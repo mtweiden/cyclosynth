@@ -1,9 +1,10 @@
 """A module that defines Clifford gates and operations involving them."""
 
 from cyclosynth.algebra import DyadicComplexNumber
+from cyclosynth.algebra import RingRoot2
+from cyclosynth.ratio import AlgebraicIntegerOverRoot2
 from cyclosynth.matrix import SO3Matrix
 from cyclosynth.matrix import U2Matrix
-from cyclosynth.bloch import BlochDecomposer
 
 
 zero = DyadicComplexNumber([0, 0, 0, 0, 0, 0, 0, 0], 0)
@@ -81,12 +82,41 @@ def cliffords(as_u2: bool = False) -> list[U2Matrix | SO3Matrix]:
         A in {I, H, S, HS, SH, HSH}
         B in {I, X, Y, Z}
     """
-    cliffords = [
-        I, H, S, X, Y, Z, HX, HY, HZ, SX, SY, SZ, HS, HSX,
-        HSY, HSZ, SH, SHX, SHY, SHZ, HSH, HSHX, HSHY, HSHZ,
-    ]
-    if not as_u2:
-        cliffords = [BlochDecomposer.from_unitary(c) for c in cliffords]
+    if as_u2:
+        cliffords = [
+            I, H, S, X, Y, Z, HX, HY, HZ, SX, SY, SZ, HS, HSX,
+            HSY, HSZ, SH, SHX, SHY, SHZ, HSH, HSHX, HSHY, HSHZ,
+        ]
+    else:
+        p = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]), 0)
+        m = AlgebraicIntegerOverRoot2(RingRoot2([-1, 0]), 0)
+        z = AlgebraicIntegerOverRoot2(RingRoot2([0, 0]), 0)
+        cliffords = [
+            SO3Matrix([p, z, z, z, p, z, z, z, p]),
+            SO3Matrix([z, z, p, z, m, z, p, z, z]),
+            SO3Matrix([z, p, z, m, z, z, z, z, p]),
+            SO3Matrix([p, z, z, z, m, z, z, z, m]),
+            SO3Matrix([m, z, z, z, p, z, z, z, m]),
+            SO3Matrix([m, z, z, z, m, z, z, z, p]),
+            SO3Matrix([z, z, p, z, p, z, m, z, z]),
+            SO3Matrix([z, z, m, z, m, z, m, z, z]),
+            SO3Matrix([z, z, m, z, p, z, p, z, z]),
+            SO3Matrix([z, p, z, p, z, z, z, z, m]),
+            SO3Matrix([z, m, z, m, z, z, z, z, m]),
+            SO3Matrix([z, m, z, p, z, z, z, z, p]),
+            SO3Matrix([z, m, z, z, z, m, p, z, z]),
+            SO3Matrix([z, m, z, z, z, p, m, z, z]),
+            SO3Matrix([z, p, z, z, z, m, m, z, z]),
+            SO3Matrix([z, p, z, z, z, p, p, z, z]),
+            SO3Matrix([z, z, p, p, z, z, z, p, z]),
+            SO3Matrix([z, z, p, m, z, z, z, m, z]),
+            SO3Matrix([z, z, m, p, z, z, z, m, z]),
+            SO3Matrix([z, z, m, m, z, z, z, p, z]),
+            SO3Matrix([p, z, z, z, z, p, z, m, z]),
+            SO3Matrix([p, z, z, z, z, m, z, p, z]),
+            SO3Matrix([m, z, z, z, z, p, z, p, z]),
+            SO3Matrix([m, z, z, z, z, m, z, m, z]),
+        ]
     return cliffords
 
 
