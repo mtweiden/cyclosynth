@@ -63,7 +63,7 @@ def bloch_identity() -> SO3Matrix:
     return mat
 
 
-def bloch_rx(n: int) -> SO3Matrix:
+def bloch_rx(n: int, dagger: bool = False) -> SO3Matrix:
     c, s  = discrete_cos(n), discrete_sin(n)
     one = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]), 0)
     zero = AlgebraicIntegerOverRoot2(RingRoot2([0, 0]), 0)
@@ -74,10 +74,14 @@ def bloch_rx(n: int) -> SO3Matrix:
             zero, -s, c,
         ]
     )
+    if dagger:
+        rx = mat.copy()
+        for _ in range(2 * n - 2):
+            mat = rx * mat
     return mat
 
 
-def bloch_ry(n: int) -> SO3Matrix:
+def bloch_ry(n: int, dagger: bool = False) -> SO3Matrix:
     c, s  = discrete_cos(n), discrete_sin(n)
     one = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]), 0)
     zero = AlgebraicIntegerOverRoot2(RingRoot2([0, 0]), 0)
@@ -88,10 +92,14 @@ def bloch_ry(n: int) -> SO3Matrix:
             s, zero, c,
         ]
     )
+    if dagger:
+        ry = mat.copy()
+        for _ in range(2 * n - 2):
+            mat = ry * mat
     return mat
 
 
-def bloch_rz(n: int) -> SO3Matrix:
+def bloch_rz(n: int, dagger: bool = False) -> SO3Matrix:
     c, s  = discrete_cos(n), discrete_sin(n)
     one = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]), 0)
     zero = AlgebraicIntegerOverRoot2(RingRoot2([0, 0]), 0)
@@ -102,6 +110,10 @@ def bloch_rz(n: int) -> SO3Matrix:
             zero, zero, one,
         ]
     )
+    if dagger:
+        rz = mat.copy()
+        for _ in range(2 * n - 2):
+            mat = rz * mat
     return mat
 
 

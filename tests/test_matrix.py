@@ -12,6 +12,7 @@ from numpy import pi
 from numpy import sin
 
 from cyclosynth.matrix import Matrix
+from cyclosynth.matrix import bloch_identity
 from cyclosynth.matrix import bloch_rx
 from cyclosynth.matrix import bloch_ry
 from cyclosynth.matrix import bloch_rz
@@ -89,6 +90,28 @@ class TestMatrix:
                 assert isclose(rx[i, j].to_float(), rx_n[i, j], atol=1e-6)
                 assert isclose(ry[i, j].to_float(), ry_n[i, j], atol=1e-6)
                 assert isclose(rz[i, j].to_float(), rz_n[i, j], atol=1e-6)
+    
+    def test_bloch_daggers(self) -> None:
+        rx_4, rxdg_4 = bloch_rx(4), bloch_rx(4, dagger=True)
+        ry_4, rydg_4 = bloch_ry(4), bloch_ry(4, dagger=True)
+        rz_4, rzdg_4 = bloch_rz(4), bloch_rz(4, dagger=True)
+        rx_8, rxdg_8 = bloch_rx(8), bloch_rx(8, dagger=True)
+        ry_8, rydg_8 = bloch_ry(8), bloch_ry(8, dagger=True)
+        rz_8, rzdg_8 = bloch_rz(8), bloch_rz(8, dagger=True)
+        identity = bloch_identity()
+        assert (rx_4 * rxdg_4).to_float() == identity.to_float()
+        assert (ry_4 * rydg_4).to_float() == identity.to_float()
+        assert (rz_4 * rzdg_4).to_float() == identity.to_float()
+        assert (rx_8 * rxdg_8).to_float() == identity.to_float()
+        assert (ry_8 * rydg_8).to_float() == identity.to_float()
+        assert (rz_8 * rzdg_8).to_float() == identity.to_float()
+        assert (rxdg_4 * rx_4).to_float() == identity.to_float()
+        assert (rydg_4 * ry_4).to_float() == identity.to_float()
+        assert (rzdg_4 * rz_4).to_float() == identity.to_float()
+        assert (rxdg_8 * rx_8).to_float() == identity.to_float()
+        assert (rydg_8 * ry_8).to_float() == identity.to_float()
+        assert (rzdg_8 * rz_8).to_float() == identity.to_float()
+
 
     def test_numerical_mul(self) -> None:
         rx4, rx8 = bloch_rx(4), bloch_rx(8)
