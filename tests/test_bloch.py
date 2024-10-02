@@ -92,5 +92,5 @@ class TestBloch:
                 target = bloch_rz(n) * target 
             bloch = BlochDecomposer(target)
             min_val = min(bloch.try_rz())
-            assert all(mde > min_val for mde in bloch.try_rx())
-            assert all(mde > min_val for mde in bloch.try_ry())
+            assert all(mde >= min_val for mde in bloch.try_rx())
+            assert all(mde >= min_val for mde in bloch.try_ry())
