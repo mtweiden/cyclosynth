@@ -13,6 +13,15 @@ from cyclosynth.utils import dyadic_cos
 from cyclosynth.utils import dyadic_sin
 
 
+def unitary_identity(n: int) -> U2Matrix:
+    one_values = [1] + [0] * (2 * n - 1)
+    zero_values = [0] * (2 * n)
+    one = DyadicComplexNumber(one_values, 0)
+    zero = DyadicComplexNumber(zero_values, 0)
+    mat = U2Matrix([one, zero, zero, one])
+    return mat
+
+
 def unitary_rx(n: int) -> U2Matrix:
     I_values = [0] * (2 * n)
     I_values[n] = 1
