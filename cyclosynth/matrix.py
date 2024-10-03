@@ -281,3 +281,11 @@ class U2Matrix(Matrix):
     
     def to_float(self) -> list[complex]:
         return [v.to_complex() for v in self.values]
+    
+    def dagger(self) -> U2Matrix:
+        a, b, c, d = self.values
+        adg = a.conjugate()
+        bdg = b.conjugate()
+        cdg = c.conjugate()
+        ddg = d.conjugate()
+        return U2Matrix([adg, cdg, bdg, ddg])
