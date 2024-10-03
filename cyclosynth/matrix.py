@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 from typing import Sequence
 
+from math import sqrt
+
 from cyclosynth.algebra import DyadicComplexNumber
 from cyclosynth.algebra import RingRoot2
 from cyclosynth.ratio import AlgebraicIntegerOverRoot2
@@ -289,3 +291,10 @@ class U2Matrix(Matrix):
         cdg = c.conjugate()
         ddg = d.conjugate()
         return U2Matrix([adg, cdg, bdg, ddg])
+
+    def hilbert_schmidt_distance(self, other: U2Matrix) -> float:
+        other_dagger = other.dagger()
+        product = self * other_dagger
+        trace = product[0, 0] + product[1, 1]
+        distance = 1 - sqrt(1 / 4 * trace.to_complex().real ** 2)
+        return distance

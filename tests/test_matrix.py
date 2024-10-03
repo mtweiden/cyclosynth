@@ -139,3 +139,9 @@ class TestMatrix:
 
             for i, j in product(range(3), range(3)):
                 assert isclose(symb[i, j].to_float(), num[i, j], atol=1e-6)
+    
+    def test_hilbert_schmidt_distance(self) -> None:
+        X = unitary_rx(4)
+        Y = unitary_ry(4)
+        assert X.hilbert_schmidt_distance(X) == 0.0
+        assert X.hilbert_schmidt_distance(Y) > 0.0
