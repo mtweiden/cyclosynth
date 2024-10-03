@@ -8,6 +8,7 @@ from typing import Sequence
 from cmath import exp
 
 from math import gcd
+from math import log2
 from math import sqrt
 from math import pi
 
@@ -264,15 +265,27 @@ class DyadicComplexNumber:
         Raises:
             ValueError: If `values` is not of length 4 (T) or 8 (sqrt T).
         """
-        # if len(values) != 4 and len(values) != 8:
-        #     m = 'The length of `values` must be 4 (T gate) or 8 (sqrt T'
-        #     m += f' gate), got {len(values)}.'
-        #     raise ValueError(m)
         self.values = list(values).copy()
         self.denominator_exponent = denominator_exponent
+    
+    def match_base_size(self, other: DyadicComplexNumber) -> None:
+        self_base, other_base = len(self.values), len(other.values)
+        if other_base <= self_base:
+            return
+        if log2(other_base / self_base) != log2(other_base // self_base):
+            m = 'New base must be a power of 2 of the old base.'
+            raise ValueError(m)
+        gap = other_base // self_base
+        new_values = [0] * other_base
+        for i, v in enumerate(self.values):
+            new_values[i * gap] = v
+        self.values = new_values
 
     def __add__(self, other: DyadicComplexNumber) -> DyadicComplexNumber:
-        assert len(self.values) == len(other.values)
+        if len(self.values) < len(other.values):
+            self.match_base_size(other)
+        elif len(self.values) > len(other.values):
+            other.match_base_size(self)
         lhs_values = self.values.copy()
         rhs_values = other.values.copy()
         offset = abs(self.denominator_exponent - other.denominator_exponent)
@@ -295,7 +308,10 @@ class DyadicComplexNumber:
 
     def __mul__(self, other: DyadicComplexNumber) -> DyadicComplexNumber:
         # Make power equal
-        assert len(self.values) == len(other.values)
+        if len(self.values) < len(other.values):
+            self.match_base_size(other)
+        elif len(self.values) > len(other.values):
+            other.match_base_size(self)
         lhs_values = self.values.copy()
         rhs_values = other.values.copy()
         new_power = self.denominator_exponent + other.denominator_exponent

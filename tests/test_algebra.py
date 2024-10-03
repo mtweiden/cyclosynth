@@ -99,13 +99,13 @@ class TestAlgebra:
             # TODO: Check a real example
 
     def test_dyadic_add(self) -> None:
-        n = 8
+        n, m = 8, 16
         for _ in range(self.num_trials):
+            # Same base
             values_a = rand_integer_values(n)
             values_b = rand_integer_values(n)
             power_a = rand_integer_values(1, 0, 50)[0]
             power_b = rand_integer_values(1, 0, 50)[0]
-
             total_a, total_b = 0 * 1j, 0 * 1j
             for i, (coeff_a, coeff_b) in enumerate(zip(values_a, values_b)):
                 total_a += coeff_a * exp(1j * pi * i / n)
@@ -113,21 +113,33 @@ class TestAlgebra:
             total_a = total_a / (2 ** power_a)
             total_b = total_b / (2 ** power_b)
             total_c = total_a + total_b
-
             int_a = DyadicComplexNumber(values_a, power_a)
             int_b = DyadicComplexNumber(values_b, power_b)
             int_c = int_a + int_b
             float_c = int_c.to_complex()
             assert isclose(total_c, float_c, rel_tol=1e-6)
 
+            # Mixed base
+            values_b = rand_integer_values(m)
+            power_b = rand_integer_values(1, 0, 50)[0]
+            total_b = 0 * 1j
+            for i, coeff_b in enumerate(values_b):
+                total_b += coeff_b * exp(1j * pi * i / m)
+            total_b = total_b / (2 ** power_b)
+            total_c = total_a + total_b
+            int_b = DyadicComplexNumber(values_b, power_b)
+            int_c = int_a + int_b
+            float_c = int_c.to_complex()
+            assert isclose(total_c, float_c, rel_tol=1e-6)
+
     def test_dyadic_sub(self) -> None:
-        n = 8
+        n, m = 8, 16
         for _ in range(self.num_trials):
+            # Same base
             values_a = rand_integer_values(n)
             values_b = rand_integer_values(n)
             power_a = rand_integer_values(1, 0, 50)[0]
             power_b = rand_integer_values(1, 0, 50)[0]
-
             total_a, total_b = 0 * 1j, 0 * 1j
             for i, (coeff_a, coeff_b) in enumerate(zip(values_a, values_b)):
                 total_a += coeff_a * exp(1j * pi * i / n)
@@ -135,21 +147,33 @@ class TestAlgebra:
             total_a = total_a / (2 ** power_a)
             total_b = total_b / (2 ** power_b)
             total_c = total_a - total_b
-
             int_a = DyadicComplexNumber(values_a, power_a)
             int_b = DyadicComplexNumber(values_b, power_b)
             int_c = int_a - int_b
             float_c = int_c.to_complex()
             assert isclose(total_c, float_c, rel_tol=1e-6)
 
+            # Mixed base
+            values_b = rand_integer_values(m)
+            power_b = rand_integer_values(1, 0, 50)[0]
+            total_b = 0 * 1j
+            for i, coeff_b in enumerate(values_b):
+                total_b += coeff_b * exp(1j * pi * i / m)
+            total_b = total_b / (2 ** power_b)
+            total_c = total_a - total_b
+            int_b = DyadicComplexNumber(values_b, power_b)
+            int_c = int_a - int_b
+            float_c = int_c.to_complex()
+            assert isclose(total_c, float_c, rel_tol=1e-6)
+
     def test_dyadic_mul(self) -> None:
-        n = 8
+        n, m = 8, 16
         for _ in range(self.num_trials):
+            # Same base
             values_a = rand_integer_values(n)
             values_b = rand_integer_values(n)
             power_a = rand_integer_values(1, 0, 50)[0]
             power_b = rand_integer_values(1, 0, 50)[0]
-
             total_a, total_b = 0 * 1j, 0 * 1j
             for i, (coeff_a, coeff_b) in enumerate(zip(values_a, values_b)):
                 total_a += coeff_a * exp(1j * pi * i / n)
@@ -157,8 +181,20 @@ class TestAlgebra:
             total_a = total_a / (2 ** power_a)
             total_b = total_b / (2 ** power_b)
             total_c = total_a * total_b
-
             int_a = DyadicComplexNumber(values_a, power_a)
+            int_b = DyadicComplexNumber(values_b, power_b)
+            int_c = int_a * int_b
+            float_c = int_c.to_complex()
+            assert isclose(total_c, float_c, rel_tol=1e-6)
+
+            # Mixed base
+            values_b = rand_integer_values(m)
+            power_b = rand_integer_values(1, 0, 50)[0]
+            total_b = 0 * 1j
+            for i, coeff_b in enumerate(values_b):
+                total_b += coeff_b * exp(1j * pi * i / m)
+            total_b = total_b / (2 ** power_b)
+            total_c = total_a * total_b
             int_b = DyadicComplexNumber(values_b, power_b)
             int_c = int_a * int_b
             float_c = int_c.to_complex()
