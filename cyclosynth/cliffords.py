@@ -41,7 +41,16 @@ HSHY = H * S * H * Y
 HSHZ = H * S * H * Z
 
 
-clifford_keys = {
+clifford_gates_to_u2 = {
+    'I': I, 'H': H, 'S': S, 'X': X, 'Y': Y, 'Z': Z,
+    'HX': HX, 'HY': HY, 'HZ': HZ, 'SX': SX, 'SY': SY,
+    'SZ': SZ, 'HS': HS, 'HSX': HSX, 'HSY': HSY, 'HSZ': HSZ,
+    'SH': SH, 'SHX': SHX, 'SHY': SHY, 'SHZ': SHZ, 'HSH': HSH,
+    'HSHX': HSHX, 'HSHY': HSHY, 'HSHZ': HSHZ,
+}
+
+
+clifford_so3_to_gates = {
     (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0): 'I',
     (0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0): 'H',
     (0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0): 'S',
@@ -127,4 +136,8 @@ def match_clifford(matrix: SO3Matrix) -> str | None:
     If the matrix is not a Clifford gate, None will be returned.
     """
     key = tuple([round(x, 3) for x in matrix.to_float()])
-    return clifford_keys.get(key)
+    return clifford_so3_to_gates.get(key)
+
+
+def clifford_str_to_u2(gates: str) -> U2Matrix | None:
+    return clifford_gates_to_u2.get(gates)
