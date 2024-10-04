@@ -6,15 +6,10 @@ from cyclosynth.algebra import RingRoot2
 from cyclosynth.algebra import RingRootRoot2Plus2
 from cyclosynth.bloch import BlochDecomposer
 from cyclosynth.cliffords import clifford_gates_to_u2
-from cyclosynth.matrix import bloch_identity
-from cyclosynth.matrix import bloch_rx
-from cyclosynth.matrix import bloch_ry
-from cyclosynth.matrix import bloch_rz
 from cyclosynth.matrix import unitary_identity
 from cyclosynth.matrix import unitary_rx
 from cyclosynth.matrix import unitary_ry
 from cyclosynth.matrix import unitary_rz
-from cyclosynth.matrix import SO3Matrix
 from cyclosynth.matrix import U2Matrix
 from cyclosynth.ratio import AlgebraicIntegerOverRoot2
 from cyclosynth.ratio import AlgebraicIntegerOverRootRoot2Plus2
