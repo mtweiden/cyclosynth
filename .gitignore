@@ -1,0 +1,16 @@
+*.egg-info/
+.tox/
+.env/
+.hypothesis/
+.venv/
+.vscode/
+.mypy_cache/
+.DS_Store
+docs/source/autogen
+__pycache__
+docs/_build
+dask-worker-space
+.ipynb_checkpoints
+dist
+build
+scratch/
