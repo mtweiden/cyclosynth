@@ -349,3 +349,7 @@ class DyadicComplexNumber:
             total += coeff * phase
         total = total / (2 ** self.denominator_exponent)
         return total
+    
+    def abs(self) -> float:
+        mag = abs(self.to_complex())
+        return mag
