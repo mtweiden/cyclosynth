@@ -16,6 +16,7 @@ from cyclosynth.matrix import bloch_identity
 from cyclosynth.matrix import bloch_rx
 from cyclosynth.matrix import bloch_ry
 from cyclosynth.matrix import bloch_rz
+from cyclosynth.matrix import unitary_identity
 from cyclosynth.matrix import unitary_rx
 from cyclosynth.matrix import unitary_ry
 from cyclosynth.matrix import unitary_rz
@@ -91,6 +92,28 @@ class TestMatrix:
                 assert isclose(ry[i, j].to_float(), ry_n[i, j], atol=1e-6)
                 assert isclose(rz[i, j].to_float(), rz_n[i, j], atol=1e-6)
     
+    def test_unitary_daggers(self) -> None:
+        rx_4, rxdg_4 = unitary_rx(4), unitary_rx(4, dagger=True)
+        ry_4, rydg_4 = unitary_ry(4), unitary_ry(4, dagger=True)
+        rz_4, rzdg_4 = unitary_rz(4), unitary_rz(4, dagger=True)
+        rx_8, rxdg_8 = unitary_rx(8), unitary_rx(8, dagger=True)
+        ry_8, rydg_8 = unitary_ry(8), unitary_ry(8, dagger=True)
+        rz_8, rzdg_8 = unitary_rz(8), unitary_rz(8, dagger=True)
+        identity = unitary_identity(8)
+        assert (rx_4 * rxdg_4).hilbert_schmidt_distance(identity) < 1e-8
+        assert (ry_4 * rydg_4).hilbert_schmidt_distance(identity) < 1e-8
+        assert (rz_4 * rzdg_4).hilbert_schmidt_distance(identity) < 1e-8
+        assert (rx_8 * rxdg_8).hilbert_schmidt_distance(identity) < 1e-8
+        assert (ry_8 * rydg_8).hilbert_schmidt_distance(identity) < 1e-8
+        assert (rz_8 * rzdg_8).hilbert_schmidt_distance(identity) < 1e-8
+        assert (rxdg_4 * rx_4).hilbert_schmidt_distance(identity) < 1e-8
+        assert (rydg_4 * ry_4).hilbert_schmidt_distance(identity) < 1e-8
+        assert (rzdg_4 * rz_4).hilbert_schmidt_distance(identity) < 1e-8
+        assert (rxdg_8 * rx_8).hilbert_schmidt_distance(identity) < 1e-8
+        assert (rydg_8 * ry_8).hilbert_schmidt_distance(identity) < 1e-8
+        assert (rzdg_8 * rz_8).hilbert_schmidt_distance(identity) < 1e-8
+
+
     def test_bloch_daggers(self) -> None:
         rx_4, rxdg_4 = bloch_rx(4), bloch_rx(4, dagger=True)
         ry_4, rydg_4 = bloch_ry(4), bloch_ry(4, dagger=True)

@@ -24,24 +24,32 @@ def unitary_identity(n: int) -> U2Matrix:
     return mat
 
 
-def unitary_rx(n: int) -> U2Matrix:
+def unitary_rx(n: int, dagger: bool = False) -> U2Matrix:
     I_values = [0] * (2 * n)
     I_values[n] = 1
     I = DyadicComplexNumber(I_values, 0)
     c = dyadic_cos(1, 2 * n)
     s = -I * dyadic_sin(1, 2 * n)
     mat = U2Matrix([c, s, s, c])
+    if dagger:
+        rx = mat.copy()
+        for _ in range(2 * n - 2):
+            mat = rx * mat
     return mat
 
 
-def unitary_ry(n: int) -> U2Matrix:
+def unitary_ry(n: int, dagger: bool = False) -> U2Matrix:
     c = dyadic_cos(1, 2 * n)
     s = dyadic_sin(1, 2 * n)
     mat = U2Matrix([c, -s, s, c])  # type: ignore
+    if dagger:
+        rx = mat.copy()
+        for _ in range(2 * n - 2):
+            mat = rx * mat
     return mat
 
 
-def unitary_rz(n: int) -> U2Matrix:
+def unitary_rz(n: int, dagger: bool = False) -> U2Matrix:
     me_values, pe_values = [0] * (2 * n), [0] * (2 * n)
     me_values[-1] = -1
     pe_values[1] = 1
@@ -49,6 +57,10 @@ def unitary_rz(n: int) -> U2Matrix:
     pe = DyadicComplexNumber(pe_values, 0)
     zero = DyadicComplexNumber([0] * (2 * n), 0)
     mat = U2Matrix([me, zero, zero, pe])
+    if dagger:
+        rx = mat.copy()
+        for _ in range(2 * n - 2):
+            mat = rx * mat
     return mat
 
 
@@ -293,8 +305,8 @@ class U2Matrix(Matrix):
         return U2Matrix([adg, cdg, bdg, ddg])
 
     def hilbert_schmidt_distance(self, other: U2Matrix) -> float:
-        other_dagger = other.dagger()
-        product = self * other_dagger
-        trace = product[0, 0] + product[1, 1]
-        distance = 1 - sqrt(1 / 4 * trace.to_complex().real ** 2)
-        return distance
+        prod = other.dagger() * self
+        trace = (prod[0, 0] + prod[1, 1]).abs()
+        val = min(trace / 2, 1)
+        dist = sqrt(1 - val ** 2)
+        return dist if dist > 0.0 else 0.0
