@@ -39,42 +39,66 @@ HSH = H * S * H
 HSHX = H * S * H * X
 HSHY = H * S * H * Y
 HSHZ = H * S * H * Z
+H_dg = H
+S_dg = S * S * S
+X_dg = X
+Y_dg = Y
+Z_dg = Z
+HX_dg = X * H
+HY_dg = Y * H
+HZ_dg = Z * H
+SX_dg = X * S_dg
+SY_dg = Y * S_dg
+SZ_dg = Z * S_dg
+HS_dg = S_dg * H
+HSX_dg = X * S_dg * H
+HSY_dg = Y * S_dg * H
+HSZ_dg = Z * S_dg * H
+SH_dg = H * S_dg
+SHX_dg = X * H * S_dg
+SHY_dg = Y * H * S_dg
+SHZ_dg = Z * H * S_dg
+HSH_dg = H * S_dg * H
+HSHX_dg = X * H * S_dg * H
+HSHY_dg = Y * H * S_dg * H
+HSHZ_dg = Z * H * S_dg * H
 
 
 clifford_gates_to_u2 = {
-    'I': I, 'H': H, 'S': S, 'X': X, 'Y': Y, 'Z': Z,
-    'HX': HX, 'HY': HY, 'HZ': HZ, 'SX': SX, 'SY': SY,
-    'SZ': SZ, 'HS': HS, 'HSX': HSX, 'HSY': HSY, 'HSZ': HSZ,
-    'SH': SH, 'SHX': SHX, 'SHY': SHY, 'SHZ': SHZ, 'HSH': HSH,
-    'HSHX': HSHX, 'HSHY': HSHY, 'HSHZ': HSHZ,
+    'I': I,
+    'H': H,
+    'S': S,
+    'X': X,
+    'Y': Y,
+    'Z': Z,
+    'XH': HX,
+    'YH': HY, 
+    'ZH': HZ,
+    'XS': SX,
+    'YS': SY,
+    'ZS': SZ,
+    'SH': HS,
+    'XSH': HSX,
+    'YSH': HSY,
+    'ZSH': HSZ,
+    'HS': SH,
+    'XHS': SHX,
+    'YHS': SHY,
+    'ZHS': SHZ,
+    'HSH': HSH,
+    'XHSH': HSHX,
+    'YHSH': HSHY,
+    'ZHSH': HSHZ,
 }
 
 
-clifford_so3_to_gates = {
-    (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0): 'I',
-    (0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0): 'H',
-    (0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0): 'S',
-    (1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, -1.0): 'X',
-    (-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0): 'Y',
-    (-1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0): 'Z',
-    (0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0): 'HX',
-    (0.0, 0.0, -1.0, 0.0, -1.0, 0.0, -1.0, 0.0, 0.0): 'HY',
-    (0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0): 'HZ',
-    (0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0): 'SX',
-    (0.0, -1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0): 'SY',
-    (0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0): 'SZ',
-    (0.0, -1.0, 0.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0): 'HS',
-    (0.0, -1.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0): 'HSX',
-    (0.0, 1.0, 0.0, 0.0, 0.0, -1.0, -1.0, 0.0, 0.0): 'HSY',
-    (0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0): 'HSZ',
-    (0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0): 'SH',
-    (0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, -1.0, 0.0): 'SHX',
-    (0.0, 0.0, -1.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0): 'SHY',
-    (0.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0): 'SHZ',
-    (1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0): 'HSH',
-    (1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0): 'HSHX',
-    (-1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0): 'HSHY',
-    (-1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, -1.0, 0.0): 'HSHZ',
+clifford_gates_to_invu2 = {
+    'I': I,
+    'H': H,
+    'S': S_dg,
+    'X': X,
+    'Y': Y,
+    'Z': Z,
 }
 
 
@@ -129,14 +153,20 @@ def cliffords(as_u2: bool = False) -> list[U2Matrix | SO3Matrix]:
     return cliffords
 
 
-def match_clifford(matrix: SO3Matrix) -> str | None:
+def match_clifford(matrix: U2Matrix) -> str | None:
     """
-    Given a matrix in SO(3), return the corresponding Clifford gate.
+    Given a matrix in U(2), return the corresponding Clifford gates.
 
     If the matrix is not a Clifford gate, None will be returned.
     """
-    key = tuple([round(x, 3) for x in matrix.to_float()])
-    return clifford_so3_to_gates.get(key)
+    candidates = [
+        gates for gates, u in clifford_gates_to_u2.items()
+        if matrix.hilbert_schmidt_distance(u) <= 1e-8
+    ]
+    if len(candidates) == 0:
+        return None
+    else:
+        return candidates[0]
 
 
 def clifford_str_to_u2(gates: str) -> U2Matrix | None:
