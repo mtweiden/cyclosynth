@@ -1,13 +1,16 @@
 from random import randint
 from random import choice
+from random import choices
 
 from cyclosynth.algebra import RingRoot2
 from cyclosynth.algebra import RingRootRoot2Plus2
 from cyclosynth.bloch import BlochDecomposer
+from cyclosynth.cliffords import clifford_gates_to_u2
 from cyclosynth.matrix import bloch_identity
 from cyclosynth.matrix import bloch_rx
 from cyclosynth.matrix import bloch_ry
 from cyclosynth.matrix import bloch_rz
+from cyclosynth.matrix import unitary_identity
 from cyclosynth.matrix import unitary_rx
 from cyclosynth.matrix import unitary_ry
 from cyclosynth.matrix import unitary_rz
@@ -15,10 +18,6 @@ from cyclosynth.matrix import SO3Matrix
 from cyclosynth.matrix import U2Matrix
 from cyclosynth.ratio import AlgebraicIntegerOverRoot2
 from cyclosynth.ratio import AlgebraicIntegerOverRootRoot2Plus2
-
-
-# from random import seed
-# seed(42)
 
 
 def rand_integer_values(
@@ -50,6 +49,21 @@ def random_u2(n: int) -> U2Matrix:
     return mat
 
 
+def construct_unitary(n: int, gates: str) -> U2Matrix:
+    mat = unitary_identity(n)
+    cliffords = clifford_gates_to_u2.keys()
+    for gate in gates:
+        if gate == 'x':
+            g = unitary_rx(n)
+        elif gate == 'y':
+            g = unitary_ry(n)
+        elif gate == 'z':
+            g = unitary_rz(n)
+        elif gate in cliffords:
+            g = clifford_gates_to_u2[gate]
+        mat = g * mat
+    return mat
+
 class TestBloch:
 
     num_trials = 100
@@ -57,40 +71,74 @@ class TestBloch:
     def test_u2_constructor(self) -> None:
         BlochDecomposer(random_u2(4))
         BlochDecomposer(random_u2(8))
-
-    def test_so3_constructor(self) -> None:
-        values_n4 = [random_ringroot2() for _ in range(9)]
-        values_n8 = [random_ringrootroot2plus2() for _ in range(9)]
-        bloch_n4 = BlochDecomposer(SO3Matrix(values_n4))
-        assert bloch_n4.base == 4
-        bloch_n8 = BlochDecomposer(SO3Matrix(values_n8))
-        assert bloch_n8.base == 8
     
-    def test_rz_simple(self) -> None:
+    def test_try_rz(self) -> None:
         n = 8
         for _ in range(self.num_trials):
-            num_rz_gates = randint(1, 50)
-            if num_rz_gates % 2 == 0:
-                num_rz_gates += 1
-            target = bloch_identity()
-            for _ in range(num_rz_gates):
-                target = bloch_rz(n) * target 
-            bloch = BlochDecomposer(target)
-            index = (n // 2 - num_rz_gates) % (n // 2) - 1
-            assert bloch.try_rz()[index] == 0
-            assert all(mde > 0 for mde in bloch.try_rx())
-            assert all(mde > 0 for mde in bloch.try_ry())
-    
-    def test_rz_complex(self) -> None:
-        n = 8
-        for _ in range(self.num_trials):
-            target = SO3Matrix([random_ringrootroot2plus2() for _ in range(9)])
+            target = unitary_identity(n)
             num_rz_gates = randint(1, 10)
             if num_rz_gates % 2 == 0:
                 num_rz_gates += 1
             for _ in range(num_rz_gates):
-                target = bloch_rz(n) * target 
+                target = unitary_rz(n) * target 
             bloch = BlochDecomposer(target)
-            min_val = min(bloch.try_rz())
-            assert all(mde >= min_val for mde in bloch.try_rx())
-            assert all(mde >= min_val for mde in bloch.try_ry())
+            min_val = min(bloch.try_rz(bloch.matrix))
+            assert all(mde >= min_val for mde in bloch.try_rx(bloch.matrix))
+            assert all(mde >= min_val for mde in bloch.try_ry(bloch.matrix))
+    
+    def test_decompose_sqrtt(self) -> None:
+        n = 8
+        length = 100
+        for _ in range(self.num_trials):
+            def constuct_u2(gates: str) -> U2Matrix:
+                mat = unitary_identity(n)
+                x, y, z = unitary_rx(n), unitary_ry(n), unitary_rz(n)
+                for gate in gates:
+                    if gate == 'x':
+                        mat = x * mat
+                    elif gate == 'y':
+                        mat = y * mat
+                    else:
+                        mat = z * mat
+                return mat
+ 
+            gates = ''.join(choices('xyz', k=length))
+            # gates += 'x' * 8
+            u2 = constuct_u2(gates)
+            bloch = BlochDecomposer(u2)
+            decomposition = bloch.decompose()
+ 
+            # If this check fails, compare unitaries
+            if not decomposition == gates:
+                decomposition_u = construct_unitary(n, decomposition)
+                gates_u = construct_unitary(n, gates)
+                dist = decomposition_u.hilbert_schmidt_distance(gates_u)
+                assert dist < 1e-8
+
+    def test_decompose_t(self) -> None:
+        n = 4
+        length = 100
+        for _ in range(self.num_trials):
+            def constuct_u2(gates: str) -> U2Matrix:
+                mat = unitary_identity(n)
+                x, y, z = unitary_rx(n), unitary_ry(n), unitary_rz(n)
+                for gate in gates:
+                    if gate == 'x':
+                        mat = x * mat
+                    elif gate == 'y':
+                        mat = y * mat
+                    else:
+                        mat = z * mat
+                return mat
+
+            gates = ''.join(choices('xyz', k=length))
+            u2 = constuct_u2(gates)
+            bloch = BlochDecomposer(u2)
+            decomposition = bloch.decompose()
+
+            # If this check fails, compare unitaries
+            if not decomposition == gates:
+                decomposition_u = construct_unitary(n, decomposition)
+                gates_u = construct_unitary(n, gates)
+                dist = decomposition_u.hilbert_schmidt_distance(gates_u)
+                assert dist < 1e-8
