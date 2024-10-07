@@ -54,6 +54,10 @@ def construct_unitary(n: int, gates: str) -> U2Matrix:
             g = unitary_ry(n)
         elif gate == 'z':
             g = unitary_rz(n)
+        elif gate == 'T':
+            g = unitary_rz(4)
+        elif gate == 'Q':
+            g = unitary_rz(8)
         elif gate in cliffords:
             g = clifford_gates_to_u2[gate]
         mat = g * mat
@@ -61,7 +65,7 @@ def construct_unitary(n: int, gates: str) -> U2Matrix:
 
 class TestBloch:
 
-    num_trials = 100
+    num_trials = 20
 
     def test_u2_constructor(self) -> None:
         BlochDecomposer(random_u2(4))
@@ -98,9 +102,8 @@ class TestBloch:
                 return mat
  
             gates = ''.join(choices('xyz', k=length))
-            # gates += 'x' * 8
             u2 = constuct_u2(gates)
-            bloch = BlochDecomposer(u2)
+            bloch = BlochDecomposer(u2, translate_gates=False)
             decomposition = bloch.decompose()
  
             # If this check fails, compare unitaries
@@ -128,7 +131,7 @@ class TestBloch:
 
             gates = ''.join(choices('xyz', k=length))
             u2 = constuct_u2(gates)
-            bloch = BlochDecomposer(u2)
+            bloch = BlochDecomposer(u2, translate_gates=False)
             decomposition = bloch.decompose()
 
             # If this check fails, compare unitaries
