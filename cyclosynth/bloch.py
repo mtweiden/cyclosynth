@@ -16,19 +16,24 @@ from cyclosynth.matrix import unitary_ry
 from cyclosynth.matrix import unitary_rz
 from cyclosynth.ratio import AlgebraicIntegerOverRoot2
 from cyclosynth.ratio import AlgebraicIntegerOverRootRoot2Plus2
+from cyclosynth.translation import translate_decomposition
 
 
 class BlochDecomposer:
     """
     For decomposing exactly implementable unitaries into discrete rotations.
     """
-    def __init__(self, target: U2Matrix) -> None:
+    def __init__(self, target: U2Matrix, translate_gates: bool = True) -> None:
         """
         Construct a BlochDecomposer.
         
         Args:
             target (U2Matrix): An exactly implementable unitary represented
                 as a matrix in U2.
+            
+            translate_gates (bool): If True, translate the decomposition into
+                Clifford+T or Clifford+Q gates. Otherwise, return the decom-
+                position in terms of discrete x, y, z rotations.
         """
         if not isinstance(target, U2Matrix):
             raise ValueError('The `target` must be a U2Matrix.')
@@ -36,6 +41,7 @@ class BlochDecomposer:
         self.matrix = BlochDecomposer.from_unitary(target)
         self.base = 4 if Matrix.type_check(self.matrix) is \
                 AlgebraicIntegerOverRoot2 else 8
+        self.translate_gates = translate_gates
         self.rx_so3 = bloch_rx(self.base, dagger=True)
         self.ry_so3 = bloch_ry(self.base, dagger=True)
         self.rz_so3 = bloch_rz(self.base, dagger=True)
@@ -45,6 +51,16 @@ class BlochDecomposer:
 
     @staticmethod
     def from_unitary(unitary: U2Matrix) -> SO3Matrix:
+        """
+        Convert an exactly implementable U2Matrix into an SO3Matrix.
+
+        Args:
+            unitary (U2Matrix): A unitary matrix that is exactly implementable
+                in the Clifford+RZ(pi/self.base) gate set.
+        
+        Returns:
+            (SO3Matrix): The SO3Matrix representation of the unitary.
+        """
         assert unitary.shape == (2, 2)
         a: DyadicComplexNumber = unitary[0, 0]
         b: DyadicComplexNumber = unitary[0, 1]
@@ -90,10 +106,6 @@ class BlochDecomposer:
         values = [int_type.from_dyadic(v) for v in values]
         bloch = SO3Matrix(values)
         return bloch
-
-    @staticmethod
-    def to_unitary(bloch: Matrix) -> Matrix:
-        pass
 
     def try_rx(self, residual: SO3Matrix) -> tuple[int]:
         """
@@ -215,4 +227,9 @@ class BlochDecomposer:
         cliffords = match_clifford(residual_u2)
         if cliffords is not None and cliffords is not 'I':
             decomposition += cliffords
+        
+        if self.translate_gates:
+            magic_gate = 'T' if self.base == 4 else 'Q'
+            decomposition = translate_decomposition(decomposition, magic_gate)
+
         return decomposition
