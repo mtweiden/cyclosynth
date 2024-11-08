@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from numpy import isclose
 from mpmath import sqrt
 from mpmath import pi
 from mpmath import matrix
@@ -39,7 +40,10 @@ class Ellipse:
             self.a, self.b, self.d = mat[0,0], mat[0,1], mat[1,1]
         else:
             self.a, self.b, self.d = mat
-        self.p = tuple(center) or (0.0, 0.0)
+        self.p = (0.0, 0.0) if center is None else tuple(center)
+    
+    def copy(self) -> Ellipse:
+        return Ellipse([self.a, self.b, self.d], self.p)
     
     @property
     def center(self) -> tuple[float]:
@@ -80,19 +84,31 @@ class Ellipse:
         a, b, d = self.a, self.b, self.d
         return a * x * x + 2 * b * x * y + d * y * y <= 1
     
-    def make_upright(self) -> Ellipse:
+    def make_upright(
+        self,
+        return_operator: bool = False,
+    ) -> Ellipse | tuple[Ellipse, Sequence[GridOperator]]:
         """
         Apply special grid operators until the ellipse is at least 1/2-upright.
 
-        TODO:
-          - Write a function that returns the grid operator tha does this.
+        Args:
+            return_operators (bool): If True, return the sequence of operators
+                that were applied to the ellipse.
+        
+        Returns:
+            upright_ellipse (Ellipse): The upright ellipse.
+
+            operators (Sequence[GridOperator]): The sequence of operators that
+                were applied to the ellipse.
         """
-        def apply_op(ellipse, n, operator_a):
+
+        def get_op(n: int, operator_a: bool) -> GridOperator:
             if operator_a:
-                op = GridOperator([1, n, 0, 1])
+                return GridOperator([1, n, 0, 1])
             else:
-                op = GridOperator([1, 0, n, 1])
-            return ellipse.apply_operator(op)
+                return GridOperator([1, 0, n, 1])
+        
+        operator = GridOperator([1, 0, 0, 1])
             
         ellipse = self
         while ellipse.uprightness() < 1/2:
@@ -114,15 +130,43 @@ class Ellipse:
                     n = int(ceil(rhs))
 
             def measure(n):
-                new_up = apply_op(ellipse, n, operator_a).uprightness()
+                op = get_op(n, operator_a)
+                new_up = ellipse.apply_operator(op).uprightness()
                 return new_up - ellipse.uprightness()
             
             if measure(n) > 0:
-                ellipse = apply_op(ellipse, n, operator_a)
+                op = get_op(n, operator_a)
             else:
-                ellipse = apply_op(ellipse, -n, operator_a)
+                op = get_op(-n, operator_a)
+            ellipse = ellipse.apply_operator(op)
+            operator = op.compose(operator)
+        
+        if return_operator:
+            return ellipse, operator
         return ellipse
-
+    
+    def __eq__(self, other: Ellipse) -> bool:
+        return self.mat == other.mat and self.p == other.p
+    
+    def is_close(self, other: Ellipse, precision: float = 1e-3) -> bool:
+        da = self.a - other.a
+        db = self.b - other.b
+        dd = self.d - other.d
+        dp0 = self.p[0] - other.p[0]
+        dp1 = self.p[1] - other.p[1]
+        return (
+            isclose(da, 0,  atol=precision) and
+            isclose(db, 0,  atol=precision) and
+            isclose(dd, 0,  atol=precision) and
+            isclose(dp0, 0, atol=precision) and
+            isclose(dp1, 0, atol=precision)
+        )
+    
+    def __repr__(self) -> str:
+        if self.p != (0.0, 0.0):
+            return f"Ellipse({self.mat}, {self.p})"
+        else:
+            return f"Ellipse({self.mat})"
 
 class GridOperator:
     """
@@ -146,10 +190,13 @@ class GridOperator:
     
     def compose(self, other: GridOperator) -> GridOperator:
         """
-        TODO: Check if multiplying on correct side.
+        Right matrix multiplication.
         """
         a = self.a * other.a + self.b * other.c
         b = self.a * other.b + self.b * other.d
         c = self.c * other.a + self.d * other.c
         d = self.c * other.b + self.d * other.d
         return GridOperator([a, b, c, d])
+    
+    def __repr__(self) -> str:
+        return f"GridOperator({self.a}, {self.b}, {self.c}, {self.d})"
