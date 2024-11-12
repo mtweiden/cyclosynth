@@ -7,11 +7,15 @@ from mpmath import acos
 from mpmath import cos
 from mpmath import sin
 from mpmath import pi
+from mpmath import sqrt
+
+from numpy import isclose
 
 from cyclosynth.algebra import RingRoot2
-from cyclosynth.ratio import IntegerRatio
 from cyclosynth.gridsynth import find_ellipse
-from cyclosynth.gridsynth import enumerate_points_for_k
+from cyclosynth.gridsynth import in_epsilon_region
+from cyclosynth.gridsynth import solve_grid_problem_1d
+from cyclosynth.gridsynth import solve_scaled_grid_problem_1d
 
 # from random import seed
 # seed(42)
@@ -43,25 +47,68 @@ class TestGridsynth:
         for _ in range(self.num_trials):
             p = random_point_in_epsilon_region()
             assert ellipse.check_inclusion(p)
-
-
-    def test_enumerate_points_for_k(self) -> None:
+    
+    def test_solve_grid_problem_1d_a(self) -> None:
+        x_lo, x_hi = 0, 8.25
+        y_lo, y_hi = -1, 1
+        solutions = [s for s in solve_grid_problem_1d(x_lo, x_hi, y_lo, y_hi)]
+        assert len(solutions) == 7
+        assert isclose(solutions[0].to_float(), 0.0)
+        assert isclose(solutions[1].to_float(), 1.0)
+        assert isclose(solutions[2].to_float(), float(1 + sqrt(2)))
+        assert isclose(solutions[3].to_float(), float(2 + sqrt(2)))
+        assert isclose(solutions[4].to_float(), float(2 + 2 * sqrt(2)))
+        assert isclose(solutions[5].to_float(), float(3 + 2 * sqrt(2)))
+        assert isclose(solutions[6].to_float(), float(4 + 3 * sqrt(2)))
+    
+    def test_solve_grid_problem_1d_b(self) -> None:
+        x_lo, x_hi = -5, 5
+        y_lo, y_hi = -3, 3
+        solutions = [s for s in solve_grid_problem_1d(x_lo, x_hi, y_lo, y_hi)]
+        assert len(solutions) == 22
+        for solution in solutions:
+            s, sc = solution.to_float(), solution.conj().to_float()
+            assert x_lo <= s and s <= x_hi
+            assert y_lo <= sc and sc <= y_hi
+    
+    def test_solve_scaled_grid_problem_1d(self) -> None:
+        k = 20
+        solutions_check_limit = 10
         for _ in range(self.num_trials):
-            a, b, c, d = [randint(-100, 100) for _ in range(4)]
-            if (c - a) % 2 == 0:
-                alpha = RingRoot2([d, (c - a) // 2])
-                beta = RingRoot2([b, (c + a) // 2])
-            else:
-                alpha = RingRoot2([d, (c - a - 1) // 2])
-                beta = RingRoot2([b, (c + a - 1) // 2])
-            
-            epsilon = 1e-3
-            x_lo = alpha.to_float() - epsilon
-            x_hi = alpha.to_float() + epsilon
-            y_lo = beta.to_float() - epsilon
-            y_hi = beta.to_float() + epsilon
-            k = 20
-            solutions = enumerate_points_for_k(x_lo, x_hi, y_lo, y_hi, k)
-            for s in solutions:
-                assert s is not None
-                break
+            x_lo, x_hi = uniform(-100, 100), uniform(-100, 100)
+            if x_lo > x_hi:
+                x_lo, x_hi = x_hi, x_lo
+            elif x_lo == x_hi:
+                x_lo -= 1
+            y_lo, y_hi = -1, 1
+            args = (x_lo, x_hi, y_lo, y_hi, k)
+            for i, c in enumerate(solve_scaled_grid_problem_1d(*args)):
+                if i >= solutions_check_limit:
+                    break
+                assert c is not None
+                c_float = c.to_float()
+                assert x_lo <= c_float and c_float <= x_hi
+
+    def test_solve_scaled_grid_problem_1d_failure(self) -> None:
+        k = 1
+        x_lo, x_hi = -0.1, 0.1
+        y_lo, y_hi = 0.1, 1
+        args = (x_lo, x_hi, y_lo, y_hi, k)
+        solutions = [c for c in solve_scaled_grid_problem_1d(*args)]
+        assert len(solutions) == 0
+    
+    def test_solve_scaled_grid_problem_2d(self) -> None:
+        ...
+
+    # def test_in_epsilon_region(self) -> None:
+    #     epsilon = 1e-20
+    #     for _ in range(self.num_trials):
+    #         angle = 2 * pi * random()
+    #         ellipse = find_ellipse(angle, epsilon)
+    #         (x_lo, x_hi), (y_lo, y_hi) = ellipse.bounding_box()
+    #         k = 40
+    #         candidates = solve_scaled_grid_problem_1d(x_lo, x_hi, y_lo, y_hi, k)
+    #         something_works = False
+    #         for s in candidates:
+    #             if in_epsilon_region(angle, epsilon, )
+    
