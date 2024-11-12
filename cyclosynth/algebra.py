@@ -143,6 +143,10 @@ class RingRoot2(AlgebraicInteger):
     def __repr__(self) -> str:
         s = f'{self.values[0]} + {self.values[1]}*sqrt(2)'
         return s
+    
+    def conj(self) -> RingRoot2:
+        a, b = self.values
+        return RingRoot2([a, -b])
 
 
 class RingRootRoot2Plus2(AlgebraicInteger):
