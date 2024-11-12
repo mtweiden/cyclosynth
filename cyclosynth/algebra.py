@@ -156,6 +156,9 @@ class RingRoot2(AlgebraicInteger):
         if n == 1:
             return self
         return self * self ** (n - 1)
+    
+    def __neg__(self) -> RingRoot2:
+        return RingRoot2([-v for v in self.values])
 
 
 class RingRootRoot2Plus2(AlgebraicInteger):
