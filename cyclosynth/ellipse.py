@@ -1,4 +1,8 @@
-"""A module for creating and manipulating ellipses."""
+"""
+A module for creating and manipulating ellipses.
+
+TODO: Change to symbolic computations.
+"""
 from __future__ import annotations
 
 from typing import Sequence
@@ -16,8 +20,6 @@ from cyclosynth.algebra import AlgebraicInteger
 class Ellipse:
     """
     An ellipse in the real plane.
-
-    TODO: Are these actually integers?
     """
     def __init__(
         self,
@@ -40,14 +42,10 @@ class Ellipse:
             self.a, self.b, self.d = mat[0,0], mat[0,1], mat[1,1]
         else:
             self.a, self.b, self.d = mat
-        self.p = (0.0, 0.0) if center is None else tuple(center)
+        self.center = (0.0, 0.0) if center is None else tuple(center)
     
     def copy(self) -> Ellipse:
-        return Ellipse([self.a, self.b, self.d], self.p)
-    
-    @property
-    def center(self) -> tuple[float]:
-        return self.p
+        return Ellipse([self.a, self.b, self.d], self.center)
     
     @property
     def mat(self) -> tuple[tuple[float]]:
@@ -76,11 +74,11 @@ class Ellipse:
         aa = w * (a * w + b * y) + y * (b * w + d * y)
         bb = w * (a * x + b * z) + y * (b * x + d * z)
         dd = x * (a * x + b * z) + z * (b * x + d * z)
-        return Ellipse([aa, bb, dd], self.p)
+        return Ellipse([aa, bb, dd], self.center)
     
     def check_inclusion(self, point: Sequence[float]) -> bool:
         """See if point is in the ellipse."""
-        x, y = point[0] - self.p[0], point[1] - self.p[1]
+        x, y = point[0] - self.center[0], point[1] - self.center[1]
         a, b, d = self.a, self.b, self.d
         return a * x * x + 2 * b * x * y + d * y * y <= 1
     
@@ -145,15 +143,23 @@ class Ellipse:
             return ellipse, operator
         return ellipse
     
+    def bounding_box(self) -> tuple[tuple[float]]:
+        """Return smallest bounding box of the ellipse."""
+        x, y = self.center
+        sqrt_det = sqrt(self.det())
+        w = sqrt(self.d) / sqrt_det
+        h = sqrt(self.a) / sqrt_det
+        return ((x - w, x + w), (y - h, y + h))
+    
     def __eq__(self, other: Ellipse) -> bool:
-        return self.mat == other.mat and self.p == other.p
+        return self.mat == other.mat and self.center == other.center
     
     def is_close(self, other: Ellipse, precision: float = 1e-3) -> bool:
         da = self.a - other.a
         db = self.b - other.b
         dd = self.d - other.d
-        dp0 = self.p[0] - other.p[0]
-        dp1 = self.p[1] - other.p[1]
+        dp0 = self.center[0] - other.center[0]
+        dp1 = self.center[1] - other.center[1]
         return (
             isclose(da, 0,  atol=precision) and
             isclose(db, 0,  atol=precision) and
@@ -163,10 +169,11 @@ class Ellipse:
         )
     
     def __repr__(self) -> str:
-        if self.p != (0.0, 0.0):
-            return f"Ellipse({self.mat}, {self.p})"
+        if self.center != (0.0, 0.0):
+            return f"Ellipse({self.mat}, {self.center})"
         else:
             return f"Ellipse({self.mat})"
+
 
 class GridOperator:
     """
@@ -200,3 +207,7 @@ class GridOperator:
     
     def __repr__(self) -> str:
         return f"GridOperator({self.a}, {self.b}, {self.c}, {self.d})"
+    
+    def apply_to_point(self, point: Sequence[float]) -> tuple[float]:
+        x, y = point
+        return (self.a * x + self.b * y, self.c * x + self.d * y)
