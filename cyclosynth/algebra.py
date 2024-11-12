@@ -147,6 +147,15 @@ class RingRoot2(AlgebraicInteger):
     def conj(self) -> RingRoot2:
         a, b = self.values
         return RingRoot2([a, -b])
+    
+    def __pow__(self, n: int) -> RingRoot2:
+        if n < 0:
+            raise ValueError('`n` must be a non-negative integer.')
+        elif n == 0:
+            return RingRoot2([1, 0])
+        if n == 1:
+            return self
+        return self * self ** (n - 1)
 
 
 class RingRootRoot2Plus2(AlgebraicInteger):
