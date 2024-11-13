@@ -57,6 +57,12 @@ class IntegerRatio:
         Divide by the denominator_base as many times as possible.
         """
         raise NotImplementedError('Define a simplify method.')
+    
+    def conj(self) -> IntegerRatio:
+        """
+        Return the conjugate of the ratio.
+        """
+        raise NotImplementedError('Define a conj method.')
 
     def to_float(self) -> complex:
         n = self.numerator.to_float()
@@ -330,3 +336,13 @@ class AlgebraicIntegerOverRoot2(IntegerRatio):
         dyadic_as_alg_int = RingRoot2([c0, c1])
         number = AlgebraicIntegerOverRoot2(dyadic_as_alg_int, 2 * k)
         return number
+    
+    def conj(self) -> AlgebraicIntegerOverRoot2:
+        """
+        Return the conjugate of the ratio.
+        """
+        new_numerator = self.numerator.conj()
+        ratio = AlgebraicIntegerOverRoot2(new_numerator, self.denominator_power)
+        if self.denominator_power % 2 == 1:
+            ratio = -ratio
+        return ratio
