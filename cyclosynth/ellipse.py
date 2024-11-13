@@ -13,6 +13,10 @@ from mpmath import pi
 from mpmath import matrix
 from mpmath import floor
 from mpmath import ceil
+from mpmath import cos
+from mpmath import sin
+from mpmath import diag
+from mpmath import inverse
 
 from cyclosynth.algebra import AlgebraicInteger
 
@@ -173,6 +177,32 @@ class Ellipse:
             return f"Ellipse({self.mat}, {self.center})"
         else:
             return f"Ellipse({self.mat})"
+
+    @staticmethod
+    def find_ellipse(angle: float, epsilon: float) -> Ellipse:
+        """
+        Find the ellipse matrix for the given angle and precision.
+
+        Returns:
+            (Ellipse): An ellipse centered at and rotated along the epsilon
+                region of the given angle.
+        """
+        d = 1 - (epsilon ** 2 / 2)  # distance from origin of e-region center
+        zx = cos(-angle / 2)  # width of e-region
+        zy = sin(-angle / 2)  # height of e-region
+        center = (d * zx, d * zy)
+
+        # Eigenvalues for scaling the determining matrix
+        ev1, ev2 = 4 / (epsilon ** 4), 1 / (epsilon ** 2)
+        
+        # Construct the determining matrix
+        bmat = matrix([[zx, -zy], [zy, zx]])
+        mmat = diag([ev1, ev2])
+        mat = bmat @ mmat @ inverse(bmat)
+
+        return Ellipse(mat, center)
+
+
 
 
 class GridOperator:

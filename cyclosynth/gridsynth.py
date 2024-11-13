@@ -66,14 +66,50 @@ def solve_grid_problem(
         return lo - jiggle, hi + jiggle
     
     lambda_ = RingRoot2([1, 1])
+    root2 = RingRoot2([0, 1])
 
-    args = (*widen_interval(Ax_lo, Ax_hi), *widen_interval(Ay_lo, Ay_hi), k)
-    for beta in solve_scaled_grid_problem_1d(*args):
-        beta_bul = beta.conj()
+    # The solution check limit is the maximum number of candidate x cooredinates
+    # to check for a given beta (y coordinate).
+    solution_check_limit = 100
+    args = (*widen_interval(Ax_lo, Ax_hi), *widen_interval(Ay_lo, Ay_hi), k + 1)
+    for beta_prime in solve_scaled_grid_problem_1d(*args):
+        beta_prime_bul = beta_prime.conj()
         range_A = Ax_lo, Ax_hi + lambda_.to_float()
         range_B = Bx_lo, Bx_hi + lambda_.to_float()
-        xs = solve_scaled_grid_problem_1d(*range_A, *range_B, k + 1)
-        if xs is None:
+
+        # Find potential solution x coordinates for region A
+        x = None
+        x_candidates = solve_scaled_grid_problem_1d(*range_A, *range_B, k + 1)
+        for x_num, x in enumerate(x_candidates):
+            # Limit the number of x candidates to check for a given beta
+            if x_num >= solution_check_limit:
+                x = None
+                break
+            x_bul = x.conj()
+            dx = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]), k)
+            dx_bul = dx.conj()
+
+            # Find the intersection of the y corredinate with the convex sets
+            # TODO
+            intersect_A = ...
+            intersect_B = ...
+
+            if intersect_A is None or intersect_B is None:
+                continue
+
+            # Compute offsets to widen the intervals to check
+            dtA = 10 / max(10, 2 ** k * (t1B - t0B))
+            dtB = 10 / max(10, 2 ** k * (t1A - t0A))
+
+            parity = ((beta_prime - x) * (root2 ** k))
+            alpha_args = ( ... , 1, parity)
+            alpha_prime_offsets = solve_scaled_parity_grid_problem_1d(*alpha_args)
+            for alpha_prime_offset in alpha_prime_offsets:
+
+                alpha_prime = alpha_prime_offset + dx + x
+
+
+        if x is None:
             continue
 
 
@@ -98,6 +134,35 @@ def solve_scaled_grid_problem_1d(
     
     for candidate in solve_grid_problem_1d(x0, x1, y0, y1):
         yield scale_inv * AlgebraicIntegerOverRoot2(candidate)
+
+
+def solve_scaled_parity_grid_problem_1d(
+    x_lo: float,
+    x_hi: float,
+    y_lo: float,
+    y_hi: float,
+    k: int,
+    beta: AlgebraicIntegerOverRoot2,
+) -> Generator[AlgebraicIntegerOverRoot2, None, None]:
+    """
+    This function addresses the case where we want to solve the grid problem
+    with an offset. This is necessary because solutions can be in the form
+    a + i b  or  a + i b + (1+i)/sqrt(2) for some a, b in Z[√2].
+    """
+    # If the denominator power is less than k-1, we solve the problem at a
+    # lower value of k
+    if beta.denominator_power <= k - 1:
+        yield from solve_scaled_grid_problem_1d(x_lo, x_hi, y_lo, y_hi, k - 1)
+    else:
+        offset = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]), k)
+        offset_bul = offset.conj()
+        x0 = x_lo + offset.to_float()
+        x1 = x_hi + offset.to_float()
+        y0 = y_lo + offset_bul.to_float()
+        y1 = y_hi + offset_bul.to_float()
+
+        for candidate in solve_scaled_grid_problem_1d(x0, x1, y0, y1, k - 1):
+            yield candidate - offset
 
 
 def solve_grid_problem_1d(
@@ -176,7 +241,6 @@ def gridpoints_internal(
     if dy < 0:
         n = -n
 
-    # TODO: Define negative power exponentiation
     if n >= 0:
         lambda_n = lambda_ ** n  # lambda ^ n
         lambda_inv_n = lambda_inv ** n  # (lambda^-1) ^ n
@@ -258,30 +322,6 @@ def solve_for_beta() -> AlgebraicInteger | None:
             beta.dagger * beta = n, or None if no solution exists.
     """
     pass
-
-
-def find_ellipse(angle: float, epsilon: float) -> Ellipse:
-    """
-    Find the ellipse matrix for the given angle and precision.
-
-    Returns:
-        (Ellipse): An ellipse centered at and rotated along the epsilon
-            region of the given angle.
-    """
-    d = 1 - (epsilon ** 2 / 2)  # distance from origin of e-region center
-    zx = cos(-angle / 2)  # width of e-region
-    zy = sin(-angle / 2)  # height of e-region
-    center = (d * zx, d * zy)
-
-    # Eigenvalues for scaling the determining matrix
-    ev1, ev2 = 4 / (epsilon ** 4), 1 / (epsilon ** 2)
-    
-    # Construct the determining matrix
-    bmat = matrix([[zx, -zy], [zy, zx]])
-    mmat = diag([ev1, ev2])
-    mat = bmat @ mmat @ inverse(bmat)
-
-    return Ellipse(mat, center)
 
 
 def in_epsilon_region(
