@@ -15,6 +15,7 @@ from mpmath import floor
 from mpmath import ceil
 from mpmath import cos
 from mpmath import sin
+from mpmath import power
 from mpmath import diag
 from mpmath import inverse
 
@@ -84,7 +85,8 @@ class Ellipse:
         """See if point is in the ellipse."""
         x, y = point[0] - self.center[0], point[1] - self.center[1]
         a, b, d = self.a, self.b, self.d
-        return a * x * x + 2 * b * x * y + d * y * y <= 1
+        dist = a * x * x + 2 * b * x * y + d * y * y
+        return dist <= 1
     
     def make_upright(
         self,
@@ -193,16 +195,15 @@ class Ellipse:
         center = (d * zx, d * zy)
 
         # Eigenvalues for scaling the determining matrix
-        ev1, ev2 = 4 / (epsilon ** 4), 1 / (epsilon ** 2)
+        r1 = 4 / power(epsilon, 4)
+        r2 = 1 / (power(epsilon, 2) * (1 - power(epsilon, 2) / 4))
         
         # Construct the determining matrix
         bmat = matrix([[zx, -zy], [zy, zx]])
-        mmat = diag([ev1, ev2])
+        mmat = diag([r1, r2])
         mat = bmat @ mmat @ inverse(bmat)
 
         return Ellipse(mat, center)
-
-
 
 
 class GridOperator:
