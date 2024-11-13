@@ -69,6 +69,9 @@ class AlgebraicInteger(ABC):
     def copy(self) -> AlgebraicInteger:
         return self.__class__(self.values)
     
+    def conj(self) -> AlgebraicInteger:
+        raise NotImplementedError('Define a conjugate method.')
+    
 
 class RingRoot2(AlgebraicInteger):
 
