@@ -2,7 +2,10 @@ from random import random
 
 from mpmath import pi
 
+from numpy import isclose
+
 from cyclosynth.convex import ConvexSet
+from cyclosynth.ellipse import Ellipse
 
 
 from random import seed
@@ -89,3 +92,16 @@ class TestConvex:
             intercept = offset - half_len - eps
             intersection = convex.line_intersection(slope, intercept)
             assert_intersection(intersection, False)
+    
+    def test_disc_rotation(self) -> None:
+        disc = ConvexSet.from_ellipse(Ellipse([1, 0, 1]))
+        for _ in range(self.num_trials):
+            angle, precision = 2 * pi * random(), 1e-4
+            convex = ConvexSet(angle, precision)
+            convex, operator = convex.make_upright()
+            disc = disc.apply_operator(operator)
+            (x_lo, x_hi), (y_lo, y_hi) = disc.bounding_box()
+            # assert isclose(float(x_lo), -1)
+            # assert isclose(float(x_hi), 1)
+            # assert isclose(float(y_lo), -1)
+            # assert isclose(float(y_hi), 1)
