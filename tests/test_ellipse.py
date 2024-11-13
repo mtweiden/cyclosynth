@@ -5,14 +5,18 @@ from numpy import array
 from numpy.linalg import eigvals
 from numpy import isclose
 
+from mpmath import mp
 from mpmath import acos
 from mpmath import cos
 from mpmath import pi
 from mpmath import sin
 from mpmath import sqrt
+from mpmath import power
 
 from cyclosynth.ellipse import Ellipse
 
+
+mp.dps = 200
 
 from random import seed
 seed(42)
@@ -33,24 +37,30 @@ class TestEllipse:
 
     def test_find_ellipse(self) -> None:
         angle = 2 * pi * random()
-        epsilon = 1e-8
+        epsilon = 1e-16
         ellipse = Ellipse.find_ellipse(angle, epsilon)
 
         def random_point_in_epsilon_region() -> tuple[float, float]:
             # Sample a point in the unrotated epsilon region
-            d = 1 - (epsilon**2 / 2)
-            y_lim = sin(acos(d))
-            y = uniform(-y_lim, y_lim)
-            x_max = max(d, 1 - y**2 - epsilon**3)
-            x = uniform(d, x_max)
+            x_len = 1 - power(epsilon, 2) / 2
+            offset = 2 * power(epsilon, 3)
+            x = uniform(x_len + offset, 1 - offset)
+            y_len = 1 - power(x, 2)
+            y = uniform(-y_len, y_len)
             # Rotate the epsilon region by the angle
             x_ = x * cos(angle / 2) + y * sin(angle / 2)
             y_ = x * -sin(angle / 2) + y * cos(angle / 2)
             return x_, y_
         
+        def random_point_outside_epsilon_region() -> tuple[float, float]:
+            x, y = random_point_in_epsilon_region()
+            return x + 1, y + 1
+        
         for _ in range(self.num_trials):
             p = random_point_in_epsilon_region()
             assert ellipse.check_inclusion(p)
+            pp = random_point_outside_epsilon_region()
+            assert not ellipse.check_inclusion(pp)
 
     def test_make_upright(self) -> None:
         for _ in range(self.num_trials):
