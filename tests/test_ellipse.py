@@ -1,8 +1,15 @@
 from random import random
+from random import uniform
 
 from numpy import array
 from numpy.linalg import eigvals
 from numpy import isclose
+
+from mpmath import acos
+from mpmath import cos
+from mpmath import pi
+from mpmath import sin
+from mpmath import sqrt
 
 from cyclosynth.ellipse import Ellipse
 
@@ -23,6 +30,27 @@ def random_ellipse(random_center: bool = False) -> Ellipse:
 class TestEllipse:
 
     num_trials = 1000
+
+    def test_find_ellipse(self) -> None:
+        angle = 2 * pi * random()
+        epsilon = 1e-8
+        ellipse = Ellipse.find_ellipse(angle, epsilon)
+
+        def random_point_in_epsilon_region() -> tuple[float, float]:
+            # Sample a point in the unrotated epsilon region
+            d = 1 - (epsilon**2 / 2)
+            y_lim = sin(acos(d))
+            y = uniform(-y_lim, y_lim)
+            x_max = max(d, 1 - y**2 - epsilon**3)
+            x = uniform(d, x_max)
+            # Rotate the epsilon region by the angle
+            x_ = x * cos(angle / 2) + y * sin(angle / 2)
+            y_ = x * -sin(angle / 2) + y * cos(angle / 2)
+            return x_, y_
+        
+        for _ in range(self.num_trials):
+            p = random_point_in_epsilon_region()
+            assert ellipse.check_inclusion(p)
 
     def test_make_upright(self) -> None:
         for _ in range(self.num_trials):
