@@ -10,13 +10,27 @@ from cyclosynth.ratio import AlgebraicIntegerOverRoot2
 
 class ConvexSet:
 
-    def __init__(self, angle: float, epsilon: float) -> None:
+    def __init__(self, angle: float | None, epsilon: float | None) -> None:
         self.angle = angle
         self.epsilon = epsilon
-        self.ell = Ellipse.find_ellipse(angle, epsilon)
+        if angle is not None and epsilon is not None:
+            self.ell = Ellipse.find_ellipse(angle, epsilon)
+        else:
+            self.ell = None
+    
+    @staticmethod
+    def from_ellipse(ell: Ellipse) -> ConvexSet:
+        convex = ConvexSet(None, None)
+        convex.ell = ell
+        return convex
 
     def ellipse(self) -> Ellipse:
         return self.ell
+    
+    def make_upright(self) -> tuple[ConvexSet, GridOperator]:
+        ell, operator = self.ell.make_upright(return_operator=True)
+        self.ell = ell
+        return self, operator
     
     def apply_operator(self, operator: GridOperator) -> ConvexSet:
         self.ell = self.ell.apply_operator(operator)
