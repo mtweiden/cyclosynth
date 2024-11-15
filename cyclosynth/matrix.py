@@ -310,3 +310,38 @@ class U2Matrix(Matrix):
         val = min(trace / 2, 1)
         dist = sqrt(1 - val ** 2)
         return dist if dist > 0.0 else 0.0
+
+
+class Operator(Matrix):
+    
+    def __init__(self, values: Sequence[IntegerRatio]) -> None:
+        super().__init__(2, values)
+    
+    def __mul__(self, other_or_ratio: Operator | IntegerRatio) -> Operator:
+        if isinstance(other_or_ratio, IntegerRatio):
+            return Operator([x * other_or_ratio for x in self.values])
+        a, b = self, other_or_ratio
+        c11 = a[0,0] * b[0,0] + a[0,1] * b[1,0]
+        c12 = a[0,0] * b[0,1] + a[0,1] * b[1,1]
+        c21 = a[1,0] * b[0,0] + a[1,1] * b[1,0]
+        c22 = a[1,0] * b[0,1] + a[1,1] * b[1,1]
+        c = Operator([c11, c12, c21, c22])
+        return c
+    
+    def __pow__(self, k: int) -> Operator:
+        if k < 0:
+            raise ValueError('Matrix power must be non-negative.')
+        elif k == 0:
+            # TODO: Return identity based on type of IntegerRatio
+            return Operator([1, 0, 0, 1])
+        elif k == 1:
+            return self
+        else:
+            return self * self.__pow__(k - 1)
+    
+    def __add__(self, other: Operator) -> Operator:
+        c11 = self[0, 0] + other[0, 0]
+        c12 = self[0, 1] + other[0, 1]
+        c21 = self[1, 0] + other[1, 0]
+        c22 = self[1, 1] + other[1, 1]
+        return Operator([c11, c12, c21, c22])
