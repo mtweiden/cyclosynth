@@ -345,3 +345,15 @@ class Operator(Matrix):
         c21 = self[1, 0] + other[1, 0]
         c22 = self[1, 1] + other[1, 1]
         return Operator([c11, c12, c21, c22])
+    
+    @property
+    def transpose(self) -> Operator:
+        c11, c12, c21, c22 = self.values
+        return Operator([c11, c21, c12, c22])
+    
+    def conj(self) -> Operator:
+        c11, c12, c21, c22 = self.values
+        return Operator([c11.conj(), c12.conj(), c21.conj(), c22.conj()])
+
+    def __repr__(self) -> str:
+        return f'Operator({self.values})'
