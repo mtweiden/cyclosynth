@@ -440,7 +440,10 @@ def step_lemma(enclosing_ellipse: Ellipse, unit_disc: Ellipse) -> Operator | Non
         raise RuntimeError('No case matched')
     
 
-def reduce(enclosing_ellipse: Ellipse, unit_disc: Ellipse) -> Operator:
+def reduce_normalized_ellipses(
+    enclosing_ellipse: Ellipse,
+    unit_disc: Ellipse,
+) -> Operator:
     """
     Reduce the given ellipse so that it and the transformed unit disc are
     both at least 1/6 upright.
@@ -453,11 +456,36 @@ def reduce(enclosing_ellipse: Ellipse, unit_disc: Ellipse) -> Operator:
     Returns:
         (Operator): The total grid operator.
     """
-    assert isclose(abs(float(enclosing_ellipse.det())), 1.0)
-    assert isclose(abs(float(unit_disc.det())), 1.0)
     op = step_lemma(enclosing_ellipse, unit_disc)
     if op is None:
         return identity_op
     new_ellipse = apply_op(enclosing_ellipse, op)
     new_disc = apply_op(unit_disc, op.conj())
-    return op * reduce(new_ellipse, new_disc)
+    return op * reduce_normalized_ellipses(new_ellipse, new_disc)
+
+
+def reduce(enclosing_ellipse: Ellipse) -> Operator:
+    """
+    Reduce the given ellipse so that it and the transformed unit disc are
+    both at least 1/6 upright.
+
+    Args:
+        enclosing_ellipse (Ellipse): An ellipse enclosing the epsilon region.
+    
+    Returns:
+        (Operator): A grid operator that makes the ellipse and the unit disc
+            simultaneously 1/6-upright.
+    """
+    norm = sqrt(enclosing_ellipse.det())
+    enc_ell = Ellipse(
+        [
+            enclosing_ellipse.a / norm,
+            enclosing_ellipse.b / norm, 
+            enclosing_ellipse.d / norm,
+        ],
+        enclosing_ellipse.center,
+    )
+    unit_disc = Ellipse([1, 0, 1], (0, 0))
+    assert isclose(abs(float(enc_ell.det())), 1.0)
+    assert isclose(abs(float(unit_disc.det())), 1.0)
+    return reduce_normalized_ellipses(enc_ell, unit_disc)

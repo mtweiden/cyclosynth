@@ -18,6 +18,7 @@ from cyclosynth.reduction import K_lemma
 from cyclosynth.reduction import A_lemma
 from cyclosynth.reduction import B_lemma
 from cyclosynth.reduction import reduce
+from cyclosynth.reduction import reduce_normalized_ellipses
 
 mp.dps = 100
 
@@ -202,8 +203,7 @@ class TestReduction:
                 ell.center,
             )
             # Apply reduction
-            opG = reduce(ell_norm, disc)
-            # opG = old_reduce(ell)
+            opG = reduce(ell)
             ell_norm = apply_op(ell_norm, opG)
             assert ell_norm.skew() < 15
             assert disc.skew() < 15
