@@ -208,5 +208,5 @@ class TestAlgebra:
                 denominator_power = randint(0, 8)
                 dyadic = DyadicComplexNumber(values, denominator_power)
                 conj_n = dyadic.to_complex().conjugate()
-                conj = dyadic.conjugate().to_complex()
+                conj = dyadic.conj().to_complex()
                 assert isclose(conj_n, conj, rel_tol=1e-6)
