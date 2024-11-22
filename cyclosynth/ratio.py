@@ -288,8 +288,12 @@ class AlgebraicIntegerOverRoot2(IntegerRatio):
     def __repr__(self) -> str:
         numerator = self.numerator.__repr__()
         r2 = 'sqrt(2)'
-        denominator = r2 if self.denominator_power == 1 else \
-                f'{r2}^{self.denominator_power}'
+        if self.denominator_power == 0:
+            return numerator
+        elif self.denominator_power == 1:
+            denominator = r2
+        else:
+            denominator = f'{r2}^{self.denominator_power}'
         return f'{numerator} / {denominator}'
     
     def to_float(self) -> float:
