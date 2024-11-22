@@ -19,8 +19,6 @@ from mpmath import power
 from mpmath import diag
 from mpmath import inverse
 
-from cyclosynth.algebra import AlgebraicInteger
-
 
 class Ellipse:
     """
