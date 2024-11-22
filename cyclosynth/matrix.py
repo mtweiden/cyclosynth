@@ -298,10 +298,10 @@ class U2Matrix(Matrix):
     
     def dagger(self) -> U2Matrix:
         a, b, c, d = self.values
-        adg = a.conjugate()
-        bdg = b.conjugate()
-        cdg = c.conjugate()
-        ddg = d.conjugate()
+        adg = a.conj()
+        bdg = b.conj()
+        cdg = c.conj()
+        ddg = d.conj()
         return U2Matrix([adg, cdg, bdg, ddg])
 
     def hilbert_schmidt_distance(self, other: U2Matrix) -> float:
@@ -317,17 +317,37 @@ class Operator(Matrix):
     def __init__(self, values: Sequence[IntegerRatio]) -> None:
         super().__init__(2, values)
     
-    def __mul__(self, other_or_ratio: Operator | IntegerRatio) -> Operator:
-        if isinstance(other_or_ratio, IntegerRatio):
-            return Operator([x * other_or_ratio for x in self.values])
-        a, b = self, other_or_ratio
+    def __mul__(
+        self,
+        other: Operator | IntegerRatio | Vector
+    ) -> Operator | Vector:
+        if isinstance(other, IntegerRatio):
+            return self.ratiomul(other)
+        elif isinstance(other, Operator):
+            return self.matmul(other)
+        elif isinstance(other, Vector):
+            return self.vecmul(other)
+        else:
+            raise TypeError(f'No mult defined for {type(other)}.')
+    
+    def ratiomul(self, other: IntegerRatio) -> Operator:
+        return Operator([x * other for x in self.values])
+    
+    def matmul(self, other: Operator) -> Operator:
+        a, b = self, other
         c11 = a[0,0] * b[0,0] + a[0,1] * b[1,0]
         c12 = a[0,0] * b[0,1] + a[0,1] * b[1,1]
         c21 = a[1,0] * b[0,0] + a[1,1] * b[1,0]
         c22 = a[1,0] * b[0,1] + a[1,1] * b[1,1]
-        c = Operator([c11, c12, c21, c22])
-        return c
+        return Operator([c11, c12, c21, c22])
     
+    def vecmul(self, other: Vector) -> Vector:
+        x, y = other.values
+        c11, c12, c21, c22 = self.values
+        x_new = c11 * x + c12 * y
+        y_new = c21 * x + c22 * y
+        return Vector([x_new, y_new])
+
     def __pow__(self, k: int) -> Operator:
         if k < 0:
             raise ValueError('Matrix power must be non-negative.')
@@ -357,3 +377,11 @@ class Operator(Matrix):
 
     def __repr__(self) -> str:
         return f'Operator({self.values})'
+
+
+class Vector:
+    def __init__(self, values: Sequence[float | IntegerRatio]) -> None:
+        self.values = list(values).copy()
+    
+    def __repr__(self)  -> str:
+        return f'Vector({self.values})'
