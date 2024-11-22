@@ -144,7 +144,29 @@ class RingRoot2(AlgebraicInteger):
         return a + b
 
     def __repr__(self) -> str:
-        s = f'{self.values[0]} + {self.values[1]}*sqrt(2)'
+        def get_root_str(v: int, w: int | None = None) -> str:
+            if v == 0:
+                return '0'
+            if v < 0:
+                if w is not None and w == 0:
+                    prefix = '-'
+                else:
+                    prefix = '- '
+            else:
+                prefix = '+ '
+            if abs(v) == 1:
+                return prefix + 'sqrt(2)'
+            else:
+                return f'{prefix}{abs(v)}*sqrt(2)'
+
+        if self.values[0] == 0 and self.values[1] == 0:
+            return '0'
+        elif self.values[0] == 0 and self.values[1] != 0:
+            s = get_root_str(self.values[1], self.values[0])
+        elif self.values != 0 and self.values[1] == 0:
+            s = f'{self.values[0]}'
+        else:
+            s = f'{self.values[0]} {get_root_str(self.values[1])}'
         return s
     
     def conj(self) -> RingRoot2:
@@ -356,7 +378,7 @@ class DyadicComplexNumber:
             else:
                 break
     
-    def conjugate(self) -> DyadicComplexNumber:
+    def conj(self) -> DyadicComplexNumber:
         new_values = self.values.copy()
         new_values[1:] = [-v for v in reversed(new_values[1:])]
         return DyadicComplexNumber(new_values, self.denominator_exponent)
