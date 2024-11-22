@@ -66,10 +66,10 @@ class BlochDecomposer:
         b: DyadicComplexNumber = unitary[0, 1]
         c: DyadicComplexNumber = unitary[1, 0]
         d: DyadicComplexNumber = unitary[1, 1]
-        adg = a.conjugate()
-        bdg = b.conjugate()
-        cdg = c.conjugate()
-        ddg = d.conjugate()
+        adg = a.conj()
+        bdg = b.conj()
+        cdg = c.conj()
+        ddg = d.conj()
 
         n = len(a.values)
         half_values = [0] * n
