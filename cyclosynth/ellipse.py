@@ -19,6 +19,9 @@ from mpmath import power
 from mpmath import diag
 from mpmath import inverse
 
+from cyclosynth.matrix import Vector
+from cyclosynth.operator import Operator
+
 
 class Ellipse:
     """
@@ -70,8 +73,8 @@ class Ellipse:
     def skew(self) -> float:
         return self.b * self.b
     
-    def apply_operator(self, operator: GridOperator) -> Ellipse:
-        inv_op = operator.inverse()
+    def apply_operator(self, operator: Operator) -> Ellipse:
+        inv_op = operator.inv()
         w, x, y, z = inv_op.a, inv_op.b, inv_op.c, inv_op.d
         a, b, d = self.a, self.b, self.d
         aa = w * (a * w + b * y) + y * (b * w + d * y)
@@ -79,8 +82,10 @@ class Ellipse:
         dd = x * (a * x + b * z) + z * (b * x + d * z)
         return Ellipse([aa, bb, dd], self.center)
     
-    def check_inclusion(self, point: Sequence[float]) -> bool:
+    def check_inclusion(self, point: Sequence[float] | Vector) -> bool:
         """See if point is in the ellipse."""
+        if isinstance(point, Vector):
+            point = point.to_tuple()
         x, y = point[0] - self.center[0], point[1] - self.center[1]
         a, b, d = self.a, self.b, self.d
         dist = a * x * x + 2 * b * x * y + d * y * y
@@ -103,6 +108,7 @@ class Ellipse:
             operators (Sequence[GridOperator]): The sequence of operators that
                 were applied to the ellipse.
         """
+        raise DeprecationWarning("This method is deprecated.")
 
         def get_op(n: int, operator_a: bool) -> GridOperator:
             if operator_a:
@@ -209,6 +215,7 @@ class GridOperator:
     An integer matrix that operates on the integer lattice.
     """
     def __init__(self, values: Sequence[int]) -> None:
+        raise DeprecationWarning("This class is deprecated.")
         self.a, self.b, self.c, self.d = values
     
     def det(self) -> int:
