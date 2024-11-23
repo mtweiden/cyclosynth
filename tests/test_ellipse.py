@@ -62,26 +62,6 @@ class TestEllipse:
             pp = random_point_outside_epsilon_region()
             assert not ellipse.check_inclusion(pp)
 
-    def test_make_upright(self) -> None:
-        for _ in range(self.num_trials):
-            e = random_ellipse()
-            if e.uprightness() >= 0.5:
-                continue
-            skew = e.skew()
-            new_e = e.make_upright()
-            assert new_e.skew() <= 0.5 * skew
-            assert new_e.uprightness() >= 0.5
-    
-    def test_upright_operators(self) -> None:
-        for _ in range(self.num_trials):
-            e = random_ellipse()
-            if e.uprightness() >= 0.5:
-                continue
-            new_e, op = e.make_upright(return_operator=True)
-            manual_e = e.copy()
-            manual_e = manual_e.apply_operator(op)
-            assert new_e.is_close(manual_e)
-    
     def test_bounding_box(self) -> None:
         for _ in range(self.num_trials):
             e = random_ellipse(random_center=True)
@@ -113,3 +93,25 @@ class TestEllipse:
             desc_y_hi = descriminant_y_bounds(y_hi - p2)
             assert isclose(desc_y_lo, 0, atol=1e-3)
             assert isclose(desc_y_hi, 0, atol=1e-3)
+
+    # Deprecased tests
+    # def test_make_upright(self) -> None:
+    #     for _ in range(self.num_trials):
+    #         e = random_ellipse()
+    #         if e.uprightness() >= 0.5:
+    #             continue
+    #         skew = e.skew()
+    #         new_e = e.make_upright()
+    #         assert new_e.skew() <= 0.5 * skew
+    #         assert new_e.uprightness() >= 0.5
+    
+    # def test_upright_operators(self) -> None:
+    #     for _ in range(self.num_trials):
+    #         e = random_ellipse()
+    #         if e.uprightness() >= 0.5:
+    #             continue
+    #         new_e, op = e.make_upright(return_operator=True)
+    #         manual_e = e.copy()
+    #         manual_e = manual_e.apply_operator(op)
+    #         assert new_e.is_close(manual_e)
+    

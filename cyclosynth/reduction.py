@@ -12,7 +12,7 @@ from numpy import isclose
 from cyclosynth.algebra import RingRoot2
 from cyclosynth.ratio import IntegerRatio
 from cyclosynth.ellipse import Ellipse
-from cyclosynth.matrix import Operator
+from cyclosynth.operator import Operator
 
 mp.dps = 100
 
