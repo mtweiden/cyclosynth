@@ -37,8 +37,10 @@ class IntegerRatio:
             self.numerator = numerator  # int
 
         if isinstance(denominator, AlgebraicInteger):
+            assert denominator.to_float() != 0, 'Denominator cannot be zero.'
             self.denominator = denominator.copy()
         else:
+            assert denominator != 0, 'Denominator cannot be zero.'
             self.denominator = denominator
         
     def _combine_integers(
