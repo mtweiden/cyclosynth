@@ -20,8 +20,8 @@ class IntegerRatio:
 
     def __init__(
         self,
-        numerator: AlgebraicInteger,
-        denominator: AlgebraicInteger | None = None,
+        numerator: AlgebraicInteger | int,
+        denominator: AlgebraicInteger | int = 1,
     ) -> None:
         """
         Construct a ratio of algebraic integers.
@@ -31,52 +31,60 @@ class IntegerRatio:
 
             denominator (AlgebraicInteger): The denominator of the ratio.
         """
-        self.numerator = numerator.copy()
-        if denominator is None:
-            self.denominator = 1
-        elif not isinstance(denominator, AlgebraicInteger):
-            raise ValueError('Denominator must be an AlgebraicInteger.')
+        if isinstance(numerator, AlgebraicInteger):
+            self.numerator = numerator.copy()
         else:
+            self.numerator = numerator  # int
+
+        if isinstance(denominator, AlgebraicInteger):
             self.denominator = denominator.copy()
+        else:
+            self.denominator = denominator
         
-    def _combine_denominators(
+    def _combine_integers(
         self,
         d1: AlgebraicInteger | int,
         d2: AlgebraicInteger | int,
-    ) -> AlgebraicInteger | None:
-        if d1 == 1 and d2 == 1:
-            d3 = None
-        elif self.denominator == 1:
-            d3 = d2
+    ) -> AlgebraicInteger | int:
+        if isinstance(d1, int) and not isinstance(d2, int):
+            d3 = d2 * d1
+        elif isinstance(d2, int) and not isinstance(d1, int):
+            d3 = d1 * d2
         else:
             d3 = d1 * d2
         return d3
 
-    def __mul__(self, number: IntegerRatio) -> IntegerRatio:
+    def __mul__(self, other: IntegerRatio) -> IntegerRatio:
         """
         Multiply the ratio by an IntegerRatio.
         """
-        new_numerator = self.numerator * number.numerator
-        new_denominator = self._combine_denominators(
-            self.denominator, number.denominator,
+        new_numerator = self._combine_integers(self.numerator, other.numerator)
+        new_denominator = self._combine_integers(
+            self.denominator, other.denominator,
         )
         new_ratio = IntegerRatio(new_numerator, new_denominator)
         new_ratio.simplify()
         return new_ratio
 
-    def __add__(self, number: IntegerRatio) -> IntegerRatio:
+    def __add__(self, other: IntegerRatio) -> IntegerRatio:
         """
         Add to the ratio by an IntegerRatio.
         """
-        a = number.numerator * self.denominator
-        b = self.numerator * number.denominator
+        a = self._combine_integers(other.numerator, self.denominator)
+        b = self._combine_integers(self.numerator, other.denominator)
         new_numerator = a + b
-        new_denominator = self._combine_denominators(
-            self.denominator, number.denominator,
+        new_denominator = self._combine_integers(
+            self.denominator, other.denominator,
         )
         new_ratio = IntegerRatio(new_numerator, new_denominator)
         new_ratio.simplify()
         return new_ratio
+    
+    def __sub__(self, other: IntegerRatio) -> IntegerRatio:
+        """
+        Subtract an IntegerRatio from the ratio.
+        """
+        return self + (-other)
 
     def simplify(self) -> None:
         """
@@ -84,28 +92,61 @@ class IntegerRatio:
         """
         if self.denominator == 1:
             return
-        num_gcd = gcd(*self.numerator.values)
-        den_gcd = gcd(*self.denominator.values)
+        if isinstance(self.denominator, int):
+            denom_vals = [self.denominator]
+        else:
+            denom_vals = self.denominator.values
+        if isinstance(self.numerator, int):
+            numer_vals = [self.numerator]
+        else:
+            numer_vals = self.numerator.values
+
+        num_gcd = gcd(*numer_vals)
+        den_gcd = gcd(*denom_vals)
         full_gcd = gcd(num_gcd, den_gcd)
-        self.numerator.values = [v // full_gcd for v in self.numerator.values]
-        self.denominator.values = [v // full_gcd for v in self.denominator.values]
+
+        if isinstance(self.numerator, int):
+            self.numerator = self.numerator // full_gcd
+        else:
+            self.numerator.values = [
+                v // full_gcd for v in self.numerator.values
+            ]
+        if isinstance(self.denominator, int):
+            self.denominator = self.denominator // full_gcd
+        else:
+            self.denominator.values = [
+                v // full_gcd for v in self.denominator.values
+            ]
     
     def conj(self) -> IntegerRatio:
         """
         Return the conjugate of the ratio.
         """
-        new_numerator = self.numerator.conj()
-        if self.denominator != 1:
+        if not isinstance(self.numerator, int):
+            new_numerator = self.numerator.conj()
+        else:
+            new_numerator = self.numerator
+        if not isinstance(self.denominator, int):
             new_denominator = self.denominator.conj()
         else:
-            new_denominator = None
+            new_denominator = self.denominator
         return IntegerRatio(new_numerator, new_denominator)
+    
+    def inverse(self) -> IntegerRatio:
+        """
+        Return the inverse of the ratio.
+        """
+        return IntegerRatio(self.denominator, self.numerator)
 
     def to_float(self) -> complex:
-        n = self.numerator.to_float()
-        if self.denominator == 1:
-            return n
-        d = self.denominator.to_float()
+        if isinstance(self.numerator, AlgebraicInteger):
+            n = self.numerator.to_float()
+        else:
+            n = self.numerator
+        if isinstance(self.denominator, AlgebraicInteger):
+            d = self.denominator.to_float()
+        else:
+            d = self.denominator
         return n / d
 
     def __repr__(self) -> str:
@@ -114,10 +155,11 @@ class IntegerRatio:
         return f'{n} / ({d})'
     
     def __neg__(self) -> IntegerRatio:
-        new_numerator = self.numerator.copy()
+        if isinstance(self.numerator, AlgebraicInteger):
+            new_numerator = self.numerator.copy()
+        else:
+            new_numerator = self.numerator
         new_numerator = new_numerator * -1
-        if self.denominator == 1:
-            return IntegerRatio(new_numerator, None)
         return IntegerRatio(new_numerator, self.denominator)
 
 

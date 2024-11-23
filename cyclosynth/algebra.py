@@ -48,16 +48,13 @@ class AlgebraicInteger(ABC):
         raise NotImplementedError(m)
 
     @abstractmethod
-    def int_to_algebraic_int(
-        self,
-        number: int | AlgebraicInteger,
-    ) -> AlgebraicInteger:
-        m = 'Define how to convert integers to this type of Algebraic Integer.'
-        raise NotImplementedError(m)
-
-    @abstractmethod
     def to_float(self) -> float:
         m = 'Define how to convert this type of Algebraic Integer to a float.'
+        raise NotImplementedError(m)
+    
+    @abstractmethod
+    def from_int(self, n: int) -> AlgebraicInteger:
+        m = 'Define how to convert an integer to this type of Algebraic Integer.'
         raise NotImplementedError(m)
 
     def __float__(self) -> float:
@@ -90,7 +87,7 @@ class RingRoot2(AlgebraicInteger):
             raise ValueError('`values` must be of length 2.')
         super().__init__(values)
 
-    def __add__(self, other: int |AlgebraicInteger) -> AlgebraicInteger:
+    def __add__(self, other: int | AlgebraicInteger) -> AlgebraicInteger:
         if isinstance(other, RingRootRoot2Plus2):
             return other + self
         elif isinstance(other, int):
@@ -126,17 +123,9 @@ class RingRoot2(AlgebraicInteger):
         new_b = a * y + b * x
         new_integer = RingRoot2([new_a, new_b])
         return new_integer
-
-    def int_to_algebraic_int(
-        self,
-        number: int | AlgebraicInteger,
-    ) -> AlgebraicInteger:
-        if isinstance(number, AlgebraicInteger):
-            return number
-        assert isinstance(number, int), '`number` must be an int!'
-        n = len(self.values)
-        number_values = [number] + [0] * (n - 1)
-        return RingRoot2(number_values)
+    
+    def from_int(self, n: int) -> RingRoot2:
+        return RingRoot2([n, 0])
 
     def to_float(self) -> float:
         a = self.values[0]
@@ -205,6 +194,9 @@ class RingRootRoot2Plus2(AlgebraicInteger):
             raise ValueError('`values` must be of length 4.')
         super().__init__(values)
 
+    def from_int(self, n: int) -> RingRootRoot2Plus2:
+        return RingRootRoot2Plus2([n, 0, 0, 0])
+
     def __add__(self, other: AlgebraicInteger) -> AlgebraicInteger:
         if isinstance(other, int):
             w, x, y, z = other, 0, 0, 0
@@ -247,17 +239,6 @@ class RingRootRoot2Plus2(AlgebraicInteger):
         dd = a*z + b*y + c*x + d*w
         new_integer = RingRootRoot2Plus2([aa, bb, cc, dd])
         return new_integer
-
-    def int_to_algebraic_int(
-        self,
-        number: int | AlgebraicInteger,
-    ) -> AlgebraicInteger:
-        if isinstance(number, AlgebraicInteger):
-            return number
-        assert isinstance(number, int), '`number` must be an int!'
-        n = len(self.values)
-        number_values = [number] + [0] * (n - 1)
-        return RingRootRoot2Plus2(number_values)
 
     def to_float(self) -> float:
         a = self.values[0]

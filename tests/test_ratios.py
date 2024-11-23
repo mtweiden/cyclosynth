@@ -8,6 +8,7 @@ from math import isclose
 from cyclosynth.algebra import RingRoot2
 from cyclosynth.algebra import RingRootRoot2Plus2
 from cyclosynth.algebra import DyadicComplexNumber
+from cyclosynth.ratio import IntegerRatio
 from cyclosynth.ratio import AlgebraicIntegerOverRoot2
 from cyclosynth.ratio import AlgebraicIntegerOverRootRoot2Plus2
 
@@ -182,3 +183,44 @@ class TestRatios:
             ratio = AlgebraicIntegerOverRoot2.from_dyadic(dyadic)
             diff = dyadic.to_complex().real - ratio.to_float()
             assert isclose(diff, 0.0, abs_tol=1e-3)
+    
+    def test_generic_ratio(self) -> None:
+        for _ in range(self.num_trials):
+            # int int
+            x1, x2, y1, y2 = rand_integer_values(4)
+            x = IntegerRatio(x1, x2)
+            y = IntegerRatio(y1, y2)
+            assert isclose((x + y).to_float(), ((x1 / x2) + (y1 / y2)))
+            assert isclose((x - y).to_float(), ((x1 / x2) - (y1 / y2)))
+            assert isclose((x * y).to_float(), ((x1 / x2) * (y1 / y2)))
+            assert isclose((x * y.inverse()).to_float(), (x1 * y2 / x2 / y1))
+
+            # aint int
+            x1, x2 = random_ringroot2(), random_ringroot2()
+            x = IntegerRatio(x1, x2)
+            x1, x2 = x1.to_float(), x2.to_float()
+            assert isclose((x + y).to_float(), ((x1 / x2) + (y1 / y2)))
+            assert isclose((x - y).to_float(), ((x1 / x2) - (y1 / y2)))
+            assert isclose((x * y).to_float(), ((x1 / x2) * (y1 / y2)))
+            assert isclose((x * y.inverse()).to_float(), (x1 * y2 / x2 / y1))
+
+            # int aint
+            y1, y2 = random_ringrootroot2plus2(), random_ringrootroot2plus2()
+            y = IntegerRatio(y1, y2)
+            y1, y2 = y1.to_float(), y2.to_float()
+            assert isclose((x + y).to_float(), ((x1 / x2) + (y1 / y2)))
+            assert isclose((x - y).to_float(), ((x1 / x2) - (y1 / y2)))
+            assert isclose((x * y).to_float(), ((x1 / x2) * (y1 / y2)))
+            assert isclose((x * y.inverse()).to_float(), (x1 * y2 / x2 / y1))
+
+            # aint aint
+            x1, x2 = random_ringroot2(), random_ringroot2()
+            y1, y2 = random_ringrootroot2plus2(), random_ringrootroot2plus2()
+            x = IntegerRatio(x1, x2)
+            y = IntegerRatio(y1, y2)
+            x1, x2 = x1.to_float(), x2.to_float()
+            y1, y2 = y1.to_float(), y2.to_float()
+            assert isclose((x + y).to_float(), ((x1 / x2) + (y1 / y2)))
+            assert isclose((x - y).to_float(), ((x1 / x2) - (y1 / y2)))
+            assert isclose((x * y).to_float(), ((x1 / x2) * (y1 / y2)))
+            assert isclose((x * y.inverse()).to_float(), (x1 * y2 / x2 / y1))
