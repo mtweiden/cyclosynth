@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from math import sqrt
+from math import gcd
+
+from mpmath import sqrt
+from mpmath import mpf
 
 from cyclosynth.algebra import AlgebraicInteger
 from cyclosynth.algebra import DyadicComplexNumber
@@ -12,14 +15,13 @@ class IntegerRatio:
     """
     A ratio of two algebraic integers.
 
-    The denominator is of the form `denominator_base` ** `denominator_power`.
+    The denominator is of the form `denominator` ** `denominator_power`.
     """
 
     def __init__(
         self,
         numerator: AlgebraicInteger,
-        denominator_base: AlgebraicInteger,
-        denominator_power: int,
+        denominator: AlgebraicInteger | None = None,
     ) -> None:
         """
         Construct a ratio of algebraic integers.
@@ -27,59 +29,96 @@ class IntegerRatio:
         Args:
             numerator (AlgebraicInteger): The numerator of the ratio.
 
-            denominator_base (AlgebraicInteger): The denominator base
-                of the ratio.
-            
-            denominator_power (int): The power of the denominator base.
+            denominator (AlgebraicInteger): The denominator of the ratio.
         """
-        if denominator_power < 0:
-            m = f'`denominator_power` must be non-negative '
-            m += f'(got {denominator_power}).'
-            raise ValueError(m)
         self.numerator = numerator.copy()
-        self.denominator_base = denominator_base.copy()
-        self.denominator_power = denominator_power
+        if denominator is None:
+            self.denominator = 1
+        elif not isinstance(denominator, AlgebraicInteger):
+            raise ValueError('Denominator must be an AlgebraicInteger.')
+        else:
+            self.denominator = denominator.copy()
+        
+    def _combine_denominators(
+        self,
+        d1: AlgebraicInteger | int,
+        d2: AlgebraicInteger | int,
+    ) -> AlgebraicInteger | None:
+        if d1 == 1 and d2 == 1:
+            d3 = None
+        elif self.denominator == 1:
+            d3 = d2
+        else:
+            d3 = d1 * d2
+        return d3
 
     def __mul__(self, number: IntegerRatio) -> IntegerRatio:
         """
         Multiply the ratio by an IntegerRatio.
         """
-        raise NotImplementedError('Define a __mul__ method.')
+        new_numerator = self.numerator * number.numerator
+        new_denominator = self._combine_denominators(
+            self.denominator, number.denominator,
+        )
+        new_ratio = IntegerRatio(new_numerator, new_denominator)
+        new_ratio.simplify()
+        return new_ratio
 
     def __add__(self, number: IntegerRatio) -> IntegerRatio:
         """
         Add to the ratio by an IntegerRatio.
         """
-        raise NotImplementedError('Define a __add__ method.')
+        a = number.numerator * self.denominator
+        b = self.numerator * number.denominator
+        new_numerator = a + b
+        new_denominator = self._combine_denominators(
+            self.denominator, number.denominator,
+        )
+        new_ratio = IntegerRatio(new_numerator, new_denominator)
+        new_ratio.simplify()
+        return new_ratio
 
     def simplify(self) -> None:
         """
-        Divide by the denominator_base as many times as possible.
+        Divide by the denominator as many times as possible.
         """
-        raise NotImplementedError('Define a simplify method.')
+        if self.denominator == 1:
+            return
+        num_gcd = gcd(*self.numerator.values)
+        den_gcd = gcd(*self.denominator.values)
+        full_gcd = gcd(num_gcd, den_gcd)
+        self.numerator.values = [v // full_gcd for v in self.numerator.values]
+        self.denominator.values = [v // full_gcd for v in self.denominator.values]
     
     def conj(self) -> IntegerRatio:
         """
         Return the conjugate of the ratio.
         """
-        raise NotImplementedError('Define a conj method.')
+        new_numerator = self.numerator.conj()
+        if self.denominator != 1:
+            new_denominator = self.denominator.conj()
+        else:
+            new_denominator = None
+        return IntegerRatio(new_numerator, new_denominator)
 
     def to_float(self) -> complex:
         n = self.numerator.to_float()
-        d = self.denominator_base.to_float() ** self.denominator_power
+        if self.denominator == 1:
+            return n
+        d = self.denominator.to_float()
         return n / d
 
     def __repr__(self) -> str:
         n = self.numerator.__repr__()
-        d = self.denominator_base.__repr__()
-        return f'{n} / ({d}) ** {self.denominator_power}'
+        d = self.denominator.__repr__()
+        return f'{n} / ({d})'
     
     def __neg__(self) -> IntegerRatio:
         new_numerator = self.numerator.copy()
         new_numerator = new_numerator * -1
-        return IntegerRatio(
-            new_numerator, self.denominator_base, self.denominator_power,
-        )
+        if self.denominator == 1:
+            return IntegerRatio(new_numerator, None)
+        return IntegerRatio(new_numerator, self.denominator)
 
 
 class AlgebraicIntegerOverRootRoot2Plus2(IntegerRatio):
@@ -104,7 +143,8 @@ class AlgebraicIntegerOverRootRoot2Plus2(IntegerRatio):
             ValueError: If `power` is negative.
         """
         rr2p2 = RingRootRoot2Plus2([0, 0, 1, 0])
-        super().__init__(integer, rr2p2, power)
+        super().__init__(integer, rr2p2)
+        self.denominator_power = power
 
     def __add__(self, other: IntegerRatio) -> IntegerRatio:
         # Set denominators equal
@@ -226,7 +266,8 @@ class AlgebraicIntegerOverRoot2(IntegerRatio):
             ValueError: If `power` is negative.
         """
         r2 = RingRoot2([0, 1])
-        super().__init__(integer, r2, power)
+        super().__init__(integer, r2)
+        self.denominator_power = power 
 
     def __add__(self, other: IntegerRatio) -> IntegerRatio:
         if isinstance(other, AlgebraicIntegerOverRootRoot2Plus2):
@@ -251,10 +292,12 @@ class AlgebraicIntegerOverRoot2(IntegerRatio):
         new_ratio.simplify()
         return new_ratio
     
-    def __mul__(self, other: IntegerRatio) -> IntegerRatio:
+    def __mul__(self, other: IntegerRatio | float) -> IntegerRatio | float:
         if isinstance(other, AlgebraicIntegerOverRootRoot2Plus2):
             new_self = self.to_rr2p2()
             return new_self * other
+        if isinstance(other, float) or isinstance(other, mpf):
+            return self.to_float() * other
         # Perform multiplication
         new_integer = self.numerator * other.numerator
         new_power = self.denominator_power + other.denominator_power
