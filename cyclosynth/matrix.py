@@ -370,18 +370,31 @@ class Operator(Matrix):
     def transpose(self) -> Operator:
         c11, c12, c21, c22 = self.values
         return Operator([c11, c21, c12, c22])
+
+    def inv(self) -> Operator:
+        a, b, c, d = self.values
+        norm = (a * d - b * c).inverse()
+        aa = d * norm
+        bb = -b * norm
+        cc = -c * norm
+        dd = a * norm
+        return Operator([aa, bb, cc, dd])
     
     def conj(self) -> Operator:
         c11, c12, c21, c22 = self.values
         return Operator([c11.conj(), c12.conj(), c21.conj(), c22.conj()])
-
+    
     def __repr__(self) -> str:
         return f'Operator({self.values})'
 
 
 class Vector:
     def __init__(self, values: Sequence[float | IntegerRatio]) -> None:
+        assert len(values) == 2, 'Vector must have length 2.'
         self.values = list(values).copy()
     
     def __repr__(self)  -> str:
         return f'Vector({self.values})'
+    
+    def to_tuple(self) -> tuple[float | IntegerRatio]:
+        return tuple(self.values)
