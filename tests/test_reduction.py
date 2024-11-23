@@ -208,11 +208,8 @@ class TestReduction:
             assert GellG.skew() < 15
             assert GdiscG.skew() < 15
 
-            # # Check that a known solution for the original problem is also a
-            # # solution for the reduced problem
-            # u = Vector(ell.center)
-            # assert ell.check_inclusion(u)
-            # assert disc.check_inclusion(u)
-            # v = opG * u
-            # assert GellG.check_inclusion(v)
-            # assert GdiscG.check_inclusion(v)
+            # Check that a known solution for the original problem is also a
+            # solution for the reduced problem
+            u = Vector(ell.center)
+            assert ell.check_inclusion(u)
+            assert disc.check_inclusion(u)
