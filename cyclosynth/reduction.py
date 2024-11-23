@@ -1,4 +1,4 @@
-"""Make an ellipse and the unit disc simultaneously 1/6-upright."""
+"""Based off: https://hackage.haskell.org/package/newsynth-0.4.1.0/docs/src/Quantum.Synthesis.GridProblems.html#lambda"""
 from typing import Sequence
 
 from mpmath import mp
@@ -10,7 +10,7 @@ from mpmath import floor
 from numpy import isclose
 
 from cyclosynth.algebra import RingRoot2
-from cyclosynth.ratio import AlgebraicIntegerOverRoot2
+from cyclosynth.ratio import IntegerRatio
 from cyclosynth.ellipse import Ellipse
 from cyclosynth.matrix import Operator
 
@@ -24,15 +24,15 @@ lamb = 1 + root2
 lamb_inv = root2 - 1
 root_lamb_inv = sqrt(lamb_inv)
 
-lambda_ = AlgebraicIntegerOverRoot2(RingRoot2([1, 1]))
-lambda_inv = AlgebraicIntegerOverRoot2(RingRoot2([-1, 1]))
-lambda_bul = AlgebraicIntegerOverRoot2(RingRoot2([1, -1]))
-lambda_inv_bul = AlgebraicIntegerOverRoot2(RingRoot2([-1, -1]))
-roothalf = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]), 1)
-zero = AlgebraicIntegerOverRoot2(RingRoot2([0, 0]))
-one = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]))
-root = AlgebraicIntegerOverRoot2(RingRoot2([0, 1]))
-two = AlgebraicIntegerOverRoot2(RingRoot2([2, 0]))
+lambda_ = IntegerRatio(RingRoot2([1, 1]))
+lambda_inv = IntegerRatio(RingRoot2([-1, 1]))
+lambda_bul = IntegerRatio(RingRoot2([1, -1]))
+lambda_inv_bul = IntegerRatio(RingRoot2([-1, -1]))
+roothalf = IntegerRatio(RingRoot2([1, 0]), RingRoot2([0, 1]))
+zero = IntegerRatio(RingRoot2([0, 0]))
+one = IntegerRatio(RingRoot2([1, 0]))
+root = IntegerRatio(RingRoot2([0, 1]))
+two = IntegerRatio(RingRoot2([2, 0]))
 
 identity_op = Operator((one, zero, zero, one))
 op_Z = Operator((one, zero, zero, -one))
@@ -132,8 +132,8 @@ def shift_sigma_k(op: Operator, k: int) -> Operator:
     else:
         lk = RingRoot2([-1, 1]) ** -k
         lik = RingRoot2([1, 1]) ** -k
-    lk = AlgebraicIntegerOverRoot2(lk)  # lambda^k
-    lik = AlgebraicIntegerOverRoot2(lik)  # lambda^{-k}
+    lk = IntegerRatio(lk)  # lambda^k
+    lik = IntegerRatio(lik)  # lambda^{-k}
     a1, b1, c1, d1 = op.values
     new_op = Operator((lk * a1, b1, c1, lik * d1))
     return new_op
@@ -164,20 +164,17 @@ def R_lemma(
 
         (Operator): The R_bul operator for the second ellipse.
     """
-    r = roothalf
     def apply_and_compute_R(ell: Ellipse) -> tuple[Ellipse, Operator]:
-        op = Operator((r, -r, r, r))
-        ell_R = apply_op(ell, op)
-        return ell_R, op
+        ell_R = apply_op(ell, op_R)
+        return ell_R, op_R
     
     def apply_and_compute_R_bul(ell: Ellipse) -> tuple[Ellipse, Operator]:
-        op = Operator((-r, r, -r, -r))
-        ell_R_bul = apply_op(ell, op)
-        return ell_R_bul, op
+        ell_R_bul = apply_op(ell, op_R.conj())
+        return ell_R_bul, op_R.conj()
     
-    ell1_R, op_R = apply_and_compute_R(ell1)
-    ell2_R, op_R_bul = apply_and_compute_R_bul(ell2)
-    return ell1_R, ell2_R, op_R, op_R_bul
+    ell1_R, R = apply_and_compute_R(ell1)
+    ell2_R, R_bul = apply_and_compute_R_bul(ell2)
+    return ell1_R, ell2_R, R, R_bul
 
 
 # The K lemma
@@ -209,27 +206,22 @@ def K_lemma(
         (Operator): The K_bul operator for the second ellipse.
     """
     assert ell1.b >= 0 and ell2.b >= 0
-    r = roothalf
 
     def apply_and_compute_K(ell: Ellipse) -> tuple[Ellipse, Operator]:
-        op = Operator(
-            (-lambda_inv * roothalf, -roothalf, lambda_ * roothalf, roothalf)
-        )
-        ell_K = apply_op(ell, op)
-        return ell_K, op
+        ell_K = apply_op(ell, op_K)
+        return ell_K, op_K
     
     def apply_and_compute_K_bul(ell: Ellipse) -> tuple[Ellipse, Operator]:
-        op = Operator((lambda_ * r, -r, -lambda_inv * r, r))
-        ell_K = apply_op(ell, op)
-        return ell_K, op
+        ell_K = apply_op(ell, op_K.conj())
+        return ell_K, op_K.conj()
     
     if not bullet:
-        ell1_K, op_K = apply_and_compute_K(ell1)
-        ell2_K, op_K_bul = apply_and_compute_K_bul(ell2)
+        ell1_K, K = apply_and_compute_K(ell1)
+        ell2_K, K_bul = apply_and_compute_K_bul(ell2)
     else:
-        ell1_K, op_K = apply_and_compute_K_bul(ell1)
-        ell2_K, op_K_bul = apply_and_compute_K(ell2)
-    return ell1_K, ell2_K, op_K, op_K_bul
+        ell1_K, K = apply_and_compute_K_bul(ell1)
+        ell2_K, K_bul = apply_and_compute_K(ell2)
+    return ell1_K, ell2_K, K, K_bul
 
 
 # The A lemma
@@ -265,7 +257,7 @@ def A_lemma(
     n = max(1, x)
 
     def apply_and_compute_A(ell: Ellipse) -> tuple[Ellipse, Operator]:
-        y = AlgebraicIntegerOverRoot2(RingRoot2([-2 * n, 0]))
+        y = IntegerRatio(RingRoot2([-2 * n, 0]))
         op = Operator((one, y, zero, one))
         ell_A = apply_op(ell, op)
         return ell_A, op
@@ -310,13 +302,13 @@ def B_lemma(
     x = int(floor(lamb ** c * root2_inv))
     n = max(1, x)
     def apply_and_compute_B(ell: Ellipse) -> tuple[Ellipse, Operator]:
-        y = AlgebraicIntegerOverRoot2(RingRoot2([0, n]))
+        y = IntegerRatio(RingRoot2([0, n]))
         op = Operator((one, y, zero, one))
         ell_B = apply_op(ell, op)
         return ell_B, op
     
     def apply_and_compute_B_bul(ell: Ellipse) -> tuple[Ellipse, Operator]:
-        y = AlgebraicIntegerOverRoot2(RingRoot2([0, -n]))
+        y = IntegerRatio(RingRoot2([0, -n]))
         op = Operator((one, y, zero, one))
         ell_B_bul = apply_op(ell, op)
         return ell_B_bul, op
@@ -338,8 +330,8 @@ def op_S_k_operator(bias: float) -> Operator:
         k = int(floor(x))
         a = RingRoot2([-1, 1]) ** -k
         b = RingRoot2([1, 1]) ** -k
-    a = AlgebraicIntegerOverRoot2(a)
-    b = AlgebraicIntegerOverRoot2(b)
+    a = IntegerRatio(a)
+    b = IntegerRatio(b)
     op = Operator((a, zero, zero, b))
     return op
 
@@ -422,7 +414,7 @@ def step_lemma(enclosing_ellipse: Ellipse, unit_disc: Ellipse) -> Operator | Non
         c = min(z, zeta)
         x = int(floor(lamb ** c / 2))
         n = max(1, x)
-        y = AlgebraicIntegerOverRoot2(RingRoot2([-2 * n, 0]))
+        y = IntegerRatio(RingRoot2([-2 * n, 0]))
         op_A = Operator((one, y, zero, one))
         return op_A
     # Case 1.4 - apply K_bul
@@ -433,7 +425,7 @@ def step_lemma(enclosing_ellipse: Ellipse, unit_disc: Ellipse) -> Operator | Non
         c = min(z, zeta)
         x = int(floor(lamb ** c * root2_inv))
         n = max(1, x)
-        y = AlgebraicIntegerOverRoot2(RingRoot2([0, n]))
+        y = IntegerRatio(RingRoot2([0, n]))
         op_B = Operator((one, y, zero, one))
         return op_B
     else:

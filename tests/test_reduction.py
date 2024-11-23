@@ -8,7 +8,7 @@ from random import randint
 from random import uniform
 
 from cyclosynth.ellipse import Ellipse
-
+from cyclosynth.matrix import Vector
 from cyclosynth.reduction import apply_op
 from cyclosynth.reduction import bias
 from cyclosynth.reduction import skew
@@ -18,7 +18,6 @@ from cyclosynth.reduction import K_lemma
 from cyclosynth.reduction import A_lemma
 from cyclosynth.reduction import B_lemma
 from cyclosynth.reduction import reduce
-from cyclosynth.reduction import reduce_normalized_ellipses
 
 mp.dps = 100
 
@@ -204,6 +203,16 @@ class TestReduction:
             )
             # Apply reduction
             opG = reduce(ell)
-            ell_norm = apply_op(ell_norm, opG)
-            assert ell_norm.skew() < 15
-            assert disc.skew() < 15
+            GellG = apply_op(ell_norm, opG)
+            GdiscG = apply_op(disc, opG.conj())
+            assert GellG.skew() < 15
+            assert GdiscG.skew() < 15
+
+            # # Check that a known solution for the original problem is also a
+            # # solution for the reduced problem
+            # u = Vector(ell.center)
+            # assert ell.check_inclusion(u)
+            # assert disc.check_inclusion(u)
+            # v = opG * u
+            # assert GellG.check_inclusion(v)
+            # assert GdiscG.check_inclusion(v)
