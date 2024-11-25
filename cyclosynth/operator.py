@@ -9,7 +9,7 @@ from cyclosynth.matrix import Vector
 
 class Operator(Matrix):
     
-    def __init__(self, values: Sequence[IntegerRatio]) -> None:
+    def __init__(self, values: Sequence[IntegerRatio | int]) -> None:
         super().__init__(2, values)
     
     def __mul__(
@@ -47,7 +47,6 @@ class Operator(Matrix):
         if k < 0:
             raise ValueError('Matrix power must be non-negative.')
         elif k == 0:
-            # TODO: Return identity based on type of IntegerRatio
             return Operator([1, 0, 0, 1])
         elif k == 1:
             return self
