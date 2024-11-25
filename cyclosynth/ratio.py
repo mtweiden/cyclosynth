@@ -56,10 +56,12 @@ class IntegerRatio:
             d3 = d1 * d2
         return d3
 
-    def __mul__(self, other: IntegerRatio) -> IntegerRatio:
+    def __mul__(self, other: IntegerRatio | AlgebraicInteger) -> IntegerRatio:
         """
         Multiply the ratio by an IntegerRatio.
         """
+        if isinstance(other, AlgebraicInteger):
+            other = IntegerRatio(other)
         new_numerator = self._combine_integers(self.numerator, other.numerator)
         new_denominator = self._combine_integers(
             self.denominator, other.denominator,
