@@ -184,3 +184,10 @@ def floor_log(x: float, b: float = 1 + sqrt(2)) -> tuple[int, float]:
             return (2 * n, r)
         else:
             return (2 * n + 1, r / b)
+
+
+def widen_interval(a: float, b: float, eps: float = 1e-8) -> tuple[float, float]:
+    """
+    Add a small epsilon to the interval [a, b].
+    """
+    return (a - eps, b + eps)
