@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from math import gcd
-from math import log2
+
+from mpmath import log
+from mpmath import sqrt
+from mpmath import mpf
 
 from cyclosynth.algebra import AlgebraicInteger
 from cyclosynth.algebra import DyadicComplexNumber
@@ -15,6 +18,10 @@ from cyclosynth.ratio import AlgebraicIntegerOverRootRoot2Plus2
 def lcm(a: int, b: int) -> int:
     """Least common multiple of `a` and `b`."""
     return abs(a * b) // gcd(abs(a), abs(b))
+
+
+def log2(n: float | mpf | int) -> float:
+    return log(n) / log(2)
 
 
 def is_divisible_by_rootroot2plus2(number: AlgebraicInteger) -> bool:
@@ -159,3 +166,21 @@ def dyadic_cos(k: int, n: int) -> DyadicComplexNumber:
     values[k_1 % n] += sign_1
     values[k_2 % n] -= sign_2
     return DyadicComplexNumber(values, 1)
+
+
+def floor_log(x: float, b: float = 1 + sqrt(2)) -> tuple[int, float]:
+    """
+    Compute integer n such that x = r * b^n where 1 <= r < b.
+    """
+    if x <= 0:
+        raise ValueError("x must be positive")
+    elif 1 <= x < b:
+        return (0, x)
+    elif 1 <= x * b and x < 1:
+        return (-1, b * x)
+    else:
+        n, r = floor_log(x, b * b)
+        if r < b:
+            return (2 * n, r)
+        else:
+            return (2 * n + 1, r / b)
