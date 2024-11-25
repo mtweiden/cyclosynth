@@ -14,12 +14,16 @@ from mpmath import ceil
 
 from cyclosynth.algebra import AlgebraicInteger
 from cyclosynth.algebra import RingRoot2
-from cyclosynth.ellipse import Ellipse
+from cyclosynth.convex import ConvexSet
+from cyclosynth.operator import Operator
 from cyclosynth.matrix import U2Matrix
-from cyclosynth.ratio import AlgebraicIntegerOverRoot2
+from cyclosynth.ratio import IntegerRatio
+from cyclosynth.utils import floor_log
 
 
 mp.dps = 100
+
+# Constants
 
 def gridsynth(angle: float, epsilon: float) -> U2Matrix:
     ...
@@ -30,149 +34,48 @@ def gridsynth(angle: float, epsilon: float) -> U2Matrix:
     # Check if grid problem solutions are in the epsilon region
 
 
-def solve_grid_problem(
-    Ax_lo: float,
-    Ax_hi: float,
-    Ay_lo: float,
-    Ay_hi: float,
-    Bx_lo: float,
-    Bx_hi: float,
-    By_lo: float,
-    By_hi: float,
-    k: int,
-) -> Generator[AlgebraicIntegerOverRoot2, None, None]:
-    """
-    Solve the 2D grid problem for convex sets (Ax x Ay), (Bx x By).
-
-    Args:
-        Ax_lo (float): The lower bound of the x-coordinate of the A region.
-        Ax_hi (float): The upper bound of the x-coordinate of the A region.
-        Ay_lo (float): The lower bound of the y-coordinate of the A region.
-        Ay_hi (float): The upper bound of the y-coordinate of the A region.
-        Bx_lo (float): The lower bound of the x-coordinate of the B region.
-        Bx_hi (float): The upper bound of the x-coordinate of the B region.
-        By_lo (float): The lower bound of the y-coordinate of the B region.
-        By_hi (float): The upper bound of the y-coordinate of the B region.
-    
-    Yields:
-        solutions (AlgebraicIntegerOverRoot2): Candidate solutions to the grid
-            problem.
-    
-    Notes:
-        - Solutions are alpha+i*beta in Z[omega] where alpha, beta in Z[√2].
-    """
-    def widen_interval(lo: float, hi: float) -> tuple[float, float]:
-        jiggle = (hi - lo) * 1e-4
-        return lo - jiggle, hi + jiggle
-    
-    lambda_ = RingRoot2([1, 1])
-    root2 = RingRoot2([0, 1])
-
-    # The solution check limit is the maximum number of candidate x cooredinates
-    # to check for a given beta (y coordinate).
-    solution_check_limit = 100
-    args = (*widen_interval(Ax_lo, Ax_hi), *widen_interval(Ay_lo, Ay_hi), k + 1)
-    for beta_prime in solve_scaled_grid_problem_1d(*args):
-        beta_prime_bul = beta_prime.conj()
-        range_A = Ax_lo, Ax_hi + lambda_.to_float()
-        range_B = Bx_lo, Bx_hi + lambda_.to_float()
-
-        # Find potential solution x coordinates for region A
-        x = None
-        x_candidates = solve_scaled_grid_problem_1d(*range_A, *range_B, k + 1)
-        for x_num, x in enumerate(x_candidates):
-            # Limit the number of x candidates to check for a given beta
-            if x_num >= solution_check_limit:
-                x = None
-                break
-            x_bul = x.conj()
-            dx = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]), k)
-            dx_bul = dx.conj()
-
-            # Find the intersection of the y corredinate with the convex sets
-            # TODO
-            intersect_A = ...
-            intersect_B = ...
-
-            if intersect_A is None or intersect_B is None:
-                continue
-
-            # Compute offsets to widen the intervals to check
-            dtA = 10 / max(10, 2 ** k * (t1B - t0B))
-            dtB = 10 / max(10, 2 ** k * (t1A - t0A))
-
-            parity = ((beta_prime - x) * (root2 ** k))
-            alpha_args = ( ... , 1, parity)
-            alpha_prime_offsets = solve_scaled_parity_grid_problem_1d(*alpha_args)
-            for alpha_prime_offset in alpha_prime_offsets:
-
-                alpha_prime = alpha_prime_offset + dx + x
-
-
-        if x is None:
-            continue
-
-
-def solve_scaled_grid_problem_1d(
+def scaled_gridpoints_1d(
     x_lo: float,
     x_hi: float,
     y_lo: float,
     y_hi: float,
     k: int,
-) -> Generator[AlgebraicIntegerOverRoot2, None, None]:
-    scale = RingRoot2([0, 1]) ** k
-    scale_inv = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]), k)
-    x0 = x_lo * scale.to_float()
-    x1 = x_hi * scale.to_float()
-
+) -> Generator[RingRoot2, None, None]:
     if k % 2 == 0:
-        y0 = y_lo * scale.to_float()
-        y1 = y_hi * scale.to_float()
+        scale_inv = RingRoot2((2 ** (k // 2), 0))
+        sign = 1
     else:
-        y0 = -y_lo * scale.to_float()
-        y1 = -y_hi * scale.to_float()
-    
-    for candidate in solve_grid_problem_1d(x0, x1, y0, y1):
-        yield scale_inv * AlgebraicIntegerOverRoot2(candidate)
+        scale_inv = RingRoot2((0, 2 ** (k // 2 + 1)))
+        sign = -1
+    scale = IntegerRatio(1, scale_inv)
+    scale_inv = scale_inv.to_float()
+
+    x0, x1 = x_lo * scale_inv, x_hi * scale_inv
+    y0, y1 = sign * y_lo * scale_inv, sign * y_hi * scale_inv
+
+    for candidate in gridpoints_1d(x0, x1, y0, y1):
+        yield scale * candidate
 
 
-def solve_scaled_parity_grid_problem_1d(
-    x_lo: float,
-    x_hi: float,
-    y_lo: float,
-    y_hi: float,
-    k: int,
-    beta: AlgebraicIntegerOverRoot2,
-) -> Generator[AlgebraicIntegerOverRoot2, None, None]:
-    """
-    This function addresses the case where we want to solve the grid problem
-    with an offset. This is necessary because solutions can be in the form
-    a + i b  or  a + i b + (1+i)/sqrt(2) for some a, b in Z[√2].
-    """
-    # If the denominator power is less than k-1, we solve the problem at a
-    # lower value of k
-    if beta.denominator_power <= k - 1:
-        yield from solve_scaled_grid_problem_1d(x_lo, x_hi, y_lo, y_hi, k - 1)
-    else:
-        offset = AlgebraicIntegerOverRoot2(RingRoot2([1, 0]), k)
-        offset_bul = offset.conj()
-        x0 = x_lo + offset.to_float()
-        x1 = x_hi + offset.to_float()
-        y0 = y_lo + offset_bul.to_float()
-        y1 = y_hi + offset_bul.to_float()
-
-        for candidate in solve_scaled_grid_problem_1d(x0, x1, y0, y1, k - 1):
-            yield candidate - offset
-
-
-def solve_grid_problem_1d(
+def gridpoints_1d(
     x_lo: float,
     x_hi: float,
     y_lo: float,
     y_hi: float,
 ) -> Generator[RingRoot2, None, None]:
     """
+    Find grid problem solutions for a 1D grid problem.
+
     Based off gridsynth implementation.
+
+    Args:
+        x_lo (float): The lower bound of the x-coordinate.
+        x_hi (float): The upper bound of the x-coordinate.
+        y_lo (float): The lower bound of the y-coordinate.
+        y_hi (float): The upper bound of the y-coordinate.
+    
+    Yields:
+        candidate (RingRoot2): A solution to a 1D grid problem.
     """
     # Compute scale factor alpha
     # We expect alpha ~ (x_0 + y_0) / 2
@@ -210,7 +113,20 @@ def gridpoints_internal(
     conjugate_output: bool = False,
 ) -> Generator[RingRoot2, None, None]:
     """
+    Internal function used to find grid problem solutions.
+
     Based off gridsynth implementation.
+
+    Args:
+        x_lo (float): The lower bound of the x-coordinate.
+        x_hi (float): The upper bound of the x-coordinate.
+        y_lo (float): The lower bound of the y-coordinate.
+        y_hi (float): The upper bound of the y-coordinate.
+        scale_output (RingRoot2): The scale factor to apply to the output.
+        conjugate_output (bool): Whether to take the conjugate of the output.
+    
+    Yields:
+        beta (RingRoot2): A potential offset solution to a 1D grid problem.
     """
     # Compute interval widths
     dx = x_hi - x_lo
@@ -218,22 +134,6 @@ def gridpoints_internal(
 
     lambda_ = RingRoot2([1, 1])
     lambda_inv = RingRoot2([-1, 1])
-    def floor_log(x: float, b: float = lambda_.to_float()) -> tuple[int, float]:
-        """
-        Compute integer n such that x = r * b^n where 1 <= r < b.
-        """
-        if x <= 0:
-            raise ValueError("x must be positive")
-        elif 1 <= x < b:
-            return (0, x)
-        elif 1 <= x * b and x < 1:
-            return (-1, b * x)
-        else:
-            n, r = floor_log(x, b * b)
-            if r < b:
-                return (2 * n, r)
-            else:
-                return (2 * n + 1, r / b)
 
     # Determine a scaling factor n so that we can approximate the width of the
     # interval dy as (1 + sqrt(2))^n
@@ -251,7 +151,9 @@ def gridpoints_internal(
         lambda_bul_n = lambda_ ** -n
 
     if dy <= 0 and dx > 0:
-        yield from gridpoints_internal(y_lo, y_hi, x_lo, x_hi, conjugate_output=True)
+        yield from gridpoints_internal(
+            y_lo, y_hi, x_lo, x_hi, conjugate_output=True,
+        )
     elif dy >= lambda_.to_float() and n % 2 == 0:
         yield from gridpoints_internal(
             lambda_n.to_float() * x_lo,
@@ -327,8 +229,8 @@ def solve_for_beta() -> AlgebraicInteger | None:
 def in_epsilon_region(
     angle: float,
     epsilon: float,
-    x_coordinate: AlgebraicIntegerOverRoot2,
-    y_coordinate: AlgebraicIntegerOverRoot2,
+    x_coordinate: IntegerRatio,
+    y_coordinate: IntegerRatio,
 ) -> bool:
     """
     Check if the point is in the epsilon region.
