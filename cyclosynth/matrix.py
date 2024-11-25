@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import Any
 from typing import Sequence
 
-from math import sqrt
+from mpmath import sqrt
+from mpmath import mpf
 
 from cyclosynth.algebra import DyadicComplexNumber
+from cyclosynth.algebra import AlgebraicInteger
 from cyclosynth.algebra import RingRoot2
 from cyclosynth.ratio import AlgebraicIntegerOverRoot2
 from cyclosynth.ratio import IntegerRatio
@@ -313,7 +315,10 @@ class U2Matrix(Matrix):
 
 
 class Vector:
-    def __init__(self, values: Sequence[float | IntegerRatio]) -> None:
+    def __init__(
+        self,
+        values: Sequence[IntegerRatio | AlgebraicInteger | float | mpf],
+    ) -> None:
         assert len(values) == 2, 'Vector must have length 2.'
         self.values = list(values).copy()
     
@@ -322,3 +327,8 @@ class Vector:
     
     def to_tuple(self) -> tuple[float | IntegerRatio]:
         return tuple(self.values)
+    
+    def innerprod(self, other: Vector) -> float | IntegerRatio:
+        x1, x2 = self.values
+        y1, y2 = other.values
+        return x1 * y1 + x2 * y2
