@@ -141,6 +141,8 @@ class RingRoot2(AlgebraicInteger):
                     prefix = '-'
                 else:
                     prefix = '- '
+            elif w == 0:
+                prefix = ''
             else:
                 prefix = '+ '
             if abs(v) == 1:
