@@ -14,7 +14,6 @@ from numpy import isclose
 from cyclosynth.algebra import RingRoot2
 from cyclosynth.gridsynth import in_epsilon_region
 from cyclosynth.gridsynth import gridpoints_1d
-from cyclosynth.gridsynth import scaled_gridpoints_1d
 from cyclosynth.ratio import AlgebraicIntegerOverRoot2
 
 # from random import seed
@@ -62,30 +61,31 @@ class TestGridsynth:
         assert isclose(solutions[14].to_float(), 3.0)
     
     def test_solve_scaled_grid_problem_1d(self) -> None:
-        k = 20
+        k = 10
         solutions_check_limit = 10
+        offset = 0.05
         for _ in range(self.num_trials):
-            x_lo, x_hi = uniform(-100, 100), uniform(-100, 100)
-            if x_lo > x_hi:
-                x_lo, x_hi = x_hi, x_lo
-            elif x_lo == x_hi:
-                x_lo -= 1
+            x_hi = uniform(-1 + offset, 1.0)
+            x_lo = x_hi - offset
             y_lo, y_hi = -1, 1
             args = (x_lo, x_hi, y_lo, y_hi, k)
-            for i, c in enumerate(scaled_gridpoints_1d(*args)):
+            no_solutions = True
+            for i, c in enumerate(gridpoints_1d(*args)):
+                no_solutions = False
                 if i >= solutions_check_limit:
                     break
                 assert c is not None
                 c_float = c.to_float()
                 assert x_lo <= c_float and c_float <= x_hi
+            assert not no_solutions
 
-    # def test_solve_scaled_grid_problem_1d_failure(self) -> None:
-    #     k = 1
-    #     x_lo, x_hi = -0.1, 0.1
-    #     y_lo, y_hi = 0.1, 1
-    #     args = (x_lo, x_hi, y_lo, y_hi, k)
-    #     solutions = [c for c in solve_scaled_grid_problem_1d(*args)]
-    #     assert len(solutions) == 0
+    def test_solve_scaled_grid_problem_1d_failure(self) -> None:
+        k = 1
+        x_lo, x_hi = -0.1, 0.1
+        y_lo, y_hi = 0.1, 1
+        args = (x_lo, x_hi, y_lo, y_hi, k)
+        solutions = [c for c in gridpoints_1d(*args)]
+        assert len(solutions) == 0
     
     # def test_solve_scaled_parity_grid_problem_1d(self) -> None:
     #     # TODO: Figure out what to put for beta
