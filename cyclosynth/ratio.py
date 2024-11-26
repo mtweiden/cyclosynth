@@ -56,17 +56,24 @@ class IntegerRatio:
             d3 = d1 * d2
         return d3
 
-    def __mul__(self, other: IntegerRatio | AlgebraicInteger) -> IntegerRatio:
+    def __mul__(
+        self,
+        other: IntegerRatio | AlgebraicInteger | int,
+    ) -> IntegerRatio:
         """
         Multiply the ratio by an IntegerRatio.
         """
-        if isinstance(other, AlgebraicInteger):
-            other = IntegerRatio(other)
-        new_numerator = self._combine_integers(self.numerator, other.numerator)
-        new_denominator = self._combine_integers(
-            self.denominator, other.denominator,
-        )
-        new_ratio = IntegerRatio(new_numerator, new_denominator)
+        if isinstance(other, int):
+            new_numerator = self.numerator * other
+            new_ratio = IntegerRatio(new_numerator, self.denominator)
+        else:
+            if isinstance(other, AlgebraicInteger):
+                other = IntegerRatio(other)
+            new_numerator = self._combine_integers(self.numerator, other.numerator)
+            new_denominator = self._combine_integers(
+                self.denominator, other.denominator,
+            )
+            new_ratio = IntegerRatio(new_numerator, new_denominator)
         new_ratio.simplify()
         return new_ratio
 
@@ -89,6 +96,13 @@ class IntegerRatio:
         Subtract an IntegerRatio from the ratio.
         """
         return self + (-other)
+    
+    def __truediv__(self, other: IntegerRatio) -> IntegerRatio:
+        new_num = self.numerator * other.denominator
+        new_denom = self.denominator * other.numerator
+        new_ratio = IntegerRatio(new_num, new_denom)
+        new_ratio.simplify()
+        return new_ratio
 
     def simplify(self) -> None:
         """
@@ -156,7 +170,7 @@ class IntegerRatio:
     def __repr__(self) -> str:
         n = self.numerator.__repr__()
         d = self.denominator.__repr__()
-        return f'{n} / ({d})'
+        return f'({n}) / ({d})'
     
     def __neg__(self) -> IntegerRatio:
         if isinstance(self.numerator, AlgebraicInteger):
