@@ -224,3 +224,17 @@ class TestRatios:
             assert isclose((x - y).to_float(), ((x1 / x2) - (y1 / y2)))
             assert isclose((x * y).to_float(), ((x1 / x2) * (y1 / y2)))
             assert isclose((x * y.inverse()).to_float(), (x1 * y2 / x2 / y1))
+    
+    def test_ring_root2_from_integer_ratio(self) -> None:
+        for _ in range(self.num_trials):
+            for power in range(0, 100):
+                x1 = rand_integer_values(1)[0]
+                if power % 2 == 0:
+                    coeff = int(2 ** power)
+                    x2 = RingRoot2([coeff, 0])
+                else:
+                    coeff = int(2 ** (power - 1))
+                    x2 = RingRoot2([0, coeff])
+                x = IntegerRatio(x1, x2)
+                y = AlgebraicIntegerOverRoot2.from_integer_ratio(x)
+                assert isclose(float(x.to_float()), float(y.to_float()))
