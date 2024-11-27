@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from math import gcd
+from math import log2
 
 from mpmath import sqrt
 from mpmath import mpf
@@ -108,6 +109,9 @@ class IntegerRatio:
         """
         Divide by the denominator as many times as possible.
         """
+        if isinstance(self.numerator, AlgebraicInteger):
+            if all(v == 0 for v in self.numerator.values):
+                self.denominator = 1
         if self.denominator == 1:
             return
         if isinstance(self.denominator, int):
@@ -245,6 +249,9 @@ class AlgebraicIntegerOverRootRoot2Plus2(IntegerRatio):
 
         Division algorithm based on `utils.is_divisible_by_rootroot2plus2`.
         """
+        if isinstance(self.numerator, AlgebraicInteger):
+            if all(v == 0 for v in self.numerator.values):
+                self.denominator_power = 0
         gamma = RingRootRoot2Plus2([0, 0, 2, -1])
         result = self.numerator.copy()
         for _ in range(self.denominator_power):
@@ -377,6 +384,9 @@ class AlgebraicIntegerOverRoot2(IntegerRatio):
 
         Division algorithm based on `utils.is_divisible_by_root2`.
         """
+        if isinstance(self.numerator, AlgebraicInteger):
+            if all(v == 0 for v in self.numerator.values):
+                self.denominator_power = 0
         gamma = RingRoot2([0, 1])
         result = self.numerator.copy()
         for _ in range(self.denominator_power):
@@ -453,3 +463,32 @@ class AlgebraicIntegerOverRoot2(IntegerRatio):
         if self.denominator_power % 2 == 1:
             ratio = -ratio
         return ratio
+    
+    @staticmethod
+    def from_integer_ratio(ratio: IntegerRatio) -> AlgebraicIntegerOverRoot2:
+        """
+        Convert an IntegerRatio to an AlgebraicIntegerOverRoot2.
+
+        Args:
+            integer_ratio (IntegerRatio): The IntegerRatio to convert.
+        """
+        denom = ratio.denominator
+        if denom.values[0] != 0 and denom.values[1] != 0:
+            raise ValueError('Denominator must be a power of sqrt(2).')
+        if not power_of_2(denom.values[0]) or not power_of_2(denom.values[1]):
+            raise ValueError('Denominator must be a power of sqrt(2).')
+
+        if denom.values[0] == 0 and denom.values[1] == 0:
+            power = 0
+        elif denom.values[0] == 0:
+            power = int(log2(denom.values[1])) + 1
+        else:
+            power = int(log2(denom.values[0])) + 1
+        
+        return AlgebraicIntegerOverRoot2(ratio.numerator, power)
+
+
+def power_of_2(n: int) -> bool:
+    if n == 0:  # Not actually a power of 2
+        return True
+    return log2(n) == int(log2(n))
