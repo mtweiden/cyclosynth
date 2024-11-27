@@ -390,10 +390,13 @@ class AlgebraicIntegerOverRoot2(IntegerRatio):
         if isinstance(self.numerator, AlgebraicInteger):
             if all(v == 0 for v in self.numerator.values):
                 self.denominator_power = 0
+        if isinstance(self.numerator, int):
+            result = RingRoot2([self.numerator, 0])
+        else:
+            result = self.numerator.copy()
         gamma = RingRoot2([0, 1])
-        result = self.numerator.copy()
         for _ in range(self.denominator_power):
-            new_result = result * gamma
+            new_result = gamma * result
             if all(v % 2 == 0 for v in new_result.values):
                 result.values = [v // 2 for v in new_result.values]
                 self.denominator_power -= 1
@@ -478,19 +481,19 @@ class AlgebraicIntegerOverRoot2(IntegerRatio):
         denom = ratio.denominator
         if isinstance(denom, int):
             denom = RingRoot2([denom, 0])
-        if denom.values[0] != 0 and denom.values[1] != 0:
-            raise ValueError('Denominator must be a power of sqrt(2).')
-        if not power_of_2(denom.values[0]) or not power_of_2(denom.values[1]):
-            raise ValueError('Denominator must be a power of sqrt(2).')
+        if sum(1 for x in denom.values if x != 0) != 1 or not \
+                any(power_of_2(v) for v in denom.values):
+            m = 'Denominator must be a power of sqrt(2) and non zero.'
+            raise ValueError(m)
 
-        if denom.values[0] == 0 and denom.values[1] == 0:
-            power = 0
-        elif denom.values[0] == 0:
-            power = int(log2(denom.values[1])) + 1
+        if denom.values[0] == 0:
+            power = 2 * int(log2(denom.values[1])) + 1
         else:
-            power = int(log2(denom.values[0])) + 1
+            power = 2 * int(log2(denom.values[0]))
         
-        return AlgebraicIntegerOverRoot2(ratio.numerator, power)
+        new_ratio = AlgebraicIntegerOverRoot2(ratio.numerator, power)
+        new_ratio.simplify()
+        return new_ratio
 
 
 def power_of_2(n: int) -> bool:
