@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
+from cyclosynth.algebra import AlgebraicInteger
 from cyclosynth.ratio import IntegerRatio
 from cyclosynth.matrix import Matrix
 from cyclosynth.matrix import Vector
@@ -42,6 +43,15 @@ class Operator(Matrix):
         x_new = c11 * x + c12 * y
         y_new = c21 * x + c22 * y
         return Vector([x_new, y_new])
+    
+    def act_on(
+        self,
+        point: Vector | Sequence[IntegerRatio],
+    ) -> Vector:
+        if not isinstance(point, Vector):
+            point = Vector(point)
+        point = self.vecmul(point)
+        return point
 
     def __pow__(self, k: int) -> Operator:
         if k < 0:
