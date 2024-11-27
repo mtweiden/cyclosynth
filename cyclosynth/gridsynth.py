@@ -2,6 +2,8 @@
 from typing import Generator
 from typing import Sequence
 
+from numpy import isclose
+
 from mpmath import mp
 from mpmath import matrix
 from mpmath import cos
@@ -17,6 +19,7 @@ from cyclosynth.algebra import RingRoot2
 from cyclosynth.convex import ConvexSet
 from cyclosynth.operator import Operator
 from cyclosynth.matrix import U2Matrix
+from cyclosynth.matrix import Vector
 from cyclosynth.ratio import IntegerRatio
 from cyclosynth.ratio import AlgebraicIntegerOverRoot2
 from cyclosynth.utils import floor_log
@@ -41,7 +44,7 @@ def gridpoints_2d(
     setB: ConvexSet,
     opG: Operator,
     k: int,
-) -> Generator[tuple[IntegerRatio | RingRoot2], None, None]:
+) -> Generator[tuple[AlgebraicIntegerOverRoot2], None, None]:
     """
     Solve the 2D scaled grid problem for the given convex sets.
 
@@ -52,43 +55,80 @@ def gridpoints_2d(
         k (int): The scaling factor k.
     
     Yields:
-        candidate (tuple[IntegerRatio | RingRoot2]): A solution to the 2D scaled
+        candidate (tuple[AlgebraicIntegerOverRoot2]): A solution to the 2D scaled
             grid problem.
     """
     opG_inv = opG.inv()
+
     setA_ = setA.transform(opG_inv)
     setB_ = setB.transform(opG_inv)
+
+    def passes_membership(alpha: IntegerRatio, beta: IntegerRatio) -> bool:
+        in_A = setA.check_inclusion(alpha, beta)
+        in_B = setB.check_inclusion(alpha.conj(), beta.conj())
+        return in_A and in_B
 
     (xA_lo, xA_hi), (yA_lo, yA_hi) = setA_.bounding_box()
     (xB_lo, xB_hi), (yB_lo, yB_hi) = setB_.bounding_box()
 
     lamb = 1 + sqrt(2)
 
+    roottwo_coeff = 2 ** (k // 2)
     if k % 2 == 0:
-        roothalf_k = RingRoot2((2 ** (k // 2), 0))
+        roottwo_k = RingRoot2((roottwo_coeff, 0))
     else:
-        roothalf_k = RingRoot2((0, 2 ** (k // 2 + 1)))
-    dx = IntegerRatio(1, roothalf_k)
-    dx_bul = opG.conj().act_on(dx)  # TODO: Test act_on
+        roottwo_k = RingRoot2((0, roottwo_coeff))
+    dx = IntegerRatio(1, roottwo_k)
+    dx_bul = dx.conj()
 
+    x0 = next(gridpoints_1d(xA_lo, xA_hi + lamb, xB_lo, xB_hi + lamb, k + 1))
+    # TODO: May need a failure condition here
+    x0_bul = x0.conj()
+
+    _yA_lo, _yA_hi = widen_interval(yA_lo, yA_hi)
+    _yB_lo, _yB_hi = widen_interval(yB_lo, yB_hi)
     # Enumerate solutions for the y-coordinate
-    for beta_prime in gridpoints_1d(
-            *widen_interval(yA_lo, yA_hi), *widen_interval(yB_lo, yB_hi), k + 1
-        ):  # why k+1?
+    for beta_prime in gridpoints_1d(_yA_lo, _yA_hi, _yB_lo, _yB_hi, k + 1):
         beta_prime_bul = beta_prime.conj()
-        for x0 in gridpoints_1d(xA_lo, xA_hi + lamb, xB_lo, xB_hi + lamb, k + 1):
-            x0_bul = opG.conj().act_on(x0)
 
-            # Intersect y-coordinate with convex sets
-            interval_A = setA_.intersection()
+        # Intersect y-coordinate with convex sets
+        point_A = Vector([x0, beta_prime])
+        direction_A = Vector([dx, 0])
+        point_B = Vector([x0_bul, beta_prime_bul])
+        direction_B = Vector([dx_bul, 0])
+        interval_A = setA_.intersection(direction_A, point_A)
+        interval_B = setB_.intersection(direction_B, point_B)
 
-            # Adjust intervals for grid enumeration
+        if interval_A is None or interval_B is None:
+            continue
 
-            # Enumerate solutions for x with parity check
+        # Adjust intervals for grid enumeration
+        (t0A, t1A), (t0B, t1B) = interval_A, interval_B
+        dtA = 10 / max(10, 2 ** k * (t1B - t0B))
+        dtB = 10 / max(10, 2 ** k * (t1A - t0A))
 
+        # Enumerate solutions for x with parity check
+        parity_match = AlgebraicIntegerOverRoot2.from_integer_ratio(
+            (beta_prime - x0) * roottwo_k,
+        )
+        parity_match.simplify()
+
+        for alpha_offset in gridpoints_1d(
+            x_lo=(t0A - dtA),
+            x_hi=(t1A + dtA),
+            y_lo=(t0B - dtB),
+            y_hi=(t1B + dtB),
+            k=1,
+            parity_match=parity_match,
+        ):
+            alpha_prime = alpha_offset * dx + x0
             # Convert back to original coordinate system
-
-            # Verify membership in original convext sets
+            alpha, beta = opG.act_on((alpha_prime, beta_prime))
+            # Verify membership in original convex sets
+            if passes_membership(alpha, beta):
+                alpha = AlgebraicIntegerOverRoot2.from_integer_ratio(alpha)
+                beta = AlgebraicIntegerOverRoot2.from_integer_ratio(beta)
+                yield alpha, beta
 
 
 def gridpoints_1d(
@@ -122,11 +162,12 @@ def gridpoints_1d(
     Yields:
         candidate (IntegerRatio | RingRoot2): A solution to a 1D grid problem.
     """
+    roottwo_coeff = 2 ** (k // 2)
     if k % 2 == 0:
-        roottwo_k = RingRoot2((2 ** (k // 2), 0))
+        roottwo_k = RingRoot2((roottwo_coeff, 0))
         sign = 1
     else:
-        roottwo_k = RingRoot2((0, 2 ** (k // 2 + 1)))
+        roottwo_k = RingRoot2((0, roottwo_coeff))
         sign = -1
     roottwo_k_f = roottwo_k.to_float()
     roothalf_k = IntegerRatio(1, roottwo_k)
@@ -137,6 +178,13 @@ def gridpoints_1d(
     if parity_match is None:
         x_lo, x_hi = x_lo * roottwo_k_f, x_hi * roottwo_k_f
         y_lo, y_hi = sign * y_lo * roottwo_k_f, sign * y_hi * roottwo_k_f
+        # y_lo, y_hi = y_lo * roottwo_k_f, y_hi * roottwo_k_f
+
+        # TODO: Check if swapping is correct (I think it is)
+        if x_lo > x_hi:
+            x_lo, x_hi = x_hi, x_lo
+        if y_lo > y_hi:
+            y_lo, y_hi = y_hi, y_lo
 
         # Compute scale factor alpha
         # We expect alpha ~ (x_0 + y_0) / 2 and alpha.conj() ~ (x_0 - y_0) / 2
@@ -163,8 +211,8 @@ def gridpoints_1d(
             if test_solution(candidate):
                 yield roothalf_k * candidate
 
-    elif parity_match.denominator <= k - 1:
-        yield from gridpoints_1d(x0, x1, y0, y1, k - 1)
+    elif parity_match.denominator_power <= k - 1:
+        yield from gridpoints_1d(x_lo, x_hi, y_lo, y_hi, k - 1)
 
     else:
         for candidate in gridpoints_1d(
@@ -220,13 +268,17 @@ def gridpoints_internal(
         n = -n
 
     if n >= 0:
+        sign = 1 if n % 2 == 0 else -1
         lambda_n = lambda_ ** n  # lambda ^ n
         lambda_inv_n = lambda_inv ** n  # (lambda^-1) ^ n
-        lambda_bul_n = (-lambda_inv) ** n   # (-lambda^-1) ^ n
+        lambda_bul_n = (lambda_inv ** n) * sign   # (-lambda^-1) ^ n
+        # lambda_bul_inv_n = (lambda_ ** n) * sign  # (-lambda) ^ -n
     else:
+        sign = 1 if n % 2 == 0 else -1
         lambda_n = lambda_inv ** -n
         lambda_inv_n = lambda_ ** -n
-        lambda_bul_n = lambda_ ** -n
+        lambda_bul_n = (lambda_ ** -n) * sign
+        # lambda_bul_inv_n = (lambda_inv ** -n) * sign
 
     if dy <= 0 and dx > 0:
         yield from gridpoints_internal(
@@ -254,7 +306,7 @@ def gridpoints_internal(
             lambda_n.to_float() * x_hi,
             lambda_bul_n.to_float() * y_lo,
             lambda_bul_n.to_float() * y_hi,
-            scale_output=lambda_n,
+            scale_output=lambda_inv_n,
         )
     elif dy > 0 and dy < 1 and n % 2 == 1:
         yield from gridpoints_internal(
@@ -262,12 +314,12 @@ def gridpoints_internal(
             lambda_n.to_float() * x_hi,
             lambda_bul_n.to_float() * y_hi,
             lambda_bul_n.to_float() * y_lo,
-            scale_output=lambda_n,
+            scale_output=lambda_inv_n,
         )
     else:
         amin = int(ceil((x_lo + y_lo) / 2))
         amax = int(floor((x_hi + y_hi) / 2))
-        for a in range(int(amin), int(amax) + 1):
+        for a in range(min(amin, amax), max(amin, amax) + 1):
             bmin = int(ceil((a - y_hi) / sqrt(2)))
             bmax = int(floor((a - y_lo) / sqrt(2)))
             for b in range(int(bmin), int(bmax) + 1):
