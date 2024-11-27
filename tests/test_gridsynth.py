@@ -12,15 +12,23 @@ from mpmath import sqrt
 from numpy import isclose
 
 from cyclosynth.algebra import RingRoot2
-from cyclosynth.gridsynth import in_epsilon_region
-from cyclosynth.gridsynth import gridpoints_1d
+from cyclosynth.convex import ConvexSet
+from cyclosynth.ellipse import Ellipse
 from cyclosynth.ratio import AlgebraicIntegerOverRoot2
+from cyclosynth.ratio import IntegerRatio
+from cyclosynth.operator import Operator
+from cyclosynth.gridsynth import gridpoints_1d
+from cyclosynth.gridsynth import gridpoints_2d
 
 # from random import seed
 # seed(42)
 
 mp.dps = 100
 
+
+def random_ratio(k: int) -> AlgebraicIntegerOverRoot2:
+    a, b = [randint(-100, 100) for _ in range(2)]
+    return AlgebraicIntegerOverRoot2(RingRoot2([a, b]), k)
 
 class TestGridsynth:
 
@@ -87,46 +95,33 @@ class TestGridsynth:
         solutions = [c for c in gridpoints_1d(*args)]
         assert len(solutions) == 0
     
-    # def test_solve_scaled_parity_grid_problem_1d(self) -> None:
-    #     # TODO: Figure out what to put for beta
-    #     k = 20
-    #     solutions_check_limit = 10
-    #     for _ in range(self.num_trials):
-    #         x_lo, x_hi = uniform(-100, 100), uniform(-100, 100)
-    #         if x_lo > x_hi:
-    #             x_lo, x_hi = x_hi, x_lo
-    #         elif x_lo == x_hi:
-    #             x_lo -= 1
-    #         y_lo, y_hi = -1, 1
-
-    #         # IDK what this should be
-    #         beta = AlgebraicIntegerOverRoot2(RingRoot2([1, 1]), k)
-
-    #         args = (x_lo, x_hi, y_lo, y_hi, k, beta)
-    #         for i, c in enumerate(solve_scaled_parity_grid_problem_1d(*args)):
-    #             if i >= solutions_check_limit:
-    #                 break
-    #             import pdb; pdb.set_trace()
-    #             assert c is not None
-    #             c_float = c.to_float()
-    #             assert x_lo <= c_float and c_float <= x_hi
-    #             c.simplify()
-    #             print(c.denominator_power)
-    #             assert c.denominator_power <= k - 1
-
+    def test_solve_scaled_grid_problem_1d_parity(self) -> None:
+        k = 11
+        solutions_check_limit = 10
+        offset = 0.05
+        for _ in range(self.num_trials):
+            beta = random_ratio(k + 1)
+            x_hi = uniform(-1 + offset, 1.0)
+            x_lo = x_hi - offset
+            y_lo, y_hi = -1, 1
+            args = (x_lo, x_hi, y_lo, y_hi, k, beta)
+            no_solutions = True
+            for i, c in enumerate(gridpoints_1d(*args)):
+                no_solutions = False
+                if i >= solutions_check_limit:
+                    break
+                assert c is not None
+                c_float = c.to_float()
+                assert x_lo <= c_float and c_float <= x_hi
+                c = AlgebraicIntegerOverRoot2.from_integer_ratio(c)
+                assert c.denominator_power <= k - 1
+            assert not no_solutions
     
-    # def test_solve_scaled_grid_problem_2d(self) -> None:
-    #     ...
-
-    # # def test_in_epsilon_region(self) -> None:
-    # #     epsilon = 1e-20
-    # #     for _ in range(self.num_trials):
-    # #         angle = 2 * pi * random()
-    # #         ellipse = find_ellipse(angle, epsilon)
-    # #         (x_lo, x_hi), (y_lo, y_hi) = ellipse.bounding_box()
-    # #         k = 40
-    # #         candidates = solve_scaled_grid_problem_1d(x_lo, x_hi, y_lo, y_hi, k)
-    # #         something_works = False
-    # #         for s in candidates:
-    # #             if in_epsilon_region(angle, epsilon, )
-    
+    def test_solve_grid_problem_2d(self) -> None:
+        ell = Ellipse([1/2, 0, 1/2], (0, 0))
+        one = IntegerRatio(RingRoot2([1, 0]))
+        zero = IntegerRatio(RingRoot2([0, 0]))
+        opG = Operator([one, zero, zero, one])
+        set_A, set_B = ConvexSet(ell), ConvexSet(ell)
+        solutions = [_ for _ in gridpoints_2d(set_A, set_B, opG, 0)]
+        assert len(solutions) == 17
