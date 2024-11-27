@@ -473,6 +473,8 @@ class AlgebraicIntegerOverRoot2(IntegerRatio):
             integer_ratio (IntegerRatio): The IntegerRatio to convert.
         """
         denom = ratio.denominator
+        if isinstance(denom, int):
+            denom = RingRoot2([denom, 0])
         if denom.values[0] != 0 and denom.values[1] != 0:
             raise ValueError('Denominator must be a power of sqrt(2).')
         if not power_of_2(denom.values[0]) or not power_of_2(denom.values[1]):
