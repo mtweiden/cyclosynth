@@ -78,13 +78,16 @@ class IntegerRatio:
         new_ratio.simplify()
         return new_ratio
 
-    def __add__(self, other: IntegerRatio) -> IntegerRatio:
+    def __add__(self, other: IntegerRatio | int) -> IntegerRatio:
         """
         Add to the ratio by an IntegerRatio.
         """
         a = self._combine_integers(other.numerator, self.denominator)
         b = self._combine_integers(self.numerator, other.denominator)
-        new_numerator = a + b
+        if isinstance(a, int):
+            new_numerator = b + a
+        else:
+            new_numerator = a + b
         new_denominator = self._combine_integers(
             self.denominator, other.denominator,
         )
