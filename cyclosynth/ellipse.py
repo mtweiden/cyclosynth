@@ -75,7 +75,7 @@ class Ellipse:
     
     def apply_operator(self, operator: Operator) -> Ellipse:
         inv_op = operator.inv()
-        w, x, y, z = inv_op.a, inv_op.b, inv_op.c, inv_op.d
+        w, x, y, z = [v.to_float() for v in inv_op.values]
         a, b, d = self.a, self.b, self.d
         aa = w * (a * w + b * y) + y * (b * w + d * y)
         bb = w * (a * x + b * z) + y * (b * x + d * z)
@@ -89,7 +89,9 @@ class Ellipse:
         x, y = point[0] - self.center[0], point[1] - self.center[1]
         a, b, d = self.a, self.b, self.d
         dist = a * x * x + 2 * b * x * y + d * y * y
-        return dist <= 1
+        less_than = dist < 1
+        equal_to = isclose(dist, 1.0, atol=1e-12)
+        return less_than or equal_to
     
     def make_upright(
         self,
