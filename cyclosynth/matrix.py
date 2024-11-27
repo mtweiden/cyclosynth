@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 from typing import Sequence
+from typing import Iterator
 
 from mpmath import sqrt
 from mpmath import mpf
@@ -315,20 +316,33 @@ class U2Matrix(Matrix):
 
 
 class Vector:
-    def __init__(
-        self,
-        values: Sequence[IntegerRatio | AlgebraicInteger | float | mpf],
-    ) -> None:
+    def __init__(self, values: Sequence[ScalarLike]) -> None:
         assert len(values) == 2, 'Vector must have length 2.'
         self.values = list(values).copy()
     
     def __repr__(self)  -> str:
         return f'Vector({self.values})'
     
-    def to_tuple(self) -> tuple[float | IntegerRatio]:
+    def to_tuple(self) -> tuple[float | IntegerRatio | AlgebraicInteger]:
         return tuple(self.values)
     
     def innerprod(self, other: Vector) -> float | IntegerRatio:
         x1, x2 = self.values
         y1, y2 = other.values
         return x1 * y1 + x2 * y2
+    
+    def __getitem__(self, key: int) -> float | IntegerRatio:
+        return self.values[key]
+    
+    def __mul__(self, scalar: ScalarLike) -> Vector:
+        import pdb; pdb.set_trace()
+        return Vector([x * scalar for x in self.values])
+    
+    def __add__(self, other: Vector) -> Vector:
+        return Vector([x + y for x, y in zip(self.values, other.values)])
+    
+    def __iter__(self) -> Iterator[ScalarLike]:
+        return iter(self.values)
+
+
+ScalarLike = IntegerRatio | AlgebraicInteger | float | mpf
