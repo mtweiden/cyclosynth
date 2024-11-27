@@ -24,6 +24,10 @@ def log2(n: float | mpf | int) -> float:
     return log(n) / log(2)
 
 
+def power_of_2(n: int) -> bool:
+    return log2(n) == int(log2(n))
+
+
 def is_divisible_by_rootroot2plus2(number: AlgebraicInteger) -> bool:
     """
     Divisibility test described in https://arxiv.org/abs/1501.04944.
@@ -125,7 +129,7 @@ def dyadic_sin(k: int, n: int) -> DyadicComplexNumber:
 
         n (int): The denominator of the angle fraction, either 4 or 8.
     """
-    if log2(n) != int(log2(n)):
+    if power_of_2(n):
         raise ValueError(f'`n` must be a power of 2, got {n}.')
     k = k % (2 * n)
     if k == (n // 2):
@@ -151,7 +155,7 @@ def dyadic_cos(k: int, n: int) -> DyadicComplexNumber:
 
         n (int): The denominator of the angle fraction, either 4 or 8.
     """
-    if log2(n) != int(log2(n)):
+    if power_of_2(n):
         raise ValueError(f'`n` must be a power of 2, got {n}.')
     k = k % (2 * n)
     if k == 0:
