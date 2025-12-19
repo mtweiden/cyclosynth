@@ -20,7 +20,7 @@ def lcm(a: int, b: int) -> int:
     return abs(a * b) // gcd(abs(a), abs(b))
 
 
-def log2(n: float | mpf | int) -> float:
+def log2(n: float | mpf | int) -> float:  # type: ignore
     return log(n) / log(2)
 
 
@@ -129,7 +129,7 @@ def dyadic_sin(k: int, n: int) -> DyadicComplexNumber:
 
         n (int): The denominator of the angle fraction, either 4 or 8.
     """
-    if power_of_2(n):
+    if not power_of_2(n):
         raise ValueError(f'`n` must be a power of 2, got {n}.')
     k = k % (2 * n)
     if k == (n // 2):
@@ -155,7 +155,7 @@ def dyadic_cos(k: int, n: int) -> DyadicComplexNumber:
 
         n (int): The denominator of the angle fraction, either 4 or 8.
     """
-    if power_of_2(n):
+    if not power_of_2(n):
         raise ValueError(f'`n` must be a power of 2, got {n}.')
     k = k % (2 * n)
     if k == 0:
