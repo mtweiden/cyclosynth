@@ -6,6 +6,6 @@ setup(
     description='For compiling to Fault-Tolerant cyclotomic gate sets.',
     version='0.1.0',
     packages=find_packages(),
-    install_requires=['sympy'],
+    install_requires=['numpy', 'mpmath'],
     python_requires='>=3.8, <4.0'
 )
