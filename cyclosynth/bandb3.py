@@ -43,6 +43,9 @@ def xy_to_uv(xy: ndarray, k: int = 3) -> ndarray:
     scale = 1 << (k // 2) if k % 2 else 2 ** (k / 2)
     return sigma_to_uv @ xy / scale
 
+def to_unit_vector(y: ndarray) -> ndarray:
+    return y / sqrt((y**2).sum())
+
 def to_unitary(x: ndarray, k) -> ndarray:
     u = xy_to_uv(x, k)
     u1 = u[0] + 1j * u[1]
@@ -328,19 +331,21 @@ def search_phase2(
 
     return sol_count
 
-
 @njit
 def search_phase1(
     target_norm: int,
+    y_list: ndarray,
     solutions: ndarray,
     max_solutions: int,
 ) -> int:
     """
-    Enumerate all (a1, c1, a2, c2) such that a1^2 + c1^2 + a2^2 + c2^2 <= target_norm,
+    Enumerate all (a1, c1, a2, c2) centered around the target direction y,
     then for each combination call phase 2 to find valid (b1, d1, b2, d2).
 
     Args:
         target_norm (int): Target squared norm (2^k).
+
+        y_list (ndarray): Target direction vector (8 components).
 
         solutions (ndarray): Output array to write solutions into.
 
@@ -351,59 +356,99 @@ def search_phase1(
     """
     sol_count = 0
 
-    # Enumerate a1
-    max_a1 = int(target_norm ** 0.5)
-    for a1 in range(-max_a1, max_a1 + 1):
-        rem1 = target_norm - a1 * a1
-        if rem1 < 0:
-            continue
+    # Compute scale factor to map y onto the sphere ||x||^2 = target_norm
+    y_norm_sq = 0.0
+    for i in range(8):
+        y_norm_sq += y_list[i] * y_list[i]
+    scale = (target_norm / y_norm_sq) ** 0.5
 
-        # Enumerate c1
-        max_c1 = int(rem1 ** 0.5)
-        for c1 in range(-max_c1, max_c1 + 1):
-            rem2 = rem1 - c1 * c1
-            if rem2 < 0:
+    # Ideal values for phase 1 coordinates
+    # x = (a1, b1, c1, d1, a2, b2, c2, d2)
+    # y_list indices: a1=0, b1=1, c1=2, d1=3, a2=4, b2=5, c2=6, d2=7
+    a1_center = int(round(y_list[0] * scale))
+    c1_center = int(round(y_list[2] * scale))
+    a2_center = int(round(y_list[4] * scale))
+    c2_center = int(round(y_list[6] * scale))
+
+    max_a1 = int(target_norm ** 0.5)
+
+    # Enumerate a1 outward from center
+    for a1_offset in range(max_a1 + abs(a1_center) + 1):
+        for a1_sign in range(2 if a1_offset > 0 else 1):
+            if a1_sign == 0:
+                a1 = a1_center + a1_offset
+            else:
+                a1 = a1_center - a1_offset
+            if a1 * a1 > target_norm:
                 continue
 
-            # Enumerate a2
-            max_a2 = int(rem2 ** 0.5)
-            for a2 in range(-max_a2, max_a2 + 1):
-                rem3 = rem2 - a2 * a2
-                if rem3 < 0:
-                    continue
+            rem1 = target_norm - a1 * a1
+            max_c1 = int(rem1 ** 0.5)
 
-                # Enumerate c2
-                max_c2 = int(rem3 ** 0.5)
-                for c2 in range(-max_c2, max_c2 + 1):
-                    remaining_norm = rem3 - c2 * c2
-                    if remaining_norm < 0:
+            # Enumerate c1 outward from center
+            for c1_offset in range(max_c1 + abs(c1_center) + 1):
+                for c1_sign in range(2 if c1_offset > 0 else 1):
+                    if c1_sign == 0:
+                        c1 = c1_center + c1_offset
+                    else:
+                        c1 = c1_center - c1_offset
+                    if c1 * c1 > rem1:
                         continue
 
-                    # Phase 2: find (b1, d1, b2, d2) satisfying
-                    # norm and unitarity constraints
-                    sol_count = search_phase2(
-                        a1, c1, a2, c2,
-                        remaining_norm,
-                        solutions,
-                        sol_count,
-                        max_solutions,
-                    )
+                    rem2 = rem1 - c1 * c1
+                    max_a2 = int(rem2 ** 0.5)
 
-                    if sol_count >= max_solutions:
-                        return sol_count
+                    # Enumerate a2 outward from center
+                    for a2_offset in range(max_a2 + abs(a2_center) + 1):
+                        for a2_sign in range(2 if a2_offset > 0 else 1):
+                            if a2_sign == 0:
+                                a2 = a2_center + a2_offset
+                            else:
+                                a2 = a2_center - a2_offset
+                            if a2 * a2 > rem2:
+                                continue
+
+                            rem3 = rem2 - a2 * a2
+                            max_c2 = int(rem3 ** 0.5)
+
+                            # Enumerate c2 outward from center
+                            for c2_offset in range(max_c2 + abs(c2_center) + 1):
+                                for c2_sign in range(2 if c2_offset > 0 else 1):
+                                    if c2_sign == 0:
+                                        c2 = c2_center + c2_offset
+                                    else:
+                                        c2 = c2_center - c2_offset
+                                    if c2 * c2 > rem3:
+                                        continue
+
+                                    remaining_norm = rem3 - c2 * c2
+
+                                    sol_count = search_phase2(
+                                        a1, c1, a2, c2,
+                                        remaining_norm,
+                                        solutions,
+                                        sol_count,
+                                        max_solutions,
+                                    )
+
+                                    if sol_count >= max_solutions:
+                                        return sol_count
 
     return sol_count
 
 
-def branch_and_bound(k: int, max_solutions: int = 100000) -> ndarray:
+def branch_and_bound(y_hat: ndarray, k: int, max_solutions: int = 100000) -> ndarray:
     """
     Find integer vectors x = (a1, b1, c1, d1, a2, b2, c2, d2) satisfying:
         - ||x||^2 = 2^k
         - b1(a1+c1) + d1(c1-a1) + b2(a2+c2) + d2(c2-a2) = 0
 
-    These correspond to exactly implementable unitaries in the Clifford+T gate set.
+    Search is centered around the target direction y for early discovery
+    of good approximations.
 
     Args:
+        y (ndarray): Target direction vector (8 components).
+
         k (int): Determines the target norm 2^k (related to T-count).
 
         max_solutions (int): Maximum number of solutions to collect.
@@ -411,16 +456,25 @@ def branch_and_bound(k: int, max_solutions: int = 100000) -> ndarray:
     Returns:
         ndarray: Array of shape (n, 8) containing the solutions found.
     """
+    assert isclose(np.linalg.norm(y_hat, 2), 1), "y_hat must be a unit vector"
     target_norm = 2 ** k
+    y_list = np.array([float(yi) for yi in y])
     solutions = np.zeros((max_solutions, 8), dtype=np.int64)
-    sol_count = search_phase1(target_norm, solutions, max_solutions)
+    sol_count = search_phase1(target_norm, y_list, solutions, max_solutions)
     return solutions[:sol_count]
+
 
 if __name__ == "__main__":
     k = 6
-    max_solutions = 1000000
-    sols = branch_and_bound(k, max_solutions)
+    max_solutions = 10
+    v = random_u3()
+    y = (uv_to_xy(v, k))
+    _y = [int(round(yi)) for yi in y]
+    print(_y)
+    y_hat = to_unit_vector(y)
+    sols = branch_and_bound(y_hat, k, max_solutions)
     for sol in sols:
         utry = to_unitary(sol, k)
-        # print(utry)
-        assert np.isclose(np.linalg.norm(utry, 2), 1)
+        # print(f"solution: {sol}   utry: {utry}")
+        print(f"solution: {sol}")
+        assert isclose(np.linalg.norm(utry, 2), 1)
