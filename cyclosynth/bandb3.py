@@ -468,7 +468,9 @@ if __name__ == "__main__":
     k = 6
     max_solutions = 10
     v = random_u3()
+    print(f"target unitary: {v}")
     y = (uv_to_xy(v, k))
+    print(y)
     _y = [int(round(yi)) for yi in y]
     print(_y)
     y_hat = to_unit_vector(y)
@@ -476,5 +478,7 @@ if __name__ == "__main__":
     for sol in sols:
         utry = to_unitary(sol, k)
         # print(f"solution: {sol}   utry: {utry}")
+        uv = xy_to_uv(sol, k)
         print(f"solution: {sol}")
+        print(f"translation: {uv}")
         assert isclose(np.linalg.norm(utry, 2), 1)
