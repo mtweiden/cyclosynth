@@ -2,7 +2,7 @@ from random import randint
 
 from cyclosynth.algebra import RingRoot2
 from cyclosynth.ratio import IntegerRatio
-from cyclosynth.operator import Operator
+from cyclosynth.operator_ import Operator
 from cyclosynth.matrix import Vector
 
 from numpy import isclose
