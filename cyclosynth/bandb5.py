@@ -137,44 +137,43 @@ def phase2_pq(a1: int, c1: int, a2: int, c2: int,
               R: int, y_full: ndarray) -> list:
     """
     Find all (b1, d1, b2, d2) satisfying:
-        unitarity:  c1*p1 + a1*q1 + c2*p2 + a2*q2 = 0   where p_i=b_i+d_i, q_i=b_i-d_i
-        norm:       b1^2+d1^2+b2^2+d2^2 = R
-        parity:     p_i ≡ q_i (mod 2)   <=> b_i, d_i ∈ Z  (automatic)
+        unitarity:  (a1+c1)*b1 + (c1-a1)*d1 + (a2+c2)*b2 + (c2-a2)*d2 = 0
+        norm:       b1^2 + d1^2 + b2^2 + d2^2 = R
 
-    CVP target direction in (p,q) space:  (y[2], y[0], y[6], y[4])
-    (derived from the y-symmetry relations).
-
-    Uses the (p,q) lattice:
-        L_pq = { (p1,q1,p2,q2) ∈ Z^4 : c1*p1 + a1*q1 + c2*p2 + a2*q2 = 0 }
-    with parity enforced by working in the (b,d) sub-lattice.
+    Null basis computed directly in (b,d) space — NOT via (p,q) and M, which
+    only generates an index-2 sublattice and misses solutions where the two
+    (p,q) component pairs have different parities.
     """
     if R < 0:
         return []
     if R == 0:
         return [(0, 0, 0, 0)]
 
-    # Unitarity constraint in (p,q) form: w_pq · (p1,q1,p2,q2) = 0
-    w_pq = np.array([c1, a1, c2, a2], dtype=np.int64)
+    # Unitarity constraint in (b,d) form: w_bd · (b1,d1,b2,d2) = 0
+    w_bd = np.array([a1+c1, c1-a1, a2+c2, c2-a2], dtype=np.int64)
 
-    # Null basis: 3x4 integer matrix in (p,q) space
-    N_pq = integer_null_basis(w_pq)   # shape (3, 4)
+    # Degenerate case: all outer vars zero -> unitarity trivially satisfied
+    # -> enumerate full 4D sphere directly
+    if not np.any(w_bd):
+        results = []
+        max_b1 = int(R ** 0.5)
+        for b1 in range(-max_b1, max_b1 + 1):
+            rem1 = R - b1*b1
+            if rem1 < 0: continue
+            for d1 in range(-int(rem1**0.5), int(rem1**0.5) + 1):
+                rem2 = rem1 - d1*d1
+                if rem2 < 0: continue
+                for b2 in range(-int(rem2**0.5), int(rem2**0.5) + 1):
+                    rem3 = rem2 - b2*b2
+                    if rem3 < 0: continue
+                    d2s = int(rem3**0.5)
+                    if d2s*d2s != rem3: continue
+                    for d2 in ([d2s] if d2s == 0 else [d2s, -d2s]):
+                        results.append((b1, d1, b2, d2))
+        return results
 
-    # The parity sublattice: p_i ≡ q_i (mod 2).
-    # Enforce by restricting to (b,d) coordinates:
-    #   p = b + d, q = b - d  =>  (p,q) = M * (b,d)
-    #   M = [[1,0,1,0],[0,1,0,1],[1,0,-1,0],[0,1,0,-1]]  (reordered)
-    # More directly: work in (b,d) coordinates throughout.
-    # The (b,d) null basis is N_bd = N_pq @ M where M maps (b,d) -> (p,q).
-    #   M[0] = (1,0,1,0)  (p1 = b1+d1, indexed as col of (b1,d1,b2,d2))
-    # Actually M in the ordering (p1,q1,p2,q2) <- (b1,d1,b2,d2):
-    M_pq_to_bd = np.array([
-        [1, 1, 0, 0],   # p1 = b1 + d1
-        [1,-1, 0, 0],   # q1 = b1 - d1
-        [0, 0, 1, 1],   # p2 = b2 + d2
-        [0, 0, 1,-1],   # q2 = b2 - d2
-    ], dtype=np.int64)
-
-    N_bd = N_pq @ M_pq_to_bd  # (3, 4) null basis in (b,d) space
+    # Null basis: 3x4 integer matrix in (b,d) space
+    N_bd = integer_null_basis(w_bd)   # shape (3, 4)
 
     # LLL-reduce
     N_lll = lll_reduce(N_bd)   # (3, 4)
@@ -207,83 +206,68 @@ def _schnorr_euchner(N: ndarray, t_lat: ndarray, R: int,
                      a1: int, c1: int, a2: int, c2: int,
                      solutions: list):
     """
-    Enumerate integer points z ∈ Z^3 such that ||N^T z||^2 = R,
-    centered around t_lat.  Converts each valid z to (b1,d1,b2,d2).
-
-    Uses a simple layer-by-layer enumeration in the QR-reduced basis,
-    equivalent to Schnorr-Euchner in dimension 3.
+    Enumerate all integer points z ∈ Z^3 such that ||N^T z||^2 = R exactly.
+    t_lat is the CVP target in lattice coordinates — used only for centering
+    the search (ordering candidates nearest-first), NOT shifted into residuals.
+    Converts each valid z to (b1,d1,b2,d2) via bd = N^T @ z.
     """
     Nf = N.astype(float)
-    # QR decomposition of N^T: N^T = Q R  =>  ||N^T z||^2 = ||R z||^2
-    # But N is 3x4, so N^T is 4x3.  Use economy QR.
+    # QR: N^T = Q R_mat, so ||N^T z||^2 = ||R_mat z||^2
     _, R_mat = np.linalg.qr(Nf.T, mode='reduced')  # R_mat is 3x3 upper triangular
-
-    # Flip sign so diagonal of R_mat is positive
-    signs = np.sign(np.diag(R_mat))
-    signs[signs == 0] = 1
+    signs = np.sign(np.diag(R_mat)); signs[signs == 0] = 1
     R_mat = signs[:, None] * R_mat
 
-    # Work in coordinates w = R_mat @ z, target w0 = R_mat @ t_lat
-    # ||N^T z||^2 = ||R_mat z||^2 (up to orthogonal factor; norms preserved by Q)
-    w0 = R_mat @ t_lat
+    radius = float(R) ** 0.5
 
-    # Bound on ||z||: ||N^T z|| = sqrt(R), and smallest singular value of N
-    # gives ||z|| <= sqrt(R) / sigma_min.  Use a loose bound.
-    radius_sq = float(R)
-
-    # Enumerate z[2] (outermost index in upper-triangular SE)
+    # Enumerate z2 centered at t_lat[2]
     r22 = R_mat[2, 2]
     if abs(r22) < 1e-12:
         return
-    z2_center = w0[2] / r22
-    z2_lo = int(np.floor(z2_center - sqrt(radius_sq) / abs(r22))) - 1
-    z2_hi = int(np.ceil( z2_center + sqrt(radius_sq) / abs(r22))) + 1
+    z2_center = t_lat[2]
+    z2_lo = int(np.floor(z2_center - radius / abs(r22))) - 1
+    z2_hi = int(np.ceil( z2_center + radius / abs(r22))) + 1
 
     for z2 in range(z2_lo, z2_hi + 1):
-        rem2 = radius_sq - (R_mat[2, 2] * z2 - w0[2]) ** 2
+        # Exact: rem2 = R - (r22*z2)^2
+        rem2 = float(R) - (R_mat[2, 2] * z2) ** 2
         if rem2 < -1e-9:
             continue
 
-        # Enumerate z[1]
-        r11 = R_mat[1, 1]
-        r12 = R_mat[1, 2]
+        r11 = R_mat[1, 1]; r12 = R_mat[1, 2]
         if abs(r11) < 1e-12:
             continue
-        w1_eff = w0[1] - r12 * z2
-        z1_center = w1_eff / r11
-        z1_lo = int(np.floor(z1_center - sqrt(max(rem2, 0)) / abs(r11))) - 1
-        z1_hi = int(np.ceil( z1_center + sqrt(max(rem2, 0)) / abs(r11))) + 1
+        # Center z1: project t_lat onto z1 axis given z2
+        z1_center = t_lat[1] - (r12 / r11) * z2
+        z1_lo = int(np.floor(z1_center - rem2**0.5 / abs(r11))) - 1
+        z1_hi = int(np.ceil( z1_center + rem2**0.5 / abs(r11))) + 1
 
         for z1 in range(z1_lo, z1_hi + 1):
-            rem1 = rem2 - (R_mat[1, 1] * z1 + R_mat[1, 2] * z2 - w0[1]) ** 2
+            # Exact: rem1 = rem2 - (r11*z1 + r12*z2)^2
+            rem1 = rem2 - (R_mat[1, 1] * z1 + R_mat[1, 2] * z2) ** 2
             if rem1 < -1e-9:
                 continue
 
-            # Solve for z[0]
-            r00 = R_mat[0, 0]
-            r01 = R_mat[0, 1]
-            r02 = R_mat[0, 2]
+            # Solve exactly for z0: (r00*z0 + r01*z1 + r02*z2)^2 = rem1
+            r00 = R_mat[0, 0]; r01 = R_mat[0, 1]; r02 = R_mat[0, 2]
             if abs(r00) < 1e-12:
                 continue
-            w0_eff = w0[0] - r01 * z1 - r02 * z2
-            # Need (r00 * z0 - w0_eff)^2 = rem1
-            if rem1 < -1e-9:
-                continue
-            val = sqrt(max(rem1, 0))
-            for sign in (+1, -1):
-                z0f = (w0_eff + sign * val) / r00
+            inner = r01 * z1 + r02 * z2
+            val = (max(rem1, 0)) ** 0.5
+            for sign in (+1.0, -1.0):
+                z0f = (-inner + sign * val) / r00
                 z0 = int(round(z0f))
-                # Verify exactly
                 z = np.array([z0, z1, z2], dtype=np.int64)
                 bd = N.T @ z   # (b1, d1, b2, d2)
                 b1, d1, b2, d2 = int(bd[0]), int(bd[1]), int(bd[2]), int(bd[3])
-                # Check norm exactly
+                # Verify norm exactly
                 if b1*b1 + d1*d1 + b2*b2 + d2*d2 != R:
                     continue
-                # Check unitarity exactly
+                # Verify unitarity exactly
                 if b1*(a1+c1) + d1*(c1-a1) + b2*(a2+c2) + d2*(c2-a2) != 0:
                     continue
-                solutions.append((b1, d1, b2, d2))
+                sol = (b1, d1, b2, d2)
+                if sol not in solutions:
+                    solutions.append(sol)
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +286,10 @@ def phase1_enumerate(y: ndarray, k: int,
     Returns list of full 8-vectors (a1,b1,c1,d1,a2,b2,c2,d2).
     """
     target_norm = 2 ** k
-    threshold_sq = (2 ** (k - 1)) * (1 - eps ** 2)  # alignment threshold on |x·y|^2 / 2^k
+    # Correct threshold: x·y = 2^(k-1)·u·v, so |x·y|² > 2^(2k-2)·(1-eps²)
+    # Since ||y||² = 2^(k-1), this equals ||y||^4 · (1-eps²) / 2^(k-1)... 
+    # simplest: just use 2^(2k-2)·(1-eps²) directly.
+    threshold_xy = 2 ** (2*k - 2) * (1 - eps ** 2)
 
     # Scale factor so that ||y_scaled|| = sqrt(target_norm)
     y_norm = np.linalg.norm(y)
@@ -326,12 +313,10 @@ def phase1_enumerate(y: ndarray, k: int,
             continue
         rem_a1 = target_norm - a1 * a1
 
-        # Cauchy-Schwarz pruning after a1:
-        # max alignment from remaining vars <= (a1*y[0] + sqrt(rem_a1)*||y_rest||)
         dot_a1 = a1 * y[0]
         y_rest_sq = y[1]**2 + y[2]**2 + y[3]**2 + y[4]**2 + y[5]**2 + y[6]**2 + y[7]**2
-        if (abs(dot_a1) + sqrt(rem_a1 * y_rest_sq)) ** 2 < threshold_sq * y_norm**2 / (target_norm / (2**(k-1))):
-            pass  # (loose prune; tighten below)
+        if (abs(dot_a1) + sqrt(rem_a1 * y_rest_sq)) ** 2 < threshold_xy:
+            continue
 
         for c1 in _centered_range(c1_c, max_outer):
             if a1*a1 + c1*c1 > target_norm:
@@ -340,8 +325,7 @@ def phase1_enumerate(y: ndarray, k: int,
 
             dot_a1c1 = a1*y[0] + c1*y[2]
             y_rest2_sq = y[1]**2 + y[3]**2 + y[4]**2 + y[5]**2 + y[6]**2 + y[7]**2
-            # Cauchy-Schwarz: |dot_a1c1 + inner| <= |dot_a1c1| + sqrt(rem_c1)*||y_rem||
-            if (abs(dot_a1c1) + sqrt(rem_c1 * y_rest2_sq)) ** 2 < threshold_sq * (y_norm ** 2):
+            if (abs(dot_a1c1) + sqrt(rem_c1 * y_rest2_sq)) ** 2 < threshold_xy:
                 continue
 
             for a2 in _centered_range(a2_c, max_outer):
@@ -351,7 +335,7 @@ def phase1_enumerate(y: ndarray, k: int,
 
                 dot_outer3 = dot_a1c1 + a2*y[4]
                 y_rest3_sq = y[1]**2 + y[3]**2 + y[5]**2 + y[6]**2 + y[7]**2
-                if (abs(dot_outer3) + sqrt(rem_a2 * y_rest3_sq)) ** 2 < threshold_sq * (y_norm ** 2):
+                if (abs(dot_outer3) + sqrt(rem_a2 * y_rest3_sq)) ** 2 < threshold_xy:
                     continue
 
                 for c2 in _centered_range(c2_c, max_outer):
@@ -360,11 +344,9 @@ def phase1_enumerate(y: ndarray, k: int,
                         continue
                     R = target_norm - outer_norm_sq
 
-                    # Cauchy-Schwarz pruning: outer dot + inner bound
                     dot_outer = dot_outer3 + c2*y[6]
-                    # Inner contribution bounded by sqrt(R) * ||y_inner||
                     y_inner_norm = sqrt(y_inner_sq)
-                    if (abs(dot_outer) + sqrt(R) * y_inner_norm) ** 2 < threshold_sq * (y_norm ** 2):
+                    if (abs(dot_outer) + sqrt(R) * y_inner_norm) ** 2 < threshold_xy:
                         continue
 
                     # Phase 2: find inner variables via LLL+CVP
@@ -372,7 +354,9 @@ def phase1_enumerate(y: ndarray, k: int,
 
                     for (b1, d1, b2, d2) in inner_solutions:
                         x = np.array([a1, b1, c1, d1, a2, b2, c2, d2], dtype=np.int64)
-                        solutions.append(x)
+                        # Post-filter: alignment check with correct threshold
+                        if float(x @ y) ** 2 >= threshold_xy:
+                            solutions.append(x)
 
     return solutions
 
@@ -388,12 +372,36 @@ def _centered_range(center: int, max_radius: int):
 # ---------------------------------------------------------------------------
 # Top-level synthesis
 # ---------------------------------------------------------------------------
-def synthesize(v: ndarray, k: int, eps: float = 1e-4) -> list:
+
+# T gate right-multiply: maps v -> v' = mat_to_uv(V · T†)
+# Used to reduce odd-k (odd T-count) to even-k search.
+# T† = [[1,0],[0,e^{-iπ/4}]], acting on uv = [Re(u1),Im(u1),Re(u2),Im(u2)]:
+#   u1' = u1,  u2' = u2 * e^{-iπ/4} = u2 * (1-i)/√2
+_r2 = float(sqrt(2.0))
+_T_dag_on_uv = np.array([
+    [1,  0,      0,      0    ],  # Re(u1) unchanged
+    [0,  1,      0,      0    ],  # Im(u1) unchanged
+    [0,  0,  1/_r2,  1/_r2   ],  # Re(u2') = (Re(u2) + Im(u2))/√2
+    [0,  0, -1/_r2,  1/_r2   ],  # Im(u2') = (-Re(u2) + Im(u2))/√2
+])
+
+def synthesize(v: ndarray, k: int, eps: float = 1e-4, odd: bool = False) -> list:
     """
-    Given target unitary v = [Re(v1), Im(v1), Re(v2), Im(v2)],
-    find all x = (a1,b1,c1,d1,a2,b2,c2,d2) ∈ Z^8 with T-count k satisfying
-    the norm, unitarity, and alignment constraints.
+    Find all x = (a1,b1,c1,d1,a2,b2,c2,d2) ∈ Z^8 satisfying the norm,
+    unitarity, and alignment constraints.
+
+    v   : target uv = [Re(v1), Im(v1), Re(v2), Im(v2)], unit vector
+    k   : lde parameter; T-count = 2k (even branch) or 2k+1 (odd branch)
+    odd : if True, search for U s.t. U·T ≈ V  (odd T-count branch)
+          Preprocesses v → v·T† before searching, so returned x satisfies
+          to_unitary(x, k) · T ≈ V.
     """
+    if odd:
+        v = _T_dag_on_uv @ v
+        norm = np.linalg.norm(v)
+        if norm < 1e-12:
+            return []
+        v = v / norm
     y = uv_to_xy(v, k)
     return phase1_enumerate(y, k, eps)
 
@@ -402,14 +410,16 @@ def synthesize(v: ndarray, k: int, eps: float = 1e-4) -> list:
 # Verification helpers
 # ---------------------------------------------------------------------------
 def verify(x: ndarray, k: int, y: ndarray, eps: float = 1e-4) -> dict:
-    a1, b1, c1, d1, a2, b2, c2, d2 = x
+    a1, b1, c1, d1, a2, b2, c2, d2 = [int(v) for v in x]
     norm_ok = (a1**2 + b1**2 + c1**2 + d1**2 + a2**2 + b2**2 + c2**2 + d2**2 == 2**k)
-    unit_ok = isclose(
-        b1*(a1+c1) + d1*(c1-a1) + b2*(a2+c2) + d2*(c2-a2), 0
-    )
+    unit_ok = (b1*(a1+c1) + d1*(c1-a1) + b2*(a2+c2) + d2*(c2-a2) == 0)
     dot = float(x @ y)
-    align_ok = dot**2 > (2**(k-1)) * (1 - eps**2) * np.dot(y, y) / (2**(k-1))
-    return {"norm": norm_ok, "unitarity": unit_ok, "alignment": align_ok, "dot": dot}
+    # x·y = 2^(k-1)·u·v, so |x·y|² > 2^(2k-2)·(1-eps²)
+    threshold_xy = 2 ** (2*k - 2) * (1 - eps**2)
+    align_ok = dot**2 >= threshold_xy
+    udotv = dot / 2**(k-1)
+    return {"norm": norm_ok, "unitarity": unit_ok, "alignment": align_ok,
+            "dot_xy": dot, "udotv": udotv}
 
 
 # ---------------------------------------------------------------------------
@@ -417,40 +427,75 @@ def verify(x: ndarray, k: int, y: ndarray, eps: float = 1e-4) -> dict:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     np.random.seed(42)
-    k = 6
+    r2_ = float(sqrt(2.0))
+    T   = np.array([[1,0],[0,np.exp(1j*np.pi/4)]])
+    Td  = T.conj().T
+    H   = np.array([[1,1],[1,-1]]) / r2_
+    S   = np.array([[1,0],[0,1j]])
+    I2  = np.eye(2, dtype=complex)
+    X   = np.array([[0,1],[1,0]], dtype=complex)
+    Y   = np.array([[0,-1j],[1j,0]], dtype=complex)
+    Z   = np.array([[1,0],[0,-1]], dtype=complex)
 
-    # Random unit target
+    def find_gate(G, odd=False, k_max=3):
+        """
+        Find G in the synthesis lattice.
+
+        Even branch (odd=False): try all 8 global phases of G, find the one
+        that fits [[u1,-u2*],[u2,u1*]], pass that uv to synthesize.
+
+        Odd branch (odd=True): try all 8 global phases of G·T†, same logic,
+        then the final gate returned is U·T.
+        """
+        phases = [np.exp(1j*n*np.pi/4) for n in range(8)]
+        target = G @ Td if odd else G
+        for ph in phases:
+            Gp = ph * target
+            u1=Gp[0,0]; u2=Gp[1,0]
+            if not np.allclose(Gp, [[u1,-np.conj(u2)],[u2,np.conj(u1)]]):
+                continue
+            v = np.array([u1.real, u1.imag, u2.real, u2.imag])
+            if np.linalg.norm(v) < 1e-10: continue
+            v /= np.linalg.norm(v)
+            for k in range(k_max+1):
+                sols = synthesize(v, k=k, eps=1.0)
+                for x in sols:
+                    U = to_unitary(x, k)
+                    Ufinal = U @ T if odd else U
+                    if np.allclose(Ufinal, ph * G if odd else Gp):
+                        return k, ph
+        return None, None
+
+    print("Gate | Even-k branch | Odd-k branch (via G·T†)")
+    print("-"*55)
+    for name, G in [('I',I2),('X',X),('Y',Y),('Z',Z),
+                    ('H',H),('S',S),('T',T),('THT',T@H@T)]:
+        ke, _ = find_gate(G, odd=False)
+        ko, _ = find_gate(G, odd=True)
+        even_str = f"k={ke}" if ke is not None else "—"
+        odd_str  = f"k={ko} (T-count={2*ko+1})" if ko is not None else "—"
+        print(f"  {name:4s} | even: {even_str:6s} | odd: {odd_str}")
+
+    '''np.random.seed(42)
+    k = 0
     v = np.random.randn(4)
     v /= np.linalg.norm(v)
-
-    print(f"k = {k}, target v = {v}")
     y = uv_to_xy(v, k)
-    print(f"y = {np.round(y, 4)}")
 
-    # Verify y-symmetry relations
-    print("\nVerifying y-symmetry:")
-    print(f"  y[1] vs (y[0]+y[2])/sqrt(2): {y[1]:.6f} vs {(y[0]+y[2])/r2:.6f}")
-    print(f"  y[3] vs (y[2]-y[0])/sqrt(2): {y[3]:.6f} vs {(y[2]-y[0])/r2:.6f}")
-    print(f"  y[5] vs (y[4]+y[6])/sqrt(2): {y[5]:.6f} vs {(y[4]+y[6])/r2:.6f}")
-    print(f"  y[7] vs (y[6]-y[4])/sqrt(2): {y[7]:.6f} vs {(y[6]-y[4])/r2:.6f}")
+    print(f"k={k}, target v = {np.round(v, 4)}")
+    print(f"||y||^2 = {y@y:.1f}  (should be 2^(k-1) = {2**(k-1)})")
+    print(f"x·y = 2^(k-1)·u·v threshold for |x·y|^2: 2^(2k-2)·(1-eps^2)")
+    print()
 
-    # Test null basis
-    a1, c1, a2, c2 = 3, 1, -2, 4
-    w_pq = np.array([c1, a1, c2, a2], dtype=np.int64)
-    N = integer_null_basis(w_pq)
-    print(f"\nNull basis check (should be zeros): {N @ w_pq}")
-
-    # Test LLL
-    N_lll = lll_reduce(N)
-    print(f"LLL reduced null basis:\n{N_lll}")
-    print(f"LLL null check (should be zeros): {N_lll @ w_pq}")
-
-    # Run synthesis
-    print(f"\nRunning synthesis (k={k}, eps=1e-2)...")
-    eps = 1e-2
-    solutions = synthesize(v, k, eps)
-    print(f"Found {len(solutions)} solutions")
-
-    for x in solutions[:5]:
-        r = verify(x, k, y, eps)
-        print(f"  x={x}  norm={r['norm']}  unit={r['unitarity']}  align={r['alignment']}  dot={r['dot']:.2f}")
+    for eps in [1, 0.01]:
+        solutions = synthesize(v, k, eps)
+        print(f"eps={eps}: {len(solutions)} solutions")
+        for x in solutions:
+            r = verify(x, k, y, eps)
+            #print(f"x dot y: {float(np.dot(x, y) * 2**(-k+1))}, u dot v: {float(np.dot(xy_to_uv(x, k), v))}")
+            # print(f"Solution: {x}")
+            # print(f"u: {xy_to_uv(x, k)}")
+            print(f"unitary:\n{to_unitary(x, k)}")
+            print(f"  norm={r['norm']} unit={r['unitarity']} align={r['alignment']}  u·v={r['udotv']:.6f}  (need > {np.sqrt(1-eps**2):.6f})")
+        if not solutions:
+            print(f"  (k={k} is insufficient for eps={eps}; need k ~ {int(3*np.log2(1/eps))+1})")'''
