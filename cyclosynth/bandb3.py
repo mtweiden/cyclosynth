@@ -481,4 +481,5 @@ if __name__ == "__main__":
         uv = xy_to_uv(sol, k)
         print(f"solution: {sol}")
         print(f"translation: {uv}")
+        print(f"x dot y: {float(np.dot(sol, y) * 2**(-k+1))}, u dot v: {float(np.dot(v, uv))}")
         assert isclose(np.linalg.norm(utry, 2), 1)

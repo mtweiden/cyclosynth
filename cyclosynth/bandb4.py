@@ -14,8 +14,37 @@ where y = sqrt(2^k) * y_hat  and  ‖y_hat‖ = 1.
 from __future__ import annotations
 import numpy as np
 from numpy import ndarray
+from numpy import array, sqrt
 from typing import List, Tuple
 
+r2 = sqrt(2)
+# Go from xy to uv
+sigma_to_uv = array([
+    [1, 1/r2, 0, -1/r2, 0, 0, 0, 0],
+    [0, 1/r2, 1,  1/r2, 0, 0, 0, 0],
+    [0, 0, 0, 0, 1, 1/r2, 0, -1/r2],
+    [0, 0, 0, 0, 0, 1/r2, 1,  1/r2],
+])
+# Go from uv to xy
+sigma_to_xy = 1/2 * array([
+    [ 1,    0,    0, 0],
+    [ 1/r2, 1/r2, 0, 0],
+    [ 0,    1,    0, 0],
+    [-1/r2, 1/r2, 0, 0],
+    [0, 0,  1,    0,  ],
+    [0, 0,  1/r2, 1/r2],
+    [0, 0,  0,    1,  ],
+    [0, 0, -1/r2, 1/r2],
+])
+
+
+def uv_to_xy(uv: ndarray, k: int = 3) -> ndarray:
+    scale = 1 << (k // 2) if k % 2 else 2 ** (k / 2)
+    return sigma_to_xy @ uv * scale  # Try figuring out how to make shift work
+
+def xy_to_uv(xy: ndarray, k: int = 3) -> ndarray:
+    scale = 1 << (k // 2) if k % 2 else 2 ** (k / 2)
+    return sigma_to_uv @ xy / scale
 
 # =============================================================================
 # Helper 1: Extended GCD
@@ -599,6 +628,7 @@ if __name__ == "__main__":
     # Build a random 4-component unit vector, embed into 8D as y_hat
     np.random.seed(42)
     uv = _random_unit()
+    print(f"Random 4D unit vector (for y_hat): {uv}")
     # Map through sigma_to_xy to get an 8-component vector
     r2v = np.sqrt(2)
     sigma_to_xy = 0.5 * np.array([
@@ -612,6 +642,7 @@ if __name__ == "__main__":
         [0, 0, -1/r2v, 1/r2v],
     ])
     y8 = sigma_to_xy @ uv
+    print(f"Mapped to 8D via sigma_to_xy: {y8}")
     y_hat = y8 / np.linalg.norm(y8)
 
     k   = 6
@@ -623,11 +654,14 @@ if __name__ == "__main__":
 
     norm_target = 2 ** (k - 1)
     for x in solutions[:5]:
+        y_full = (2 ** k) ** 0.5 * y_hat
+        print(f"\nChecking solution: {x}")
+        print(f"to uv: {xy_to_uv(x, k)}")
+        print(f"x dot y: {float(np.dot(x, y_full) * 2**(-k))}, u dot v: {float(np.dot(xy_to_uv(x, k), uv))}")
         a1, b1, c1, d1, a2, b2, c2, d2 = x
         assert int(np.dot(x, x)) == norm_target,    f"Norm violated: {x}"
         assert (b1*(a1+c1) + d1*(c1-a1)
               + b2*(a2+c2) + d2*(c2-a2)) == 0,      f"Unitarity violated: {x}"
-        y_full = (2 ** k) ** 0.5 * y_hat
         assert float(np.dot(x, y_full))**2 > (2**k)*(1-eps**2), \
             f"Alignment violated: {x}"
     print("All constraints verified on returned solutions.")
