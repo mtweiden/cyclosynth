@@ -274,7 +274,8 @@ def _schnorr_euchner(N: ndarray, t_lat: ndarray, R: int,
 # Phase 1: enumerate (a1, c1, a2, c2) with Cauchy-Schwarz pruning
 # ---------------------------------------------------------------------------
 def phase1_enumerate(y: ndarray, k: int,
-                     eps: float = 1e-4) -> list:
+                     eps: float = 1e-4,
+                     max_solutions: int = None) -> list:
     """
     Enumerate outer variables (a1, c1, a2, c2) centered on the projection
     of y_outer = (y[0], y[2], y[4], y[6]).
@@ -357,6 +358,8 @@ def phase1_enumerate(y: ndarray, k: int,
                         # Post-filter: alignment check with correct threshold
                         if float(x @ y) ** 2 >= threshold_xy:
                             solutions.append(x)
+                            if max_solutions is not None and len(solutions) >= max_solutions:
+                                return solutions
 
     return solutions
 
@@ -385,7 +388,8 @@ _T_dag_on_uv = np.array([
     [0,  0, -1/_r2,  1/_r2   ],  # Im(u2') = (-Re(u2) + Im(u2))/√2
 ])
 
-def synthesize(v: ndarray, k: int, eps: float = 1e-4, odd: bool = False) -> list:
+def synthesize(v: ndarray, k: int, eps: float = 1e-4, odd: bool = False,
+               max_solutions: int = None) -> list:
     """
     Find all x = (a1,b1,c1,d1,a2,b2,c2,d2) ∈ Z^8 satisfying the norm,
     unitarity, and alignment constraints.
@@ -403,7 +407,7 @@ def synthesize(v: ndarray, k: int, eps: float = 1e-4, odd: bool = False) -> list
             return []
         v = v / norm
     y = uv_to_xy(v, k)
-    return phase1_enumerate(y, k, eps)
+    return phase1_enumerate(y, k, eps, max_solutions=max_solutions)
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +470,7 @@ if __name__ == "__main__":
                         return k, ph
         return None, None
 
-    print("Gate | Even-k branch | Odd-k branch (via G·T†)")
+    '''print("Gate | Even-k branch | Odd-k branch (via G·T†)")
     print("-"*55)
     for name, G in [('I',I2),('X',X),('Y',Y),('Z',Z),
                     ('H',H),('S',S),('T',T),('THT',T@H@T)]:
@@ -474,10 +478,10 @@ if __name__ == "__main__":
         ko, _ = find_gate(G, odd=True)
         even_str = f"k={ke}" if ke is not None else "—"
         odd_str  = f"k={ko} (T-count={2*ko+1})" if ko is not None else "—"
-        print(f"  {name:4s} | even: {even_str:6s} | odd: {odd_str}")
+        print(f"  {name:4s} | even: {even_str:6s} | odd: {odd_str}")'''
 
-    '''np.random.seed(42)
-    k = 0
+    np.random.seed(42)
+    k = 20
     v = np.random.randn(4)
     v /= np.linalg.norm(v)
     y = uv_to_xy(v, k)
@@ -487,8 +491,8 @@ if __name__ == "__main__":
     print(f"x·y = 2^(k-1)·u·v threshold for |x·y|^2: 2^(2k-2)·(1-eps^2)")
     print()
 
-    for eps in [1, 0.01]:
-        solutions = synthesize(v, k, eps)
+    for eps in [1e-2]:
+        solutions = synthesize(v, k, eps, False, max_solutions=1)
         print(f"eps={eps}: {len(solutions)} solutions")
         for x in solutions:
             r = verify(x, k, y, eps)
@@ -498,4 +502,4 @@ if __name__ == "__main__":
             print(f"unitary:\n{to_unitary(x, k)}")
             print(f"  norm={r['norm']} unit={r['unitarity']} align={r['alignment']}  u·v={r['udotv']:.6f}  (need > {np.sqrt(1-eps**2):.6f})")
         if not solutions:
-            print(f"  (k={k} is insufficient for eps={eps}; need k ~ {int(3*np.log2(1/eps))+1})")'''
+            print(f"  (k={k} is insufficient for eps={eps}; need k ~ {int(3*np.log2(1/eps))+1})")
