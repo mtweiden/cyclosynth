@@ -20,18 +20,20 @@ impl AlgInt {
     }
 
     pub fn is_zero(&self) -> bool {
+        use num_traits::Zero;
         match self {
             AlgInt::Int(n) => *n == 0,
             AlgInt::Root2(r) => r.values.iter().all(|&v| v == 0),
-            AlgInt::RootRoot2Plus2(r) => r.values.iter().all(|&v| v == 0),
+            AlgInt::RootRoot2Plus2(r) => r.values.iter().all(|v| v.is_zero()),
         }
     }
 
     pub fn values(&self) -> Vec<i128> {
+        use num_traits::ToPrimitive;
         match self {
             AlgInt::Int(n) => vec![*n],
             AlgInt::Root2(r) => r.values.to_vec(),
-            AlgInt::RootRoot2Plus2(r) => r.values.to_vec(),
+            AlgInt::RootRoot2Plus2(r) => r.values.iter().map(|v| v.to_i128().unwrap_or(i128::MAX)).collect(),
         }
     }
 
