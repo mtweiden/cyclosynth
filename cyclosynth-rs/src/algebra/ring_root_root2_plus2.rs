@@ -1,5 +1,11 @@
 //! Z[√(√2+2)] — algebraic integers with 4 coefficients.
+//!
+//! Uses `num_bigint::BigInt` for the coefficient values to avoid i128 overflow
+//! when composing many gates (e.g. 100 random Q-gates).
 
+use num_bigint::BigInt;
+use num_integer::Integer;
+use num_traits::{One, ToPrimitive, Zero};
 use pyo3::prelude::*;
 use std::ops::{Add, Mul, Neg, Sub};
 
@@ -10,42 +16,64 @@ use super::ring_root2::RingRoot2;
 #[pyclass]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RingRootRoot2Plus2 {
-    #[pyo3(get)]
-    pub values: [i128; 4],
+    pub values: [BigInt; 4],
 }
 
 impl RingRootRoot2Plus2 {
-    pub fn new(values: [i128; 4]) -> Self {
+    pub fn new_big(values: [BigInt; 4]) -> Self {
         Self { values }
     }
 
+    pub fn new(values: [i128; 4]) -> Self {
+        Self {
+            values: values.map(BigInt::from),
+        }
+    }
+
     pub fn zero() -> Self {
-        Self { values: [0, 0, 0, 0] }
+        Self {
+            values: [BigInt::zero(), BigInt::zero(), BigInt::zero(), BigInt::zero()],
+        }
     }
 
     pub fn one() -> Self {
-        Self { values: [1, 0, 0, 0] }
+        Self {
+            values: [BigInt::one(), BigInt::zero(), BigInt::zero(), BigInt::zero()],
+        }
     }
 
     pub fn to_f64(&self) -> f64 {
-        let [a, b, c, d] = self.values;
+        let [a, b, c, d] = &self.values;
         let sqrt2 = std::f64::consts::SQRT_2;
         let sqrt_r2p2 = (sqrt2 + 2.0).sqrt();
-        a as f64 + b as f64 * sqrt2 + c as f64 * sqrt_r2p2 + d as f64 * sqrt2 * sqrt_r2p2
+        a.to_f64().unwrap_or(f64::NAN)
+            + b.to_f64().unwrap_or(f64::NAN) * sqrt2
+            + c.to_f64().unwrap_or(f64::NAN) * sqrt_r2p2
+            + d.to_f64().unwrap_or(f64::NAN) * sqrt2 * sqrt_r2p2
     }
 
     pub fn from_ring_root2(r: &RingRoot2) -> Self {
         Self {
-            values: [r.values[0], r.values[1], 0, 0],
+            values: [
+                BigInt::from(r.values[0]),
+                BigInt::from(r.values[1]),
+                BigInt::zero(),
+                BigInt::zero(),
+            ],
         }
     }
 
-    pub fn greatest_divisor(&self) -> i128 {
-        let mut g = self.values[0].unsigned_abs();
-        for &v in &self.values[1..] {
-            g = gcd(g, v.unsigned_abs());
+    pub fn greatest_divisor(&self) -> BigInt {
+        let mut g = BigInt::zero();
+        for v in &self.values {
+            g = g.gcd(v);
         }
-        g as i128
+        g
+    }
+
+    /// Return the values as i128 for PyO3 (lossy if BigInt is very large).
+    pub fn to_i128_array(&self) -> [i128; 4] {
+        self.values.each_ref().map(|v| v.to_i128().unwrap_or(i128::MAX))
     }
 }
 
@@ -54,10 +82,10 @@ impl Add for &RingRootRoot2Plus2 {
     fn add(self, rhs: &RingRootRoot2Plus2) -> RingRootRoot2Plus2 {
         RingRootRoot2Plus2 {
             values: [
-                self.values[0] + rhs.values[0],
-                self.values[1] + rhs.values[1],
-                self.values[2] + rhs.values[2],
-                self.values[3] + rhs.values[3],
+                &self.values[0] + &rhs.values[0],
+                &self.values[1] + &rhs.values[1],
+                &self.values[2] + &rhs.values[2],
+                &self.values[3] + &rhs.values[3],
             ],
         }
     }
@@ -68,10 +96,10 @@ impl Sub for &RingRootRoot2Plus2 {
     fn sub(self, rhs: &RingRootRoot2Plus2) -> RingRootRoot2Plus2 {
         RingRootRoot2Plus2 {
             values: [
-                self.values[0] - rhs.values[0],
-                self.values[1] - rhs.values[1],
-                self.values[2] - rhs.values[2],
-                self.values[3] - rhs.values[3],
+                &self.values[0] - &rhs.values[0],
+                &self.values[1] - &rhs.values[1],
+                &self.values[2] - &rhs.values[2],
+                &self.values[3] - &rhs.values[3],
             ],
         }
     }
@@ -80,13 +108,15 @@ impl Sub for &RingRootRoot2Plus2 {
 impl Mul for &RingRootRoot2Plus2 {
     type Output = RingRootRoot2Plus2;
     fn mul(self, rhs: &RingRootRoot2Plus2) -> RingRootRoot2Plus2 {
-        let [a, b, c, d] = self.values;
-        let [w, x, y, z] = rhs.values;
+        let [a, b, c, d] = &self.values;
+        let [w, x, y, z] = &rhs.values;
         // Multiplication table derived from:
         // √(√2+2)² = √2+2, (√2)² = 2, √2·√(√2+2)·√(√2+2) = √2(√2+2) = 2+2√2
-        let aa = a * w + 2 * b * x + 2 * c * y + 2 * c * z + 2 * d * y + 4 * d * z;
-        let bb = a * x + b * w + c * y + 2 * c * z + 2 * d * y + 2 * d * z;
-        let cc = a * y + 2 * b * z + c * w + 2 * d * x;
+        let two = BigInt::from(2i32);
+        let four = BigInt::from(4i32);
+        let aa = a * w + &two * b * x + &two * c * y + &two * c * z + &two * d * y + &four * d * z;
+        let bb = a * x + b * w + c * y + &two * c * z + &two * d * y + &two * d * z;
+        let cc = a * y + &two * b * z + c * w + &two * d * x;
         let dd = a * z + b * y + c * x + d * w;
         RingRootRoot2Plus2 {
             values: [aa, bb, cc, dd],
@@ -97,12 +127,13 @@ impl Mul for &RingRootRoot2Plus2 {
 impl Mul<i128> for &RingRootRoot2Plus2 {
     type Output = RingRootRoot2Plus2;
     fn mul(self, rhs: i128) -> RingRootRoot2Plus2 {
+        let r = BigInt::from(rhs);
         RingRootRoot2Plus2 {
             values: [
-                self.values[0] * rhs,
-                self.values[1] * rhs,
-                self.values[2] * rhs,
-                self.values[3] * rhs,
+                &self.values[0] * &r,
+                &self.values[1] * &r,
+                &self.values[2] * &r,
+                &self.values[3] * &r,
             ],
         }
     }
@@ -121,24 +152,21 @@ impl Neg for &RingRootRoot2Plus2 {
     type Output = RingRootRoot2Plus2;
     fn neg(self) -> RingRootRoot2Plus2 {
         RingRootRoot2Plus2 {
-            values: [-self.values[0], -self.values[1], -self.values[2], -self.values[3]],
+            values: [
+                -&self.values[0],
+                -&self.values[1],
+                -&self.values[2],
+                -&self.values[3],
+            ],
         }
-    }
-}
-
-fn gcd(a: u128, b: u128) -> u128 {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
     }
 }
 
 #[pymethods]
 impl RingRootRoot2Plus2 {
     #[new]
-    fn py_new(values: [i128; 4]) -> Self {
-        Self::new(values)
+    fn py_new(values: [i64; 4]) -> Self {
+        Self::new(values.map(|v| v as i128))
     }
 
     fn __add__(&self, other: &RingRootRoot2Plus2) -> Self {
@@ -158,10 +186,15 @@ impl RingRootRoot2Plus2 {
     }
 
     fn __repr__(&self) -> String {
-        let [a, b, c, d] = self.values;
+        let [a, b, c, d] = self.to_i128_array();
         format!(
             "{a} + {b}*sqrt(2) + {c}*sqrt(sqrt(2)+2) + {d}*sqrt(2)*sqrt(sqrt(2)+2)"
         )
+    }
+
+    #[getter]
+    fn values(&self) -> [i128; 4] {
+        self.to_i128_array()
     }
 
     #[getter]
@@ -230,9 +263,13 @@ mod tests {
             let vb = rand_values();
             let a = RingRootRoot2Plus2::new(va);
             let b = RingRootRoot2Plus2::new(vb);
-            let _ = &a * &b;
-            // Multiplication produces very large values, hard to verify with f64
-            // Just check it doesn't panic
+            let c = &a * &b;
+            let expected = a.to_f64() * b.to_f64();
+            let actual = c.to_f64();
+            assert!(
+                (expected - actual).abs() / expected.abs().max(1.0) < 1e-5,
+                "mul: {expected} != {actual}"
+            );
         }
     }
 }
