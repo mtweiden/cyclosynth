@@ -171,7 +171,7 @@ class RingRoot2(AlgebraicInteger):
             return RingRoot2([1, 0])
         if n == 1:
             return self
-        return self * self ** (n - 1)
+        return self * self ** (n - 1)  # type: ignore
     
     def __neg__(self) -> RingRoot2:
         return RingRoot2([-v for v in self.values])
@@ -377,3 +377,231 @@ class DyadicComplexNumber:
     def abs(self) -> float:
         mag = abs(self.to_complex())
         return mag
+    
+    def __repr__(self) -> str:
+        terms = ''
+        for i, coeff in enumerate(self.values):
+            # Skip zero coefficients 
+            if coeff == 0:
+                continue
+
+            # Set the phase
+            if i == 0:
+                phase = ''
+            elif i == 1:
+                phase = 'ω'
+            else:
+                phase = f'ω^{i}'
+
+            if len(terms) == 0:
+                link = ''
+            else:
+                link = '+' if coeff > 0 else '-'
+            
+            # Set the coeff string
+            if link == '':
+                if coeff == 1 and phase == '':
+                    terms += '1'
+                elif coeff == -1 and phase == '':
+                    terms += '-1'
+                elif coeff == 1:
+                    terms += f'{phase}'
+                elif coeff == -1:
+                    terms += f'-{phase}'
+                else:
+                    terms += f'{coeff}{phase}'
+            else:
+                if coeff == 1:
+                    terms += f' {link} {phase}'
+                elif coeff == -1:
+                    terms += f' {link} {phase}'
+                else:
+                    terms += f' {link} {abs(coeff)}{phase}'
+
+        numerator = ''.join(terms) if terms else '0'
+
+        denom_exponent = 2 * self.denominator_exponent
+
+        if self.denominator_exponent == 0:
+            return f'{numerator}'
+        elif denom_exponent == 1:
+            return f'({numerator}) / √2'
+        else:
+            denominator = f'√2^{denom_exponent}'
+            return f'({numerator}) / {denominator}'
+
+
+class DOmega:
+    """A class representing numbers in Z[e^(i*pi/4), 1/sqrt{2}]."""
+    def __init__(
+        self,
+        values: Sequence[int],
+        denominator_exponent: int,
+    ) -> None:
+        """
+        Construct a number as (prod_{k}^{m//2-1} a_k * e^(i*k*pi4)) / sqrt(2)^l.
+
+        Args:
+            values (Sequence[int]): The integer coefficient values of the
+                numerator. This sequence must be of length 4.
+            
+            denominator_exponent (int): The power of sqrt(2) in the denominator.
+        
+        Raises:
+            ValueError: If `values` is not of length 4 (T).
+        """
+        self.values = list(values).copy()
+        self.denominator_exponent = denominator_exponent
+
+    def match_base_size(self, other: DOmega) -> None:
+        self_base, other_base = len(self.values), len(other.values)
+        if other_base <= self_base:
+            return
+        if log2(other_base / self_base) != log2(other_base // self_base):
+            m = 'New base must be a power of 2 of the old base.'
+            raise ValueError(m)
+        gap = other_base // self_base
+        new_values = [0] * other_base
+        for i, v in enumerate(self.values):
+            new_values[i * gap] = v
+        self.values = new_values
+
+    def __add__(self, other: DOmega) -> DOmega:
+        if len(self.values) < len(other.values):
+            self.match_base_size(other)
+        elif len(self.values) > len(other.values):
+            other.match_base_size(self)
+        lhs_values = self.values.copy()
+        rhs_values = other.values.copy()
+        offset = abs(self.denominator_exponent - other.denominator_exponent)
+        if self.denominator_exponent < other.denominator_exponent:
+            lhs_values = [v << offset for v in lhs_values]
+        elif self.denominator_exponent > other.denominator_exponent:
+            rhs_values = [v << offset for v in rhs_values]
+        new_power = max(self.denominator_exponent, other.denominator_exponent)
+        new_values = [a + b for a, b in zip(lhs_values, rhs_values)]
+        new_num = DOmega(new_values, new_power)
+        new_num.simplify()
+        return new_num
+
+    def __neg__(self) -> DOmega:
+        new_values = [-v for v in self.values]
+        return DOmega(new_values, self.denominator_exponent)
+
+    def __sub__(self, other: DOmega) -> DOmega:
+        return self + (-other)
+
+    def __mul__(self, other: DOmega) -> DOmega:
+        # Make power equal
+        if len(self.values) < len(other.values):
+            self.match_base_size(other)
+        elif len(self.values) > len(other.values):
+            other.match_base_size(self)
+        lhs_values = self.values.copy()
+        rhs_values = other.values.copy()
+        new_power = self.denominator_exponent + other.denominator_exponent
+        # FOIL
+        m = len(lhs_values)
+        new_values = [0] * m
+        for i, coeff_a in enumerate(lhs_values):
+            for j, coeff_b in enumerate(rhs_values):
+                k = i + j
+                new_coeff = coeff_a * coeff_b
+                sign = (-1) ** (k >= m)
+                new_values[k % m] += sign * new_coeff
+        new_num = DOmega(new_values, new_power)
+        new_num.simplify()
+        return new_num
+    
+    def simplify(self) -> None:
+        # Try to combine values from k=1 and k=3
+        max_iterations = self.denominator_exponent
+        for i in range(max_iterations):
+            if all(v % 2 == 0 for v in self.values) and self.denominator_exponent >= 2:
+                self.values = [v >> 1 for v in self.values]
+                self.denominator_exponent -= 2
+            else:
+                break
+
+
+    def conj(self) -> DOmega:
+        new_values = self.values.copy()
+        new_values[1:] = [-v for v in reversed(new_values[1:])]
+        return DOmega(new_values, self.denominator_exponent)
+    
+    def bullet(self) -> DOmega:
+        new_values = self.values.copy()
+        new_values[0] = self.values[0]
+        new_values[1] = -self.values[1]
+        new_values[2] = -self.values[2]
+        new_values[3] = self.values[3]
+        return DOmega(new_values, self.denominator_exponent)
+
+    def to_complex(self) -> complex:
+        total = 0 * 1j
+        for i, coeff in enumerate(self.values):
+            phase = exp(1j * pi * i / len(self.values))
+            total += coeff * phase
+        total = total / (sqrt(2) ** self.denominator_exponent)
+        return total
+    
+    def abs(self) -> float:
+        mag = abs(self.to_complex())
+        return mag
+    
+    def magnitude_squared(self) -> int | float:
+        a = self
+        b = self.conj()
+        c = a * b
+        return c.to_complex().real
+    
+    def __repr__(self) -> str:
+        terms = ''
+        for i, coeff in enumerate(self.values):
+            # Skip zero coefficients 
+            if coeff == 0:
+                continue
+
+            # Set the phase
+            if i == 0:
+                phase = ''
+            elif i == 1:
+                phase = 'ω'
+            else:
+                phase = f'ω^{i}'
+
+            if len(terms) == 0:
+                link = ''
+            else:
+                link = '+' if coeff > 0 else '-'
+            
+            # Set the coeff string
+            if link == '':
+                if coeff == 1 and phase == '':
+                    terms += '1'
+                elif coeff == -1 and phase == '':
+                    terms += '-1'
+                elif coeff == 1:
+                    terms += f'{phase}'
+                elif coeff == -1:
+                    terms += f'-{phase}'
+                else:
+                    terms += f'{coeff}{phase}'
+            else:
+                if coeff == 1:
+                    terms += f' {link} {phase}'
+                elif coeff == -1:
+                    terms += f' {link} {phase}'
+                else:
+                    terms += f' {link} {abs(coeff)}{phase}'
+
+        numerator = ''.join(terms) if terms else '0'
+
+        if self.denominator_exponent == 0:
+            return f'{numerator}'
+        elif self.denominator_exponent == 1:
+            return f'({numerator}) / √2'
+        else:
+            denominator = f'√2^{self.denominator_exponent}'
+            return f'({numerator}) / {denominator}'
+

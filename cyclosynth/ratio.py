@@ -451,6 +451,9 @@ class AlgebraicIntegerOverRoot2(IntegerRatio):
             dyadic (DyadicComplexNumber): The DyadicComplexNumber to convert
                 to an AlgebraicIntegerOverRoot2.
         """
+        if len(dyadic.values) < 8:
+            ref = DyadicComplexNumber([0] * 8, 0)
+            dyadic.match_base_size(ref)
         assert len(dyadic.values) == 8
         dyadic.simplify()
         k = dyadic.denominator_exponent
