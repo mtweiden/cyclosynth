@@ -1,5 +1,7 @@
 //! AlgebraicInteger / (√(√2+2))^power — ratios over sqrt(sqrt(2)+2).
 
+use num_bigint::BigInt;
+use num_traits::Zero;
 use pyo3::prelude::*;
 
 use crate::algebra::{DyadicComplexNumber, RingRootRoot2Plus2};
@@ -33,22 +35,20 @@ impl AlgebraicIntegerOverRootRoot2Plus2 {
     }
 
     pub fn simplify(&mut self) {
-        if self.numerator.values.iter().all(|&v| v == 0) {
+        if self.numerator.values.iter().all(|v| v.is_zero()) {
             self.denominator_power = 0;
             return;
         }
         // gamma = (2 - sqrt(2)) * sqrt(2 + sqrt(2)) in ring form: [0, 0, 2, -1]
         let gamma = RingRootRoot2Plus2::new([0, 0, 2, -1]);
+        let two = BigInt::from(2i32);
         let mut result = self.numerator.clone();
         for _ in 0..self.denominator_power {
             let new_result = &result * &gamma;
-            if new_result.values.iter().all(|&v| v % 2 == 0) {
-                result = RingRootRoot2Plus2::new([
-                    new_result.values[0] / 2,
-                    new_result.values[1] / 2,
-                    new_result.values[2] / 2,
-                    new_result.values[3] / 2,
-                ]);
+            if new_result.values.iter().all(|v| v % &two == BigInt::zero()) {
+                result = RingRootRoot2Plus2::new_big(
+                    new_result.values.map(|v| v / &two),
+                );
                 self.denominator_power -= 1;
             } else {
                 break;
@@ -105,15 +105,15 @@ impl AlgebraicIntegerOverRootRoot2Plus2 {
         let mut d = dyadic.clone();
         d.simplify();
         let k = d.denominator_exponent;
-        let c0 = 2 * d.values[2];
-        let c1 = d.values[2] + d.values[6];
-        let c2 = d.values[0];
-        let c3 = d.values[4];
-        let dyadic_int = RingRootRoot2Plus2::new([c0, c1, c2, c3]);
+        // Extract coefficients as BigInt to avoid overflow for large k.
+        let c0 = BigInt::from(2 * d.values[2]);
+        let c1 = BigInt::from(d.values[2] + d.values[6]);
+        let c2 = BigInt::from(d.values[0]);
+        let c3 = BigInt::from(d.values[4]);
+        let dyadic_int = RingRootRoot2Plus2::new_big([c0, c1, c2, c3]);
         let mut result = AlgebraicIntegerOverRootRoot2Plus2::new(dyadic_int, 1);
         // Apply (1+√2)/r^2 exactly 2k times instead of computing (1+√2)^{2k} all at once.
-        // Mathematically: (1+√2)^{2k} / r^{4k} = 1/2^k, so this avoids i128 overflow.
-        // simplify() is called at each step by mul(), keeping intermediate values bounded.
+        // Mathematically: (1+√2)^{2k} / r^{4k} = 1/2^k, so each step keeps values bounded.
         let factor = AlgebraicIntegerOverRootRoot2Plus2::new(
             RingRootRoot2Plus2::new([1, 1, 0, 0]),
             2,
@@ -129,8 +129,8 @@ impl AlgebraicIntegerOverRootRoot2Plus2 {
 impl AlgebraicIntegerOverRootRoot2Plus2 {
     #[new]
     #[pyo3(signature = (values, power=0))]
-    fn py_new(values: [i128; 4], power: u32) -> Self {
-        Self::new(RingRootRoot2Plus2::new(values), power)
+    fn py_new(values: [i64; 4], power: u32) -> Self {
+        Self::new(RingRootRoot2Plus2::new(values.map(|v| v as i128)), power)
     }
 
     fn __add__(&self, other: &AlgebraicIntegerOverRootRoot2Plus2) -> Self {
@@ -146,7 +146,7 @@ impl AlgebraicIntegerOverRootRoot2Plus2 {
     }
 
     fn __repr__(&self) -> String {
-        let n = format!("{:?}", self.numerator.values);
+        let n = format!("{:?}", self.numerator.to_i128_array());
         let rr2p2 = "sqrt(2 + sqrt(2))";
         if self.denominator_power == 0 {
             n
@@ -202,7 +202,8 @@ mod tests {
             }
             let mut ratio = AlgebraicIntegerOverRootRoot2Plus2::new(x, power);
             ratio.simplify();
-            assert_eq!(ratio.numerator.values, [1, 0, 0, 0]);
+            let expected = RingRootRoot2Plus2::one();
+            assert_eq!(ratio.numerator, expected, "simplify should reduce to 1");
             assert_eq!(ratio.denominator_power, 0);
         }
     }
