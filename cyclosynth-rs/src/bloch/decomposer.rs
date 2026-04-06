@@ -7,7 +7,7 @@ use crate::matrix::{
     bloch_rx, bloch_ry, bloch_rz, unitary_rx, unitary_ry,
     unitary_rz, SO3Matrix, U2Matrix,
 };
-use crate::ratio::{AlgebraicIntegerOverRoot2, AlgebraicIntegerOverRootRoot2Plus2, RatioEntry};
+use crate::ratio::RatioEntry;
 
 use super::cliffords::match_clifford;
 use super::translation::translate_decomposition;
@@ -245,6 +245,7 @@ impl BlochDecomposer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::algebra::DyadicComplexNumber;
     use crate::matrix::factories::{unitary_identity, unitary_rx, unitary_ry, unitary_rz};
     use rand::Rng;
 
@@ -265,6 +266,27 @@ mod tests {
         mat
     }
 
+    /// Build Clifford single-char gate matrices (all use n=4 base size).
+    fn clifford_gate(ch: char) -> U2Matrix {
+        let dcn = |vals: [i128; 8], exp: i32| DyadicComplexNumber::new(vals.to_vec(), exp);
+        let zero  = || dcn([0,0,0,0,0,0,0,0], 0);
+        let one   = || dcn([1,0,0,0,0,0,0,0], 0);
+        let neg1  = || dcn([-1,0,0,0,0,0,0,0], 0);
+        let imag  = || dcn([0,0,0,0,1,0,0,0], 0);
+        let nimag = || dcn([0,0,0,0,-1,0,0,0], 0);
+        let osqrt2 = || dcn([0,0,1,0,0,0,-1,0], 1);  // 1/√2
+        match ch {
+            'H' => U2Matrix::new([osqrt2(), osqrt2(), osqrt2(), {let mut v=osqrt2(); v.values[2]*=-1; v.values[6]*=-1; v}]),
+            'S' => U2Matrix::new([one(), zero(), zero(), imag()]),
+            'X' => U2Matrix::new([zero(), one(), one(), zero()]),
+            'Y' => U2Matrix::new([zero(), nimag(), imag(), zero()]),
+            'Z' => U2Matrix::new([one(), zero(), zero(), neg1()]),
+            _   => unitary_identity(4),
+        }
+    }
+
+    /// Construct a U2 matrix from a gate string. Supports lowercase xyz (discrete rotations
+    /// of any n), uppercase HSXYZ (Clifford gates, applied at n=4 base size), and 'I'.
     fn construct_u2(n: usize, gates: &[char]) -> U2Matrix {
         let mut mat = unitary_identity(n);
         let x = unitary_rx(n, false);
@@ -272,9 +294,10 @@ mod tests {
         let z = unitary_rz(n, false);
         for &g in gates {
             let gate = match g {
-                'x' => &x,
-                'y' => &y,
-                _ => &z,
+                'x' => x.clone(),
+                'y' => y.clone(),
+                'z' => z.clone(),
+                c => clifford_gate(c),
             };
             mat = gate.mul(&mat);
         }
