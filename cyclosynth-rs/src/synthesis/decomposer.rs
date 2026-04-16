@@ -326,7 +326,6 @@ mod tests {
     use super::*;
     use rand::Rng;
     use crate::rings::ZOmega;
-    use crate::matrix::SO3;
     use num_complex::Complex64;
     use std::f64::consts::FRAC_1_SQRT_2;
 
