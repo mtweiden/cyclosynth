@@ -268,6 +268,7 @@ def _schnorr_euchner(N: ndarray, t_lat: ndarray, R: int,
                 sol = (b1, d1, b2, d2)
                 if sol not in solutions:
                     solutions.append(sol)
+                    return
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +358,7 @@ def phase1_enumerate(y: ndarray, k: int,
                         # Post-filter: alignment check with correct threshold
                         if float(x @ y) ** 2 >= threshold_xy:
                             solutions.append(x)
+                            return solutions
 
     return solutions
 
@@ -427,57 +429,7 @@ def verify(x: ndarray, k: int, y: ndarray, eps: float = 1e-4) -> dict:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     np.random.seed(42)
-    r2_ = float(sqrt(2.0))
-    T   = np.array([[1,0],[0,np.exp(1j*np.pi/4)]])
-    Td  = T.conj().T
-    H   = np.array([[1,1],[1,-1]]) / r2_
-    S   = np.array([[1,0],[0,1j]])
-    I2  = np.eye(2, dtype=complex)
-    X   = np.array([[0,1],[1,0]], dtype=complex)
-    Y   = np.array([[0,-1j],[1j,0]], dtype=complex)
-    Z   = np.array([[1,0],[0,-1]], dtype=complex)
-
-    def find_gate(G, odd=False, k_max=3):
-        """
-        Find G in the synthesis lattice.
-
-        Even branch (odd=False): try all 8 global phases of G, find the one
-        that fits [[u1,-u2*],[u2,u1*]], pass that uv to synthesize.
-
-        Odd branch (odd=True): try all 8 global phases of G·T†, same logic,
-        then the final gate returned is U·T.
-        """
-        phases = [np.exp(1j*n*np.pi/4) for n in range(8)]
-        target = G @ Td if odd else G
-        for ph in phases:
-            Gp = ph * target
-            u1=Gp[0,0]; u2=Gp[1,0]
-            if not np.allclose(Gp, [[u1,-np.conj(u2)],[u2,np.conj(u1)]]):
-                continue
-            v = np.array([u1.real, u1.imag, u2.real, u2.imag])
-            if np.linalg.norm(v) < 1e-10: continue
-            v /= np.linalg.norm(v)
-            for k in range(k_max+1):
-                sols = synthesize(v, k=k, eps=1.0)
-                for x in sols:
-                    U = to_unitary(x, k)
-                    Ufinal = U @ T if odd else U
-                    if np.allclose(Ufinal, ph * G if odd else Gp):
-                        return k, ph
-        return None, None
-
-    print("Gate | Even-k branch | Odd-k branch (via G·T†)")
-    print("-"*55)
-    for name, G in [('I',I2),('X',X),('Y',Y),('Z',Z),
-                    ('H',H),('S',S),('T',T),('THT',T@H@T)]:
-        ke, _ = find_gate(G, odd=False)
-        ko, _ = find_gate(G, odd=True)
-        even_str = f"k={ke}" if ke is not None else "—"
-        odd_str  = f"k={ko} (T-count={2*ko+1})" if ko is not None else "—"
-        print(f"  {name:4s} | even: {even_str:6s} | odd: {odd_str}")
-
-    '''np.random.seed(42)
-    k = 0
+    k = 10
     v = np.random.randn(4)
     v /= np.linalg.norm(v)
     y = uv_to_xy(v, k)
@@ -487,7 +439,7 @@ if __name__ == "__main__":
     print(f"x·y = 2^(k-1)·u·v threshold for |x·y|^2: 2^(2k-2)·(1-eps^2)")
     print()
 
-    for eps in [1, 0.01]:
+    for eps in [0.05]:
         solutions = synthesize(v, k, eps)
         print(f"eps={eps}: {len(solutions)} solutions")
         for x in solutions:
@@ -496,6 +448,7 @@ if __name__ == "__main__":
             # print(f"Solution: {x}")
             # print(f"u: {xy_to_uv(x, k)}")
             print(f"unitary:\n{to_unitary(x, k)}")
+            print(f"  x: {x}")
             print(f"  norm={r['norm']} unit={r['unitarity']} align={r['alignment']}  u·v={r['udotv']:.6f}  (need > {np.sqrt(1-eps**2):.6f})")
         if not solutions:
-            print(f"  (k={k} is insufficient for eps={eps}; need k ~ {int(3*np.log2(1/eps))+1})")'''
+            print(f"  (k={k} is insufficient for eps={eps}; need k ~ {int(3*np.log2(1/eps))+1})")
