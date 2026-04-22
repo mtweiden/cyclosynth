@@ -268,6 +268,7 @@ def _schnorr_euchner(N: ndarray, t_lat: ndarray, R: int,
                 sol = (b1, d1, b2, d2)
                 if sol not in solutions:
                     solutions.append(sol)
+                    return
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +501,7 @@ if __name__ == "__main__":
             # print(f"Solution: {x}")
             # print(f"u: {xy_to_uv(x, k)}")
             print(f"unitary:\n{to_unitary(x, k)}")
+            print(f"  x: {x}")
             print(f"  norm={r['norm']} unit={r['unitarity']} align={r['alignment']}  u·v={r['udotv']:.6f}  (need > {np.sqrt(1-eps**2):.6f})")
         if not solutions:
             print(f"  (k={k} is insufficient for eps={eps}; need k ~ {int(3*np.log2(1/eps))+1})")
