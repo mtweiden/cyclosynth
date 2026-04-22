@@ -1,0 +1,958 @@
+//! Exact Clifford+T synthesis (Algorithm 3.14, arXiv:2510.05816).
+//!
+//! Finds the minimum-lde Clifford+T circuit U such that d_diamond(U, V) < ε.
+//!
+//! Strategy:
+//!   - For lde t ≤ direct_limit: try direct aligned_search (even, T, T† branches)
+//!     plus all 24 Clifford left-prefixes.
+//!   - For lde t > direct_limit: divide-and-conquer with Matsumoto–Amano prefixes
+//!     (Lemma 3.10). Residual lde = direct_limit.
+
+use num_complex::Complex;
+
+use crate::matrix::U2T;
+use crate::rings::types::{Int, Float};
+use crate::rings::ZOmega;
+use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
+use crate::synthesis::decomposer::BlochDecomposer;
+use crate::synthesis::search::{
+    apply_t_dag_to_uv, apply_t_to_uv, apply_u2t_dag_to_uv, compute_align_vec, normalize4,
+};
+
+// ─── Float matrix helpers ──────────────────────────────────────────────────────
+
+type Mat2 = [[Complex<Float>; 2]; 2];
+
+/// Diamond distance between two unitaries: √max(0, 1 − |tr(A·B†)|²/4).
+pub fn diamond_distance_float(a: &Mat2, b: &Mat2) -> Float {
+    let tr = a[0][0] * b[0][0].conj()
+           + a[0][1] * b[1][0].conj()
+           + a[1][0] * b[0][1].conj()
+           + a[1][1] * b[1][1].conj();
+    (1.0 - tr.norm_sqr() / 4.0).max(0.0).sqrt()
+}
+
+/// Diamond distance between an exact U2T and a float target matrix.
+fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
+    let uf = u.to_float();
+    let tr = uf[0][0] * target[0][0].conj()
+           + uf[0][1] * target[1][0].conj()
+           + uf[1][0] * target[0][1].conj()
+           + uf[1][1] * target[1][1].conj();
+    (1.0 - tr.norm_sqr() / 4.0).max(0.0).sqrt()
+}
+
+/// Extract uv = [Re(u1), Im(u1), Re(u2), Im(u2)] from a 2×2 unitary matrix.
+///
+/// Normalizes to SU(2) first by dividing by √det, so that targets like
+/// diag(1, i) (which has det=i) map to the same search direction as their
+/// SU(2) representative diag(e^{−iπ/4}, e^{iπ/4}).
+///
+/// Convention: V ≈ e^{iφ} · [[u1, −ū2],[u2, ū1]].
+fn unitary_to_uv(v: &Mat2) -> [Float; 4] {
+    let det = v[0][0] * v[1][1] - v[0][1] * v[1][0];
+    let phase = det.sqrt(); // principal square root of det
+    if phase.norm() > 1e-12 {
+        let u1 = v[0][0] / phase;
+        let u2 = v[1][0] / phase;
+        [u1.re, u1.im, u2.re, u2.im]
+    } else {
+        [v[0][0].re, v[0][0].im, v[1][0].re, v[1][0].im]
+    }
+}
+
+// ─── MA prefix generation (Lemma 3.10) ───────────────────────────────────────
+
+/// Generate all Matsumoto–Amano left prefixes for `t_prime` T-gates.
+///
+/// L_{t'} = {∏_{i=1}^{t'} HS^{b_i}T | b_i∈{0,1}}
+///         ∪ {T·∏_{i=1}^{t'−1} HS^{b_i}T}
+///
+/// Returns 3·2^{t'−1} exact U2T matrices (or 1 for t'=0).
+fn generate_left_prefixes(t_prime: u32) -> Vec<U2T> {
+    if t_prime == 0 {
+        return vec![U2T::eye()];
+    }
+
+    let h = U2T::h();
+    let s = U2T::s();
+    let t = U2T::t();
+    // HS^0T = H·T (T applied first, then H)
+    let hs0t = h * t;
+    // HS^1T = H·S·T
+    let hs1t = h * s * t;
+
+    let mut prefixes = Vec::new();
+
+    // First family: ∏_{i=0}^{t'−1} gate_i where gate_i ∈ {HS0T, HS1T}.
+    // Product built left-to-right: U = U @ gate_i (gate_i applied after current U).
+    let n = 1u32 << t_prime;
+    for bits in 0..n {
+        let mut u = U2T::eye();
+        for i in 0..t_prime {
+            let gate = if (bits >> i) & 1 == 1 { hs1t } else { hs0t };
+            u = u * gate;
+        }
+        prefixes.push(u);
+    }
+
+    // Second family: T · ∏_{i=0}^{t'−2} gate_i.
+    let n2 = 1u32 << (t_prime - 1);
+    for bits in 0..n2 {
+        let mut u = t;
+        for i in 0..(t_prime - 1) {
+            let gate = if (bits >> i) & 1 == 1 { hs1t } else { hs0t };
+            u = u * gate;
+        }
+        prefixes.push(u);
+    }
+
+    prefixes
+}
+
+// ─── Solution conversion ──────────────────────────────────────────────────────
+
+/// Build U2T from an integer lattice solution and denominator exponent.
+///
+/// sol = [a,b,c,d, e,f,g,h] encodes u1=(a,b,c,d), u2=(e,f,g,h) in ZOmega,
+/// with U = [[u1, -ū2], [u2, ū1]] / √2^k (SU(2) convention).
+fn solution_to_u2t(sol: &[i64; 8], k: u32) -> U2T {
+    let u1 = ZOmega::new(
+        Int::from_i64(sol[0]), Int::from_i64(sol[1]),
+        Int::from_i64(sol[2]), Int::from_i64(sol[3]),
+    );
+    let u2 = ZOmega::new(
+        Int::from_i64(sol[4]), Int::from_i64(sol[5]),
+        Int::from_i64(sol[6]), Int::from_i64(sol[7]),
+    );
+    U2T::new(u1, -u2.conj(), u2, u1.conj(), k)
+}
+
+/// Decompose a lattice solution into a Clifford+T gate string.
+fn solution_to_gates(sol: &[i64; 8], k: u32) -> String {
+    BlochDecomposer.decompose(&solution_to_u2t(sol, k))
+}
+
+// ─── LLL-based aligned search (bandb5.py port) ────────────────────────────────
+
+/// Scale the alignment vector to the y-vector used in bandb5.py.
+///
+/// y = compute_align_vec(v) * sqrt(2^k) / 2.
+/// Property: ||y||² = 2^(k-1).
+fn uv_to_xy(v: [Float; 4], k: u32) -> [Float; 8] {
+    let scale = ((1i64 << k) as Float).sqrt() / 2.0;
+    compute_align_vec(v).map(|x| x * scale)
+}
+
+/// Extended GCD: returns (gcd, s, t) such that a*s + b*t = gcd.
+fn extended_gcd(a: i64, b: i64) -> (i64, i64, i64) {
+    if b == 0 {
+        return (a, 1, 0);
+    }
+    let (g, s, t) = extended_gcd(b, a % b);
+    (g, t, s - (a / b) * t)
+}
+
+/// Compute a 3×4 integer null basis N for the row vector w ∈ ℤ⁴.
+///
+/// Returns N such that N @ w == 0 and N has full row rank 3.
+/// Uses unimodular column operations via extended GCD.
+fn integer_null_basis(w: [i64; 4]) -> [[i64; 4]; 3] {
+    let mut ww = w;
+    // 4×4 identity stored column-major: u[col][row]
+    let mut u = [[0i64; 4]; 4];
+    for i in 0..4 {
+        u[i][i] = 1;
+    }
+
+    for i in 1..4 {
+        if ww[i] == 0 {
+            continue;
+        }
+        let (g, s, t) = extended_gcd(ww[0], ww[i]);
+        let wi_g = ww[i] / g;
+        let w0_g = ww[0] / g;
+        // new_col0 = s*col0 + t*col_i
+        // new_col_i = -wi_g*col0 + w0_g*col_i
+        let mut new_col0 = [0i64; 4];
+        let mut new_coli = [0i64; 4];
+        for r in 0..4 {
+            new_col0[r] = s * u[0][r] + t * u[i][r];
+            new_coli[r] = -wi_g * u[0][r] + w0_g * u[i][r];
+        }
+        u[0] = new_col0;
+        u[i] = new_coli;
+        ww[0] = g;
+        ww[i] = 0;
+    }
+
+    // Return last 3 columns of U transposed: shape 3×4
+    // u[1], u[2], u[3] are columns 1,2,3 of U; each has 4 rows
+    [u[1], u[2], u[3]]
+}
+
+/// Gram-Schmidt orthogonalization of a 3×4 float basis (rows = basis vectors).
+/// Returns (Bs, mu) where Bs is the orthogonalized basis and mu[i][j] = proj coefficient.
+fn gram_schmidt_3x4(bf: &[[Float; 4]; 3]) -> ([[Float; 4]; 3], [[Float; 3]; 3]) {
+    let mut bs = *bf;
+    let mut mu = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..i {
+            let dot_ij: Float = bf[i].iter().zip(bs[j].iter()).map(|(a, b)| a * b).sum();
+            let dot_jj: Float = bs[j].iter().map(|x| x * x).sum();
+            if dot_jj.abs() < 1e-14 {
+                continue;
+            }
+            mu[i][j] = dot_ij / dot_jj;
+            for k in 0..4 {
+                bs[i][k] -= mu[i][j] * bs[j][k];
+            }
+        }
+    }
+    (bs, mu)
+}
+
+/// LLL basis reduction for a 3×4 integer matrix (rows = basis vectors), delta=0.75.
+fn lll_reduce(basis: [[i64; 4]; 3]) -> [[i64; 4]; 3] {
+    let mut b = basis;
+    let mut bf: [[Float; 4]; 3] = b.map(|row| row.map(|x| x as Float));
+
+    let mut k = 1usize;
+    while k < 3 {
+        let (_, mu) = gram_schmidt_3x4(&bf);
+
+        // Size reduction
+        for j in (0..k).rev() {
+            let r = mu[k][j].round() as i64;
+            if r != 0 {
+                for c in 0..4 {
+                    b[k][c] -= r * b[j][c];
+                    bf[k][c] -= r as Float * bf[j][c];
+                }
+            }
+        }
+
+        let (bs2, mu2) = gram_schmidt_3x4(&bf);
+        let norm_k: Float = bs2[k].iter().map(|x| x * x).sum();
+        let norm_km1: Float = bs2[k - 1].iter().map(|x| x * x).sum();
+        let delta = 0.75;
+        if norm_k >= (delta - mu2[k][k - 1].powi(2)) * norm_km1 {
+            k += 1;
+        } else {
+            b.swap(k, k - 1);
+            bf.swap(k, k - 1);
+            k = k.saturating_sub(1).max(1);
+        }
+    }
+    b
+}
+
+/// Compute the upper-triangular R factor from QR decomposition of N^T (4×3).
+///
+/// Uses modified Gram-Schmidt on the columns of N^T.
+/// Returns 3×3 upper triangular R with positive diagonal.
+fn qr_upper(n: &[[i64; 4]; 3]) -> [[Float; 3]; 3] {
+    // Columns of N^T (4×3): column j of N^T = row j of N = n[j].
+    // Each column is a 4-element vector (one entry per row of N^T).
+    let mut cols: [[Float; 4]; 3] = [
+        n[0].map(|x| x as Float),
+        n[1].map(|x| x as Float),
+        n[2].map(|x| x as Float),
+    ];
+    let mut r = [[0.0; 3]; 3];
+
+    // Modified Gram-Schmidt
+    for i in 0..3 {
+        // R[i][j] for j > i: project col[j] onto q[i]
+        // First, compute norm of col[i] before orthogonalizing against previous
+        // (at this point col[i] has already been orthogonalized against 0..i)
+        let norm_i: Float = cols[i].iter().map(|x| x * x).sum::<Float>().sqrt();
+        r[i][i] = norm_i;
+        if norm_i < 1e-14 {
+            continue;
+        }
+        // Normalize q_i (stored in cols[i])
+        let q_i = cols[i].map(|x| x / norm_i);
+
+        // Orthogonalize remaining columns and fill R[i][j>i]
+        for j in (i + 1)..3 {
+            let dot: Float = q_i.iter().zip(cols[j].iter()).map(|(a, b)| a * b).sum();
+            r[i][j] = dot;
+            for row in 0..4 {
+                cols[j][row] -= dot * q_i[row];
+            }
+        }
+        cols[i] = q_i;
+    }
+
+    // Make diagonal positive (adjust sign of each row)
+    for i in 0..3 {
+        if r[i][i] < 0.0 {
+            for j in 0..3 {
+                r[i][j] = -r[i][j];
+            }
+        }
+    }
+
+    r
+}
+
+/// Schnorr-Euchner CVP enumeration over z ∈ ℤ³ such that ‖N_lll^T @ z‖² = r_norm_sq.
+///
+/// Returns the first (b1,d1,b2,d2) = N_lll^T @ z that satisfies both
+/// the norm constraint and the unitarity constraint exactly.
+fn schnorr_euchner(
+    n_lll: &[[i64; 4]; 3],
+    r_mat: &[[Float; 3]; 3],
+    t_lat: [Float; 3],
+    r_norm_sq: i64,
+    a1: i64, c1: i64, a2: i64, c2: i64,
+) -> Option<[i64; 4]> {
+    let radius = (r_norm_sq as Float).sqrt();
+
+    let r22 = r_mat[2][2];
+    if r22.abs() < 1e-12 {
+        return None;
+    }
+    let z2_center = t_lat[2];
+    let z2_lo = (z2_center - radius / r22.abs()).floor() as i64 - 1;
+    let z2_hi = (z2_center + radius / r22.abs()).ceil() as i64 + 1;
+
+    for z2 in z2_lo..=z2_hi {
+        let rem2 = r_norm_sq as Float - (r_mat[2][2] * z2 as Float).powi(2);
+        if rem2 < -1e-9 {
+            continue;
+        }
+        let rem2 = rem2.max(0.0);
+
+        let r11 = r_mat[1][1];
+        let r12 = r_mat[1][2];
+        if r11.abs() < 1e-12 {
+            continue;
+        }
+        let z1_center = t_lat[1] - (r12 / r11) * z2 as Float;
+        let z1_lo = (z1_center - rem2.sqrt() / r11.abs()).floor() as i64 - 1;
+        let z1_hi = (z1_center + rem2.sqrt() / r11.abs()).ceil() as i64 + 1;
+
+        for z1 in z1_lo..=z1_hi {
+            let rem1 = rem2 - (r_mat[1][1] * z1 as Float + r_mat[1][2] * z2 as Float).powi(2);
+            if rem1 < -1e-9 {
+                continue;
+            }
+            let rem1 = rem1.max(0.0);
+
+            let r00 = r_mat[0][0];
+            let r01 = r_mat[0][1];
+            let r02 = r_mat[0][2];
+            if r00.abs() < 1e-12 {
+                continue;
+            }
+            let inner = r01 * z1 as Float + r02 * z2 as Float;
+            let val = rem1.sqrt();
+
+            for sign in [1.0, -1.0] {
+                let z0f = (-inner + sign * val) / r00;
+                let z0 = z0f.round() as i64;
+                // Compute bd = N_lll^T @ [z0, z1, z2]
+                let mut bd = [0i64; 4];
+                for row in 0..4 {
+                    bd[row] = n_lll[0][row] * z0 + n_lll[1][row] * z1 + n_lll[2][row] * z2;
+                }
+                let [b1, d1, b2, d2] = bd;
+                // Verify norm exactly
+                if b1 * b1 + d1 * d1 + b2 * b2 + d2 * d2 != r_norm_sq {
+                    continue;
+                }
+                // Verify unitarity exactly
+                if b1 * (a1 + c1) + d1 * (c1 - a1) + b2 * (a2 + c2) + d2 * (c2 - a2) != 0 {
+                    continue;
+                }
+                return Some(bd);
+            }
+        }
+    }
+    None
+}
+
+/// Phase 2: find (b1,d1,b2,d2) satisfying norm and unitarity using LLL+CVP.
+///
+/// Returns the first valid solution, or None if none found.
+fn phase2_pq(a1: i64, c1: i64, a2: i64, c2: i64, r: i64, y: &[Float; 8]) -> Option<[i64; 4]> {
+    if r < 0 {
+        return None;
+    }
+    if r == 0 {
+        return Some([0, 0, 0, 0]);
+    }
+
+    let w_bd = [a1 + c1, c1 - a1, a2 + c2, c2 - a2];
+
+    // Degenerate: all unitarity coefficients zero → brute-force 4D sphere
+    if w_bd == [0, 0, 0, 0] {
+        let max_b1 = (r as Float).sqrt() as i64 + 1;
+        for b1 in -max_b1..=max_b1 {
+            let rem1 = r - b1 * b1;
+            if rem1 < 0 { continue; }
+            let max_d1 = (rem1 as Float).sqrt() as i64 + 1;
+            for d1 in -max_d1..=max_d1 {
+                let rem2 = rem1 - d1 * d1;
+                if rem2 < 0 { continue; }
+                let max_b2 = (rem2 as Float).sqrt() as i64 + 1;
+                for b2 in -max_b2..=max_b2 {
+                    let rem3 = rem2 - b2 * b2;
+                    if rem3 < 0 { continue; }
+                    let d2s = (rem3 as Float).sqrt() as i64;
+                    if d2s * d2s != rem3 { continue; }
+                    let candidates: &[i64] = if d2s == 0 { &[0] } else { &[d2s, -d2s] };
+                    for &d2 in candidates {
+                        return Some([b1, d1, b2, d2]);
+                    }
+                }
+            }
+        }
+        return None;
+    }
+
+    let n_bd = integer_null_basis(w_bd);
+    let n_lll = lll_reduce(n_bd);
+
+    // CVP target: project y_inner toward √r
+    let y_inner = [y[1], y[3], y[5], y[7]];
+    let norm_yi: Float = y_inner.iter().map(|x| x * x).sum::<Float>().sqrt();
+    let t_ambient: [Float; 4] = if norm_yi < 1e-12 {
+        [0.0; 4]
+    } else {
+        let s = (r as Float).sqrt() / norm_yi;
+        y_inner.map(|x| x * s)
+    };
+
+    // Gram matrix G = N_lll @ N_lll^T (3×3)
+    let nf: [[Float; 4]; 3] = n_lll.map(|row| row.map(|x| x as Float));
+    let mut g = [[0.0; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            g[i][j] = nf[i].iter().zip(nf[j].iter()).map(|(a, b)| a * b).sum();
+        }
+    }
+
+    // rhs = N_lll @ t_ambient (3-vector)
+    let rhs: [Float; 3] = [
+        nf[0].iter().zip(t_ambient.iter()).map(|(a, b)| a * b).sum(),
+        nf[1].iter().zip(t_ambient.iter()).map(|(a, b)| a * b).sum(),
+        nf[2].iter().zip(t_ambient.iter()).map(|(a, b)| a * b).sum(),
+    ];
+
+    // Solve G @ t_lat = rhs via Cholesky-like forward substitution (G is SPD).
+    // Use simple 3×3 Gaussian elimination.
+    let t_lat = solve_3x3(&g, rhs).unwrap_or([0.0; 3]);
+
+    let r_mat = qr_upper(&n_lll);
+    schnorr_euchner(&n_lll, &r_mat, t_lat, r, a1, c1, a2, c2)
+}
+
+/// Solve a 3×3 system Ax = b via Gaussian elimination with partial pivoting.
+fn solve_3x3(a: &[[Float; 3]; 3], b: [Float; 3]) -> Option<[Float; 3]> {
+    let mut m = [
+        [a[0][0], a[0][1], a[0][2], b[0]],
+        [a[1][0], a[1][1], a[1][2], b[1]],
+        [a[2][0], a[2][1], a[2][2], b[2]],
+    ];
+    for col in 0..3 {
+        // Pivot
+        let mut max_row = col;
+        for row in (col + 1)..3 {
+            if m[row][col].abs() > m[max_row][col].abs() {
+                max_row = row;
+            }
+        }
+        m.swap(col, max_row);
+        if m[col][col].abs() < 1e-14 {
+            return None;
+        }
+        let pivot = m[col][col];
+        for row in (col + 1)..3 {
+            let factor = m[row][col] / pivot;
+            for k in col..4 {
+                let v = m[col][k];
+                m[row][k] -= factor * v;
+            }
+        }
+    }
+    // Back substitution
+    let mut x = [0.0; 3];
+    for i in (0..3).rev() {
+        let mut s = m[i][3];
+        for j in (i + 1)..3 {
+            s -= m[i][j] * x[j];
+        }
+        x[i] = s / m[i][i];
+    }
+    Some(x)
+}
+
+/// Iterator yielding integers outward from `center`: center, center+1, center-1, ...
+struct CenteredRange {
+    center: i64,
+    offset: i64,
+    limit: i64,
+}
+
+impl CenteredRange {
+    fn new(center: i64, max_radius: i64) -> Self {
+        Self { center, offset: 0, limit: max_radius + center.unsigned_abs() as i64 + 2 }
+    }
+}
+
+impl Iterator for CenteredRange {
+    type Item = i64;
+    fn next(&mut self) -> Option<i64> {
+        if self.offset > self.limit {
+            return None;
+        }
+        let val = if self.offset == 0 {
+            self.offset = 1;
+            self.center
+        } else if self.offset % 2 == 1 {
+            let v = self.center + (self.offset + 1) / 2;
+            self.offset += 1;
+            v
+        } else {
+            let v = self.center - self.offset / 2;
+            self.offset += 1;
+            v
+        };
+        Some(val)
+    }
+}
+
+/// Phase 1: enumerate outer variables (a1,c1,a2,c2) with Cauchy-Schwarz pruning.
+///
+/// Returns up to one full 8-vector [a1,b1,c1,d1,a2,b2,c2,d2].
+fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
+    let target_norm: i64 = 1i64 << k;
+    // Threshold on (x·y)²: 2^(2k-2)·(1-eps²)
+    let threshold_xy = (1i64 << (2 * k)) as Float / 4.0 * (1.0 - eps * eps);
+
+    let y_norm: Float = y.iter().map(|x| x * x).sum::<Float>().sqrt();
+    let scale = (target_norm as Float).sqrt() / y_norm;
+
+    let a1_c = (y[0] * scale).round() as i64;
+    let c1_c = (y[2] * scale).round() as i64;
+    let a2_c = (y[4] * scale).round() as i64;
+    let c2_c = (y[6] * scale).round() as i64;
+
+    let max_outer = (target_norm as Float).sqrt() as i64 + 1;
+    let mut solutions = Vec::new();
+
+    // Precompute partial squared norms of y for Cauchy-Schwarz pruning
+    let y_sq_all: Float = y.iter().map(|x| x * x).sum();
+    let y_sq_no_a1 = y_sq_all - y[0] * y[0]; // remaining after fixing a1
+    let y_sq_no_a1_c1 = y_sq_no_a1 - y[2] * y[2]; // after fixing c1
+    let y_sq_no_a1_c1_a2 = y_sq_no_a1_c1 - y[4] * y[4]; // after fixing a2
+    let y_sq_inner = y[1]*y[1] + y[3]*y[3] + y[5]*y[5] + y[7]*y[7]; // inner only
+
+    let thresh = threshold_xy.sqrt();
+
+    for a1 in CenteredRange::new(a1_c, max_outer) {
+        if a1 * a1 > target_norm { continue; }
+        let rem_a1 = target_norm - a1 * a1;
+        let dot_a1 = a1 as Float * y[0];
+        if (dot_a1.abs() + (rem_a1 as Float * y_sq_no_a1).sqrt()) < thresh {
+            continue;
+        }
+
+        for c1 in CenteredRange::new(c1_c, max_outer) {
+            if a1*a1 + c1*c1 > target_norm { continue; }
+            let rem_c1 = target_norm - a1*a1 - c1*c1;
+            let dot_a1c1 = dot_a1 + c1 as Float * y[2];
+            if (dot_a1c1.abs() + (rem_c1 as Float * y_sq_no_a1_c1).sqrt()) < thresh {
+                continue;
+            }
+
+            for a2 in CenteredRange::new(a2_c, max_outer) {
+                if a1*a1 + c1*c1 + a2*a2 > target_norm { continue; }
+                let rem_a2 = target_norm - a1*a1 - c1*c1 - a2*a2;
+                let dot_3 = dot_a1c1 + a2 as Float * y[4];
+                if (dot_3.abs() + (rem_a2 as Float * y_sq_no_a1_c1_a2).sqrt()) < thresh {
+                    continue;
+                }
+
+                for c2 in CenteredRange::new(c2_c, max_outer) {
+                    let outer_norm_sq = a1*a1 + c1*c1 + a2*a2 + c2*c2;
+                    if outer_norm_sq > target_norm { continue; }
+                    let r = target_norm - outer_norm_sq;
+                    let dot_outer = dot_3 + c2 as Float * y[6];
+                    // Tighter Cauchy-Schwarz: inner (b1,d1,b2,d2) is constrained to the null
+                    // space of w_bd = [a1+c1, c1-a1, a2+c2, c2-a2] (unitarity constraint).
+                    // Max inner dot = sqrt(r * |P_{null(w_bd)} y_inner|²)
+                    //               = sqrt(r * (y_sq_inner − (w_bd·y_inner)²/|w_bd|²))
+                    // |w_bd|² = (a1+c1)²+(c1−a1)²+(a2+c2)²+(c2−a2)² = 2*outer_norm_sq
+                    let w_bd_norm_sq = 2 * outer_norm_sq;
+                    let y_inner_proj_sq = if w_bd_norm_sq > 0 {
+                        let wdot = y[1] * (a1 + c1) as Float + y[3] * (c1 - a1) as Float
+                                 + y[5] * (a2 + c2) as Float + y[7] * (c2 - a2) as Float;
+                        (y_sq_inner - wdot * wdot / w_bd_norm_sq as Float).max(0.0)
+                    } else {
+                        y_sq_inner
+                    };
+                    if dot_outer.abs() + (r as Float * y_inner_proj_sq).sqrt() < thresh {
+                        continue;
+                    }
+
+                    if let Some([b1, d1, b2, d2]) = phase2_pq(a1, c1, a2, c2, r, y) {
+                        let x = [a1, b1, c1, d1, a2, b2, c2, d2];
+                        let dot: Float = x.iter().zip(y.iter()).map(|(&xi, &yi)| xi as Float * yi).sum();
+                        if dot * dot >= threshold_xy {
+                            solutions.push(x);
+                            return solutions;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    solutions
+}
+
+/// LLL-based aligned search: implements bandb5.py's `synthesize`.
+///
+/// Drop-in replacement for `aligned_search` from search.rs.
+/// Uses LLL+Schnorr-Euchner CVP for the inner (b,d) variables.
+fn lll_aligned_search(v: [Float; 4], k: u32, eps: Float, max_solutions: usize) -> Vec<[i64; 8]> {
+    if max_solutions == 0 || k > 62 {
+        return Vec::new();
+    }
+    let y = uv_to_xy(v, k);
+    let sols = phase1_enumerate(&y, k, eps);
+    if max_solutions >= sols.len() {
+        sols
+    } else {
+        sols.into_iter().take(max_solutions).collect()
+    }
+}
+
+// ─── Result type ──────────────────────────────────────────────────────────────
+
+/// Result of a successful synthesis.
+pub struct SynthResult {
+    /// Clifford+T gate string (leftmost = first gate applied).
+    /// `None` if the gate string could not be extracted (e.g., d&c prefix case).
+    pub gates: Option<String>,
+    /// Denominator exponent of the synthesized unitary.
+    pub lde: u32,
+    /// Diamond distance to the target.
+    pub distance: Float,
+}
+
+// ─── Synthesizer ──────────────────────────────────────────────────────────────
+
+/// Clifford+T synthesizer implementing Algorithm 3.14 of arXiv:2510.05816.
+pub struct Synthesizer {
+    /// Approximation precision in diamond distance.
+    pub epsilon: Float,
+    /// Maximum lde to search before giving up.
+    pub max_lde: u32,
+    /// Maximum lde for direct aligned_search; beyond this uses divide-and-conquer.
+    pub direct_limit: u32,
+}
+
+impl Synthesizer {
+    /// Create a synthesizer with the given precision and sensible defaults.
+    pub fn new(epsilon: Float) -> Self {
+        Self { epsilon, max_lde: 50, direct_limit: 12 }
+    }
+
+    pub fn with_max_lde(mut self, max_lde: u32) -> Self {
+        self.max_lde = max_lde;
+        self
+    }
+
+    pub fn with_direct_limit(mut self, direct_limit: u32) -> Self {
+        self.direct_limit = direct_limit;
+        self
+    }
+
+    /// Find a minimum-lde Clifford+T circuit approximating `target`.
+    ///
+    /// Returns `None` if no circuit within `max_lde` achieves distance < `epsilon`.
+    pub fn synthesize(&self, target: Mat2) -> Option<SynthResult> {
+        let raw_uv = unitary_to_uv(&target);
+        let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
+
+        for t in 0..=self.max_lde {
+            if let Some(result) = self.try_at_lde(&target, v, t) {
+                return Some(result);
+            }
+        }
+        None
+    }
+
+    /// Try to find a solution at denominator exponent `t`.
+    fn try_at_lde(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResult> {
+        if t <= self.direct_limit {
+            self.direct_search(target, v, t)
+        } else {
+            self.dc_search(target, v, t)
+        }
+    }
+
+    /// Algorithm 3.6: direct search with even / T / T† branches and Clifford prefixes.
+    fn direct_search(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResult> {
+        let eps = self.epsilon;
+
+        // ── Even branch: find U ≈ target directly. ──────────────────────────────
+        for sol in lll_aligned_search(v, t, eps, 1) {
+            let u2t = solution_to_u2t(&sol, t);
+            let dist = diamond_distance_u2t_float(&u2t, target);
+            if dist < eps {
+                return Some(SynthResult {
+                    gates: Some(solution_to_gates(&sol, t)),
+                    lde: t,
+                    distance: dist,
+                });
+            }
+        }
+
+        // ── T branch: find U s.t. U·T ≈ target, i.e. U ≈ target·T†. ───────────
+        let v_t = apply_t_dag_to_uv(v);
+        for sol in lll_aligned_search(v_t, t, eps, 1) {
+            let u2t = solution_to_u2t(&sol, t) * U2T::t();
+            let dist = diamond_distance_u2t_float(&u2t, target);
+            if dist < eps {
+                let gates = solution_to_gates(&sol, t) + "T";
+                return Some(SynthResult { gates: Some(gates), lde: t, distance: dist });
+            }
+        }
+
+        // ── T† branch: find U s.t. U·T† ≈ target, i.e. U ≈ target·T. ──────────
+        let v_tdg = apply_t_to_uv(v);
+        for sol in lll_aligned_search(v_tdg, t, eps, 1) {
+            let u2t = solution_to_u2t(&sol, t) * U2T::t().dagger();
+            let dist = diamond_distance_u2t_float(&u2t, target);
+            if dist < eps {
+                // T† = S³·T in Clifford+T gate set.
+                let gates = solution_to_gates(&sol, t) + "SSST";
+                return Some(SynthResult { gates: Some(gates), lde: t, distance: dist });
+            }
+        }
+
+        // ── C-phase: try all 24 Clifford left-prefixes. ─────────────────────────
+        for (c_str, c_u2t) in CLIFFORD_TABLE_T {
+            if *c_str == "I" {
+                continue; // Identity already covered by even branch above.
+            }
+
+            // uv(C†·target) = C†·v for SU(2) Clifford C (phase cancels).
+            let v_inner = apply_u2t_dag_to_uv(c_u2t, v);
+
+            // Inner even branch: C·U ≈ target.
+            for sol in lll_aligned_search(v_inner, t, eps, 1) {
+                let u2t = *c_u2t * solution_to_u2t(&sol, t);
+                let dist = diamond_distance_u2t_float(&u2t, target);
+                if dist < eps {
+                    let gates = solution_to_gates(&sol, t) + c_str;
+                    return Some(SynthResult { gates: Some(gates), lde: t, distance: dist });
+                }
+            }
+
+            // Inner T branch: C·U·T ≈ target, i.e. U ≈ (C†·target)·T†.
+            let v_inner_t = apply_t_dag_to_uv(v_inner);
+            for sol in lll_aligned_search(v_inner_t, t, eps, 1) {
+                let u2t = *c_u2t * solution_to_u2t(&sol, t) * U2T::t();
+                let dist = diamond_distance_u2t_float(&u2t, target);
+                if dist < eps {
+                    let gates = solution_to_gates(&sol, t) + "T" + c_str;
+                    return Some(SynthResult { gates: Some(gates), lde: t, distance: dist });
+                }
+            }
+
+            // Inner T† branch: C·U·T† ≈ target, i.e. U ≈ (C†·target)·T.
+            let v_inner_tdg = apply_t_to_uv(v_inner);
+            for sol in lll_aligned_search(v_inner_tdg, t, eps, 1) {
+                let u2t = *c_u2t * solution_to_u2t(&sol, t) * U2T::t().dagger();
+                let dist = diamond_distance_u2t_float(&u2t, target);
+                if dist < eps {
+                    let gates = solution_to_gates(&sol, t) + "SSST" + c_str;
+                    return Some(SynthResult { gates: Some(gates), lde: t, distance: dist });
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Algorithm 3.11: divide-and-conquer with MA left prefixes.
+    ///
+    /// t_prime = t − direct_limit (number of MA peeling steps), so k_residual = direct_limit always.
+    fn dc_search(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResult> {
+        let eps = self.epsilon;
+        let t_prime = t - self.direct_limit;
+        let k_residual = t - t_prime; // = direct_limit
+
+        let prefixes = generate_left_prefixes(t_prime);
+
+        for u_l in &prefixes {
+            // uv(U_L†·target) = U_L†·v (same identity as for Cliffords).
+            let v_r = apply_u2t_dag_to_uv(u_l, v);
+
+            for sol_r in lll_aligned_search(v_r, k_residual, eps, 10) {
+                let u2t = *u_l * solution_to_u2t(&sol_r, k_residual);
+                let dist = diamond_distance_u2t_float(&u2t, target);
+                if dist < eps {
+                    let gates = BlochDecomposer.decompose(&u2t);
+                    return Some(SynthResult {
+                        gates: Some(gates),
+                        lde: t,
+                        distance: dist,
+                    });
+                }
+            }
+        }
+
+        None
+    }
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::{PI, FRAC_1_SQRT_2};
+
+    fn rz(theta: Float) -> Mat2 {
+        [
+            [Complex::from_polar(1., -theta / 2.), Complex::new(0., 0.)],
+            [Complex::new(0., 0.), Complex::from_polar(1., theta / 2.)],
+        ]
+    }
+
+    // fn rx(theta: f64) -> Mat2 {
+    //     let c = Complex64::new((theta / 2.).cos(), 0.);
+    //     let is = Complex64::new(0., -(theta / 2.).sin());
+    //     [[c, is], [is, c]]
+    // }
+
+    // fn ry(theta: f64) -> Mat2 {
+    //     let c = Complex64::new((theta / 2.).cos(), 0.);
+    //     let s = Complex64::new((theta / 2.).sin(), 0.);
+    //     [[c, -s], [s, c]]
+    // }
+
+    fn check_result(result: &SynthResult, _target: &Mat2, eps: Float) {
+        assert!(
+            result.distance < eps,
+            "distance={:.6e} ≥ epsilon={:.6e}",
+            result.distance, eps
+        );
+    }
+
+    #[test]
+    fn test_synthesize_identity() {
+        let id: Mat2 = [[Complex::new(1., 0.), Complex::new(0., 0.)], [Complex::new(0., 0.), Complex::new(1., 0.)]];
+        let synth = Synthesizer::new(0.01);
+        let result = synth.synthesize(id).expect("Should synthesize identity");
+        check_result(&result, &id, 0.01);
+        assert_eq!(result.lde, 0, "Identity should have lde=0");
+    }
+
+    #[test]
+    fn test_synthesize_s_gate() {
+        let s: Mat2 = [
+            [Complex::new(1., 0.), Complex::new(0., 0.)],
+            [Complex::new(0., 0.), Complex::new(0., 1.)],
+        ];
+        let synth = Synthesizer::new(0.01);
+        let result = synth.synthesize(s).expect("Should synthesize S");
+        check_result(&result, &s, 0.01);
+        assert_eq!(result.lde, 0, "S is a Clifford, should need lde=0");
+    }
+
+    #[test]
+    fn test_synthesize_h_gate() {
+        let r = FRAC_1_SQRT_2 as Float;
+        let h: Mat2 = [
+            [Complex::new(r, 0.), Complex::new(r, 0.)],
+            [Complex::new(r, 0.), Complex::new(-r, 0.)],
+        ];
+        let synth = Synthesizer::new(0.01);
+        let result = synth.synthesize(h).expect("Should synthesize H");
+        check_result(&result, &h, 0.01);
+    }
+
+    #[test]
+    fn test_synthesize_rz_small() {
+        // Rz(π/4) = T gate, should need lde=1.
+        let target = rz(PI as Float / 4.);
+        let synth = Synthesizer::new(0.01);
+        let result = synth.synthesize(target).expect("Should synthesize Rz(π/4)");
+        check_result(&result, &target, 0.01);
+    }
+
+    #[test]
+    fn test_synthesize_rz_moderate_1() {
+        let target = rz(0.3);
+        let synth = Synthesizer::new(0.01);
+        let result = synth.synthesize(target).expect("Should synthesize Rz(0.3)");
+        check_result(&result, &target, 0.01);
+    }
+
+    #[test]
+    fn test_synthesize_rz_moderate_2() {
+        let target = rz(1.34);
+        let synth = Synthesizer::new(0.01);
+        let result = synth.synthesize(target).expect("Should synthesize Rz(1.34)");
+        check_result(&result, &target, 0.01);
+    }
+
+    #[test]
+    fn test_synthesize_rz_hard_1() {
+        let target = rz(0.3);
+        let synth = Synthesizer::new(0.001);
+        let result = synth.synthesize(target).expect("Should synthesize Rz(0.3)");
+        check_result(&result, &target, 0.001);
+    }
+
+    #[test]
+    fn test_synthesize_rz_hard_2() {
+        let target = rz(1.34);
+        let synth = Synthesizer::new(0.001);
+        let result = synth.synthesize(target).expect("Should synthesize Rz(1.34)");
+        check_result(&result, &target, 0.001);
+    }
+
+    // #[test]
+    // fn test_gates_string_roundtrip() {
+    //     // Gates string, when evaluated as a unitary, should match the claimed distance.
+    //     use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
+    //     let h: Mat2 = [
+    //         [Complex64::new(std::f64::consts::FRAC_1_SQRT_2, 0.),
+    //          Complex64::new(std::f64::consts::FRAC_1_SQRT_2, 0.)],
+    //         [Complex64::new(std::f64::consts::FRAC_1_SQRT_2, 0.),
+    //          Complex64::new(-std::f64::consts::FRAC_1_SQRT_2, 0.)],
+    //     ];
+
+    //     let synth = Synthesizer::new(0.01);
+    //     let result = synth.synthesize(h).expect("Should synthesize H");
+
+    //     // Verify lde is sensible (H is Clifford, lde=1 with the table entry).
+    //     assert!(result.lde <= 1, "H should need at most lde=1");
+
+    //     // Verify the gate string exists.
+    //     assert!(result.gates.is_some(), "H synthesis should produce a gate string");
+    //     let gates = result.gates.unwrap();
+    //     assert!(!gates.is_empty() || result.lde == 0);
+
+    //     // Verify every Clifford in the table synthesizes exactly.
+    //     for (name, c) in CLIFFORD_TABLE_T {
+    //         let mat = c.to_float();
+    //         let r = synth.synthesize(mat).expect(&format!("Should synthesize {name}"));
+    //         assert!(
+    //             r.distance < 0.01,
+    //             "Clifford {name}: distance={:.6e}",
+    //             r.distance
+    //         );
+    //     }
+    // }
+}
