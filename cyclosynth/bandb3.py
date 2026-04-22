@@ -13,6 +13,34 @@ from random import random
 # Some constants
 #===============================================================================
 r2 = sqrt(2)
+
+# T gate as SU(2) (det=1 form): [[1,0],[0,e^{iπ/4}]]
+_T_gate = array([[1, 0], [0, np.exp(1j * np.pi / 4)]], dtype=complex)
+
+# T† right-multiply on uv: maps uv(V) → uv(V · T†).
+# Reduces odd-T-count search: find x s.t. to_unitary(x,k)·T ≈ V
+# by searching for to_unitary(x,k) ≈ V·T† → aligned_search on _T_dag_on_uv@v.
+# T† acts as u2' = u2 * e^{-iπ/4} = u2*(1-i)/√2.
+_T_dag_on_uv = array([
+    [1,  0,       0,      0   ],  # Re(u1) unchanged
+    [0,  1,       0,      0   ],  # Im(u1) unchanged
+    [0,  0,   1/r2,   1/r2   ],  # Re(u2') = (Re(u2) + Im(u2))/√2
+    [0,  0,  -1/r2,   1/r2   ],  # Im(u2') = (-Re(u2) + Im(u2))/√2
+])
+
+# T right-multiply on uv: maps uv(V) → uv(V·T).
+# Used for T† branch: find U s.t. U·T† ≈ V by searching aligned_search on _T_on_uv@v.
+# T acts as u2' = u2 * e^{iπ/4} = u2*(1+i)/√2.
+_T_on_uv = array([
+    [1,  0,      0,     0   ],  # Re(u1) unchanged
+    [0,  1,      0,     0   ],  # Im(u1) unchanged
+    [0,  0,  1/r2, -1/r2   ],  # Re(u2') = (Re(u2) - Im(u2))/√2
+    [0,  0,  1/r2,  1/r2   ],  # Im(u2') = (Re(u2) + Im(u2))/√2
+])
+
+# T† gate as U(2): diag(1, e^{-iπ/4})
+_T_dag_gate = array([[1, 0], [0, np.exp(-1j * np.pi / 4)]], dtype=complex)
+
 # Go from xy to uv
 sigma_to_uv = array([
     [1, 1/r2, 0, -1/r2, 0, 0, 0, 0],
@@ -1181,14 +1209,22 @@ def aligned_search(
     Returns:
         ndarray: Array of shape (n, 8) containing solutions found.
     """
+    try:
+        from cyclosynth import py_aligned_search as _rust_aligned_search
+        norm = np.linalg.norm(v)
+        v_unit = (v / norm).tolist() if norm > 1e-12 else list(v)
+        sols = _rust_aligned_search(v_unit, k, epsilon, max_solutions)
+        return np.array(sols, dtype=np.int64).reshape(-1, 8) if sols else np.zeros((0, 8), dtype=np.int64)
+    except ImportError:
+        pass
+
+    # Python fallback (numba)
     target_norm = 2 ** k
 
     align_vec = sigma_to_uv.T @ v
     av = np.array([float(a) for a in align_vec])
     align_thresh_sq = float(target_norm * (1.0 - epsilon ** 2))
 
-    # Choose strategy: if alignment is concentrated in u1 (indices 0-3),
-    # enumerate those first for better pruning, solve u2 coords algebraically.
     u1_av_sq = sum(av[i] ** 2 for i in range(4))
     u2_av_sq = sum(av[i] ** 2 for i in range(4, 8))
 
@@ -1875,6 +1911,112 @@ def solution_to_gates(x: ndarray, k: int) -> str:
     return decomposer.decompose()
 
 
+def _domega_to_rust_dcn(values: list[int], k: int):
+    """
+    Convert DOmega coefficients (a + bω + cω² + dω³)/(√2)^k to a Rust
+    DyadicComplexNumber with 8 components (base=4, suitable for T-gate
+    BlochDecomposer).
+
+    The 8-component basis is {e^(iπj/4) for j=0..7}.  The DOmega basis
+    {ω^0,...,ω^3} occupies positions 0-3; positions 4-7 are zero.
+
+    For even k: numerator is [a, b, c, d, 0, 0, 0, 0], denominator = k//2.
+    For odd k:  multiply numerator by √2 = (ω - ω³) first, giving
+                [b-d, a+c, b+d, c-a, 0, 0, 0, 0], denominator = (k+1)//2.
+    """
+    from cyclosynth import DyadicComplexNumber
+    a, b, c, d = values
+    # The 8-component Rust DCN uses basis {e^(iπj/8) for j=0..7}.
+    # DOmega basis {ω^k = e^(iπk/4)} occupies even indices 0,2,4,6.
+    # Odd indices (e^(iπ/8), e^(3iπ/8), ...) are zero.
+    if k % 2 == 0:
+        return DyadicComplexNumber([a, 0, b, 0, c, 0, d, 0], k // 2)
+    else:
+        new = [b - d, a + c, b + d, c - a]  # = original * √2 in DOmega
+        return DyadicComplexNumber([new[0], 0, new[1], 0, new[2], 0, new[3], 0], (k + 1) // 2)
+
+
+def solution_to_rust_u2matrix(x: ndarray, k: int):
+    """
+    Convert an integer solution to an exact Rust U2Matrix.
+
+    Equivalent to solution_to_u2matrix but constructs Rust algebraic types
+    directly so the result can be passed to the Rust BlochDecomposer.
+    """
+    from cyclosynth import U2Matrix
+    a1, b1, c1, d1 = int(x[0]), int(x[1]), int(x[2]), int(x[3])
+    a2, b2, c2, d2 = int(x[4]), int(x[5]), int(x[6]), int(x[7])
+
+    u1       = _domega_to_rust_dcn([a1,  b1,  c1,  d1], k)
+    u2       = _domega_to_rust_dcn([a2,  b2,  c2,  d2], k)
+    conj_u1  = _domega_to_rust_dcn([a1, -d1, -c1, -b1], k)
+    neg_cu2  = _domega_to_rust_dcn([-a2, d2,  c2,  b2], k)
+
+    return U2Matrix([u1, neg_cu2, u2, conj_u1])
+
+
+def solution_to_rust_gates(x: ndarray, k: int) -> str:
+    """
+    Convert an integer solution to a Clifford+T gate sequence using the Rust
+    BlochDecomposer.
+    """
+    from cyclosynth import BlochDecomposer
+    u2 = solution_to_rust_u2matrix(x, k)
+    return BlochDecomposer(u2).py_decompose()
+
+
+_clifford_table_cache = None
+
+def _get_clifford_table() -> list[tuple]:
+    """
+    Build and cache a list of (C_numpy, C_gate_str) for all 24 single-qubit
+    Cliffords.  C_gate_str is the gate string FOR C (circuit order), so the
+    full circuit for 'synthesize C†·V then right-apply C' is gates + C_gate_str.
+    """
+    global _clifford_table_cache
+    if _clifford_table_cache is not None:
+        return _clifford_table_cache
+    from cyclosynth.cliffords import clifford_gates_to_u2
+    table = []
+    for gate_str, u2mat in clifford_gates_to_u2.items():
+        entries = u2mat.to_float()  # [u00, u01, u10, u11] as complex
+        C_np = np.array(
+            [[entries[0], entries[1]], [entries[2], entries[3]]],
+            dtype=complex,
+        )
+        # Project to nearest unitary to remove float noise from Rust conversion.
+        U, _, Vh = np.linalg.svd(C_np)
+        C_np = U @ Vh
+        table.append((C_np, gate_str))
+    _clifford_table_cache = table
+    return table
+
+
+def _branch_reconstruct(item: dict, t: int):
+    """
+    Reconstruct (U_numpy, gate_str) from a direct-search candidate item.
+    Handles even / T / Tdg branches.
+    Returns (U, gates_or_None).
+    """
+    sol = item['sol']
+    branch = item.get('_branch', 'even')
+    if branch == 'T':
+        U = to_unitary(sol, t) @ _T_gate
+    elif branch == 'Tdg':
+        U = to_unitary(sol, t) @ _T_dag_gate
+    else:
+        U = to_unitary(sol, t)
+    try:
+        g = solution_to_gates(sol, t)
+        if branch == 'T':
+            g = g + 'T'
+        elif branch == 'Tdg':
+            g = g + 'SSST'
+    except Exception:
+        g = None
+    return U, g
+
+
 def _generate_left_prefixes(t_prime: int) -> list[ndarray]:
     """
     Generate all left prefixes L_{t'} from Lemma 3.10.
@@ -1932,8 +2074,31 @@ def _enumerate_at_t(V: ndarray, v: ndarray, t: int, epsilon: float,
     zeta = np.exp(1j * np.pi / 4)
 
     if t <= direct_limit:
-        # Algorithm 3.6: direct integer-point enumeration
-        return list(aligned_search(v, t, epsilon, max_solutions))
+        # Algorithm 3.6: direct integer-point enumeration (even and odd branches).
+        # max_solutions=1 per branch: centering finds the nearest solution first.
+        # Both branches are always tried; synthesize() filters by diamond_distance.
+        results = []
+        # Even branch: U ≈ V directly.
+        for sol in aligned_search(v, t, epsilon, 1):
+            results.append({'_odd': False, '_branch': 'even', '_dc': False, 'sol': sol})
+            break
+        # T branch: find U s.t. U·T ≈ V → search aligned with uv(V·T†).
+        v_t = _T_dag_on_uv @ v
+        norm_t = np.linalg.norm(v_t)
+        if norm_t > 1e-12:
+            v_t = v_t / norm_t
+            for sol in aligned_search(v_t, t, epsilon, 1):
+                results.append({'_odd': True, '_branch': 'T', '_dc': False, 'sol': sol})
+                break
+        # T† branch: find U s.t. U·T† ≈ V → search aligned with uv(V·T).
+        v_tdg = _T_on_uv @ v
+        norm_tdg = np.linalg.norm(v_tdg)
+        if norm_tdg > 1e-12:
+            v_tdg = v_tdg / norm_tdg
+            for sol in aligned_search(v_tdg, t, epsilon, 1):
+                results.append({'_odd': True, '_branch': 'Tdg', '_dc': False, 'sol': sol})
+                break
+        return results
 
     # Algorithm 3.11: divide-and-conquer with MA left prefixes.
     # Choose t_prime (number of prefix T-gates) so residual lde fits
@@ -2070,30 +2235,54 @@ def synthesize(
         _elapsed = _time.time() - _t0
 
         if t <= direct_limit:
-            # Direct results: list of 8D integer solutions
+            # Direct results: list of dicts with '_branch' and 'sol' keys.
             method = "direct"
             best_dist = float('inf')
-            for sol in candidates:
-                U = to_unitary(sol, t)
+
+            for item in candidates:
+                U, gates = _branch_reconstruct(item, t)
                 dist = diamond_distance(U, V)
                 if dist < best_dist:
                     best_dist = dist
                 if dist < epsilon:
-                    result = {
-                        'solution': sol,
-                        'unitary': U,
-                        'lde': t,
-                        'distance': dist,
-                    }
-                    try:
-                        result['gates'] = solution_to_gates(sol, t)
-                    except Exception as e:
-                        result['gates'] = None
-                        result['gate_error'] = str(e)
                     if verbose:
                         print(f"  t={t}: {method} {_elapsed:.2f}s"
                               f" => FOUND d={dist:.6e}")
-                    return result
+                    return {
+                        'solution': item['sol'],
+                        'unitary': U,
+                        'lde': t,
+                        'distance': dist,
+                        'gates': gates,
+                    }
+
+            # C phase: try each Clifford C as a left-factor.
+            # Synthesize C†·V; if found (gate string G), full circuit is G + C.
+            for C_np, C_str in _get_clifford_table():
+                if np.allclose(C_np, np.eye(2)):
+                    continue  # identity: already covered by direct search above
+                V_prime = C_np.conj().T @ V
+                v_prime = unitary_to_uv(V_prime)
+                c_cands = _enumerate_at_t(
+                    V_prime, v_prime, t, epsilon, 1, direct_limit)
+                for item in c_cands:
+                    U_inner, inner_gates = _branch_reconstruct(item, t)
+                    U = C_np @ U_inner
+                    dist = diamond_distance(U, V)
+                    if dist < best_dist:
+                        best_dist = dist
+                    if dist < epsilon:
+                        gates = (inner_gates or '') + C_str
+                        if verbose:
+                            print(f"  t={t}: C({C_str}) {_elapsed:.2f}s"
+                                  f" => FOUND d={dist:.6e}")
+                        return {
+                            'solution': item['sol'],
+                            'unitary': U,
+                            'lde': t,
+                            'distance': dist,
+                            'gates': gates,
+                        }
         else:
             # D&C results: list of dicts with combined unitary info
             t_prime = 2 * (t - direct_limit)
