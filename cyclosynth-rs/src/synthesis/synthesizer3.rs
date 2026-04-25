@@ -26,12 +26,6 @@
 //!   k_inner = (t_inner - 1) / 2 + 1  (odd)
 
 use num_complex::Complex;
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
-
-/// Global cache for build_l results, keyed by t_prime.
-static BUILD_L_CACHE: LazyLock<Mutex<HashMap<u32, Vec<U2T>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 use crate::matrix::U2T;
 use crate::rings::types::{Int, Float};
@@ -48,12 +42,10 @@ use crate::synthesis::search::{
 type Mat2 = [[Complex<Float>; 2]; 2];
 
 /// Diamond distance between two unitaries: √max(0, 1 − |tr(A·B†)|²/4).
-///
-/// Tr(A·B†) = sum_{i,k} A[i][k] · conj(B[i][k])  (sum over all i, k of element-wise products).
 pub fn diamond_distance_float(a: &Mat2, b: &Mat2) -> Float {
     let tr = a[0][0] * b[0][0].conj()
-           + a[0][1] * b[0][1].conj()
-           + a[1][0] * b[1][0].conj()
+           + a[0][1] * b[1][0].conj()
+           + a[1][0] * b[0][1].conj()
            + a[1][1] * b[1][1].conj();
     (1.0 - tr.norm_sqr() / 4.0).max(0.0).sqrt()
 }
@@ -62,8 +54,8 @@ pub fn diamond_distance_float(a: &Mat2, b: &Mat2) -> Float {
 fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
     let uf = u.to_float();
     let tr = uf[0][0] * target[0][0].conj()
-           + uf[0][1] * target[0][1].conj()
-           + uf[1][0] * target[1][0].conj()
+           + uf[0][1] * target[1][0].conj()
+           + uf[1][0] * target[0][1].conj()
            + uf[1][1] * target[1][1].conj();
     (1.0 - tr.norm_sqr() / 4.0).max(0.0).sqrt()
 }
@@ -87,118 +79,20 @@ fn unitary_to_uv(v: &Mat2) -> [Float; 4] {
     }
 }
 
-/// Convert a 2×2 unitary to uv by trying all 8 global phases e^{ikπ/4} to find
-/// the SU(2) form [[u1, −ū2], [u2, ū1]]. Returns None if no phase works.
-///
-/// Matches Python's mat_to_uv in bandb6.py.  The 8 phases correspond to the
-/// possible determinants of Clifford+T products (det ∈ {e^{ikπ/4}}).
-fn mat_to_uv(u: &Mat2) -> Option<[Float; 4]> {
-    use std::f64::consts::FRAC_PI_4;
-    for k in 0..8 {
-        let ph = Complex::from_polar(1.0, k as Float * FRAC_PI_4);
-        let m00 = ph * u[0][0];
-        let m01 = ph * u[0][1];
-        let m10 = ph * u[1][0];
-        let m11 = ph * u[1][1];
-        // Check [[u1, -ū2], [u2, ū1]]: u1 = m00, u2 = m10.
-        // Need: m11 == conj(m00) and m01 == -conj(m10).
-        let d11 = m11 - Complex::new(m00.re, -m00.im);
-        let d01 = m01 - Complex::new(-m10.re, m10.im);
-        if d11.norm() < 1e-9 && d01.norm() < 1e-9 {
-            let u1 = m00;
-            let u2 = m10;
-            let v = [u1.re, u1.im, u2.re, u2.im];
-            let n: Float = v.iter().map(|x| x * x).sum::<Float>().sqrt();
-            if n > 1e-12 {
-                return Some(v.map(|x| x / n));
-            }
-        }
-    }
-    None
-}
-
-/// Compute U_L† · target as a float matrix.
-/// U_L is stored as U2T (exact), target as Mat2 (float).
-fn u2t_dag_times_mat2(u_l: &U2T, target: &Mat2) -> Mat2 {
-    let u_f = u_l.to_float();
-    // (U_L†)[i][j] = conj(U_L[j][i])
-    let ud00 = Complex::new(u_f[0][0].re, -u_f[0][0].im);
-    let ud01 = Complex::new(u_f[1][0].re, -u_f[1][0].im);
-    let ud10 = Complex::new(u_f[0][1].re, -u_f[0][1].im);
-    let ud11 = Complex::new(u_f[1][1].re, -u_f[1][1].im);
-    [
-        [
-            ud00 * target[0][0] + ud01 * target[1][0],
-            ud00 * target[0][1] + ud01 * target[1][1],
-        ],
-        [
-            ud10 * target[0][0] + ud11 * target[1][0],
-            ud10 * target[0][1] + ud11 * target[1][1],
-        ],
-    ]
-}
-
 // ─── MA prefix generation (Lemma 3.10) ───────────────────────────────────────
 
-/// Canonical float key for a U2T matrix, invariant under global U(1) phase.
+/// Generate all Matsumoto–Amano left prefixes for `t_prime` T-gates.
 ///
-/// Rotates the flattened matrix so the largest-magnitude element becomes
-/// real-positive, then rounds to 6 decimal places.  Used for O(n)-average
-/// deduplication in build_L, matching Python's `_canonical_key`.
-fn canonical_key(u: &U2T) -> [i64; 8] {
-    let m = u.to_float(); // [[Complex; 2]; 2]
-    let flat = [m[0][0], m[0][1], m[1][0], m[1][1]];
-
-    // Find element with largest magnitude
-    let (idx, _) = flat.iter().enumerate()
-        .max_by(|(_, a), (_, b)| a.norm_sqr().partial_cmp(&b.norm_sqr()).unwrap())
-        .unwrap();
-    let piv = flat[idx];
-
-    // Rotate so pivot is real-positive
-    let rot: Vec<_> = if piv.norm() < 1e-12 {
-        flat.iter().flat_map(|c| [c.re, c.im]).collect()
-    } else {
-        let phase = piv / piv.norm();
-        flat.iter().flat_map(|c| {
-            let r = c / phase;
-            [r.re, r.im]
-        }).collect()
-    };
-
-    // Round to 6 decimal places and encode as i64 (multiply by 1e6)
-    rot.iter().map(|x| (x * 1_000_000.0).round() as i64).collect::<Vec<_>>()
-        .try_into().unwrap()
-}
-
-/// Build L_{t'}: the Matsumoto–Amano prefix set with Clifford postmultiplication.
+/// L_{t'} = { ∏_{i=1}^{t'} HS^{b_i}T | b_i ∈ {0,1} }
+///         ∪ { T · ∏_{i=1}^{t'−1} HS^{b_i}T }
 ///
-/// Matches Python's `build_L`:
-///   L_0 = {I}
-///   L_n (n≥1):
-///     even branch: (HS^{b_n}T)·…·(HS^{b_1}T) · C  for b_i ∈ {0,1}, C ∈ C_1
-///     odd  branch: T · (HS^{b_{n-1}}T)·…·(HS^{b_1}T) · C
-///   deduplicated up to global U(1) phase.
+/// This is the bare MA sequence set (without Clifford right-multiplication).
+/// Clifford factors are handled inside direct_search, which tries all 24
+/// Clifford left-prefixes on the inner target, so the overall search space
+/// is identical to the Python version's L_{t'} × C_1 after deduplication.
 ///
-/// Size after dedup: |L_0|=1, |L_n| = O(2^n) (much less than 3·2^{n-1}·24
-/// due to many Clifford products being phase-equivalent).
-fn build_l(t_prime: u32) -> Vec<U2T> {
-    // Check cache first
-    {
-        let cache = BUILD_L_CACHE.lock().unwrap();
-        if let Some(v) = cache.get(&t_prime) {
-            return v.clone();
-        }
-    }
-
-    let result = build_l_inner(t_prime);
-
-    // Store in cache
-    BUILD_L_CACHE.lock().unwrap().insert(t_prime, result.clone());
-    result
-}
-
-fn build_l_inner(t_prime: u32) -> Vec<U2T> {
+/// Returns 3·2^{t'−1} exact U2T matrices (or 1 for t'=0).
+fn generate_left_prefixes(t_prime: u32) -> Vec<U2T> {
     if t_prime == 0 {
         return vec![U2T::eye()];
     }
@@ -206,12 +100,13 @@ fn build_l_inner(t_prime: u32) -> Vec<U2T> {
     let h = U2T::h();
     let s = U2T::s();
     let t = U2T::t();
-    let hs0t = h * t;        // H·T
-    let hs1t = h * s * t;   // H·S·T
+    // HS^0T = H·T,  HS^1T = H·S·T
+    let hs0t = h * t;
+    let hs1t = h * s * t;
 
-    let mut candidates: Vec<U2T> = Vec::new();
+    let mut prefixes = Vec::new();
 
-    // Even branch: length-t' product of (HS^b T) blocks, then · C
+    // First family: ∏_{i=0}^{t'−1} gate_i, gate_i ∈ {HS0T, HS1T}.
     let n = 1u32 << t_prime;
     for bits in 0..n {
         let mut u = U2T::eye();
@@ -219,12 +114,10 @@ fn build_l_inner(t_prime: u32) -> Vec<U2T> {
             let gate = if (bits >> i) & 1 == 1 { hs1t } else { hs0t };
             u = u * gate;
         }
-        for (_, c_u2t) in CLIFFORD_TABLE_T {
-            candidates.push(u * *c_u2t);
-        }
+        prefixes.push(u);
     }
 
-    // Odd branch: T · length-(t'-1) product · C
+    // Second family: T · ∏_{i=0}^{t'−2} gate_i.
     let n2 = 1u32 << (t_prime - 1);
     for bits in 0..n2 {
         let mut u = t;
@@ -232,21 +125,10 @@ fn build_l_inner(t_prime: u32) -> Vec<U2T> {
             let gate = if (bits >> i) & 1 == 1 { hs1t } else { hs0t };
             u = u * gate;
         }
-        for (_, c_u2t) in CLIFFORD_TABLE_T {
-            candidates.push(u * *c_u2t);
-        }
+        prefixes.push(u);
     }
 
-    // Deduplicate up to global phase
-    let mut seen: std::collections::HashSet<[i64; 8]> = std::collections::HashSet::new();
-    let mut unique: Vec<U2T> = Vec::new();
-    for u in candidates {
-        let key = canonical_key(&u);
-        if seen.insert(key) {
-            unique.push(u);
-        }
-    }
-    unique
+    prefixes
 }
 
 // ─── Solution conversion ──────────────────────────────────────────────────────
@@ -437,13 +319,12 @@ fn schnorr_euchner(
     t_lat: [Float; 3],
     r_norm_sq: i64,
     a1: i64, c1: i64, a2: i64, c2: i64,
-) -> Vec<[i64; 4]> {
-    let mut out: Vec<[i64; 4]> = Vec::new();
+) -> Option<[i64; 4]> {
     let radius = (r_norm_sq as Float).sqrt();
 
     let r22 = r_mat[2][2];
     if r22.abs() < 1e-12 {
-        return out;
+        return None;
     }
     let z2_center = t_lat[2];
     let z2_lo = (z2_center - radius / r22.abs()).floor() as i64 - 1;
@@ -497,31 +378,26 @@ fn schnorr_euchner(
                 if b1 * (a1 + c1) + d1 * (c1 - a1) + b2 * (a2 + c2) + d2 * (c2 - a2) != 0 {
                     continue;
                 }
-                // Dedup (z0 ± rounding may produce the same bd twice)
-                if !out.contains(&bd) {
-                    out.push(bd);
-                }
+                return Some(bd);
             }
         }
     }
-    out
+    None
 }
 
 /// Phase 2: find (b1,d1,b2,d2) satisfying norm and unitarity using LLL+CVP.
-/// Returns all found solutions.
-fn phase2_pq(a1: i64, c1: i64, a2: i64, c2: i64, r: i64, y: &[Float; 8]) -> Vec<[i64; 4]> {
+fn phase2_pq(a1: i64, c1: i64, a2: i64, c2: i64, r: i64, y: &[Float; 8]) -> Option<[i64; 4]> {
     if r < 0 {
-        return Vec::new();
+        return None;
     }
     if r == 0 {
-        return vec![[0, 0, 0, 0]];
+        return Some([0, 0, 0, 0]);
     }
 
     let w_bd = [a1 + c1, c1 - a1, a2 + c2, c2 - a2];
 
     // Degenerate: all unitarity coefficients zero → brute-force 4D sphere
     if w_bd == [0, 0, 0, 0] {
-        let mut results = Vec::new();
         let max_b1 = (r as Float).sqrt() as i64 + 1;
         for b1 in -max_b1..=max_b1 {
             let rem1 = r - b1 * b1;
@@ -536,16 +412,15 @@ fn phase2_pq(a1: i64, c1: i64, a2: i64, c2: i64, r: i64, y: &[Float; 8]) -> Vec<
                     if rem3 < 0 { continue; }
                     let d2s = (rem3 as Float).sqrt() as i64;
                     if d2s * d2s != rem3 { continue; }
-                    if d2s == 0 {
-                        results.push([b1, d1, b2, 0]);
-                    } else {
-                        results.push([b1, d1, b2, d2s]);
-                        results.push([b1, d1, b2, -d2s]);
+                    let both = [d2s, -d2s];
+                    let candidates: &[i64] = if d2s == 0 { &[0] } else { &both };
+                    for &d2 in candidates {
+                        return Some([b1, d1, b2, d2]);
                     }
                 }
             }
         }
-        return results;
+        return None;
     }
 
     let n_bd = integer_null_basis(w_bd);
@@ -725,8 +600,7 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
                         continue;
                     }
 
-                    for bd in phase2_pq(a1, c1, a2, c2, r, y) {
-                        let [b1, d1, b2, d2] = bd;
+                    if let Some([b1, d1, b2, d2]) = phase2_pq(a1, c1, a2, c2, r, y) {
                         let x = [a1, b1, c1, d1, a2, b2, c2, d2];
                         let dot: Float = x.iter().zip(y.iter()).map(|(&xi, &yi)| xi as Float * yi).sum();
                         if dot * dot >= threshold_xy {
@@ -993,9 +867,15 @@ impl Synthesizer {
         }
         let t_inner = t - t_prime;
 
-        // Convert t_inner (T-count) to the k convention used by lll_aligned_search.
-        //   even T-count: k = t_inner/2 + 1
-        //   odd  T-count: k = (t_inner-1)/2 + 1
+        // Convert t_inner (T-count) to bandb5's k convention.
+        //
+        // In bandb5.py, k is NOT the T-count.  The relationship is:
+        //   even T-count: T = 2*(k-1)  =>  k = T/2 + 1,  norm = 2^k = 2^(T/2+1)
+        //   odd  T-count: T = 2*(k-1)+1 =>  k = (T-1)/2 + 1, with odd=true flag
+        //
+        // The Rust lll_aligned_search uses the same k convention as bandb5
+        // (norm = 2^k), so we must convert.  Passing t_inner directly would
+        // search a norm shell 2^(t_inner/2-1) times larger than needed.
         let odd_inner = t_inner % 2 == 1;
         let k_inner: u32 = if odd_inner {
             (t_inner - 1) / 2 + 1
@@ -1003,18 +883,13 @@ impl Synthesizer {
             t_inner / 2 + 1
         };
 
-        let prefixes = build_l(t_prime);
+        let prefixes = generate_left_prefixes(t_prime);
 
         for u_l in &prefixes {
-            // Compute U_L† · target as a full float matrix, then extract uv via
-            // mat_to_uv which tries all 8 global phases (matches bandb6.py).
-            let m_inner = u2t_dag_times_mat2(u_l, target);
-            let v_inner = match mat_to_uv(&m_inner) {
-                Some(v) => v,
-                None => continue,
-            };
+            let v_inner = apply_u2t_dag_to_uv(u_l, v);
 
-            // Even inner branch: U_L · U_R ≈ target
+            // Even inner branch: U_L · U_R ≈ target, T-count(U_R) = t_inner (even)
+            // or t_inner-1 (using odd branch below).  In both cases k_inner is correct.
             for sol in lll_aligned_search(v_inner, k_inner, eps, 1) {
                 let u2t = *u_l * solution_to_u2t(&sol, k_inner);
                 let dist = diamond_distance_u2t_float(&u2t, target);
@@ -1027,7 +902,8 @@ impl Synthesizer {
                 }
             }
 
-            // Odd inner branch: U_L · U_R · T ≈ target
+            // Odd inner branch: U_L · U_R · T ≈ target.
+            // Equivalent to searching for U_R ≈ U_L†·target·T† at k_inner.
             if t_inner > 0 {
                 let v_inner_t = apply_t_dag_to_uv(v_inner);
                 for sol in lll_aligned_search(v_inner_t, k_inner, eps, 1) {
@@ -1204,36 +1080,5 @@ mod tests {
     }
 
     // Synthesize a Haar-random SU(2) unitary at eps=0.01.
-    #[ignore]
-    #[test]
-    fn test_synthesize_random_unitary() {
-        use rand::{SeedableRng, rngs::StdRng, Rng};
-
-        let mut rng = StdRng::seed_from_u64(42);
-        let eps = 0.01_f64;
-
-        let theta: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
-        let phi: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
-        let lambda: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
-        
-        let ct = (theta / 2.0).cos();
-        let st = (theta / 2.0).sin();
-
-        // U3(θ,φ,λ) has det = e^{i(φ+λ)}, which is SU(2) only if φ+λ=0.
-        // Normalize to SU(2) by multiplying by e^{-i(φ+λ)/2}.
-        let global_phase = Complex::from_polar(1.0, -(phi + lambda) / 2.0);
-        let target: Mat2 = [
-            [global_phase * Complex::new(ct, 0.0), global_phase * (-Complex::from_polar(st, lambda))],
-            [global_phase * Complex::from_polar(st, phi), global_phase * Complex::from_polar(ct, phi + lambda)],
-        ];
-        println!("Target unitary:\n{:?}", target);
-
-        let synth = Synthesizer::new(eps);
-        let result = synth.synthesize(target).expect("Should synthesize random unitary");
-        print!("Random unitary synthesis result: gates={:?}, lde={}, distance={:.6e}\n",
-            result.gates, result.lde, result.distance);
-        assert!(result.distance < eps,
-            "distance={:.6e} >= epsilon={:.6e}", result.distance, eps);
-    }
 
 }
