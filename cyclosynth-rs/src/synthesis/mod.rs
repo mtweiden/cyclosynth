@@ -2,8 +2,6 @@ pub mod cliffords;
 pub mod decomposer;
 pub mod search;
 pub mod synthesizer;
-pub mod synthesizer2;
-pub mod synthesizer3;
 
 pub use cliffords::{CLIFFORD_TABLE_T, apply_clifford_dagger, match_clifford};
 pub use decomposer::BlochDecomposer;
