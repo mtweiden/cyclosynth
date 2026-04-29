@@ -841,7 +841,23 @@ impl Synthesizer {
         let raw_uv = unitary_to_uv(&target);
         let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
 
-        for t in 0..=self.max_lde {
+        // Phase 1: small t — catches Cliffords, T, and low-T-count gates
+        for t in 0..=self.direct_limit {
+            if let Some(result) = self.try_at_lde(&target, v, t) {
+                return Some(result);
+            }
+        }
+
+        // Phase 2: DC regime — skip the gap where dc_search exists but prefix lists
+        // are tiny and lll_aligned_search is cheap anyway (t=direct_limit+1 .. t_dc_start-1)
+        let t_dc_start = if self.epsilon < 1.0 {
+            let raw = (5.0 / 2.0) * (1.0 / self.epsilon).log2();
+            (raw as u32).max(self.direct_limit + 1)
+        } else {
+            self.direct_limit + 1
+        };
+
+        for t in t_dc_start..=self.max_lde {
             if let Some(result) = self.try_at_lde(&target, v, t) {
                 return Some(result);
             }
@@ -858,13 +874,10 @@ impl Synthesizer {
     /// The direct_limit cap prevents aligned_search from hanging at large lde.
     fn try_at_lde(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResult> {
         if t <= self.direct_limit {
-            // Small t: direct brute-force search is fast (norm shell ≤ 2^direct_limit).
+            eprintln!("t={t} → direct_search");
             self.direct_search(target, v, t)
         } else {
-            // Large t: always use DC regardless of the optimal-split formula.
-            // dc_search computes the optimal t' internally; if t' == 0 (formula
-            // says direct is fine) but t > direct_limit, we force t' = t - direct_limit
-            // so the inner search stays within the tractable brute-force regime.
+            eprintln!("t={t} → dc_search");
             self.dc_search(target, v, t)
         }
     }
@@ -989,10 +1002,14 @@ impl Synthesizer {
                 opt
             }
         };
+        
         if t_prime == 0 || t_prime > t {
             return self.direct_search(target, v, t);
         }
         let t_inner = t - t_prime;
+
+        let prefixes = build_l(t_prime);
+        eprintln!("t={t}, t_prime={t_prime}, t_inner={t_inner}, |prefixes|={}", prefixes.len());
 
         // Convert t_inner (T-count) to the k convention used by lll_aligned_search.
         //   even T-count: k = t_inner/2 + 1
@@ -1150,7 +1167,7 @@ mod tests {
     #[test]
     fn test_synthesize_rz_hard_2() {
         let target = rz(1.34);
-        let synth = Synthesizer::new(0.01);
+        let synth = Synthesizer::new(0.001);
         let result = synth.synthesize(target).expect("Should synthesize Rz(1.34) at eps=0.01");
         println!("{:?}", result.gates);
 
@@ -1213,7 +1230,7 @@ mod tests {
         use rand::{SeedableRng, rngs::StdRng, Rng};
 
         let mut rng = StdRng::seed_from_u64(42);
-        let eps = 0.01_f64;
+        let eps = 0.001_f64;
 
         let theta: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
         let phi: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
