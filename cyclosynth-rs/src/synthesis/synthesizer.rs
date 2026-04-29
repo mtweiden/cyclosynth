@@ -28,6 +28,7 @@
 use num_complex::Complex;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
+use rayon::prelude::*;
 
 /// Global cache for build_l results, keyed by t_prime.
 static BUILD_L_CACHE: LazyLock<Mutex<HashMap<u32, Vec<U2T>>>> =
@@ -1005,13 +1006,15 @@ impl Synthesizer {
 
         let prefixes = build_l(t_prime);
 
-        for u_l in &prefixes {
+        // Parallel search over all left prefixes.
+        // find_map_any stops all threads as soon as any one returns Some(...).
+        prefixes.par_iter().find_map_any(|u_l| {
             // Compute U_L† · target as a full float matrix, then extract uv via
             // mat_to_uv which tries all 8 global phases (matches bandb6.py).
             let m_inner = u2t_dag_times_mat2(u_l, target);
             let v_inner = match mat_to_uv(&m_inner) {
                 Some(v) => v,
-                None => continue,
+                None => return None,
             };
 
             // Even inner branch: U_L · U_R ≈ target
@@ -1042,9 +1045,9 @@ impl Synthesizer {
                     }
                 }
             }
-        }
 
-        None
+            None
+        })
     }
 }
 
