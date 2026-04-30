@@ -843,8 +843,11 @@ impl Synthesizer {
 
         // Phase 1: small t — catches Cliffords, T, and low-T-count gates
         for t in 0..=self.direct_limit {
-            if let Some(result) = self.try_at_lde(&target, v, t) {
-                return Some(result);
+            let t0 = std::time::Instant::now();
+            let result = self.try_at_lde(&target, v, t);
+            eprintln!("t={t} took {:.3}s", t0.elapsed().as_secs_f64());
+            if result.is_some() {
+                return result;
             }
         }
 
@@ -858,8 +861,11 @@ impl Synthesizer {
         };
 
         for t in t_dc_start..=self.max_lde {
-            if let Some(result) = self.try_at_lde(&target, v, t) {
-                return Some(result);
+            let t0 = std::time::Instant::now();
+            let result = self.try_at_lde(&target, v, t);
+            eprintln!("t={t} took {:.3}s", t0.elapsed().as_secs_f64());
+            if result.is_some() {
+                return result;
             }
         }
         None
@@ -1008,9 +1014,6 @@ impl Synthesizer {
         }
         let t_inner = t - t_prime;
 
-        let prefixes = build_l(t_prime);
-        eprintln!("t={t}, t_prime={t_prime}, t_inner={t_inner}, |prefixes|={}", prefixes.len());
-
         // Convert t_inner (T-count) to the k convention used by lll_aligned_search.
         //   even T-count: k = t_inner/2 + 1
         //   odd  T-count: k = (t_inner-1)/2 + 1
@@ -1022,10 +1025,15 @@ impl Synthesizer {
         };
 
         let prefixes = build_l(t_prime);
+        eprintln!("t={t}, t_prime={t_prime}, t_inner={t_inner}, |prefixes|={}", prefixes.len());
 
         // Parallel search over all left prefixes.
         // find_map_any stops all threads as soon as any one returns Some(...).
-        prefixes.par_iter().find_map_any(|u_l| {
+        // with_min_len ensures rayon distributes work evenly rather than
+        // keeping everything on one thread when items complete quickly.
+        let n_threads = rayon::current_num_threads();
+        let chunk = (prefixes.len() / n_threads).max(1);
+        prefixes.par_iter().with_min_len(chunk).find_map_any(|u_l| {
             // Compute U_L† · target as a full float matrix, then extract uv via
             // mat_to_uv which tries all 8 global phases (matches bandb6.py).
             let m_inner = u2t_dag_times_mat2(u_l, target);
