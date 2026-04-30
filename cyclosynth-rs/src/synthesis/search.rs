@@ -714,20 +714,10 @@ pub fn aligned_search(
     let u2_energy: f64 = av[4]*av[4] + av[5]*av[5] + av[6]*av[6] + av[7]*av[7];
 
     let mut out = Vec::new();
-    if k <= 5 {
-        // Small norm shell — serial is faster than rayon overhead.
-        if u1_energy >= u2_energy {
-            fast_search_u1(target_norm, &av, thresh_sq, max_solutions, &mut out);
-        } else {
-            fast_search(target_norm, &av, thresh_sq, max_solutions, &mut out);
-        }
+    if u1_energy >= u2_energy {
+        fast_search_u1(target_norm, &av, thresh_sq, max_solutions, &mut out);
     } else {
-        // Large norm shell — parallelise over the outermost a1 loop.
-        if u1_energy >= u2_energy {
-            fast_search_u1(target_norm, &av, thresh_sq, max_solutions, &mut out);
-        } else {
-            fast_search(target_norm, &av, thresh_sq, max_solutions, &mut out);
-        }
+        fast_search(target_norm, &av, thresh_sq, max_solutions, &mut out);
     }
     out
 }
