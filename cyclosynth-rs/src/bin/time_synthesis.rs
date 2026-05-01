@@ -1,9 +1,11 @@
 //! Timing harness for Clifford+T synthesis.
 //!
 //! Usage:
-//!   time_synthesis [--threads N] [--max-lde N]
+//!   time_synthesis [--threads N] [--max-lde N] [--trials N] [--skip-tight]
 //!
-//! RAYON_NUM_THREADS env var also controls thread count.
+//! Defaults: 8 threads, max-lde 50, 3 trials.
+//! Build with --features profiling to see per-phase breakdowns.
+//! Use --skip-tight to omit the slow 1e-4 cases.
 
 use cyclosynth::synthesis::synthesizer::Synthesizer;
 use num_complex::Complex;
@@ -13,29 +15,47 @@ use std::time::Instant;
 type C64 = Complex<f64>;
 type Mat2 = [[C64; 2]; 2];
 
+fn mat_mul(a: Mat2, b: Mat2) -> Mat2 {
+    [[
+        a[0][0]*b[0][0] + a[0][1]*b[1][0],
+        a[0][0]*b[0][1] + a[0][1]*b[1][1],
+    ],[
+        a[1][0]*b[0][0] + a[1][1]*b[1][0],
+        a[1][0]*b[0][1] + a[1][1]*b[1][1],
+    ]]
+}
+
 fn rz(theta: f64) -> Mat2 {
-    [
-        [C64::from_polar(1.0, -theta / 2.0), C64::new(0.0, 0.0)],
-        [C64::new(0.0, 0.0), C64::from_polar(1.0, theta / 2.0)],
-    ]
+    [[C64::from_polar(1.0, -theta / 2.0), C64::new(0.0, 0.0)],
+     [C64::new(0.0, 0.0),                 C64::from_polar(1.0, theta / 2.0)]]
+}
+
+fn ry(theta: f64) -> Mat2 {
+    let c = (theta / 2.0).cos();
+    let s = (theta / 2.0).sin();
+    [[C64::new(c, 0.0), C64::new(-s, 0.0)],
+     [C64::new(s, 0.0), C64::new(c, 0.0)]]
+}
+
+// General SU(2) via Euler decomposition: Rz(a) · Ry(b) · Rz(c)
+fn u3(a: f64, b: f64, c: f64) -> Mat2 {
+    mat_mul(mat_mul(rz(a), ry(b)), rz(c))
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let mut num_threads: Option<usize> = None;
+    let mut num_threads: Option<usize> = Some(8);
     let mut max_lde: u32 = 50;
+    let mut n_trials: usize = 3;
+    let mut skip_tight = false;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--threads" => {
-                i += 1;
-                num_threads = Some(args[i].parse().expect("--threads requires a number"));
-            }
-            "--max-lde" => {
-                i += 1;
-                max_lde = args[i].parse().expect("--max-lde requires a number");
-            }
+            "--threads" => { i += 1; num_threads = Some(args[i].parse().expect("--threads N")); }
+            "--max-lde" => { i += 1; max_lde = args[i].parse().expect("--max-lde N"); }
+            "--trials"  => { i += 1; n_trials = args[i].parse().expect("--trials N"); }
+            "--skip-tight" => { skip_tight = true; }
             _ => {}
         }
         i += 1;
@@ -51,49 +71,85 @@ fn main() {
     let n_threads = rayon::current_num_threads();
 
     let r = std::f64::consts::FRAC_1_SQRT_2;
-    let h: Mat2 = [
-        [C64::new(r, 0.0), C64::new(r, 0.0)],
-        [C64::new(r, 0.0), C64::new(-r, 0.0)],
-    ];
-    let id: Mat2 = [
-        [C64::new(1.0, 0.0), C64::new(0.0, 0.0)],
-        [C64::new(0.0, 0.0), C64::new(1.0, 0.0)],
-    ];
+    let h: Mat2 = [[C64::new(r, 0.0), C64::new(r, 0.0)],
+                   [C64::new(r, 0.0), C64::new(-r, 0.0)]];
+    let id: Mat2 = [[C64::new(1.0, 0.0), C64::new(0.0, 0.0)],
+                    [C64::new(0.0, 0.0), C64::new(1.0, 0.0)]];
 
+    // cases: (name, matrix, epsilon)
+    // Rz-only, eps=1e-2
+    // Rz-only, eps=1e-3
+    // General SU(2) (Ry and Rz*Ry*Rz), eps=1e-2 and 1e-3
+    // Tight eps=1e-4
     let cases: Vec<(&str, Mat2, f64)> = vec![
-        ("identity",       id,           0.01),
-        ("H_gate",         h,            0.01),
-        ("T_gate",         rz(PI / 4.0), 0.01),
-        ("Rz_0.3",         rz(0.3),      0.01),
-        ("Rz_1.34",        rz(1.34),     0.01),
-        ("Rz_pi/7",        rz(PI / 7.0), 0.01),
-        ("Rz_0.3_tight",   rz(0.3),      0.001),
-        ("Rz_1.34_tight",  rz(1.34),     0.001),
+        // ── eps = 1e-2 ─────────────────────────────────────────────────────────
+        ("identity",           id,                      1e-2),
+        ("H",                  h,                       1e-2),
+        ("T",                  rz(PI / 4.0),            1e-2),
+        ("Rz(0.30)_1e-2",     rz(0.3),                 1e-2),
+        ("Rz(1.34)_1e-2",     rz(1.34),                1e-2),
+        ("Rz(pi/7)_1e-2",     rz(PI / 7.0),            1e-2),
+        ("Ry(0.50)_1e-2",     ry(0.5),                  1e-2),
+        ("U3(0.3,0.7,1.2)_1e-2", u3(0.3, 0.7, 1.2),   1e-2),
+        ("U3(1.1,0.4,2.3)_1e-2", u3(1.1, 0.4, 2.3),   1e-2),
+        // ── eps = 1e-3 ─────────────────────────────────────────────────────────
+        ("Rz(0.30)_1e-3",     rz(0.3),                 1e-3),
+        ("Rz(1.34)_1e-3",     rz(1.34),                1e-3),
+        ("Rz(pi/7)_1e-3",     rz(PI / 7.0),            1e-3),
+        ("Ry(0.50)_1e-3",     ry(0.5),                  1e-3),
+        ("U3(0.3,0.7,1.2)_1e-3", u3(0.3, 0.7, 1.2),   1e-3),
     ];
 
-    println!("threads: {n_threads}  max_lde: {max_lde}");
-    println!("{:<18} {:>7}  {:>4}  {:>10}  {:>10}", "name", "eps", "lde", "dist", "time_ms");
-    println!("{}", "-".repeat(60));
+    let tight_cases: Vec<(&str, Mat2, f64)> = vec![
+        // ── eps = 1e-4 (slow, skip with --skip-tight) ───────────────────────────
+        ("Rz(0.30)_1e-4",     rz(0.3),                 1e-4),
+        ("Rz(pi/7)_1e-4",     rz(PI / 7.0),            1e-4),
+        ("U3(0.3,0.7,1.2)_1e-4", u3(0.3, 0.7, 1.2),   1e-4),
+    ];
 
-    let mut total_ms = 0.0_f64;
+    let cases: Vec<(&str, Mat2, f64)> = if skip_tight {
+        cases
+    } else {
+        cases.into_iter().chain(tight_cases.into_iter()).collect()
+    };
+
+    println!("threads: {n_threads}  max_lde: {max_lde}  trials: {n_trials}");
+    println!("{:<26} {:>6}  {:>4}  {:>10}  {:>10}  {:>10}",
+             "name", "eps", "lde", "dist", "min_ms", "avg_ms");
+    println!("{}", "-".repeat(76));
+
+    let mut total_min_ms = 0.0_f64;
 
     for (name, target, eps) in &cases {
-        #[cfg(feature = "profiling")]
-        cyclosynth::synthesis::synthesizer::reset_profiling();
-
         let synth = Synthesizer::new(*eps).with_max_lde(max_lde);
-        let t0 = Instant::now();
-        let result = synth.synthesize(*target);
-        let elapsed_ms = t0.elapsed().as_secs_f64() * 1000.0;
-        total_ms += elapsed_ms;
 
-        match result {
+        let mut times = Vec::with_capacity(n_trials);
+        let mut last_result = None;
+
+        for trial in 0..n_trials {
+            #[cfg(feature = "profiling")]
+            if trial == n_trials - 1 {
+                // Only profile the last trial to avoid cross-trial contamination
+                cyclosynth::synthesis::synthesizer::reset_profiling();
+            }
+
+            let t0 = Instant::now();
+            let result = synth.synthesize(*target);
+            times.push(t0.elapsed().as_secs_f64() * 1000.0);
+            if trial == n_trials - 1 { last_result = result; }
+        }
+
+        let min_ms = times.iter().cloned().fold(f64::INFINITY, f64::min);
+        let avg_ms = times.iter().sum::<f64>() / times.len() as f64;
+        total_min_ms += min_ms;
+
+        match &last_result {
             Some(r) => println!(
-                "{:<18} {:>7.4}  {:>4}  {:>10.3e}  {:>10.1}",
-                name, eps, r.lde, r.distance, elapsed_ms
+                "{:<26} {:>6.0e}  {:>4}  {:>10.3e}  {:>10.1}  {:>10.1}",
+                name, eps, r.lde, r.distance, min_ms, avg_ms
             ),
             None => println!(
-                "{:<18} {:>7.4}  FAILED (no solution within max_lde={max_lde})",
+                "{:<26} {:>6.0e}  FAILED (no solution within max_lde={max_lde})",
                 name, eps
             ),
         }
@@ -102,6 +158,6 @@ fn main() {
         cyclosynth::synthesis::synthesizer::report_profiling();
     }
 
-    println!("{}", "-".repeat(60));
-    println!("total: {total_ms:.1} ms");
+    println!("{}", "-".repeat(76));
+    println!("total (min): {total_min_ms:.1} ms");
 }
