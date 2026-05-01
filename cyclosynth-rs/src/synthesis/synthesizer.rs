@@ -674,7 +674,6 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
     let c2_c = (y[6] * scale).round() as i64;
 
     let max_outer = (target_norm as Float).sqrt() as i64 + 1;
-    let mut solutions = Vec::new();
 
     let y_sq_all: Float = y.iter().map(|x| x * x).sum();
     let y_sq_no_a1 = y_sq_all - y[0] * y[0];
@@ -684,36 +683,47 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
 
     let thresh = threshold_xy.sqrt();
 
-    for a1 in CenteredRange::new(a1_c, max_outer) {
-        if a1 * a1 > target_norm { continue; }
-        let rem_a1 = target_norm - a1 * a1;
-        let dot_a1 = a1 as Float * y[0];
-        if (dot_a1.abs() + (rem_a1 as Float * y_sq_no_a1).sqrt()) < thresh {
-            continue;
-        }
-
-        for c1 in CenteredRange::new(c1_c, max_outer) {
-            if a1*a1 + c1*c1 > target_norm { continue; }
-            let rem_c1 = target_norm - a1*a1 - c1*c1;
-            let dot_a1c1 = dot_a1 + c1 as Float * y[2];
-            if (dot_a1c1.abs() + (rem_c1 as Float * y_sq_no_a1_c1).sqrt()) < thresh {
+    // Phase 1a: collect (a1, c1, rem_c1, dot_a1c1) pairs that pass the outer two
+    // pruning levels.  This is cheap (norm + Cauchy-Schwarz checks only, no LLL)
+    // and produces a small Vec that the parallel phase below can distribute across cores.
+    let pairs: Vec<(i64, i64, i64, Float)> = {
+        let mut v = Vec::new();
+        for a1 in CenteredRange::new(a1_c, max_outer) {
+            if a1 * a1 > target_norm { continue; }
+            let rem_a1 = target_norm - a1 * a1;
+            let dot_a1 = a1 as Float * y[0];
+            if dot_a1.abs() + (rem_a1 as Float * y_sq_no_a1).sqrt() < thresh {
                 continue;
             }
-
-            for a2 in CenteredRange::new(a2_c, max_outer) {
-                if a1*a1 + c1*c1 + a2*a2 > target_norm { continue; }
-                let rem_a2 = target_norm - a1*a1 - c1*c1 - a2*a2;
-                let dot_3 = dot_a1c1 + a2 as Float * y[4];
-                if (dot_3.abs() + (rem_a2 as Float * y_sq_no_a1_c1_a2).sqrt()) < thresh {
+            for c1 in CenteredRange::new(c1_c, max_outer) {
+                if a1*a1 + c1*c1 > target_norm { continue; }
+                let rem_c1 = target_norm - a1*a1 - c1*c1;
+                let dot_a1c1 = dot_a1 + c1 as Float * y[2];
+                if dot_a1c1.abs() + (rem_c1 as Float * y_sq_no_a1_c1).sqrt() < thresh {
                     continue;
                 }
+                v.push((a1, c1, rem_c1, dot_a1c1));
+            }
+        }
+        v
+    };
 
+    // Phase 1b: run the a2/c2/phase2_pq inner work in parallel over the collected pairs.
+    // find_map_any stops all threads as soon as any one returns Some.
+    pairs.into_par_iter()
+        .find_map_any(|(a1, c1, rem_c1, dot_a1c1)| {
+            for a2 in CenteredRange::new(a2_c, max_outer) {
+                if a2*a2 > rem_c1 { continue; }
+                let rem_a2 = rem_c1 - a2*a2;
+                let dot_3 = dot_a1c1 + a2 as Float * y[4];
+                if dot_3.abs() + (rem_a2 as Float * y_sq_no_a1_c1_a2).sqrt() < thresh {
+                    continue;
+                }
                 for c2 in CenteredRange::new(c2_c, max_outer) {
-                    let outer_norm_sq = a1*a1 + c1*c1 + a2*a2 + c2*c2;
-                    if outer_norm_sq > target_norm { continue; }
-                    let r = target_norm - outer_norm_sq;
+                    if c2*c2 > rem_a2 { continue; }
+                    let r = rem_a2 - c2*c2;
+                    let outer_norm_sq = target_norm - r;
                     let dot_outer = dot_3 + c2 as Float * y[6];
-                    // Tighter Cauchy-Schwarz using the unitarity null-space projection
                     let w_bd_norm_sq = 2 * outer_norm_sq;
                     let y_inner_proj_sq = if w_bd_norm_sq > 0 {
                         let wdot = y[1] * (a1 + c1) as Float + y[3] * (c1 - a1) as Float
@@ -725,22 +735,21 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
                     if dot_outer.abs() + (r as Float * y_inner_proj_sq).sqrt() < thresh {
                         continue;
                     }
-
                     for bd in phase2_pq(a1, c1, a2, c2, r, y) {
                         let [b1, d1, b2, d2] = bd;
                         let x = [a1, b1, c1, d1, a2, b2, c2, d2];
-                        let dot: Float = x.iter().zip(y.iter()).map(|(&xi, &yi)| xi as Float * yi).sum();
+                        let dot: Float = x.iter().zip(y.iter())
+                            .map(|(&xi, &yi)| xi as Float * yi).sum();
                         if dot * dot >= threshold_xy {
-                            solutions.push(x);
-                            return solutions;
+                            return Some(x);
                         }
                     }
                 }
             }
-        }
-    }
-
-    solutions
+            None
+        })
+        .map(|x| vec![x])
+        .unwrap_or_default()
 }
 
 /// LLL-based aligned search: implements bandb5.py's `synthesize`.
@@ -890,6 +899,25 @@ impl Synthesizer {
             self.direct_limit + 1
         };
         let t_dc_start = t_dc_start.max(self.min_lde);
+
+        // Pre-warm the L cache in parallel for the t_prime values expected in the first
+        // few steps of the t-loop.  build_l is expensive (O(2^t_prime)) and lazily
+        // populated; doing it here fills all cores before the search loop starts.
+        // Cap at a 5-step horizon: solutions are almost always found within the first
+        // few t values above t_dc_start, so building larger L sets is wasteful.
+        if t_dc_start <= self.max_lde {
+            let horizon = (t_dc_start + 5).min(self.max_lde);
+            let needed: Vec<u32> = {
+                let mut seen = std::collections::HashSet::new();
+                (t_dc_start..=horizon)
+                    .filter_map(|t| {
+                        let tp = optimal_t_prime(t, self.epsilon);
+                        if tp > 0 && seen.insert(tp) { Some(tp) } else { None }
+                    })
+                    .collect()
+            };
+            needed.into_par_iter().for_each(|tp| { build_l(tp); });
+        }
 
         for t in t_dc_start..=self.max_lde {
             let t0 = std::time::Instant::now();
