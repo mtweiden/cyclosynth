@@ -557,11 +557,18 @@ fn outer_max_offset(max_outer: i64) -> i64 {
 
 /// Per-phase1_enumerate cap on phase2_pq invocations. Bails out of an unproductive prefix
 /// search after this many phase2_pq calls. CenteredRange iterates outer (a1..c2) tuples
-/// from the optimal CVP center outward, so the first MAX_PHASE2_PER_PHASE1 are the most
-/// likely to succeed. If solution at lde=T is past this budget, it's recovered at lde=T+1
-/// (per project speed-vs-completeness goal). The cap is shared across parallel inner_fn
-/// invocations within a single phase1_enumerate, so the budget is global to the prefix.
-const MAX_PHASE2_PER_PHASE1: u64 = 2_000_000;
+/// from the optimal CVP center outward, so the first calls are the most likely to succeed.
+/// The cap is shared across parallel inner_fn invocations within a single phase1_enumerate,
+/// so the budget is global to the prefix.
+///
+/// `synthesize` does adaptive retry: at each lde, dc_search runs first with PASS1_CAP
+/// (aggressive — fast bail of failing prefixes); if no solution is found across the entire
+/// L_t', it retries with PASS2_CAP (full budget) before rolling to lde+1. The two-pass
+/// scheme is a win when (a) at least one prefix's solution is shallow (pass 1 finds it
+/// quickly) or (b) every prefix's solution is deep (pass 1 is wasted but cheap, pass 2
+/// catches it). It's a loss when pass 1 finds a "deep alternative" prefix slowly.
+const PASS1_CAP: u64 = 2_000_000;
+const PASS2_CAP: u64 = u64::MAX;
 
 /// Schnorr-Euchner CVP enumeration over z ∈ ℤ³ such that ‖N_lll^T @ z‖² = r_norm_sq.
 ///
@@ -905,8 +912,18 @@ impl Iterator for CenteredRange {
 
 /// Phase 1: enumerate outer variables (a1,c1,a2,c2) with Cauchy-Schwarz pruning.
 ///
+/// `max_phase2_calls` caps the per-phase1 phase2_pq dispatch budget; once exhausted,
+/// remaining inner_fn invocations return None. `budget_hit` is set to true if the cap
+/// was actually reached (so the caller can decide whether to retry with a larger cap).
+///
 /// Returns up to one full 8-vector [a1,b1,c1,d1,a2,b2,c2,d2].
-fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
+fn phase1_enumerate(
+    y: &[Float; 8],
+    k: u32,
+    eps: Float,
+    max_phase2_calls: u64,
+    budget_hit: &std::sync::atomic::AtomicBool,
+) -> Vec<[i64; 8]> {
     #[cfg(feature = "profiling")]
     {
         use std::sync::atomic::Ordering;
@@ -981,7 +998,8 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
     let inner_fn = |(a1, c1, rem_c1, dot_a1c1): (i64, i64, i64, Float)| -> Option<[i64; 8]> {
         use std::sync::atomic::Ordering;
         // Fast-path bail: budget already exhausted by another thread.
-        if phase2_count.load(Ordering::Relaxed) >= MAX_PHASE2_PER_PHASE1 {
+        if phase2_count.load(Ordering::Relaxed) >= max_phase2_calls {
+            budget_hit.store(true, Ordering::Relaxed);
             return None;
         }
         for a2 in CenteredRange::new(a2_c, max_outer).take(outer_take) {
@@ -1008,7 +1026,8 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
                     continue;
                 }
                 // Cap check: bail out if budget exhausted.
-                if phase2_count.fetch_add(1, Ordering::Relaxed) >= MAX_PHASE2_PER_PHASE1 {
+                if phase2_count.fetch_add(1, Ordering::Relaxed) >= max_phase2_calls {
+                    budget_hit.store(true, Ordering::Relaxed);
                     return None;
                 }
                 let y_inner = [y[1], y[3], y[5], y[7]];
@@ -1038,12 +1057,21 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
 /// LLL-based aligned search: implements bandb5.py's `synthesize`.
 ///
 /// Finds integer lattice vectors satisfying norm, unitarity, and alignment.
-fn lll_aligned_search(v: [Float; 4], k: u32, eps: Float, max_solutions: usize) -> Vec<[i64; 8]> {
+/// `max_phase2_calls` caps the per-phase1 phase2_pq dispatch budget; if reached, the
+/// shared `budget_hit` flag is set so dc_search can decide whether to retry.
+fn lll_aligned_search(
+    v: [Float; 4],
+    k: u32,
+    eps: Float,
+    max_solutions: usize,
+    max_phase2_calls: u64,
+    budget_hit: &std::sync::atomic::AtomicBool,
+) -> Vec<[i64; 8]> {
     if max_solutions == 0 || k > 62 {
         return Vec::new();
     }
     let y = uv_to_xy(v, k);
-    let sols = phase1_enumerate(&y, k, eps);
+    let sols = phase1_enumerate(&y, k, eps, max_phase2_calls, budget_hit);
     if max_solutions >= sols.len() {
         sols
     } else {
@@ -1213,14 +1241,27 @@ impl Synthesizer {
     ///
     /// Dispatches to direct_search or dc_search:
     ///   - If t <= direct_limit AND optimal_t_prime == 0: direct_search (fast brute-force).
-    ///   - Otherwise: dc_search (MA prefix + LLL/CVP inner search).
+    ///   - Otherwise: dc_search with adaptive cap retry.
     ///
-    /// The direct_limit cap prevents aligned_search from hanging at large lde.
+    /// Adaptive cap: first try dc_search with PASS1_CAP (aggressive — bails unproductive
+    /// prefixes quickly). If no solution found AND budget was actually exhausted, retry
+    /// with PASS2_CAP (full budget). If pass 1 found no solution and budget was *not*
+    /// exhausted, the search was already exhaustive at this lde — skip pass 2 and let the
+    /// caller advance to lde+1.
     fn try_at_lde(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResult> {
         if t <= self.direct_limit {
             self.direct_search(target, v, t)
         } else {
-            self.dc_search(target, v, t)
+            let (result, budget_hit) = self.dc_search(target, v, t, PASS1_CAP);
+            if result.is_some() {
+                return result;
+            }
+            if !budget_hit {
+                // Search was exhaustive at PASS1_CAP — no solution exists at this lde.
+                return None;
+            }
+            // Some prefix's budget was exhausted; the solution might be deeper.
+            self.dc_search(target, v, t, PASS2_CAP).0
         }
     }
 
@@ -1310,7 +1351,12 @@ impl Synthesizer {
     /// Inner step uses lll_aligned_search (CVP-based), which is O(1) near a
     /// solution — fast exactly when DC is needed (large t, small eps).
     /// Even and odd inner branches are both tried per prefix.
-    fn dc_search(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResult> {
+    /// `max_phase2_calls` is forwarded to lll_aligned_search → phase1_enumerate.
+    /// Returns `(solution, budget_was_hit)` where `budget_was_hit=true` means at least
+    /// one phase1_enumerate exhausted its phase2_pq budget — the caller may want to retry
+    /// at the same lde with a larger budget. If `false` and `solution` is `None`, the
+    /// search was exhaustive at this lde and the caller should advance to lde+1.
+    fn dc_search(&self, target: &Mat2, v: [Float; 4], t: u32, max_phase2_calls: u64) -> (Option<SynthResult>, bool) {
         let eps = self.epsilon;
 
         // Compute t_prime: use the optimal split from Prop 3.13, but if that gives
@@ -1324,13 +1370,13 @@ impl Synthesizer {
         let t_prime = {
             let opt = optimal_t_prime(t, eps);
             if opt == 0 && t > self.direct_limit {
-                return None;
+                return (None, false);
             }
             opt
         };
-        
+
         if t_prime == 0 || t_prime > t {
-            return self.direct_search(target, v, t);
+            return (self.direct_search(target, v, t), false);
         }
         let t_inner = t - t_prime;
 
@@ -1352,7 +1398,8 @@ impl Synthesizer {
         // keeping everything on one thread when items complete quickly.
         let n_threads = rayon::current_num_threads();
         let chunk = (prefixes.len() / n_threads).max(1);
-        prefixes.par_iter().with_min_len(chunk).find_map_any(|u_l| {
+        let budget_hit = std::sync::atomic::AtomicBool::new(false);
+        let result = prefixes.par_iter().with_min_len(chunk).find_map_any(|u_l| {
             // Compute U_L† · target as a full float matrix, then extract uv via
             // mat_to_uv which tries all 8 global phases (matches bandb6.py).
             let m_inner = u2t_dag_times_mat2(u_l, target);
@@ -1362,7 +1409,7 @@ impl Synthesizer {
             };
 
             // Even inner branch: U_L · U_R ≈ target
-            for sol in lll_aligned_search(v_inner, k_inner, eps, 1) {
+            for sol in lll_aligned_search(v_inner, k_inner, eps, 1, max_phase2_calls, &budget_hit) {
                 let u2t = *u_l * solution_to_u2t(&sol, k_inner);
                 let dist = diamond_distance_u2t_float(&u2t, target);
                 if dist < eps {
@@ -1377,7 +1424,7 @@ impl Synthesizer {
             // Odd inner branch: U_L · U_R · T ≈ target
             if t_inner > 0 {
                 let v_inner_t = apply_t_dag_to_uv(v_inner);
-                for sol in lll_aligned_search(v_inner_t, k_inner, eps, 1) {
+                for sol in lll_aligned_search(v_inner_t, k_inner, eps, 1, max_phase2_calls, &budget_hit) {
                     let u2t = *u_l * solution_to_u2t(&sol, k_inner) * U2T::t();
                     let dist = diamond_distance_u2t_float(&u2t, target);
                     if dist < eps {
@@ -1391,7 +1438,8 @@ impl Synthesizer {
             }
 
             None
-        })
+        });
+        (result, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
     }
 }
 
