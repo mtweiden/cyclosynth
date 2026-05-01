@@ -209,3 +209,66 @@ Strategy 6 (t-parity gap): Analysis shows t_inner is always 24 for eps=0.001 (al
 - Removed non-guarded debug eprintln! calls from synthesize(), try_at_lde(), dc_search()
 - Added sequential fallback: Phase 1b runs sequentially when pairs.len() < n_threads*4
 - No measurable performance change (within noise of Run 3)
+
+=======================================================================
+Run 5  —  Strategy A: alignment-guided Schnorr-Euchner
+          Outward z2/z1 iteration + alignment Cauchy-Schwarz prune per z2/z1
+          + partial_eff improvement (z0 center incorporated into z1 prune)
+          Return Option<[i64;4]> (first aligned solution, no Vec)
+=======================================================================
+
+=== threads=1 ===
+
+threads: 1  max_lde: 50
+name                   eps   lde        dist     time_ms
+------------------------------------------------------------
+identity            0.0100    18    1.490e-8        27.9
+H_gate              0.0100    18     0.000e0         3.8
+T_gate              0.0100    18     0.000e0         8.9
+Rz_0.3              0.0100    18    9.115e-3        14.6
+Rz_1.34             0.0100    18    9.875e-3         6.6
+Rz_pi/7             0.0100    20    6.402e-3       572.6
+Rz_0.3_tight        0.0010    28    3.264e-4       385.7
+Rz_1.34_tight       0.0010    28    5.396e-4       906.5
+------------------------------------------------------------
+total: 1926.6 ms
+
+=== threads=16 ===
+
+threads: 16  max_lde: 50
+name                   eps   lde        dist     time_ms
+------------------------------------------------------------
+identity            0.0100    18    1.490e-8         6.4
+H_gate              0.0100    18     0.000e0         3.3
+T_gate              0.0100    18     0.000e0        12.3
+Rz_0.3              0.0100    18    9.115e-3         7.9
+Rz_1.34             0.0100    18    9.875e-3         8.3
+Rz_pi/7             0.0100    20    6.402e-3        64.1
+Rz_0.3_tight        0.0010    28    3.264e-4       717.9
+Rz_1.34_tight       0.0010    28    8.467e-4       601.0
+------------------------------------------------------------
+total: 1421.2 ms
+
+=== Notes (Run 5) ===
+
+- Strategy A changes: schnorr_euchner signature extended with y_inner, dot_outer,
+  threshold_sq; return type changed from Vec<[i64;4]> to Option<[i64;4]>. z2 and z1
+  loops now iterate outward from the CVP center. Alignment Cauchy-Schwarz prune fires
+  per z2 (skips z1 loop) and per z1 (skips z0 computation) when the achievable
+  |dot| range [partial_eff ± max_align] lies entirely within (-threshold, threshold).
+  z1 prune uses partial_eff = total_center + z1_dot + z0_center_dot (incorporates
+  z0's analytic center contribution for a tighter bound). phase2_pq signature changed
+  to take y_inner, dot_outer, threshold_sq instead of the full y vector.
+  phase1_enumerate inner closure updated to pass these values.
+
+- Speedup vs Run 4 (t=1): Rz_0.3_tight 940ms → 386ms (2.4x), Rz_1.34_tight 2312ms → 907ms (2.5x)
+- Speedup vs Run 4 (t=16): Rz_0.3_tight 2095ms → 718ms (2.9x), Rz_1.34_tight 1917ms → 601ms (3.2x)
+- All distances preserved; 89/89 tests pass.
+
+- Why 2.4x instead of 4-10x (estimated):
+  Pairs reaching phase2_pq have already passed the outer Cauchy-Schwarz check, meaning
+  |dot_outer| is close to threshold. Consequently, max_perp needs only a small contribution
+  from z1,z0 to potentially bridge the gap, so the z2/z1 alignment prune fires only at the
+  sphere boundary (small rem2), not near the center. Most z2/z1 iterations still enter the
+  inner computation. Strategy B (algebraic replace) is needed for further speedup.
+
