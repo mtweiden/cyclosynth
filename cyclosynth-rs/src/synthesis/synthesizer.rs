@@ -555,6 +555,14 @@ fn outer_max_offset(max_outer: i64) -> i64 {
     (max_outer / 2).max(30)
 }
 
+/// Per-phase1_enumerate cap on phase2_pq invocations. Bails out of an unproductive prefix
+/// search after this many phase2_pq calls. CenteredRange iterates outer (a1..c2) tuples
+/// from the optimal CVP center outward, so the first MAX_PHASE2_PER_PHASE1 are the most
+/// likely to succeed. If solution at lde=T is past this budget, it's recovered at lde=T+1
+/// (per project speed-vs-completeness goal). The cap is shared across parallel inner_fn
+/// invocations within a single phase1_enumerate, so the budget is global to the prefix.
+const MAX_PHASE2_PER_PHASE1: u64 = 2_000_000;
+
 /// Schnorr-Euchner CVP enumeration over z ∈ ℤ³ such that ‖N_lll^T @ z‖² = r_norm_sq.
 ///
 /// Iterates z2 outward from the CVP center and prunes via alignment Cauchy-Schwarz.
@@ -968,7 +976,14 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
     // For large Vec, run in parallel (find_map_any for early exit).
     let n_threads = rayon::current_num_threads();
     let run_par = n_threads > 1 && pairs.len() >= n_threads * 4;
+    // Per-phase1 budget shared across all parallel inner_fn calls.
+    let phase2_count = std::sync::atomic::AtomicU64::new(0);
     let inner_fn = |(a1, c1, rem_c1, dot_a1c1): (i64, i64, i64, Float)| -> Option<[i64; 8]> {
+        use std::sync::atomic::Ordering;
+        // Fast-path bail: budget already exhausted by another thread.
+        if phase2_count.load(Ordering::Relaxed) >= MAX_PHASE2_PER_PHASE1 {
+            return None;
+        }
         for a2 in CenteredRange::new(a2_c, max_outer).take(outer_take) {
             if a2*a2 > rem_c1 { continue; }
             let rem_a2 = rem_c1 - a2*a2;
@@ -991,6 +1006,10 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
                 };
                 if dot_outer.abs() + (r as Float * y_inner_proj_sq).sqrt() < thresh {
                     continue;
+                }
+                // Cap check: bail out if budget exhausted.
+                if phase2_count.fetch_add(1, Ordering::Relaxed) >= MAX_PHASE2_PER_PHASE1 {
+                    return None;
                 }
                 let y_inner = [y[1], y[3], y[5], y[7]];
                 if let Some([b1, d1, b2, d2]) =
