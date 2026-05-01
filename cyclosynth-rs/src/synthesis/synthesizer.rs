@@ -471,99 +471,174 @@ fn qr_upper(n: &[[i64; 4]; 3]) -> [[Float; 3]; 3] {
 
 /// Schnorr-Euchner CVP enumeration over z ∈ ℤ³ such that ‖N_lll^T @ z‖² = r_norm_sq.
 ///
-/// Returns the first (b1,d1,b2,d2) = N_lll^T @ z that satisfies both
-/// the norm constraint and the unitarity constraint exactly.
+/// Iterates z2 outward from the CVP center and prunes via alignment Cauchy-Schwarz.
+/// Returns the first (b1,d1,b2,d2) that satisfies norm, unitarity, and alignment.
 fn schnorr_euchner(
     n_lll: &[[i64; 4]; 3],
     r_mat: &[[Float; 3]; 3],
     t_lat: [Float; 3],
     r_norm_sq: i64,
     a1: i64, c1: i64, a2: i64, c2: i64,
-) -> Vec<[i64; 4]> {
-    let mut out: Vec<[i64; 4]> = Vec::new();
-    let radius = (r_norm_sq as Float).sqrt();
+    y_inner: [Float; 4],
+    dot_outer: Float,
+    threshold_sq: Float,
+) -> Option<[i64; 4]> {
+    // w_lat[i] = N_lll[i] · y_inner: alignment direction in lattice coordinates
+    let nf: [[Float; 4]; 3] = n_lll.map(|row| row.map(|x| x as Float));
+    let w_lat: [Float; 3] = std::array::from_fn(|i| {
+        nf[i].iter().zip(y_inner.iter()).map(|(a, b)| a * b).sum()
+    });
+    let r00 = r_mat[0][0].abs().max(1e-12);
+    let r11_abs = r_mat[1][1].abs().max(1e-12);
+    // Cauchy-Schwarz bound coefficient: max |z1·w_lat[1] + z0·w_lat[0]|² / rem2
+    let align_perp_sq = w_lat[0] * w_lat[0] / (r00 * r00)
+                      + w_lat[1] * w_lat[1] / (r11_abs * r11_abs);
 
+    let radius = (r_norm_sq as Float).sqrt();
     let r22 = r_mat[2][2];
     if r22.abs() < 1e-12 {
-        return out;
+        return None;
     }
-    let z2_center = t_lat[2];
-    let z2_lo = (z2_center - radius / r22.abs()).floor() as i64 - 1;
-    let z2_hi = (z2_center + radius / r22.abs()).ceil() as i64 + 1;
 
-    for z2 in z2_lo..=z2_hi {
-        let rem2 = r_norm_sq as Float - (r_mat[2][2] * z2 as Float).powi(2);
-        if rem2 < -1e-9 {
+    let z2_ci = t_lat[2].round() as i64;
+    let z2_max_offset = (radius / r22.abs()).ceil() as i64 + 2;
+
+    let mut z2_pos_done = false;
+    let mut z2_neg_done = false;
+
+    for raw_offset in 0..=(2 * z2_max_offset) {
+        // Alternate outward: 0, +1, -1, +2, -2, ...
+        let offset: i64 = if raw_offset == 0 {
+            0
+        } else if raw_offset % 2 == 1 {
+            (raw_offset + 1) / 2
+        } else {
+            -(raw_offset / 2)
+        };
+
+        if offset > 0 && z2_pos_done { continue; }
+        if offset < 0 && z2_neg_done { continue; }
+        if z2_pos_done && z2_neg_done { break; }
+
+        let z2 = z2_ci + offset;
+
+        let rem2_raw = r_norm_sq as Float - (r22 * z2 as Float) * (r22 * z2 as Float);
+        if rem2_raw < -1e-9 {
+            // Sphere exceeded: monotone, so all further z2 in this direction also exceed.
+            if offset >= 0 { z2_pos_done = true; }
+            if offset <= 0 { z2_neg_done = true; }
             continue;
         }
-        let rem2 = rem2.max(0.0);
+        let rem2 = rem2_raw.max(0.0);
+
+        // Alignment prune: can any (z1,z0) achieve |dot| ≥ sqrt(threshold_sq)?
+        let z2_dot = z2 as Float * w_lat[2];
+        let total_center = dot_outer + z2_dot;
+        let max_perp = (rem2 * align_perp_sq).sqrt();
+        if (total_center + max_perp) * (total_center + max_perp) < threshold_sq
+            && (total_center - max_perp) * (total_center - max_perp) < threshold_sq
+        {
+            continue; // no (z1,z0) can satisfy alignment for this z2
+        }
 
         let r11 = r_mat[1][1];
         let r12 = r_mat[1][2];
-        if r11.abs() < 1e-12 {
-            continue;
-        }
+        if r11.abs() < 1e-12 { continue; }
         let z1_center = t_lat[1] - (r12 / r11) * z2 as Float;
-        let z1_lo = (z1_center - rem2.sqrt() / r11.abs()).floor() as i64 - 1;
-        let z1_hi = (z1_center + rem2.sqrt() / r11.abs()).ceil() as i64 + 1;
+        let z1_ci = z1_center.round() as i64;
+        let z1_max_offset = (rem2.sqrt() / r11.abs()).ceil() as i64 + 2;
+        let w_lat_z0_scale = w_lat[0].abs() / r00;
 
-        for z1 in z1_lo..=z1_hi {
-            let rem1 = rem2 - (r_mat[1][1] * z1 as Float + r_mat[1][2] * z2 as Float).powi(2);
-            if rem1 < -1e-9 {
+        let mut z1_pos_done = false;
+        let mut z1_neg_done = false;
+
+        for raw_offset1 in 0..=(2 * z1_max_offset) {
+            let offset1: i64 = if raw_offset1 == 0 {
+                0
+            } else if raw_offset1 % 2 == 1 {
+                (raw_offset1 + 1) / 2
+            } else {
+                -(raw_offset1 / 2)
+            };
+
+            if offset1 > 0 && z1_pos_done { continue; }
+            if offset1 < 0 && z1_neg_done { continue; }
+            if z1_pos_done && z1_neg_done { break; }
+
+            let z1 = z1_ci + offset1;
+
+            let rem1_raw =
+                rem2 - (r_mat[1][1] * z1 as Float + r_mat[1][2] * z2 as Float).powi(2);
+            if rem1_raw < -1e-9 {
+                if offset1 >= 0 { z1_pos_done = true; }
+                if offset1 <= 0 { z1_neg_done = true; }
                 continue;
             }
-            let rem1 = rem1.max(0.0);
+            let rem1 = rem1_raw.max(0.0);
 
-            let r00 = r_mat[0][0];
+            let r00_local = r_mat[0][0];
             let r01 = r_mat[0][1];
             let r02 = r_mat[0][2];
-            if r00.abs() < 1e-12 {
-                continue;
-            }
+            if r00_local.abs() < 1e-12 { continue; }
             let inner = r01 * z1 as Float + r02 * z2 as Float;
             let val = rem1.sqrt();
 
-            for sign in [1.0, -1.0] {
-                let z0f = (-inner + sign * val) / r00;
+            // Alignment prune on z1: incorporate z0's analytic center into partial for
+            // a tighter bound — z0f ≈ (-inner ± val)/r00, so z0 contributes
+            // (-inner/r00)*w_lat[0] (fixed) ± (val/r00)*|w_lat[0]| (variable).
+            let z1_dot = z1 as Float * w_lat[1];
+            let z0_center_dot = (-inner / r00_local) * w_lat[0];
+            let max_z0_align = val * w_lat_z0_scale;
+            let partial_eff = total_center + z1_dot + z0_center_dot;
+            if (partial_eff + max_z0_align) * (partial_eff + max_z0_align) < threshold_sq
+                && (partial_eff - max_z0_align) * (partial_eff - max_z0_align) < threshold_sq
+            {
+                continue;
+            }
+
+            for sign in [1.0_f64, -1.0] {
+                let z0f = (-inner + sign * val) / r00_local;
                 let z0 = z0f.round() as i64;
                 let mut bd = [0i64; 4];
                 for row in 0..4 {
                     bd[row] = n_lll[0][row] * z0 + n_lll[1][row] * z1 + n_lll[2][row] * z2;
                 }
                 let [b1, d1, b2, d2] = bd;
-                // Verify norm exactly
-                if b1 * b1 + d1 * d1 + b2 * b2 + d2 * d2 != r_norm_sq {
-                    continue;
-                }
-                // Verify unitarity exactly
+                if b1 * b1 + d1 * d1 + b2 * b2 + d2 * d2 != r_norm_sq { continue; }
                 if b1 * (a1 + c1) + d1 * (c1 - a1) + b2 * (a2 + c2) + d2 * (c2 - a2) != 0 {
                     continue;
                 }
-                // Dedup (z0 ± rounding may produce the same bd twice)
-                if !out.contains(&bd) {
-                    out.push(bd);
+                let dot_inner = b1 as Float * y_inner[0] + d1 as Float * y_inner[1]
+                              + b2 as Float * y_inner[2] + d2 as Float * y_inner[3];
+                let dot = dot_outer + dot_inner;
+                if dot * dot >= threshold_sq {
+                    return Some(bd);
                 }
             }
         }
     }
-    out
+    None
 }
 
-/// Phase 2: find (b1,d1,b2,d2) satisfying norm and unitarity using LLL+CVP.
-/// Returns all found solutions.
-fn phase2_pq(a1: i64, c1: i64, a2: i64, c2: i64, r: i64, y: &[Float; 8]) -> Vec<[i64; 4]> {
+/// Phase 2: find (b1,d1,b2,d2) satisfying norm, unitarity, and alignment using LLL+CVP.
+fn phase2_pq(
+    a1: i64, c1: i64, a2: i64, c2: i64, r: i64,
+    y_inner: [Float; 4],
+    dot_outer: Float,
+    threshold_sq: Float,
+) -> Option<[i64; 4]> {
     if r < 0 {
-        return Vec::new();
+        return None;
     }
     if r == 0 {
-        return vec![[0, 0, 0, 0]];
+        let dot = dot_outer;
+        return if dot * dot >= threshold_sq { Some([0, 0, 0, 0]) } else { None };
     }
 
     let w_bd = [a1 + c1, c1 - a1, a2 + c2, c2 - a2];
 
-    // Degenerate: all unitarity coefficients zero → brute-force 4D sphere
+    // Degenerate: all unitarity coefficients zero → brute-force 4D sphere with alignment check
     if w_bd == [0, 0, 0, 0] {
-        let mut results = Vec::new();
         let max_b1 = (r as Float).sqrt() as i64 + 1;
         for b1 in -max_b1..=max_b1 {
             let rem1 = r - b1 * b1;
@@ -578,16 +653,19 @@ fn phase2_pq(a1: i64, c1: i64, a2: i64, c2: i64, r: i64, y: &[Float; 8]) -> Vec<
                     if rem3 < 0 { continue; }
                     let d2s = (rem3 as Float).sqrt() as i64;
                     if d2s * d2s != rem3 { continue; }
-                    if d2s == 0 {
-                        results.push([b1, d1, b2, 0]);
-                    } else {
-                        results.push([b1, d1, b2, d2s]);
-                        results.push([b1, d1, b2, -d2s]);
+                    let d2_vals: &[i64] = if d2s == 0 { &[0] } else { &[d2s, -d2s] };
+                    for &d2 in d2_vals {
+                        let dot_inner = b1 as Float * y_inner[0] + d1 as Float * y_inner[1]
+                                      + b2 as Float * y_inner[2] + d2 as Float * y_inner[3];
+                        let dot = dot_outer + dot_inner;
+                        if dot * dot >= threshold_sq {
+                            return Some([b1, d1, b2, d2]);
+                        }
                     }
                 }
             }
         }
-        return results;
+        return None;
     }
 
     #[cfg(feature = "profiling")]
@@ -608,7 +686,6 @@ fn phase2_pq(a1: i64, c1: i64, a2: i64, c2: i64, r: i64, y: &[Float; 8]) -> Vec<
                                    std::sync::atomic::Ordering::Relaxed);
 
     // CVP target: project y_inner toward √r
-    let y_inner = [y[1], y[3], y[5], y[7]];
     let norm_yi: Float = y_inner.iter().map(|x| x * x).sum::<Float>().sqrt();
     let t_ambient: [Float; 4] = if norm_yi < 1e-12 {
         [0.0; 4]
@@ -644,7 +721,9 @@ fn phase2_pq(a1: i64, c1: i64, a2: i64, c2: i64, r: i64, y: &[Float; 8]) -> Vec<
 
     #[cfg(feature = "profiling")]
     let t_sch = std::time::Instant::now();
-    let result = schnorr_euchner(&n_lll, &r_mat, t_lat, r, a1, c1, a2, c2);
+    let result = schnorr_euchner(
+        &n_lll, &r_mat, t_lat, r, a1, c1, a2, c2, y_inner, dot_outer, threshold_sq,
+    );
     #[cfg(feature = "profiling")]
     profiling::SCHNORR_NANOS.fetch_add(t_sch.elapsed().as_nanos() as u64,
                                        std::sync::atomic::Ordering::Relaxed);
@@ -804,14 +883,11 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
                 if dot_outer.abs() + (r as Float * y_inner_proj_sq).sqrt() < thresh {
                     continue;
                 }
-                for bd in phase2_pq(a1, c1, a2, c2, r, y) {
-                    let [b1, d1, b2, d2] = bd;
-                    let x = [a1, b1, c1, d1, a2, b2, c2, d2];
-                    let dot: Float = x.iter().zip(y.iter())
-                        .map(|(&xi, &yi)| xi as Float * yi).sum();
-                    if dot * dot >= threshold_xy {
-                        return Some(x);
-                    }
+                let y_inner = [y[1], y[3], y[5], y[7]];
+                if let Some([b1, d1, b2, d2]) =
+                    phase2_pq(a1, c1, a2, c2, r, y_inner, dot_outer, threshold_xy)
+                {
+                    return Some([a1, b1, c1, d1, a2, b2, c2, d2]);
                 }
             }
         }
