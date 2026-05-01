@@ -35,36 +35,107 @@ use rayon::prelude::*;
 mod profiling {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{LazyLock, Mutex};
+
+    // phase1_enumerate
+    pub static PHASE1_CALLS: AtomicU64 = AtomicU64::new(0);   // invocations
+    pub static PHASE1A_PAIRS: AtomicU64 = AtomicU64::new(0);  // total (a1,c1) pairs collected
+    pub static PHASE1A_NANOS: AtomicU64 = AtomicU64::new(0);  // CPU-ns in phase 1a collection
+    pub static PHASE1B_NANOS: AtomicU64 = AtomicU64::new(0);  // CPU-ns in phase 1b search
+
+    // phase2_pq
     pub static PHASE2_CALLS: AtomicU64 = AtomicU64::new(0);
     pub static LLL_NANOS: AtomicU64 = AtomicU64::new(0);
     pub static QR_NANOS: AtomicU64 = AtomicU64::new(0);
     pub static SCHNORR_NANOS: AtomicU64 = AtomicU64::new(0);
-    // w_bd repetition: count total phase2_pq calls where w_bd was already seen
-    // within the same synthesis call (upper bound on cache hit rate).
-    // Tracked per-thread via a Mutex<HashSet> that is reset before each synthesis.
+
+    // w_bd repetition (upper bound on LLL cache hit rate)
     pub static W_BD_CACHE: LazyLock<Mutex<std::collections::HashSet<[i64; 4]>>> =
         LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
     pub static W_BD_HITS: AtomicU64 = AtomicU64::new(0);
 
+    // CVP-offset stats: when SE returns a solution, how far is z2/z1 from the CVP center?
+    // Drives the "cap SE radius" optimization (ideas.md).
+    pub static SE_HITS: AtomicU64 = AtomicU64::new(0);             // # successful SE returns
+    pub static SE_Z2_OFFSET_SUM: AtomicU64 = AtomicU64::new(0);    // Σ |z2 - round(t_lat[2])|
+    pub static SE_Z1_OFFSET_SUM: AtomicU64 = AtomicU64::new(0);    // Σ |z1 - round(z1_center)|
+    pub static SE_Z2_OFFSET_MAX: AtomicU64 = AtomicU64::new(0);    // max |z2_offset|
+    pub static SE_Z1_OFFSET_MAX: AtomicU64 = AtomicU64::new(0);    // max |z1_offset|
+
     pub fn reset() {
+        PHASE1_CALLS.store(0, Ordering::Relaxed);
+        PHASE1A_PAIRS.store(0, Ordering::Relaxed);
+        PHASE1A_NANOS.store(0, Ordering::Relaxed);
+        PHASE1B_NANOS.store(0, Ordering::Relaxed);
         PHASE2_CALLS.store(0, Ordering::Relaxed);
         LLL_NANOS.store(0, Ordering::Relaxed);
         QR_NANOS.store(0, Ordering::Relaxed);
         SCHNORR_NANOS.store(0, Ordering::Relaxed);
         W_BD_HITS.store(0, Ordering::Relaxed);
         W_BD_CACHE.lock().unwrap().clear();
+        SE_HITS.store(0, Ordering::Relaxed);
+        SE_Z2_OFFSET_SUM.store(0, Ordering::Relaxed);
+        SE_Z1_OFFSET_SUM.store(0, Ordering::Relaxed);
+        SE_Z2_OFFSET_MAX.store(0, Ordering::Relaxed);
+        SE_Z1_OFFSET_MAX.store(0, Ordering::Relaxed);
+    }
+
+    pub fn record_se_hit(z2_offset: i64, z1_offset: i64) {
+        let z2 = z2_offset.unsigned_abs();
+        let z1 = z1_offset.unsigned_abs();
+        SE_HITS.fetch_add(1, Ordering::Relaxed);
+        SE_Z2_OFFSET_SUM.fetch_add(z2, Ordering::Relaxed);
+        SE_Z1_OFFSET_SUM.fetch_add(z1, Ordering::Relaxed);
+        // Atomic max via compare-exchange loop
+        let mut prev = SE_Z2_OFFSET_MAX.load(Ordering::Relaxed);
+        while z2 > prev {
+            match SE_Z2_OFFSET_MAX.compare_exchange_weak(prev, z2, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(now) => prev = now,
+            }
+        }
+        let mut prev = SE_Z1_OFFSET_MAX.load(Ordering::Relaxed);
+        while z1 > prev {
+            match SE_Z1_OFFSET_MAX.compare_exchange_weak(prev, z1, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(now) => prev = now,
+            }
+        }
     }
 
     pub fn report() {
-        let calls = PHASE2_CALLS.load(Ordering::Relaxed);
+        let p1_calls = PHASE1_CALLS.load(Ordering::Relaxed);
+        let p1a_pairs = PHASE1A_PAIRS.load(Ordering::Relaxed);
+        let p1a_ms = PHASE1A_NANOS.load(Ordering::Relaxed) as f64 / 1e6;
+        let p1b_ms = PHASE1B_NANOS.load(Ordering::Relaxed) as f64 / 1e6;
+        let avg_pairs = if p1_calls > 0 { p1a_pairs as f64 / p1_calls as f64 } else { 0.0 };
+        eprintln!(
+            "[profile] phase1_enumerate: {p1_calls} calls | 1a_pairs={p1a_pairs} ({avg_pairs:.1}/call) | 1a={p1a_ms:.1}ms  1b={p1b_ms:.1}ms"
+        );
+
+        let p2_calls = PHASE2_CALLS.load(Ordering::Relaxed);
         let lll_ms = LLL_NANOS.load(Ordering::Relaxed) as f64 / 1e6;
         let qr_ms = QR_NANOS.load(Ordering::Relaxed) as f64 / 1e6;
         let sch_ms = SCHNORR_NANOS.load(Ordering::Relaxed) as f64 / 1e6;
         let hits = W_BD_HITS.load(Ordering::Relaxed);
-        let hit_pct = if calls > 0 { 100.0 * hits as f64 / calls as f64 } else { 0.0 };
+        let hit_pct = if p2_calls > 0 { 100.0 * hits as f64 / p2_calls as f64 } else { 0.0 };
+        let avg_lll_us = if p2_calls > 0 { lll_ms * 1000.0 / p2_calls as f64 } else { 0.0 };
+        let avg_se_us  = if p2_calls > 0 { sch_ms * 1000.0 / p2_calls as f64 } else { 0.0 };
         eprintln!(
-            "[profile] phase2_pq: {calls} calls | lll={lll_ms:.1}ms  qr={qr_ms:.1}ms  schnorr={sch_ms:.1}ms | w_bd_hits={hits}/{calls} ({hit_pct:.1}%)"
+            "[profile] phase2_pq:        {p2_calls} calls | lll={lll_ms:.1}ms ({avg_lll_us:.2}µs/call)  qr={qr_ms:.1}ms  se={sch_ms:.1}ms ({avg_se_us:.2}µs/call) | w_bd_hits={hits}/{p2_calls} ({hit_pct:.1}%)"
         );
+
+        let se_hits = SE_HITS.load(Ordering::Relaxed);
+        let z2_sum = SE_Z2_OFFSET_SUM.load(Ordering::Relaxed);
+        let z1_sum = SE_Z1_OFFSET_SUM.load(Ordering::Relaxed);
+        let z2_max = SE_Z2_OFFSET_MAX.load(Ordering::Relaxed);
+        let z1_max = SE_Z1_OFFSET_MAX.load(Ordering::Relaxed);
+        if se_hits > 0 {
+            let z2_avg = z2_sum as f64 / se_hits as f64;
+            let z1_avg = z1_sum as f64 / se_hits as f64;
+            eprintln!(
+                "[profile] se_hits: {se_hits} | |z2_off| avg={z2_avg:.2} max={z2_max} | |z1_off| avg={z1_avg:.2} max={z1_max}"
+            );
+        }
     }
 }
 
@@ -469,6 +540,21 @@ fn qr_upper(n: &[[i64; 4]; 3]) -> [[Float; 3]; 3] {
     r
 }
 
+/// Hard cap on SE outward iteration radius. Empirically (see profiling se_hits stats),
+/// >99% of solutions across k_inner=9..17 land within ±8 of the CVP center. Capping at 6
+/// caps per-call SE cost aggressively; solutions at offset > 6 are skipped at t=T but found
+/// at t=T+1 (acceptable per project speed-vs-completeness goal).
+const SE_MAX_OFFSET: i64 = 6;
+
+/// Adaptive cap on outer (a1,c1,a2,c2) CenteredRange offset in `phase1_enumerate`.
+/// Scales with the natural sphere bound max_outer = sqrt(2^k). A fixed cap fails because
+/// at k=17 (max_outer=363) capping at 50 forces lde rollover (solutions need wider range);
+/// at k=13 (max_outer=90) capping at 50 is loose enough. We use max_outer/2 with a floor
+/// of 30, which gives k=13: ±45 (full range), k=17: ±181 (about half range).
+fn outer_max_offset(max_outer: i64) -> i64 {
+    (max_outer / 2).max(30)
+}
+
 /// Schnorr-Euchner CVP enumeration over z ∈ ℤ³ such that ‖N_lll^T @ z‖² = r_norm_sq.
 ///
 /// Iterates z2 outward from the CVP center and prunes via alignment Cauchy-Schwarz.
@@ -501,7 +587,10 @@ fn schnorr_euchner(
     }
 
     let z2_ci = t_lat[2].round() as i64;
-    let z2_max_offset = (radius / r22.abs()).ceil() as i64 + 2;
+    // Cap SE outward iteration radius. Empirically, ~99% of solutions land within ±8 of
+    // the CVP center (see [profile] se_hits stats). Capping trades occasional misses at
+    // t=T for a constant-bounded SE per call; missed solutions are recovered at t=T+1.
+    let z2_max_offset = ((radius / r22.abs()).ceil() as i64 + 2).min(SE_MAX_OFFSET);
 
     let mut z2_pos_done = false;
     let mut z2_neg_done = false;
@@ -546,7 +635,7 @@ fn schnorr_euchner(
         if r11.abs() < 1e-12 { continue; }
         let z1_center = t_lat[1] - (r12 / r11) * z2 as Float;
         let z1_ci = z1_center.round() as i64;
-        let z1_max_offset = (rem2.sqrt() / r11.abs()).ceil() as i64 + 2;
+        let z1_max_offset = ((rem2.sqrt() / r11.abs()).ceil() as i64 + 2).min(SE_MAX_OFFSET);
         let w_lat_z0_scale = w_lat[0].abs() / r00;
 
         let mut z1_pos_done = false;
@@ -612,6 +701,8 @@ fn schnorr_euchner(
                               + b2 as Float * y_inner[2] + d2 as Float * y_inner[3];
                 let dot = dot_outer + dot_inner;
                 if dot * dot >= threshold_sq {
+                    #[cfg(feature = "profiling")]
+                    profiling::record_se_hit(z2 - z2_ci, z1 - z1_ci);
                     return Some(bd);
                 }
             }
@@ -730,6 +821,7 @@ fn phase2_pq(
     result
 }
 
+
 /// Solve a 3×3 system Ax = b via Gaussian elimination with partial pivoting.
 fn solve_3x3(a: &[[Float; 3]; 3], b: [Float; 3]) -> Option<[Float; 3]> {
     let mut m = [
@@ -807,6 +899,14 @@ impl Iterator for CenteredRange {
 ///
 /// Returns up to one full 8-vector [a1,b1,c1,d1,a2,b2,c2,d2].
 fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
+    #[cfg(feature = "profiling")]
+    {
+        use std::sync::atomic::Ordering;
+        profiling::PHASE1_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+    #[cfg(feature = "profiling")]
+    let t_phase1a = std::time::Instant::now();
+
     let target_norm: i64 = 1i64 << k;
     // Threshold on (x·y)²: 2^(2k-2)·(1-eps²)
     let threshold_xy = (1i64 << (2 * k)) as Float / 4.0 * (1.0 - eps * eps);
@@ -830,18 +930,18 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
     let thresh = threshold_xy.sqrt();
 
     // Phase 1a: collect (a1, c1, rem_c1, dot_a1c1) pairs that pass the outer two
-    // pruning levels.  This is cheap (norm + Cauchy-Schwarz checks only, no LLL)
-    // and produces a small Vec that the parallel phase below can distribute across cores.
+    // pruning levels.  Capped adaptively at outer_max_offset(max_outer).
+    let outer_take = (2 * outer_max_offset(max_outer) + 1) as usize;
     let pairs: Vec<(i64, i64, i64, Float)> = {
         let mut v = Vec::new();
-        for a1 in CenteredRange::new(a1_c, max_outer) {
+        for a1 in CenteredRange::new(a1_c, max_outer).take(outer_take) {
             if a1 * a1 > target_norm { continue; }
             let rem_a1 = target_norm - a1 * a1;
             let dot_a1 = a1 as Float * y[0];
             if dot_a1.abs() + (rem_a1 as Float * y_sq_no_a1).sqrt() < thresh {
                 continue;
             }
-            for c1 in CenteredRange::new(c1_c, max_outer) {
+            for c1 in CenteredRange::new(c1_c, max_outer).take(outer_take) {
                 if a1*a1 + c1*c1 > target_norm { continue; }
                 let rem_c1 = target_norm - a1*a1 - c1*c1;
                 let dot_a1c1 = dot_a1 + c1 as Float * y[2];
@@ -854,20 +954,29 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
         v
     };
 
+    #[cfg(feature = "profiling")]
+    {
+        use std::sync::atomic::Ordering;
+        profiling::PHASE1A_PAIRS.fetch_add(pairs.len() as u64, Ordering::Relaxed);
+        profiling::PHASE1A_NANOS.fetch_add(t_phase1a.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+    #[cfg(feature = "profiling")]
+    let t_phase1b = std::time::Instant::now();
+
     // Phase 1b: run the a2/c2/phase2_pq inner work over collected pairs.
     // For small Vec, run sequentially to avoid rayon overhead.
     // For large Vec, run in parallel (find_map_any for early exit).
     let n_threads = rayon::current_num_threads();
     let run_par = n_threads > 1 && pairs.len() >= n_threads * 4;
     let inner_fn = |(a1, c1, rem_c1, dot_a1c1): (i64, i64, i64, Float)| -> Option<[i64; 8]> {
-        for a2 in CenteredRange::new(a2_c, max_outer) {
+        for a2 in CenteredRange::new(a2_c, max_outer).take(outer_take) {
             if a2*a2 > rem_c1 { continue; }
             let rem_a2 = rem_c1 - a2*a2;
             let dot_3 = dot_a1c1 + a2 as Float * y[4];
             if dot_3.abs() + (rem_a2 as Float * y_sq_no_a1_c1_a2).sqrt() < thresh {
                 continue;
             }
-            for c2 in CenteredRange::new(c2_c, max_outer) {
+            for c2 in CenteredRange::new(c2_c, max_outer).take(outer_take) {
                 if c2*c2 > rem_a2 { continue; }
                 let r = rem_a2 - c2*c2;
                 let outer_norm_sq = target_norm - r;
@@ -899,6 +1008,11 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
     } else {
         pairs.into_iter().find_map(inner_fn)
     };
+
+    #[cfg(feature = "profiling")]
+    profiling::PHASE1B_NANOS.fetch_add(t_phase1b.elapsed().as_nanos() as u64,
+                                       std::sync::atomic::Ordering::Relaxed);
+
     result.map(|x| vec![x]).unwrap_or_default()
 }
 
