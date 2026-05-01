@@ -78,6 +78,9 @@ fn main() {
     let mut total_ms = 0.0_f64;
 
     for (name, target, eps) in &cases {
+        #[cfg(feature = "profiling")]
+        cyclosynth::synthesis::synthesizer::reset_profiling();
+
         let synth = Synthesizer::new(*eps).with_max_lde(max_lde);
         let t0 = Instant::now();
         let result = synth.synthesize(*target);
@@ -94,6 +97,9 @@ fn main() {
                 name, eps
             ),
         }
+
+        #[cfg(feature = "profiling")]
+        cyclosynth::synthesis::synthesizer::report_profiling();
     }
 
     println!("{}", "-".repeat(60));
