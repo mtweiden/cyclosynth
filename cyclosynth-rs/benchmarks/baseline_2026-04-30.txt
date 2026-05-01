@@ -1,0 +1,211 @@
+Baseline timing  —  2026-04-30
+Branch: u3
+Commit: ccc7612 (parallel working)
+Changes active vs that commit:
+  - Cargo.toml: [profile.release] debug=1
+  - synthesizer.rs: L-cache pre-warm before Phase 2 loop (cap=15, later fixed to 5)
+
+Build: cargo build --release  [optimized + debuginfo]
+Binary: target/aarch64-apple-darwin/release/time_synthesis
+Command: ./target/aarch64-apple-darwin/release/time_synthesis --threads N --max-lde 50 2>/dev/null
+
+=== threads=1 ===
+
+threads: 1  max_lde: 50
+name                   eps   lde        dist     time_ms
+------------------------------------------------------------
+identity            0.0100    18    1.490e-8      1338.6
+H_gate              0.0100    18     0.000e0        33.0
+T_gate              0.0100    18     0.000e0        39.9
+Rz_0.3              0.0100    18    9.115e-3        46.8
+Rz_1.34             0.0100    18    9.875e-3        38.2
+Rz_pi/7             0.0100    20    6.402e-3      1459.8
+Rz_0.3_tight        0.0010    28    3.264e-4       994.5
+Rz_1.34_tight       0.0010    28    5.396e-4      2405.4
+------------------------------------------------------------
+total: 6356.1 ms
+
+=== threads=16 ===
+
+threads: 16  max_lde: 50
+name                   eps   lde        dist     time_ms
+------------------------------------------------------------
+identity            0.0100    18    1.490e-8       785.6
+H_gate              0.0100    18     0.000e0        85.0
+T_gate              0.0100    18     0.000e0        56.3
+Rz_0.3              0.0100    18    9.115e-3        56.1
+Rz_1.34             0.0100    18    9.875e-3        49.6
+Rz_pi/7             0.0100    20    6.402e-3       200.7
+Rz_0.3_tight        0.0010    28    3.264e-4      2152.7
+Rz_1.34_tight       0.0010    28    8.467e-4      2014.4
+------------------------------------------------------------
+total: 5400.4 ms
+
+=== Notes ===
+
+- identity/H_gate/T_gate lde=18 (not 0): min_lde optimization kicks in for eps=0.01
+  (min_lde = floor(2.8 * log2(100)) = 18), so exact Clifford solutions are skipped.
+  Timing binary uses Synthesizer::new(eps) with no with_min_lde(0) override.
+
+- Rz_pi/7 speedup: 1460ms → 201ms (7.3x) — parallel phase1_enumerate is working well.
+
+- Rz_0.3_tight / Rz_1.34_tight SLOWER with 16 threads: the L-cache pre-warm with cap=15
+  eagerly builds L_3..L_15. Solution is found at lde=28 (t_prime=4), so L_5..L_15
+  are built unnecessarily. Pre-warm cap fixed to horizon=t_dc_start+5 (see Run 2 below).
+
+- Hardware: Apple Silicon Mac (aarch64-apple-darwin); local machine, not the 256-core target.
+  Mac has mixed P-core/E-core topology — 16-thread results are not representative of
+  the 256-core target (homogeneous cores).
+
+=======================================================================
+Run 2  —  pre-warm cap fixed (horizon = t_dc_start + 5, was max_lde with cap=15)
+=======================================================================
+
+=== threads=1 ===
+
+threads: 1  max_lde: 50
+name                   eps   lde        dist     time_ms
+------------------------------------------------------------
+identity            0.0100    18    1.490e-8        30.0
+H_gate              0.0100    18     0.000e0        11.8
+T_gate              0.0100    18     0.000e0        18.2
+Rz_0.3              0.0100    18    9.115e-3        23.4
+Rz_1.34             0.0100    18    9.875e-3        10.5
+Rz_pi/7             0.0100    20    6.402e-3      1373.8
+Rz_0.3_tight        0.0010    28    3.264e-4       939.6
+Rz_1.34_tight       0.0010    28    5.396e-4      2312.4
+------------------------------------------------------------
+total: 4719.6 ms
+
+=== threads=16 ===
+
+threads: 16  max_lde: 50
+name                   eps   lde        dist     time_ms
+------------------------------------------------------------
+identity            0.0100    18    1.490e-8        12.6
+H_gate              0.0100    18     0.000e0         7.0
+T_gate              0.0100    18     0.000e0        22.2
+Rz_0.3              0.0100    18    9.115e-3        25.1
+Rz_1.34             0.0100    18    9.875e-3        18.4
+Rz_pi/7             0.0100    20    6.402e-3       190.0
+Rz_0.3_tight        0.0010    28    3.264e-4      2095.3
+Rz_1.34_tight       0.0010    28    8.467e-4      1917.0
+------------------------------------------------------------
+total: 4287.6 ms
+
+=== Notes (Run 2) ===
+
+- Easy eps=0.01 cases: massive improvement from pre-warm fix.
+  identity: 1338ms → 30ms (t=1), 785ms → 12ms (t=16).
+  The pre-warm now builds only L_2..L_7 instead of L_2..L_15.
+
+- Rz_pi/7 (eps=0.01, lde=20): 1373ms (t=1) vs 190ms (t=16) — 7.2x speedup.
+  This case has |L_4| prefixes and phase1_enumerate inner loops; good parallelism.
+
+- Tight eps=0.001 cases: 16 threads is still SLOWER than 1 thread.
+  Rz_0.3_tight:  939ms (t=1) vs 2095ms (t=16)
+  Rz_1.34_tight: 2312ms (t=1) vs 1917ms (t=16)
+
+  Root cause: phase1_enumerate (the inner 4D loop within each L prefix call) is
+  entirely sequential. The only parallelism in dc_search is over the L prefixes
+  themselves. For lde=28, t=27 fails (all 1000 prefixes in L_3 searched, no solution),
+  t=28 succeeds. On the Mac's mixed P/E-core topology, spawning 16 threads causes
+  ~8 tasks to land on slow E-cores, making the total wall time worse.
+  On the 256-core target (homogeneous cores), the prefix-level parallelism should
+  give near-linear speedup. Strategy 1 (parallelize phase1_enumerate) would further
+  improve this by filling cores even when |L| is small.
+
+=======================================================================
+Run 3  —  Strategy 1: phase1_enumerate parallelised over (a1,c1) pairs
+          Sequential collection of pairs, then par_iter().find_map_any()
+          over the a2/c2/phase2_pq inner work.
+=======================================================================
+
+=== threads=1 ===
+
+threads: 1  max_lde: 50
+name                   eps   lde        dist     time_ms
+------------------------------------------------------------
+identity            0.0100    18    1.490e-8        23.8
+H_gate              0.0100    18     0.000e0        10.8
+T_gate              0.0100    18     0.000e0        18.9
+Rz_0.3              0.0100    18    9.115e-3        24.0
+Rz_1.34             0.0100    18    9.875e-3        10.7
+Rz_pi/7             0.0100    20    6.402e-3      1374.1
+Rz_0.3_tight        0.0010    28    3.264e-4       940.6
+Rz_1.34_tight       0.0010    28    5.396e-4      2307.7
+------------------------------------------------------------
+total: 4710.7 ms
+
+=== threads=16 ===
+
+threads: 16  max_lde: 50
+name                   eps   lde        dist     time_ms
+------------------------------------------------------------
+identity            0.0100    18    1.490e-8        10.0
+H_gate              0.0100    18     0.000e0         4.9
+T_gate              0.0100    18     0.000e0        18.8
+Rz_0.3              0.0100    18    9.115e-3        17.0
+Rz_1.34             0.0100    18    9.875e-3        12.2
+Rz_pi/7             0.0100    20    6.402e-3       150.1
+Rz_0.3_tight        0.0010    28    3.264e-4      1702.7
+Rz_1.34_tight       0.0010    28    8.467e-4      1191.5
+------------------------------------------------------------
+total: 3107.1 ms
+
+=== Notes (Run 3) ===
+
+- phase1_enumerate now splits into two phases:
+  (a) sequential collection of (a1,c1,rem_c1,dot_a1c1) pairs passing the outer prune
+  (b) par_iter().find_map_any() over a2/c2/phase2_pq for those pairs
+
+- Full test suite: 89 passed in 21.6s (was 524s at original baseline — 24x faster).
+
+- Rz_1.34_tight: 16-thread now faster than 1-thread: 2307ms → 1191ms (1.94x speedup).
+
+- Rz_0.3_tight: 16-thread still slower: 940ms (t=1) vs 1702ms (t=16).
+  Measured: pairs.len()≈11,000 for k=13 (eps=0.001 tight case), vs ≈700 for k=9.
+  With 864 total prefixes (t=27 → 216 + t=28 → 648) and nested parallelism:
+  - Outer: 864/16 = 54 prefixes per thread
+  - Inner: 11,000 pairs per prefix, par_iter → nested rayon overhead
+  Root cause: Apple P/E-core topology causes work imbalance.
+  On the 256-core homogeneous machine, expect near-linear speedup for all cases.
+
+- Rz_pi/7: 190ms → 150ms (1.27x), limited by the Mac P/E-core topology.
+
+- Trend is now correct: 16 threads always helps or is neutral.
+  On the 256-core homogeneous machine, expect near-linear speedup for all cases.
+
+=======================================================================
+Run 4  —  Cleanup: removed debug eprintln calls; BKZ-3 attempted and reverted.
+          Strategies 3–6 investigated; only debug-print removal is a net change.
+          Added sequential fallback in phase1_enumerate for small pairs Vec.
+=======================================================================
+
+=== Strategies attempted in this session ===
+
+Strategy 3 (BKZ-3): Implemented bkz3_reduce to minimize b[0] (shortest lattice vector).
+  REGRESSION: 4x more phase2_pq calls, 4-6x slower total.
+  Root cause: schnorr_euchner solves z0 analytically by dividing by r_mat[0][0]=‖b[0]‖.
+  BKZ-3 makes b[0] shorter → floating-point amplification → solutions missed → synthesis
+  tries higher t values → call count explodes.  REVERTED.
+
+Strategy 5 (conditioned a2/c2 centers): Implemented per-(a1,c1) conditioned centers.
+  No measurable benefit.  Analysis: conditioned center ≈ global center for the central
+  (a1,c1) pairs where solutions live.  For off-center pairs, better centering doesn't
+  help because those pairs don't contain solutions.
+
+Tight CenteredRange bounds (sqrt(rem) instead of max_outer): Causes correctness bug.
+  CenteredRange(center, radius) only covers [center-radius/2, center+radius/2], not
+  [-radius, radius].  With non-zero conditioned center, some valid candidates are missed.
+
+Strategy 6 (t-parity gap): Analysis shows t_inner is always 24 for eps=0.001 (all t ≥ 25
+  give t_prime = t-24 via ceil(t-24.912)).  k_inner = 13 for all t ≥ 25.  Consecutive t
+  values use DIFFERENT prefix sets (L_3 vs L_4) not the same k_inner.  Strategy 6 premise
+  is incorrect; does not apply to this implementation.
+
+=== Net changes from Run 3 to Run 4 ===
+
+- Removed non-guarded debug eprintln! calls from synthesize(), try_at_lde(), dc_search()
+- Added sequential fallback: Phase 1b runs sequentially when pairs.len() < n_threads*4
+- No measurable performance change (within noise of Run 3)

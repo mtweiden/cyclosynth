@@ -21,3 +21,4 @@ debug = 1
 
 [features]
 python = []
+profiling = []
