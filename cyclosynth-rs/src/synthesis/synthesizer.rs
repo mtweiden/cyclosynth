@@ -30,6 +30,47 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use rayon::prelude::*;
 
+// ─── Profiling counters (compiled only with --features profiling) ─────────────
+#[cfg(feature = "profiling")]
+mod profiling {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{LazyLock, Mutex};
+    pub static PHASE2_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub static LLL_NANOS: AtomicU64 = AtomicU64::new(0);
+    pub static QR_NANOS: AtomicU64 = AtomicU64::new(0);
+    pub static SCHNORR_NANOS: AtomicU64 = AtomicU64::new(0);
+    // w_bd repetition: count total phase2_pq calls where w_bd was already seen
+    // within the same synthesis call (upper bound on cache hit rate).
+    // Tracked per-thread via a Mutex<HashSet> that is reset before each synthesis.
+    pub static W_BD_CACHE: LazyLock<Mutex<std::collections::HashSet<[i64; 4]>>> =
+        LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+    pub static W_BD_HITS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn reset() {
+        PHASE2_CALLS.store(0, Ordering::Relaxed);
+        LLL_NANOS.store(0, Ordering::Relaxed);
+        QR_NANOS.store(0, Ordering::Relaxed);
+        SCHNORR_NANOS.store(0, Ordering::Relaxed);
+        W_BD_HITS.store(0, Ordering::Relaxed);
+        W_BD_CACHE.lock().unwrap().clear();
+    }
+
+    pub fn report() {
+        let calls = PHASE2_CALLS.load(Ordering::Relaxed);
+        let lll_ms = LLL_NANOS.load(Ordering::Relaxed) as f64 / 1e6;
+        let qr_ms = QR_NANOS.load(Ordering::Relaxed) as f64 / 1e6;
+        let sch_ms = SCHNORR_NANOS.load(Ordering::Relaxed) as f64 / 1e6;
+        let hits = W_BD_HITS.load(Ordering::Relaxed);
+        let hit_pct = if calls > 0 { 100.0 * hits as f64 / calls as f64 } else { 0.0 };
+        eprintln!(
+            "[profile] phase2_pq: {calls} calls | lll={lll_ms:.1}ms  qr={qr_ms:.1}ms  schnorr={sch_ms:.1}ms | w_bd_hits={hits}/{calls} ({hit_pct:.1}%)"
+        );
+    }
+}
+
+#[cfg(feature = "profiling")]
+pub use profiling::{reset as reset_profiling, report as report_profiling};
+
 /// Global cache for build_l results, keyed by t_prime.
 static BUILD_L_CACHE: LazyLock<Mutex<HashMap<u32, Vec<U2T>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -549,8 +590,22 @@ fn phase2_pq(a1: i64, c1: i64, a2: i64, c2: i64, r: i64, y: &[Float; 8]) -> Vec<
         return results;
     }
 
+    #[cfg(feature = "profiling")]
+    {
+        use std::sync::atomic::Ordering;
+        profiling::PHASE2_CALLS.fetch_add(1, Ordering::Relaxed);
+        if !profiling::W_BD_CACHE.lock().unwrap().insert(w_bd) {
+            profiling::W_BD_HITS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(feature = "profiling")]
+    let t_lll = std::time::Instant::now();
     let n_bd = integer_null_basis(w_bd);
     let n_lll = lll_reduce(n_bd);
+    #[cfg(feature = "profiling")]
+    profiling::LLL_NANOS.fetch_add(t_lll.elapsed().as_nanos() as u64,
+                                   std::sync::atomic::Ordering::Relaxed);
 
     // CVP target: project y_inner toward √r
     let y_inner = [y[1], y[3], y[5], y[7]];
@@ -580,8 +635,20 @@ fn phase2_pq(a1: i64, c1: i64, a2: i64, c2: i64, r: i64, y: &[Float; 8]) -> Vec<
 
     let t_lat = solve_3x3(&g, rhs).unwrap_or([0.0; 3]);
 
+    #[cfg(feature = "profiling")]
+    let t_qr = std::time::Instant::now();
     let r_mat = qr_upper(&n_lll);
-    schnorr_euchner(&n_lll, &r_mat, t_lat, r, a1, c1, a2, c2)
+    #[cfg(feature = "profiling")]
+    profiling::QR_NANOS.fetch_add(t_qr.elapsed().as_nanos() as u64,
+                                  std::sync::atomic::Ordering::Relaxed);
+
+    #[cfg(feature = "profiling")]
+    let t_sch = std::time::Instant::now();
+    let result = schnorr_euchner(&n_lll, &r_mat, t_lat, r, a1, c1, a2, c2);
+    #[cfg(feature = "profiling")]
+    profiling::SCHNORR_NANOS.fetch_add(t_sch.elapsed().as_nanos() as u64,
+                                       std::sync::atomic::Ordering::Relaxed);
+    result
 }
 
 /// Solve a 3×3 system Ax = b via Gaussian elimination with partial pivoting.
@@ -708,48 +775,55 @@ fn phase1_enumerate(y: &[Float; 8], k: u32, eps: Float) -> Vec<[i64; 8]> {
         v
     };
 
-    // Phase 1b: run the a2/c2/phase2_pq inner work in parallel over the collected pairs.
-    // find_map_any stops all threads as soon as any one returns Some.
-    pairs.into_par_iter()
-        .find_map_any(|(a1, c1, rem_c1, dot_a1c1)| {
-            for a2 in CenteredRange::new(a2_c, max_outer) {
-                if a2*a2 > rem_c1 { continue; }
-                let rem_a2 = rem_c1 - a2*a2;
-                let dot_3 = dot_a1c1 + a2 as Float * y[4];
-                if dot_3.abs() + (rem_a2 as Float * y_sq_no_a1_c1_a2).sqrt() < thresh {
+    // Phase 1b: run the a2/c2/phase2_pq inner work over collected pairs.
+    // For small Vec, run sequentially to avoid rayon overhead.
+    // For large Vec, run in parallel (find_map_any for early exit).
+    let n_threads = rayon::current_num_threads();
+    let run_par = n_threads > 1 && pairs.len() >= n_threads * 4;
+    let inner_fn = |(a1, c1, rem_c1, dot_a1c1): (i64, i64, i64, Float)| -> Option<[i64; 8]> {
+        for a2 in CenteredRange::new(a2_c, max_outer) {
+            if a2*a2 > rem_c1 { continue; }
+            let rem_a2 = rem_c1 - a2*a2;
+            let dot_3 = dot_a1c1 + a2 as Float * y[4];
+            if dot_3.abs() + (rem_a2 as Float * y_sq_no_a1_c1_a2).sqrt() < thresh {
+                continue;
+            }
+            for c2 in CenteredRange::new(c2_c, max_outer) {
+                if c2*c2 > rem_a2 { continue; }
+                let r = rem_a2 - c2*c2;
+                let outer_norm_sq = target_norm - r;
+                let dot_outer = dot_3 + c2 as Float * y[6];
+                let w_bd_norm_sq = 2 * outer_norm_sq;
+                let y_inner_proj_sq = if w_bd_norm_sq > 0 {
+                    let wdot = y[1] * (a1 + c1) as Float + y[3] * (c1 - a1) as Float
+                             + y[5] * (a2 + c2) as Float + y[7] * (c2 - a2) as Float;
+                    (y_sq_inner - wdot * wdot / w_bd_norm_sq as Float).max(0.0)
+                } else {
+                    y_sq_inner
+                };
+                if dot_outer.abs() + (r as Float * y_inner_proj_sq).sqrt() < thresh {
                     continue;
                 }
-                for c2 in CenteredRange::new(c2_c, max_outer) {
-                    if c2*c2 > rem_a2 { continue; }
-                    let r = rem_a2 - c2*c2;
-                    let outer_norm_sq = target_norm - r;
-                    let dot_outer = dot_3 + c2 as Float * y[6];
-                    let w_bd_norm_sq = 2 * outer_norm_sq;
-                    let y_inner_proj_sq = if w_bd_norm_sq > 0 {
-                        let wdot = y[1] * (a1 + c1) as Float + y[3] * (c1 - a1) as Float
-                                 + y[5] * (a2 + c2) as Float + y[7] * (c2 - a2) as Float;
-                        (y_sq_inner - wdot * wdot / w_bd_norm_sq as Float).max(0.0)
-                    } else {
-                        y_sq_inner
-                    };
-                    if dot_outer.abs() + (r as Float * y_inner_proj_sq).sqrt() < thresh {
-                        continue;
-                    }
-                    for bd in phase2_pq(a1, c1, a2, c2, r, y) {
-                        let [b1, d1, b2, d2] = bd;
-                        let x = [a1, b1, c1, d1, a2, b2, c2, d2];
-                        let dot: Float = x.iter().zip(y.iter())
-                            .map(|(&xi, &yi)| xi as Float * yi).sum();
-                        if dot * dot >= threshold_xy {
-                            return Some(x);
-                        }
+                for bd in phase2_pq(a1, c1, a2, c2, r, y) {
+                    let [b1, d1, b2, d2] = bd;
+                    let x = [a1, b1, c1, d1, a2, b2, c2, d2];
+                    let dot: Float = x.iter().zip(y.iter())
+                        .map(|(&xi, &yi)| xi as Float * yi).sum();
+                    if dot * dot >= threshold_xy {
+                        return Some(x);
                     }
                 }
             }
-            None
-        })
-        .map(|x| vec![x])
-        .unwrap_or_default()
+        }
+        None
+    };
+
+    let result = if run_par {
+        pairs.into_par_iter().find_map_any(inner_fn)
+    } else {
+        pairs.into_iter().find_map(inner_fn)
+    };
+    result.map(|x| vec![x]).unwrap_or_default()
 }
 
 /// LLL-based aligned search: implements bandb5.py's `synthesize`.
@@ -882,9 +956,7 @@ impl Synthesizer {
         // Phase 1: direct_search for small t.  Starts at min_lde (not 0) because
         // no generic rotation can be approximated to within ε with fewer T-gates.
         for t in self.min_lde..=self.direct_limit {
-            let t0 = std::time::Instant::now();
             let result = self.try_at_lde(&target, v, t);
-            eprintln!("t={t} took {:.3}s", t0.elapsed().as_secs_f64());
             if result.is_some() {
                 return result;
             }
@@ -920,9 +992,7 @@ impl Synthesizer {
         }
 
         for t in t_dc_start..=self.max_lde {
-            let t0 = std::time::Instant::now();
             let result = self.try_at_lde(&target, v, t);
-            eprintln!("t={t} took {:.3}s", t0.elapsed().as_secs_f64());
             if result.is_some() {
                 return result;
             }
@@ -939,10 +1009,8 @@ impl Synthesizer {
     /// The direct_limit cap prevents aligned_search from hanging at large lde.
     fn try_at_lde(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResult> {
         if t <= self.direct_limit {
-            eprintln!("t={t} → direct_search");
             self.direct_search(target, v, t)
         } else {
-            eprintln!("t={t} → dc_search");
             self.dc_search(target, v, t)
         }
     }
@@ -1068,7 +1136,6 @@ impl Synthesizer {
         };
 
         let prefixes = build_l(t_prime);
-        eprintln!("t={t}, t_prime={t_prime}, t_inner={t_inner}, |prefixes|={}", prefixes.len());
 
         // Parallel search over all left prefixes.
         // find_map_any stops all threads as soon as any one returns Some(...).
