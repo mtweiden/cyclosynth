@@ -799,6 +799,17 @@ pub struct SynthResult {
     pub distance: Float,
 }
 
+// ─── Direct search branch tags ────────────────────────────────────────────────
+
+enum DirectBranch {
+    Plain,
+    T,
+    Tdg,
+    ClifEven(usize),
+    ClifT(usize),
+    ClifTdg(usize),
+}
+
 // ─── Synthesizer ──────────────────────────────────────────────────────────────
 
 /// Clifford+T synthesizer implementing Algorithm 3.14 of arXiv:2510.05816.
@@ -807,6 +818,11 @@ pub struct Synthesizer {
     pub epsilon: Float,
     /// Maximum lde to search before giving up.
     pub max_lde: u32,
+    /// Minimum lde to start searching from.
+    /// Defaults to floor(3/2 · log₂(1/ε)), the information-theoretic lower bound
+    /// on the minimum T-count for a generic SU(2) rotation.  Set to 0 to find
+    /// exact low-T-count solutions for Cliffords and other special gates.
+    pub min_lde: u32,
     /// Maximum lde for direct_search (brute-force aligned_search).
     /// For t > direct_limit, skip direct_search and go straight to dc_search
     /// regardless of the optimal t' split. This prevents aligned_search from
@@ -818,12 +834,25 @@ pub struct Synthesizer {
 
 impl Synthesizer {
     /// Create a synthesizer with the given precision and sensible defaults.
+    ///
+    /// Sets `min_lde = floor(3/2 · log₂(1/ε))` — the lower bound below which
+    /// no generic rotation can be approximated to within ε.
     pub fn new(epsilon: Float) -> Self {
-        Self { epsilon, max_lde: 50, direct_limit: 6 }
+        let min_lde = if epsilon > 0.0 && epsilon < 1.0 {
+            (2.8 * (1.0 / epsilon).log2()).floor() as u32
+        } else {
+            0
+        };
+        Self { epsilon, max_lde: 50, min_lde, direct_limit: 6 }
     }
 
     pub fn with_max_lde(mut self, max_lde: u32) -> Self {
         self.max_lde = max_lde;
+        self
+    }
+
+    pub fn with_min_lde(mut self, min_lde: u32) -> Self {
+        self.min_lde = min_lde;
         self
     }
 
@@ -841,8 +870,9 @@ impl Synthesizer {
         let raw_uv = unitary_to_uv(&target);
         let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
 
-        // Phase 1: small t — catches Cliffords, T, and low-T-count gates
-        for t in 0..=self.direct_limit {
+        // Phase 1: direct_search for small t.  Starts at min_lde (not 0) because
+        // no generic rotation can be approximated to within ε with fewer T-gates.
+        for t in self.min_lde..=self.direct_limit {
             let t0 = std::time::Instant::now();
             let result = self.try_at_lde(&target, v, t);
             eprintln!("t={t} took {:.3}s", t0.elapsed().as_secs_f64());
@@ -855,10 +885,11 @@ impl Synthesizer {
         // are tiny and lll_aligned_search is cheap anyway (t=direct_limit+1 .. t_dc_start-1)
         let t_dc_start = if self.epsilon < 1.0 {
             let raw = (5.0 / 2.0) * (1.0 / self.epsilon).log2();
-            (raw as u32).max(self.direct_limit + 1)
+            (raw.ceil() as u32).max(self.direct_limit + 1)
         } else {
             self.direct_limit + 1
         };
+        let t_dc_start = t_dc_start.max(self.min_lde);
 
         for t in t_dc_start..=self.max_lde {
             let t0 = std::time::Instant::now();
@@ -906,84 +937,65 @@ impl Synthesizer {
     fn direct_search(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResult> {
         let eps = self.epsilon;
 
-        // ── Even branch: find U ≈ target directly. ──────────────────────────────
-        for sol in aligned_search(v, t, eps, 1) {
-            let u2t = solution_to_u2t(&sol, t);
-            let dist = diamond_distance_u2t_float(&u2t, target);
-            if dist < eps {
-                return Some(SynthResult {
-                    gates: Some(solution_to_gates(&sol, t)),
-                    lde: t,
-                    distance: dist,
-                });
-            }
+        // Pre-compute search directions for all 24 Clifford left-prefixes.
+        let clif_vs: Vec<[Float; 4]> = CLIFFORD_TABLE_T.iter()
+            .map(|(_, c_u2t)| apply_u2t_dag_to_uv(c_u2t, v))
+            .collect();
+
+        // Build all 75 (v_search, tag) branches: 3 top-level + 23 Cliffords × 3.
+        // Index 0 of CLIFFORD_TABLE_T is "I", covered by Plain/T/Tdg already.
+        let mut branches: Vec<([Float; 4], DirectBranch)> = Vec::with_capacity(75);
+        branches.push((v, DirectBranch::Plain));
+        branches.push((apply_t_dag_to_uv(v), DirectBranch::T));
+        branches.push((apply_t_to_uv(v), DirectBranch::Tdg));
+        for i in 1..CLIFFORD_TABLE_T.len() {
+            let vi = clif_vs[i];
+            branches.push((vi, DirectBranch::ClifEven(i)));
+            branches.push((apply_t_dag_to_uv(vi), DirectBranch::ClifT(i)));
+            branches.push((apply_t_to_uv(vi), DirectBranch::ClifTdg(i)));
         }
 
-        // ── T branch: find U s.t. U·T ≈ target, i.e. U ≈ target·T†. ───────────
-        let v_t = apply_t_dag_to_uv(v);
-        for sol in aligned_search(v_t, t, eps, 1) {
-            let u2t = solution_to_u2t(&sol, t) * U2T::t();
-            let dist = diamond_distance_u2t_float(&u2t, target);
-            if dist < eps {
-                let gates = solution_to_gates(&sol, t) + "T";
-                return Some(SynthResult { gates: Some(gates), lde: t, distance: dist });
-            }
-        }
-
-        // ── T† branch: find U s.t. U·T† ≈ target, i.e. U ≈ target·T. ──────────
-        let v_tdg = apply_t_to_uv(v);
-        for sol in aligned_search(v_tdg, t, eps, 1) {
-            let u2t = solution_to_u2t(&sol, t) * U2T::t().dagger();
-            let dist = diamond_distance_u2t_float(&u2t, target);
-            if dist < eps {
-                // T† = S³·T in Clifford+T gate set.
-                let gates = solution_to_gates(&sol, t) + "SSST";
-                return Some(SynthResult { gates: Some(gates), lde: t, distance: dist });
-            }
-        }
-
-        // ── C-phase: try all 24 Clifford left-prefixes. ─────────────────────────
-        for (c_str, c_u2t) in CLIFFORD_TABLE_T {
-            if *c_str == "I" {
-                continue; // Identity already covered by even branch above.
-            }
-
-            let v_inner = apply_u2t_dag_to_uv(c_u2t, v);
-
-            // Inner even branch: C·U ≈ target.
-            for sol in aligned_search(v_inner, t, eps, 1) {
-                let u2t = *c_u2t * solution_to_u2t(&sol, t);
+        branches.par_iter().find_map_any(|(v_s, tag)| {
+            for sol in aligned_search(*v_s, t, eps, 1) {
+                let (u2t, gates) = match tag {
+                    DirectBranch::Plain => (
+                        solution_to_u2t(&sol, t),
+                        solution_to_gates(&sol, t),
+                    ),
+                    DirectBranch::T => (
+                        solution_to_u2t(&sol, t) * U2T::t(),
+                        solution_to_gates(&sol, t) + "T",
+                    ),
+                    DirectBranch::Tdg => (
+                        solution_to_u2t(&sol, t) * U2T::t().dagger(),
+                        solution_to_gates(&sol, t) + "SSST",
+                    ),
+                    DirectBranch::ClifEven(i) => {
+                        let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
+                        (*c_u2t * solution_to_u2t(&sol, t), solution_to_gates(&sol, t) + c_str)
+                    },
+                    DirectBranch::ClifT(i) => {
+                        let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
+                        (
+                            *c_u2t * solution_to_u2t(&sol, t) * U2T::t(),
+                            solution_to_gates(&sol, t) + "T" + c_str,
+                        )
+                    },
+                    DirectBranch::ClifTdg(i) => {
+                        let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
+                        (
+                            *c_u2t * solution_to_u2t(&sol, t) * U2T::t().dagger(),
+                            solution_to_gates(&sol, t) + "SSST" + c_str,
+                        )
+                    },
+                };
                 let dist = diamond_distance_u2t_float(&u2t, target);
                 if dist < eps {
-                    let gates = solution_to_gates(&sol, t) + c_str;
                     return Some(SynthResult { gates: Some(gates), lde: t, distance: dist });
                 }
             }
-
-            // Inner T branch: C·U·T ≈ target, i.e. U ≈ (C†·target)·T†.
-            let v_inner_t = apply_t_dag_to_uv(v_inner);
-            for sol in aligned_search(v_inner_t, t, eps, 1) {
-                let u2t = *c_u2t * solution_to_u2t(&sol, t) * U2T::t();
-                let dist = diamond_distance_u2t_float(&u2t, target);
-                if dist < eps {
-                    let gates = solution_to_gates(&sol, t) + "T" + c_str;
-                    return Some(SynthResult { gates: Some(gates), lde: t, distance: dist });
-                }
-            }
-
-            // Inner T† branch: C·U·T† ≈ target, i.e. U ≈ (C†·target)·T.
-            let v_inner_tdg = apply_t_to_uv(v_inner);
-            for sol in aligned_search(v_inner_tdg, t, eps, 1) {
-                let u2t = *c_u2t * solution_to_u2t(&sol, t) * U2T::t().dagger();
-                let dist = diamond_distance_u2t_float(&u2t, target);
-                if dist < eps {
-                    let gates = solution_to_gates(&sol, t) + "SSST" + c_str;
-                    return Some(SynthResult { gates: Some(gates), lde: t, distance: dist });
-                }
-            }
-        }
-
-        None
+            None
+        })
     }
 
     /// Algorithm 3.11: divide-and-conquer with MA left prefixes.
@@ -1000,13 +1012,16 @@ impl Synthesizer {
         // t_prime == 0 (meaning the formula says direct search is fine), force
         // t_prime = t - direct_limit so the inner LLL/CVP search stays within the
         // brute-force-tractable regime (inner T-count = direct_limit).
+        // Guard: if opt==0 the formula says t is below the DC threshold, meaning
+        // no split is theoretically needed and forcing t_prime = t-direct_limit
+        // would produce an exponentially large prefix set.  Return None so the
+        // outer loop advances to the next (higher) t where opt > 0.
         let t_prime = {
             let opt = optimal_t_prime(t, eps);
             if opt == 0 && t > self.direct_limit {
-                t - self.direct_limit
-            } else {
-                opt
+                return None;
             }
+            opt
         };
         
         if t_prime == 0 || t_prime > t {
@@ -1101,7 +1116,8 @@ mod tests {
     #[test]
     fn test_synthesize_identity() {
         let id: Mat2 = [[Complex::new(1., 0.), Complex::new(0., 0.)], [Complex::new(0., 0.), Complex::new(1., 0.)]];
-        let synth = Synthesizer::new(0.01);
+        // with_min_lde(0): identity is a Clifford with exact solution at lde=0.
+        let synth = Synthesizer::new(0.01).with_min_lde(0);
         let result = synth.synthesize(id).expect("Should synthesize identity");
         check_result(&result, &id, 0.01);
         assert_eq!(result.lde, 0, "Identity should have lde=0");
@@ -1113,7 +1129,8 @@ mod tests {
             [Complex::new(1., 0.), Complex::new(0., 0.)],
             [Complex::new(0., 0.), Complex::new(0., 1.)],
         ];
-        let synth = Synthesizer::new(0.01);
+        // with_min_lde(0): S is a Clifford with exact solution at lde=0.
+        let synth = Synthesizer::new(0.01).with_min_lde(0);
         let result = synth.synthesize(s).expect("Should synthesize S");
         println!("{:?}", result.gates);
         check_result(&result, &s, 0.01);

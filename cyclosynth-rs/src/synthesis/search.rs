@@ -443,15 +443,15 @@ use rayon::prelude::*;
 
 // ── fast_search (solves for b1, d1) ──────────────────────────────────────────
 
-/// Inner body for one fixed a1 slice. Enumerates c1, a2, c2, b2, d2 and calls
+/// Inner body for one fixed (a1, c1) pair. Enumerates a2, c2, b2, d2 and calls
 /// solve_b1d1 for the remaining pair. Returns all solutions found up to max_sol.
 fn fast_search_inner(
     a1: i64,
-    rem1: i64,
-    pdot1: f64,
+    c1: i64,
+    rem2: i64,
+    pdot2: f64,
     av: &[f64; 8],
     thresh_sq: f64,
-    av_sq_2: f64,
     av_sq_3: f64,
     av_sq_4: f64,
     av_sq_5: f64,
@@ -462,45 +462,37 @@ fn fast_search_inner(
 ) -> Vec<[i64; 8]> {
     let mut out: Vec<[i64; 8]> = Vec::new();
 
-    let max_c1 = integer_sqrt(rem1);
-    for c1 in -max_c1..=max_c1 {
-        let rem2 = rem1 - c1 * c1;
-        if rem2 < 0 { continue; }
-        let pdot2 = pdot1 + c1 as f64 * av[2];
-        if do_prune && pdot2.abs() + (rem2 as f64 * av_sq_2).sqrt() < thresh { continue; }
+    let max_a2 = integer_sqrt(rem2);
+    for a2 in -max_a2..=max_a2 {
+        let rem3 = rem2 - a2 * a2;
+        if rem3 < 0 { continue; }
+        let pdot3 = pdot2 + a2 as f64 * av[4];
+        if do_prune && pdot3.abs() + (rem3 as f64 * av_sq_3).sqrt() < thresh { continue; }
 
-        let max_a2 = integer_sqrt(rem2);
-        for a2 in -max_a2..=max_a2 {
-            let rem3 = rem2 - a2 * a2;
-            if rem3 < 0 { continue; }
-            let pdot3 = pdot2 + a2 as f64 * av[4];
-            if do_prune && pdot3.abs() + (rem3 as f64 * av_sq_3).sqrt() < thresh { continue; }
+        let max_c2 = integer_sqrt(rem3);
+        for c2 in -max_c2..=max_c2 {
+            let rem4 = rem3 - c2 * c2;
+            if rem4 < 0 { continue; }
+            let pdot4 = pdot3 + c2 as f64 * av[6];
+            if do_prune && pdot4.abs() + (rem4 as f64 * av_sq_4).sqrt() < thresh { continue; }
 
-            let max_c2 = integer_sqrt(rem3);
-            for c2 in -max_c2..=max_c2 {
-                let rem4 = rem3 - c2 * c2;
-                if rem4 < 0 { continue; }
-                let pdot4 = pdot3 + c2 as f64 * av[6];
-                if do_prune && pdot4.abs() + (rem4 as f64 * av_sq_4).sqrt() < thresh { continue; }
+            let max_b2 = integer_sqrt(rem4);
+            for b2 in -max_b2..=max_b2 {
+                let rem5 = rem4 - b2 * b2;
+                if rem5 < 0 { continue; }
+                let pdot5 = pdot4 + b2 as f64 * av[5];
+                if do_prune && pdot5.abs() + (rem5 as f64 * av_sq_5).sqrt() < thresh { continue; }
 
-                let max_b2 = integer_sqrt(rem4);
-                for b2 in -max_b2..=max_b2 {
-                    let rem5 = rem4 - b2 * b2;
-                    if rem5 < 0 { continue; }
-                    let pdot5 = pdot4 + b2 as f64 * av[5];
-                    if do_prune && pdot5.abs() + (rem5 as f64 * av_sq_5).sqrt() < thresh { continue; }
+                let max_d2 = integer_sqrt(rem5);
+                for d2 in -max_d2..=max_d2 {
+                    let r = rem5 - d2 * d2;
+                    if r < 0 { continue; }
+                    let pdot6 = pdot5 + d2 as f64 * av[7];
+                    if do_prune && pdot6.abs() + (r as f64 * av_sq_6).sqrt() < thresh { continue; }
 
-                    let max_d2 = integer_sqrt(rem5);
-                    for d2 in -max_d2..=max_d2 {
-                        let r = rem5 - d2 * d2;
-                        if r < 0 { continue; }
-                        let pdot6 = pdot5 + d2 as f64 * av[7];
-                        if do_prune && pdot6.abs() + (r as f64 * av_sq_6).sqrt() < thresh { continue; }
-
-                        let rhs = -(b2 * (a2 + c2) + d2 * (c2 - a2));
-                        solve_b1d1(a1, c1, a2, b2, c2, d2, r, rhs, av, thresh_sq, &mut out, max_sol);
-                        if out.len() >= max_sol { return out; }
-                    }
+                    let rhs = -(b2 * (a2 + c2) + d2 * (c2 - a2));
+                    solve_b1d1(a1, c1, a2, b2, c2, d2, r, rhs, av, thresh_sq, &mut out, max_sol);
+                    if out.len() >= max_sol { return out; }
                 }
             }
         }
@@ -511,7 +503,7 @@ fn fast_search_inner(
 /// Full-sphere enumeration with Cauchy–Schwarz pruning, solving for (b1, d1).
 ///
 /// Enumeration order: a1(0), c1(2), a2(4), c2(6), b2(5), d2(7) → solve b1(1), d1(3).
-/// Parallelised over the outermost a1 loop via rayon.
+/// Parallelised over (a1, c1) pairs via rayon.
 fn fast_search(
     target_norm: i64,
     av: &[f64; 8],
@@ -532,18 +524,33 @@ fn fast_search(
 
     let max_a1 = integer_sqrt(target_norm);
 
-    let batches: Vec<Vec<[i64; 8]>> = (-max_a1..=max_a1)
-        .into_par_iter()
-        .filter_map(|a1| {
+    let pairs: Vec<(i64, i64, i64, f64)> = (-max_a1..=max_a1)
+        .flat_map(|a1| {
             let rem1 = target_norm - a1 * a1;
-            if rem1 < 0 { return None; }
+            if rem1 < 0 { return vec![]; }
             let pdot1 = a1 as f64 * av[0];
             if do_prune && pdot1.abs() + (rem1 as f64 * av_sq_1).sqrt() < thresh {
-                return None;
+                return vec![];
             }
+            let max_c1 = integer_sqrt(rem1);
+            (-max_c1..=max_c1).filter_map(|c1| {
+                let rem2 = rem1 - c1 * c1;
+                if rem2 < 0 { return None; }
+                let pdot2 = pdot1 + c1 as f64 * av[2];
+                if do_prune && pdot2.abs() + (rem2 as f64 * av_sq_2).sqrt() < thresh {
+                    return None;
+                }
+                Some((a1, c1, rem2, pdot2))
+            }).collect::<Vec<_>>()
+        })
+        .collect();
+
+    let batches: Vec<Vec<[i64; 8]>> = pairs
+        .into_par_iter()
+        .filter_map(|(a1, c1, rem2, pdot2)| {
             let local = fast_search_inner(
-                a1, rem1, pdot1, av, thresh_sq,
-                av_sq_2, av_sq_3, av_sq_4, av_sq_5, av_sq_6,
+                a1, c1, rem2, pdot2, av, thresh_sq,
+                av_sq_3, av_sq_4, av_sq_5, av_sq_6,
                 do_prune, thresh, max_sol,
             );
             if local.is_empty() { None } else { Some(local) }
@@ -560,15 +567,15 @@ fn fast_search(
 
 // ── fast_search_u1 (solves for b2, d2) ───────────────────────────────────────
 
-/// Inner body for one fixed a1 slice. Enumerates b1, c1, d1, a2, c2 and calls
+/// Inner body for one fixed (a1, b1) pair. Enumerates c1, d1, a2, c2 and calls
 /// solve_b2d2 for the remaining pair. Returns all solutions found up to max_sol.
 fn fast_search_u1_inner(
     a1: i64,
-    rem1: i64,
-    pdot1: f64,
+    b1: i64,
+    rem2: i64,
+    pdot2: f64,
     av: &[f64; 8],
     thresh_sq: f64,
-    av_sq_2: f64,
     av_sq_3: f64,
     av_sq_4: f64,
     av_sq_5: f64,
@@ -579,47 +586,39 @@ fn fast_search_u1_inner(
 ) -> Vec<[i64; 8]> {
     let mut out: Vec<[i64; 8]> = Vec::new();
 
-    let max_b1 = integer_sqrt(rem1);
-    for b1 in -max_b1..=max_b1 {
-        let rem2 = rem1 - b1 * b1;
-        if rem2 < 0 { continue; }
-        let pdot2 = pdot1 + b1 as f64 * av[1];
-        if do_prune && pdot2.abs() + (rem2 as f64 * av_sq_2).sqrt() < thresh { continue; }
+    let max_c1 = integer_sqrt(rem2);
+    for c1 in -max_c1..=max_c1 {
+        let rem3 = rem2 - c1 * c1;
+        if rem3 < 0 { continue; }
+        let pdot3 = pdot2 + c1 as f64 * av[2];
+        if do_prune && pdot3.abs() + (rem3 as f64 * av_sq_3).sqrt() < thresh { continue; }
 
-        let max_c1 = integer_sqrt(rem2);
-        for c1 in -max_c1..=max_c1 {
-            let rem3 = rem2 - c1 * c1;
-            if rem3 < 0 { continue; }
-            let pdot3 = pdot2 + c1 as f64 * av[2];
-            if do_prune && pdot3.abs() + (rem3 as f64 * av_sq_3).sqrt() < thresh { continue; }
+        let max_d1 = integer_sqrt(rem3);
+        for d1 in -max_d1..=max_d1 {
+            let rem4 = rem3 - d1 * d1;
+            if rem4 < 0 { continue; }
+            let pdot4 = pdot3 + d1 as f64 * av[3];
+            if do_prune && pdot4.abs() + (rem4 as f64 * av_sq_4).sqrt() < thresh { continue; }
 
-            let max_d1 = integer_sqrt(rem3);
-            for d1 in -max_d1..=max_d1 {
-                let rem4 = rem3 - d1 * d1;
-                if rem4 < 0 { continue; }
-                let pdot4 = pdot3 + d1 as f64 * av[3];
-                if do_prune && pdot4.abs() + (rem4 as f64 * av_sq_4).sqrt() < thresh { continue; }
+            let cross1 = b1 * (a1 + c1) + d1 * (c1 - a1);
 
-                let cross1 = b1 * (a1 + c1) + d1 * (c1 - a1);
+            let max_a2 = integer_sqrt(rem4);
+            for a2 in -max_a2..=max_a2 {
+                let rem5 = rem4 - a2 * a2;
+                if rem5 < 0 { continue; }
+                let pdot5 = pdot4 + a2 as f64 * av[4];
+                if do_prune && pdot5.abs() + (rem5 as f64 * av_sq_5).sqrt() < thresh { continue; }
 
-                let max_a2 = integer_sqrt(rem4);
-                for a2 in -max_a2..=max_a2 {
-                    let rem5 = rem4 - a2 * a2;
-                    if rem5 < 0 { continue; }
-                    let pdot5 = pdot4 + a2 as f64 * av[4];
-                    if do_prune && pdot5.abs() + (rem5 as f64 * av_sq_5).sqrt() < thresh { continue; }
+                let max_c2 = integer_sqrt(rem5);
+                for c2 in -max_c2..=max_c2 {
+                    let r = rem5 - c2 * c2;
+                    if r < 0 { continue; }
+                    let pdot6 = pdot5 + c2 as f64 * av[6];
+                    if do_prune && pdot6.abs() + (r as f64 * av_sq_6).sqrt() < thresh { continue; }
 
-                    let max_c2 = integer_sqrt(rem5);
-                    for c2 in -max_c2..=max_c2 {
-                        let r = rem5 - c2 * c2;
-                        if r < 0 { continue; }
-                        let pdot6 = pdot5 + c2 as f64 * av[6];
-                        if do_prune && pdot6.abs() + (r as f64 * av_sq_6).sqrt() < thresh { continue; }
-
-                        let rhs = -cross1;
-                        solve_b2d2(a1, b1, c1, d1, a2, c2, r, rhs, av, thresh_sq, &mut out, max_sol);
-                        if out.len() >= max_sol { return out; }
-                    }
+                    let rhs = -cross1;
+                    solve_b2d2(a1, b1, c1, d1, a2, c2, r, rhs, av, thresh_sq, &mut out, max_sol);
+                    if out.len() >= max_sol { return out; }
                 }
             }
         }
@@ -631,7 +630,7 @@ fn fast_search_u1_inner(
 ///
 /// Preferred when alignment energy is concentrated in u1 (indices 0-3).
 /// Enumeration order: a1(0), b1(1), c1(2), d1(3), a2(4), c2(6) → solve b2(5), d2(7).
-/// Parallelised over the outermost a1 loop via rayon.
+/// Parallelised over (a1, b1) pairs via rayon.
 fn fast_search_u1(
     target_norm: i64,
     av: &[f64; 8],
@@ -652,18 +651,33 @@ fn fast_search_u1(
 
     let max_a1 = integer_sqrt(target_norm);
 
-    let batches: Vec<Vec<[i64; 8]>> = (-max_a1..=max_a1)
-        .into_par_iter()
-        .filter_map(|a1| {
+    let pairs: Vec<(i64, i64, i64, f64)> = (-max_a1..=max_a1)
+        .flat_map(|a1| {
             let rem1 = target_norm - a1 * a1;
-            if rem1 < 0 { return None; }
+            if rem1 < 0 { return vec![]; }
             let pdot1 = a1 as f64 * av[0];
             if do_prune && pdot1.abs() + (rem1 as f64 * av_sq_1).sqrt() < thresh {
-                return None;
+                return vec![];
             }
+            let max_b1 = integer_sqrt(rem1);
+            (-max_b1..=max_b1).filter_map(|b1| {
+                let rem2 = rem1 - b1 * b1;
+                if rem2 < 0 { return None; }
+                let pdot2 = pdot1 + b1 as f64 * av[1];
+                if do_prune && pdot2.abs() + (rem2 as f64 * av_sq_2).sqrt() < thresh {
+                    return None;
+                }
+                Some((a1, b1, rem2, pdot2))
+            }).collect::<Vec<_>>()
+        })
+        .collect();
+
+    let batches: Vec<Vec<[i64; 8]>> = pairs
+        .into_par_iter()
+        .filter_map(|(a1, b1, rem2, pdot2)| {
             let local = fast_search_u1_inner(
-                a1, rem1, pdot1, av, thresh_sq,
-                av_sq_2, av_sq_3, av_sq_4, av_sq_5, av_sq_6,
+                a1, b1, rem2, pdot2, av, thresh_sq,
+                av_sq_3, av_sq_4, av_sq_5, av_sq_6,
                 do_prune, thresh, max_sol,
             );
             if local.is_empty() { None } else { Some(local) }
