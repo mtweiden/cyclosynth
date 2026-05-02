@@ -585,7 +585,6 @@ fn i256_log2_ceil(v: &i256) -> i32 {
 /// triangle (j ≤ i) is read.
 pub fn gs_int_inplace(scratch: &mut IntScratch) {
     let prec = scratch.prec_mu;
-    let tiny = rfv(prec, 1e-300);
     let mut acc = rfz(prec);
     let mut tmp = rfz(prec);
 
@@ -596,13 +595,17 @@ pub fn gs_int_inplace(scratch: &mut IntScratch) {
             for l in 0..j {
                 // tmp = μ[j][l] * g_star[i][l]
                 tmp.assign(&scratch.mu[j][l] * &scratch.g_star[i][l]);
-                let cur = acc.clone();
-                acc.assign(&cur - &tmp);
+                // acc -= tmp (in-place; no clone)
+                acc -= &tmp;
             }
             scratch.g_star[i][j].assign(&acc);
         }
         scratch.gnorm_sq[j].assign(&scratch.g_star[j][j]);
-        if scratch.gnorm_sq[j].clone().abs() < tiny {
+        // Cheap zero/tiny check: bypass clone via raw exponent inspection. RFloat
+        // is ≥ tiny iff non-zero and exponent ≥ exp(tiny). For our use, just
+        // check is_zero AND not too-small via to_f64.
+        let gn = scratch.gnorm_sq[j].to_f64();
+        if !gn.is_finite() || gn.abs() < 1e-300 {
             for i in (j + 1)..8 {
                 scratch.mu[i][j].assign(0.0_f64);
             }
