@@ -180,6 +180,13 @@ pub struct IntScratch {
     // ── prec_mu temporaries for Lovász check ──
     pub lov_t1: RFloat,
     pub lov_t2: RFloat,
+
+    // ── post-LLL MPFR buffers for Cholesky + LU ──
+    pub g_post_lll: [[RFloat; 8]; 8],
+    pub l: [[RFloat; 8]; 8],
+    pub lu_a: [[RFloat; 8]; 8],
+    pub lu_rhs: [RFloat; 8],
+    pub lu_x: [RFloat; 8],
 }
 
 fn rfz(prec: u32) -> RFloat {
@@ -286,6 +293,11 @@ impl IntScratch {
             delta_lll: rfv(prec_mu, 0.75),
             lov_t1: rfz(prec_mu),
             lov_t2: rfz(prec_mu),
+            g_post_lll: rmat_zero(prec_q),
+            l: rmat_zero(prec_q),
+            lu_a: rmat_zero(prec_q),
+            lu_rhs: rvec_zero(prec_q),
+            lu_x: rvec_zero(prec_q),
         };
         fill_sigma(&mut s.sigma, prec_q);
         s
@@ -685,6 +697,286 @@ pub fn lll_int_8(scratch: &mut IntScratch) -> LllResult {
         LllResult::IterCap
     } else {
         LllResult::Converged
+    }
+}
+
+// ─── Convert i256 Gram → MPFR (post-LLL, into g_post_lll) ─────────────────────
+
+/// Convert the post-LLL i256 Gram matrix into MPFR (g_post_lll) so the
+/// existing Cholesky/LU pipeline can run on it. The integer Gram is divided
+/// by 2^scale_bits during conversion to recover the natural Q-metric scale.
+fn snapshot_gram_to_mpfr(scratch: &mut IntScratch) {
+    let prec = scratch.prec_q;
+    let shift = scratch.scale_bits;
+    let mut tmp = rfz(prec);
+    for i in 0..8 {
+        for j in 0..8 {
+            i256_to_rfloat(&scratch.gram[i][j], &mut tmp);
+            // Divide by 2^scale_bits to recover natural-scale G
+            if shift > 0 {
+                tmp >>= shift as u32;
+            } else if shift < 0 {
+                tmp <<= (-shift) as u32;
+            }
+            scratch.g_post_lll[i][j].assign(&tmp);
+        }
+    }
+}
+
+// ─── Cholesky (in-place rug, ported from heavy) ──────────────────────────────
+
+fn cholesky_int_8(scratch: &mut IntScratch) -> bool {
+    let prec = scratch.prec_q;
+    for i in 0..8 {
+        for j in 0..8 {
+            scratch.l[i][j].assign(0.0_f64);
+        }
+    }
+    let zero = rfz(prec);
+    for i in 0..8 {
+        for j in 0..=i {
+            scratch.acc.assign(&scratch.g_post_lll[i][j]);
+            for k in 0..j {
+                scratch.tmp.assign(&scratch.l[i][k] * &scratch.l[j][k]);
+                let acc_clone = scratch.acc.clone();
+                scratch.acc.assign(&acc_clone - &scratch.tmp);
+            }
+            if i == j {
+                if scratch.acc <= zero {
+                    return false;
+                }
+                let acc_clone = scratch.acc.clone();
+                scratch.l[i][i].assign(acc_clone.sqrt());
+            } else {
+                scratch.tmp2.assign(&scratch.l[j][j]);
+                scratch.l[i][j].assign(&scratch.acc / &scratch.tmp2);
+            }
+        }
+    }
+    true
+}
+
+// ─── LU solve with partial pivoting (in-place rug, ported from heavy) ─────────
+
+fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
+    let prec = scratch.prec_q;
+    let tol = rfv(prec, 1e-30);
+
+    for k in 0..8 {
+        let mut piv = k;
+        let mut piv_abs = scratch.lu_a[k][k].clone().abs();
+        for i in (k + 1)..8 {
+            let v = scratch.lu_a[i][k].clone().abs();
+            if v > piv_abs {
+                piv_abs = v;
+                piv = i;
+            }
+        }
+        if piv_abs < tol {
+            return false;
+        }
+        if piv != k {
+            scratch.lu_a.swap(k, piv);
+            scratch.lu_rhs.swap(k, piv);
+        }
+        for i in (k + 1)..8 {
+            scratch.tmp.assign(&scratch.lu_a[i][k] / &scratch.lu_a[k][k]);
+            let factor = scratch.tmp.clone();
+            // a[i][j] -= factor · a[k][j]  for j in k..8
+            // Avoid simultaneous &mut borrows on rows i and k.
+            let (row_i, row_k) = if i < k {
+                let (head, tail) = scratch.lu_a.split_at_mut(k);
+                (&mut head[i], &mut tail[0])
+            } else {
+                let (head, tail) = scratch.lu_a.split_at_mut(i);
+                (&mut tail[0], &mut head[k])
+            };
+            for j in k..8 {
+                scratch.tmp.assign(&factor * &row_k[j]);
+                let cur = row_i[j].clone();
+                row_i[j].assign(&cur - &scratch.tmp);
+            }
+            scratch.tmp.assign(&factor * &scratch.lu_rhs[k]);
+            let rhs_i_cur = scratch.lu_rhs[i].clone();
+            scratch.lu_rhs[i].assign(&rhs_i_cur - &scratch.tmp);
+        }
+    }
+    for i in (0..8).rev() {
+        scratch.acc.assign(&scratch.lu_rhs[i]);
+        for j in (i + 1)..8 {
+            scratch.tmp.assign(&scratch.lu_a[i][j] * &scratch.lu_x[j]);
+            let cur = scratch.acc.clone();
+            scratch.acc.assign(&cur - &scratch.tmp);
+        }
+        let acc_clone = scratch.acc.clone();
+        scratch.lu_x[i].assign(&acc_clone / &scratch.lu_a[i][i]);
+    }
+    true
+}
+
+// ─── Top-level phase1_lenstra_int ───────────────────────────────────────────
+
+use std::sync::atomic::AtomicBool;
+use twofloat::TwoFloat as Tf;
+
+/// Outcome of one integer-LLL phase1 attempt. Same shape as
+/// `lenstra_heavy::AttemptOutcome` for dispatch parity. `should_escalate`
+/// is set when the i256 Gram overflowed during LLL (deep ε transient) —
+/// caller can choose to fall back to a smaller TARGET_BITS or alternative
+/// strategy.
+pub struct IntAttemptOutcome {
+    pub solutions: Vec<[i64; 8]>,
+    pub should_escalate: bool,
+}
+
+/// Run the full 8D Lenstra pipeline using the integer LLL. One attempt;
+/// no internal retry (matches the heavy `phase1_lenstra_attempt` interface
+/// at the dispatch level).
+pub fn phase1_lenstra_int(
+    scratch: &mut IntScratch,
+    y: &[Float; 8],
+    k: u32,
+    eps: Float,
+    max_phase2_calls: u64,
+    budget_hit: &AtomicBool,
+) -> IntAttemptOutcome {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let target_norm: i64 = 1i64 << k;
+    let threshold_xy = (1u128 << (2 * k)) as Float / 4.0 * (1.0 - eps * eps);
+
+    let trace = crate::synthesis::diag::trace_enabled();
+
+    // Step 1: build Q in MPFR + integer snapshot
+    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+    build_q_mpfr(scratch, y, k, eps);
+    build_q_int(scratch);
+    if let Some(t0) = t_phase {
+        crate::synthesis::diag::T_BUILD_NS
+            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    // Step 2: integer LLL
+    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+    let lll_result = lll_int_8(scratch);
+    if let Some(t0) = t_phase {
+        crate::synthesis::diag::T_LLL_NS
+            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+    if let LllResult::GramOverflow = lll_result {
+        return IntAttemptOutcome { solutions: Vec::new(), should_escalate: true };
+    }
+
+    // Step 3: assert det = ±1
+    let basis = scratch.basis;
+    match crate::synthesis::lenstra_heavy::det8_exact(&basis) {
+        Some(1) | Some(-1) => {}
+        Some(d) => {
+            eprintln!(
+                "[lenstra_int] LLL non-unimodular (det={}) at eps={:e}, k={}; bailing.",
+                d, eps, k
+            );
+            return IntAttemptOutcome { solutions: Vec::new(), should_escalate: false };
+        }
+        None => {
+            eprintln!(
+                "[lenstra_int] det8_exact overflow at eps={:e}, k={}; bailing.",
+                eps, k
+            );
+            return IntAttemptOutcome { solutions: Vec::new(), should_escalate: false };
+        }
+    }
+
+    // Step 4: snapshot Gram → MPFR, then Cholesky
+    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+    snapshot_gram_to_mpfr(scratch);
+    let chol_ok = cholesky_int_8(scratch);
+    if let Some(t0) = t_phase {
+        crate::synthesis::diag::T_CHOLESKY_NS
+            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+    if !chol_ok {
+        eprintln!(
+            "[lenstra_int] Cholesky failed at eps={:e}, k={}; bailing.", eps, k
+        );
+        return IntAttemptOutcome { solutions: Vec::new(), should_escalate: false };
+    }
+
+    // Convert Cholesky factor to TwoFloat for SE
+    let r_chol_tf: [[Tf; 8]; 8] = std::array::from_fn(|i| {
+        std::array::from_fn(|j| crate::synthesis::lenstra_heavy::rug_to_tf(&scratch.l[j][i]))
+    });
+
+    // Step 5: build cap center c = y · cap_mid (in MPFR), then LU solve
+    // B_LLLᵀ · z_c = c.
+    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+    for i in 0..8 {
+        for j in 0..8 {
+            scratch.lu_a[i][j].assign(rfv(scratch.prec_q, basis[j][i] as f64));
+        }
+        scratch.lu_rhs[i].assign(&scratch.c[i]);
+    }
+    let lu_ok = lu_solve_int_inplace(scratch);
+    if let Some(t0) = t_phase {
+        crate::synthesis::diag::T_LU_NS
+            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+    if !lu_ok {
+        eprintln!("[lenstra_int] LU solve failed at eps={:e}, k={}; bailing.", eps, k);
+        return IntAttemptOutcome { solutions: Vec::new(), should_escalate: false };
+    }
+    let z_c_tf: [Tf; 8] = std::array::from_fn(|i| {
+        crate::synthesis::lenstra_heavy::rug_to_tf(&scratch.lu_x[i])
+    });
+
+    // Step 6: SE in TwoFloat
+    let r_eucl = crate::synthesis::lenstra_heavy::compute_r_eucl(&basis);
+    let target_norm_f = target_norm as f64;
+    let count = AtomicU64::new(0);
+    let abort = AtomicBool::new(false);
+    let bound_tf = Tf::from(1.51_f64);
+    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+
+    let result = crate::synthesis::lenstra_heavy::se_8d_tf(
+        &r_chol_tf,
+        &z_c_tf,
+        bound_tf,
+        r_eucl.as_ref(),
+        target_norm_f,
+        &abort,
+        |z: &[i64; 8]| {
+            let n_so_far = count.load(Ordering::Relaxed);
+            if n_so_far >= max_phase2_calls {
+                budget_hit.store(true, Ordering::Relaxed);
+                return None;
+            }
+            count.fetch_add(1, Ordering::Relaxed);
+            let x = crate::synthesis::lenstra_heavy::reconstruct_x(&basis, z);
+            let n: i64 = x.iter().map(|&v| v * v).sum();
+            if n != target_norm {
+                return None;
+            }
+            if crate::synthesis::lenstra_heavy::bilinear_b(&x) != 0 {
+                return None;
+            }
+            let dot: Float = x.iter().zip(y.iter()).map(|(a, b)| *a as Float * b).sum();
+            if dot * dot < threshold_xy {
+                return None;
+            }
+            Some(x)
+        },
+    );
+
+    if let Some(t0) = t_phase {
+        crate::synthesis::diag::T_SE_NS
+            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+    crate::synthesis::diag::N_SE_CALLBACKS
+        .fetch_add(count.load(Ordering::Relaxed), Ordering::Relaxed);
+
+    match result {
+        Some(x) => IntAttemptOutcome { solutions: vec![x], should_escalate: false },
+        None => IntAttemptOutcome { solutions: Vec::new(), should_escalate: false },
     }
 }
 
