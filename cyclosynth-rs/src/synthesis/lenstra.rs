@@ -6,45 +6,33 @@
 //!   LLL+Cholesky setup. Stack-allocated `Copy` arithmetic with near-zero
 //!   per-op overhead. Numerically stable for ε ≥ ~1e-4 (κ(Q) up to ~10¹⁶).
 //!
-//! - **`lenstra_heavy`** uses `rug::Float` (MPFR) at adaptive precision. Heap-
-//!   allocated arithmetic with disciplined in-place mutation via macros and a
-//!   pre-allocated `HeavyScratch` per rayon worker. Stable at any ε but ~25–30×
-//!   slower at moderate ε due to MPFR fixed-overhead vs dual-double.
+//! - **`lenstra_integer`** uses `i256` for the LLL Gram matrix, with MPFR
+//!   only for μ-values and the post-LLL Cholesky/LU. Per-iteration LLL cost
+//!   drops because i256 multiplies are ~10× cheaper than MPFR at the same
+//!   precision. Validated for ε ∈ [1e-10, 1e-3]; replaces the older
+//!   `lenstra_heavy` MPFR-throughout pipeline (still in tree for fallback).
 //!
 //! Dispatch happens in `LenstraScratch::new(eps)` and `phase1_lenstra(scratch, …)`:
-//! ε ≥ 1e-4 → `Light` (fast common path), ε < 1e-4 → `Heavy` (precision-
-//! correct universal path). The Heavy path also handles the f64 SE precision
-//! issue that emerges at extreme ε (the SE itself is in f64 in both cases; this
-//! becomes a real concern around ε ≤ 1e-5 — see the SE-node-count diagnostic
-//! in `lenstra_heavy::phase1_lenstra` if added later).
+//! ε ≥ 1e-4 → `Light` (fast common path), ε < 1e-4 → `Integer` (precision-
+//! correct universal path).
 
 use crate::rings::Float;
 use std::sync::atomic::AtomicBool;
 
-/// ε threshold separating the Light (twofloat) path from the Heavy (rug) path.
-/// Below this, twofloat's ~104-bit precision becomes insufficient for the LLL
-/// Gram-Schmidt to maintain a unimodular basis (κ(Q) ≈ 4/ε⁴ exceeds f128-class
-/// margins after Gram-Schmidt cancellation).
+/// ε threshold separating the Light (twofloat) path from the Integer (i256+MPFR)
+/// path. Below this, twofloat's ~104-bit precision becomes insufficient for the
+/// LLL Gram-Schmidt to maintain a unimodular basis (κ(Q) ≈ 16/ε⁴ exceeds
+/// f128-class margins after Gram-Schmidt cancellation).
 const LIGHT_EPS_FLOOR: Float = 1e-4;
 
 /// Per-worker scratch holding pre-allocated buffers for whichever precision
 /// path is active. Allocate once via rayon's `map_init`, reuse across all MA
 /// prefixes that worker handles.
-///
-/// The `Heavy` variant carries TWO HeavyScratch buffers — a low-precision
-/// scratch that handles the typical prefix and a full-precision scratch used
-/// only when the low-precision attempt signals escalation (det/Cholesky/LU
-/// failure or SE-node circuit breaker tripped). Pre-allocating both eliminates
-/// per-prefix allocation cost on escalation; memory cost is ~2× per worker
-/// (~10 KB) which is negligible.
 pub enum LenstraScratch {
     /// twofloat path — no scratch needed (TwoFloat is `Copy` and stack-allocated).
     Light,
-    /// rug path — adaptive: try `low` first, escalate to `high` if needed.
-    Heavy {
-        low: crate::synthesis::lenstra_heavy::HeavyScratch,
-        high: crate::synthesis::lenstra_heavy::HeavyScratch,
-    },
+    /// i256 + MPFR path — pre-allocated `IntScratch` with all working buffers.
+    Integer(crate::synthesis::lenstra_integer::IntScratch),
 }
 
 impl LenstraScratch {
@@ -53,25 +41,16 @@ impl LenstraScratch {
         if eps >= LIGHT_EPS_FLOOR {
             LenstraScratch::Light
         } else {
-            let prec_low = crate::synthesis::lenstra_heavy::compute_prec_low(eps);
-            let prec_high = crate::synthesis::lenstra_heavy::compute_prec(eps);
-            LenstraScratch::Heavy {
-                low: crate::synthesis::lenstra_heavy::HeavyScratch::new(prec_low),
-                high: crate::synthesis::lenstra_heavy::HeavyScratch::new(prec_high),
-            }
+            LenstraScratch::Integer(
+                crate::synthesis::lenstra_integer::IntScratch::new(eps),
+            )
         }
     }
 }
 
-/// Run the full 8D Lenstra pipeline. Dispatches to Light or Heavy based on
+/// Run the full 8D Lenstra pipeline. Dispatches to Light or Integer based on
 /// the variant of `scratch`. Both paths return integer 8-vectors satisfying
 /// the same constraints (‖x‖² = 2^k, B(x) = 0, alignment ≥ thresh).
-///
-/// In the Heavy path, the low-precision scratch is tried first. If it returns
-/// `should_escalate` (det/Cholesky/LU failure or SE-node count > threshold
-/// without finding a solution), the high-precision scratch retries the same
-/// prefix. The basis must be reset between attempts since the low-prec attempt
-/// already mutated it.
 pub fn phase1_lenstra(
     scratch: &mut LenstraScratch,
     y: &[Float; 8],
@@ -84,17 +63,10 @@ pub fn phase1_lenstra(
         LenstraScratch::Light => crate::synthesis::lenstra_light::phase1_lenstra(
             y, k, eps, max_phase2_calls, budget_hit,
         ),
-        LenstraScratch::Heavy { low, high } => {
-            low.reset_basis();
-            let outcome = crate::synthesis::lenstra_heavy::phase1_lenstra_attempt(
-                low, y, k, eps, max_phase2_calls, budget_hit, true,
-            );
-            if !outcome.should_escalate {
-                return outcome.solutions;
-            }
-            high.reset_basis();
-            crate::synthesis::lenstra_heavy::phase1_lenstra_attempt(
-                high, y, k, eps, max_phase2_calls, budget_hit, false,
+        LenstraScratch::Integer(s) => {
+            s.reset_basis();
+            crate::synthesis::lenstra_integer::phase1_lenstra_int(
+                s, y, k, eps, max_phase2_calls, budget_hit,
             )
             .solutions
         }
@@ -136,9 +108,9 @@ mod tests {
     }
 
     #[test]
-    fn heavy_path_at_eps_1e_5_runs() {
+    fn integer_path_at_eps_1e_5_runs() {
         let mut scratch = LenstraScratch::new(1e-5);
-        assert!(matches!(scratch, LenstraScratch::Heavy { .. }));
+        assert!(matches!(scratch, LenstraScratch::Integer(_)));
         let y = realistic_y(21);
         let budget_hit = AtomicBool::new(false);
         let _ = phase1_lenstra(&mut scratch, &y, 21, 1e-5, 1_000, &budget_hit);
