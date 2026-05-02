@@ -107,20 +107,28 @@ pub fn lu_solve_8(a: &Mat8, b: &Vec8) -> Option<Vec8> {
 // ─── 8×8 Cholesky (twofloat) ──────────────────────────────────────────────────
 
 /// Cholesky decomposition: `g = L · Lᵀ` for symmetric positive-definite `g`.
-/// Returns lower-triangular `L`. `None` if a diagonal element computes as
-/// substantially negative (indicating `g` is not PD).
+/// Returns lower-triangular `L`, or `None` if any diagonal element comes out
+/// non-positive OR catastrophically smaller than what the input matrix scale
+/// would predict (a sign that twofloat cancellation has corrupted the result).
 ///
-/// At very tight ε (κ(Q) ≳ 1e20), twofloat catastrophic cancellation can
-/// produce a slightly-negative diagonal value where the true value is barely
-/// positive. To cope, diagonal values within `[−tol, tol]` are clamped up to
-/// `tol`, where `tol = 1e-25 · max(|g[i][i]|)`. This perturbs the bounding
-/// ellipsoid by at most `√tol/scale ≈ 1e-12.5` of its smallest axis — well
-/// below the SE bound's 0.01 noise margin.
+/// Why we *don't* clamp small/negative diagonals to a small positive value
+/// (a tempting "regularization"): doing so produces a degenerate Cholesky
+/// factor with a tiny diagonal `L[i][i]`, which when used as a bound divisor
+/// in the downstream Schnorr-Euchner search inflates the i-th iteration range
+/// by `1/L[i][i]` — easily blowing up to tens of thousands of iterations per
+/// level and causing exponential SE explosion. Better to fail fast and let the
+/// caller fall back to a higher-precision path.
 pub fn cholesky_8(g: &Mat8) -> Option<Mat8> {
     let zero = tf(0.0);
     let mut l: Mat8 = [[zero; 8]; 8];
 
-    // Compute regularization tolerance from the scale of g's diagonal.
+    // Sanity threshold: a diagonal s < `tol` indicates catastrophic cancellation.
+    // The input G_LLL has condition number bounded by κ(Q)·κ(B_LLL)² but for
+    // any well-conditioned LLL output the smallest GS norm² is on the order of
+    // the smallest eigenvalue of G, i.e., ~max_diag/κ(Q). We use a coarse but
+    // safe lower bound: 1e-18 · max_diag. This catches twofloat exhaustion
+    // (where cancellation produces s ≈ 0 or slightly negative) without
+    // rejecting legitimate small-but-positive diagonals from a high-κ matrix.
     let mut max_diag = zero;
     for i in 0..8 {
         let d = g[i][i].abs();
@@ -128,7 +136,7 @@ pub fn cholesky_8(g: &Mat8) -> Option<Mat8> {
             max_diag = d;
         }
     }
-    let reg = max_diag * tf(1e-25);
+    let tol = max_diag * tf(1e-18);
 
     for i in 0..8 {
         for j in 0..=i {
@@ -137,13 +145,10 @@ pub fn cholesky_8(g: &Mat8) -> Option<Mat8> {
                 s = s - l[i][k] * l[j][k];
             }
             if i == j {
-                // Reject only on substantially-negative s; clamp tiny / slightly-
-                // negative values to `reg` to absorb twofloat cancellation noise.
-                if s < -reg {
+                if s <= tol {
                     return None;
                 }
-                let s_clamped = if s < reg { reg } else { s };
-                l[i][i] = s_clamped.sqrt();
+                l[i][i] = s.sqrt();
             } else {
                 l[i][j] = s / l[j][j];
             }
@@ -685,6 +690,406 @@ pub fn phase1_lenstra(
         Some(x) => vec![x],
         None => Vec::new(),
     })
+}
+
+// ─── Smoke test for rug-based LLL at extreme κ ────────────────────────────────
+//
+// This module mirrors `build_q`, `compute_qgram`, `gs_qgram`, `lll_qgram_8`,
+// `cholesky_8` using `rug::Float` at adaptive precision. The goal is *just* a
+// smoke test: verify the LLL+Cholesky pipeline at ε=1e-5 (κ(Q)≈1.6e21) produces
+// a unimodular basis and a valid Cholesky factor at 150-bit precision. If yes,
+// the full rewrite (replacing twofloat with rug) is justified.
+//
+// Performance: not optimized — this uses operator-overloaded rug arithmetic
+// (allocating per-op). For the production rewrite we'd switch to `Assign` /
+// `*_assign` discipline, but for the smoke test correctness > speed.
+
+#[cfg(test)]
+#[allow(clippy::needless_range_loop)]
+mod rug_smoke {
+    use super::{det8_exact, IMat8};
+    use rug::Float as RFloat;
+
+    type RMat8 = [[RFloat; 8]; 8];
+
+    fn rf(prec: u32, x: f64) -> RFloat {
+        RFloat::with_val(prec, x)
+    }
+    fn rf_zero(prec: u32) -> RFloat {
+        RFloat::with_val(prec, 0.0_f64)
+    }
+    fn make_zero_matrix(prec: u32) -> RMat8 {
+        std::array::from_fn(|_| std::array::from_fn(|_| rf_zero(prec)))
+    }
+
+    /// Σ matrix from arXiv:2510.05816 eq (3.15), in rug at `prec` bits.
+    fn sigma_matrix_rug(prec: u32) -> RMat8 {
+        // Pattern: 1 = +1, -1 = -1, 2 = +1/√2, -2 = -1/√2, 0 = 0
+        let pattern: [[i32; 8]; 8] = [
+            [1,  2, 0, -2, 0,  0, 0,  0],  // Σ_top row 0
+            [0,  2, 1,  2, 0,  0, 0,  0],  // Σ_top row 1
+            [0,  0, 0,  0, 1,  2, 0, -2],  // Σ_top row 2
+            [0,  0, 0,  0, 0,  2, 1,  2],  // Σ_top row 3
+            [1, -2, 0,  2, 0,  0, 0,  0],  // Σ_bot row 0
+            [0, -2, 1, -2, 0,  0, 0,  0],  // Σ_bot row 1
+            [0,  0, 0,  0, 1, -2, 0,  2],  // Σ_bot row 2
+            [0,  0, 0,  0, 0, -2, 1, -2],  // Σ_bot row 3
+        ];
+        let two = RFloat::with_val(prec, 2.0_f64);
+        let r2 = two.sqrt().recip();   // 1/√2 (full precision)
+        let nr2 = -r2.clone();
+        let one = rf(prec, 1.0);
+        let nine_one = -one.clone();
+        let mut m = make_zero_matrix(prec);
+        for i in 0..8 {
+            for j in 0..8 {
+                m[i][j] = match pattern[i][j] {
+                    1 => one.clone(),
+                    -1 => nine_one.clone(),
+                    2 => r2.clone(),
+                    -2 => nr2.clone(),
+                    0 => rf_zero(prec),
+                    _ => unreachable!(),
+                };
+            }
+        }
+        m
+    }
+
+    /// Helper: compute `&a · &b` at `prec`, returning a fresh `Float`.
+    fn mul(prec: u32, a: &RFloat, b: &RFloat) -> RFloat {
+        RFloat::with_val(prec, a * b)
+    }
+    /// Helper: compute `&a + &b` at `prec`.
+    fn add(prec: u32, a: &RFloat, b: &RFloat) -> RFloat {
+        RFloat::with_val(prec, a + b)
+    }
+    /// Helper: compute `&a - &b` at `prec`.
+    fn sub(prec: u32, a: &RFloat, b: &RFloat) -> RFloat {
+        RFloat::with_val(prec, a - b)
+    }
+    /// Helper: compute `&a / &b` at `prec`.
+    fn div(prec: u32, a: &RFloat, b: &RFloat) -> RFloat {
+        RFloat::with_val(prec, a / b)
+    }
+
+    fn build_q_rug(y: &[f64; 8], k: u32, eps: f64, prec: u32) -> RMat8 {
+        let r_sq = rf(prec, (1u64 << k) as f64);
+        let r = r_sq.clone().sqrt();
+        let one = rf(prec, 1.0);
+        let two = rf(prec, 2.0);
+        let eps_rf = rf(prec, eps);
+        let eps_sq = mul(prec, &eps_rf, &eps_rf);
+        let one_minus_eps_sq = sub(prec, &one, &eps_sq);
+        let sqrt_1m = one_minus_eps_sq.sqrt();
+        let one_plus_sqrt = add(prec, &one, &sqrt_1m);
+        let denom = mul(prec, &one_plus_sqrt, &two);
+        let delta_y = div(prec, &mul(prec, &r, &eps_sq), &denom);
+        let delta_perp = mul(prec, &r, &eps_rf);
+        let dy_sq = mul(prec, &delta_y, &delta_y);
+        let dp_sq = mul(prec, &delta_perp, &delta_perp);
+        let inv_dy_sq = div(prec, &one, &dy_sq);
+        let inv_dp_sq = div(prec, &one, &dp_sq);
+        let inv_r_sq = div(prec, &one, &r_sq);
+
+        let y_rf: [RFloat; 8] = std::array::from_fn(|i| rf(prec, y[i]));
+        let mut y_norm_sq = rf_zero(prec);
+        for i in 0..8 {
+            y_norm_sq = add(prec, &y_norm_sq, &mul(prec, &y_rf[i], &y_rf[i]));
+        }
+        let inv_y_norm_sq = div(prec, &one, &y_norm_sq);
+        let mut yhat_yhat_t = make_zero_matrix(prec);
+        for i in 0..8 {
+            for j in 0..8 {
+                let yij = mul(prec, &y_rf[i], &y_rf[j]);
+                yhat_yhat_t[i][j] = mul(prec, &yij, &inv_y_norm_sq);
+            }
+        }
+
+        let sigma = sigma_matrix_rug(prec);
+        let half = rf(prec, 0.5);
+        let mut p_u = make_zero_matrix(prec);
+        let mut p_ub = make_zero_matrix(prec);
+        for i in 0..8 {
+            for j in 0..8 {
+                let mut su = rf_zero(prec);
+                let mut sb = rf_zero(prec);
+                for r_idx in 0..4 {
+                    su = add(prec, &su, &mul(prec, &sigma[r_idx][i], &sigma[r_idx][j]));
+                    sb = add(
+                        prec,
+                        &sb,
+                        &mul(prec, &sigma[r_idx + 4][i], &sigma[r_idx + 4][j]),
+                    );
+                }
+                p_u[i][j] = mul(prec, &su, &half);
+                p_ub[i][j] = mul(prec, &sb, &half);
+            }
+        }
+
+        let mut q = make_zero_matrix(prec);
+        for i in 0..8 {
+            for j in 0..8 {
+                let t1 = mul(prec, &inv_dy_sq, &yhat_yhat_t[i][j]);
+                let p_minus = sub(prec, &p_u[i][j], &yhat_yhat_t[i][j]);
+                let t2 = mul(prec, &inv_dp_sq, &p_minus);
+                let t3 = mul(prec, &inv_r_sq, &p_ub[i][j]);
+                q[i][j] = add(prec, &add(prec, &t1, &t2), &t3);
+            }
+        }
+        q
+    }
+
+    fn compute_qgram_rug(basis: &IMat8, q: &RMat8, prec: u32) -> RMat8 {
+        let mut temp = make_zero_matrix(prec);
+        for i in 0..8 {
+            for b in 0..8 {
+                let mut s = rf_zero(prec);
+                for a in 0..8 {
+                    let bi = rf(prec, basis[i][a] as f64);
+                    s = add(prec, &s, &mul(prec, &bi, &q[a][b]));
+                }
+                temp[i][b] = s;
+            }
+        }
+        let mut g = make_zero_matrix(prec);
+        for i in 0..8 {
+            for j in 0..8 {
+                let mut s = rf_zero(prec);
+                for b in 0..8 {
+                    let bj = rf(prec, basis[j][b] as f64);
+                    s = add(prec, &s, &mul(prec, &temp[i][b], &bj));
+                }
+                g[i][j] = s;
+            }
+        }
+        g
+    }
+
+    fn gs_qgram_rug(
+        basis: &IMat8,
+        q: &RMat8,
+        prec: u32,
+    ) -> ([[RFloat; 8]; 8], [RFloat; 8]) {
+        let g = compute_qgram_rug(basis, q, prec);
+        let mut mu = make_zero_matrix(prec);
+        let mut g_star = make_zero_matrix(prec);
+        let mut gnorm_sq: [RFloat; 8] = std::array::from_fn(|_| rf_zero(prec));
+        let tiny = rf(prec, 1e-60);
+        for j in 0..8 {
+            for i in j..8 {
+                let mut s = g[i][j].clone();
+                for k in 0..j {
+                    s = sub(prec, &s, &mul(prec, &mu[j][k], &g_star[i][k]));
+                }
+                g_star[i][j] = s;
+            }
+            gnorm_sq[j] = g_star[j][j].clone();
+            if gnorm_sq[j].clone().abs() < tiny {
+                continue;
+            }
+            for i in (j + 1)..8 {
+                mu[i][j] = div(prec, &g_star[i][j], &gnorm_sq[j]);
+            }
+        }
+        (mu, gnorm_sq)
+    }
+
+    fn lll_qgram_8_rug(q: &RMat8, prec: u32) -> IMat8 {
+        let mut b: IMat8 = std::array::from_fn(|i| {
+            let mut row = [0i64; 8];
+            row[i] = 1;
+            row
+        });
+        let delta = rf(prec, 0.75);
+        let mut k = 1usize;
+        let max_iter = 10_000usize;
+        let mut iters = 0usize;
+        while k < 8 && iters < max_iter {
+            iters += 1;
+            let (mu, _) = gs_qgram_rug(&b, q, prec);
+            // Size reduction
+            for j in (0..k).rev() {
+                let r_round = mu[k][j].to_f64().round() as i64;
+                if r_round != 0 {
+                    for c in 0..8 {
+                        b[k][c] -= r_round * b[j][c];
+                    }
+                }
+            }
+            let (mu2, gnorm) = gs_qgram_rug(&b, q, prec);
+            let mu_sq = mul(prec, &mu2[k][k - 1], &mu2[k][k - 1]);
+            let coeff = sub(prec, &delta, &mu_sq);
+            let rhs = mul(prec, &coeff, &gnorm[k - 1]);
+            if gnorm[k] >= rhs {
+                k += 1;
+            } else {
+                b.swap(k, k - 1);
+                k = k.saturating_sub(1).max(1);
+            }
+        }
+        b
+    }
+
+    fn cholesky_8_rug(g: &RMat8, prec: u32) -> Option<RMat8> {
+        // Pure rejection on non-positive diagonals — no tolerance scaling.
+        // At extreme κ, the legitimate smallest diagonal can be many orders of
+        // magnitude below max_diag; a `max_diag · ε` tolerance would falsely
+        // reject. We rely on the high-precision arithmetic to keep
+        // mathematically-positive diagonals visibly positive.
+        let mut l = make_zero_matrix(prec);
+        let zero = rf_zero(prec);
+        for i in 0..8 {
+            for j in 0..=i {
+                let mut s = g[i][j].clone();
+                for k in 0..j {
+                    s = sub(prec, &s, &mul(prec, &l[i][k], &l[j][k]));
+                }
+                if i == j {
+                    if s <= zero {
+                        return None;
+                    }
+                    l[i][i] = s.sqrt();
+                } else {
+                    l[i][j] = div(prec, &s, &l[j][j]);
+                }
+            }
+        }
+        Some(l)
+    }
+
+    /// Build a realistic y vector for testing at ε=1e-5, k=21.
+    /// Uses Rz(0.30) target alignment as reference.
+    fn realistic_y(k: u32) -> [f64; 8] {
+        // Rz(0.30): v = compute_align_vec for some target. We use a generic
+        // unit-v shape. For the smoke test the exact values don't matter,
+        // just that y has the right magnitude scale (√2^k / 2 in non-zero
+        // components) and isn't axis-aligned.
+        let r2 = 1.0 / 2.0_f64.sqrt();
+        let s = ((1u64 << k) as f64).sqrt() / 2.0;
+        // v ~ (cos(0.15), -sin(0.15), 0, 0) for Rz(0.30):
+        let c = (0.15_f64).cos();
+        let ns = -(0.15_f64).sin();
+        // y = compute_align_vec(v) · √2^k/2:
+        [
+            s * c,
+            s * (c + ns) * r2,
+            s * ns,
+            s * (-c + ns) * r2,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ]
+    }
+
+    fn smoke_at(prec: u32, k: u32, eps: f64) -> Result<(f64, f64), String> {
+        let y = realistic_y(k);
+        let q = build_q_rug(&y, k, eps, prec);
+        let basis = lll_qgram_8_rug(&q, prec);
+        let det = det8_exact(&basis).ok_or("det overflow")?;
+        if det != 1 && det != -1 {
+            return Err(format!("non-unimodular basis: det={det}"));
+        }
+        let g_lll = compute_qgram_rug(&basis, &q, prec);
+        let l = cholesky_8_rug(&g_lll, prec).ok_or("Cholesky failed")?;
+        let mut min_d: f64 = f64::INFINITY;
+        let mut max_d: f64 = 0.0;
+        for i in 0..8 {
+            let d = l[i][i].to_f64();
+            if !d.is_finite() || d <= 0.0 {
+                return Err(format!("L[{i}][{i}] = {d}"));
+            }
+            if d < min_d { min_d = d; }
+            if d > max_d { max_d = d; }
+        }
+        Ok((min_d, max_d))
+    }
+
+    #[test]
+    fn rug_smoke_precision_ceiling_sweep() {
+        // For each ε, find the minimum precision (in bits) at which LLL+Cholesky
+        // succeeds in rug. Compare to the theoretical bound 8·log₂(1/ε)+50 from
+        // the Stehlé-Pujol L² analysis.
+        let cases: &[(f64, u32, &[u32])] = &[
+            (1e-3_f64, 14, &[60, 80, 100, 150]),
+            (1e-4_f64, 17, &[80, 100, 150, 200]),
+            (1e-5_f64, 21, &[100, 150, 200, 250]),
+            (1e-6_f64, 25, &[150, 200, 250, 300]),
+            (1e-7_f64, 29, &[200, 250, 300, 400]),
+            (1e-9_f64, 36, &[300, 400, 500, 600]),
+        ];
+        for &(eps, k, precs) in cases {
+            let mut succeeded_at: Option<u32> = None;
+            for &p in precs {
+                match smoke_at(p, k, eps) {
+                    Ok((min_d, max_d)) => {
+                        eprintln!(
+                            "[ceiling] ε={eps:e} k={k} prec={p}: OK  L_diag ∈ [{min_d:.3e}, {max_d:.3e}], ratio={:.2e}",
+                            max_d / min_d
+                        );
+                        succeeded_at = Some(p);
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("[ceiling] ε={eps:e} k={k} prec={p}: FAIL ({e})");
+                    }
+                }
+            }
+            assert!(
+                succeeded_at.is_some(),
+                "no precision in {precs:?} succeeded at ε={eps:e}, k={k}"
+            );
+        }
+    }
+
+    #[test]
+    fn rug_smoke_lll_at_eps_1e_5_k_21() {
+        let prec: u32 = 150;
+        let k = 21u32;
+        let eps = 1e-5_f64;
+        let y = realistic_y(k);
+        eprintln!(
+            "[smoke] Building Q at prec={prec}, k={k}, ε={eps:e}; ‖y‖²≈{:.3e}",
+            y.iter().map(|v| v * v).sum::<f64>()
+        );
+        let q = build_q_rug(&y, k, eps, prec);
+        // Sanity: Q is symmetric
+        for i in 0..8 {
+            for j in 0..i {
+                let diff = sub(prec, &q[i][j], &q[j][i]).abs();
+                assert!(
+                    diff < rf(prec, 1e-40),
+                    "Q not symmetric at ({i},{j}): {:?}",
+                    diff.to_f64()
+                );
+            }
+        }
+        eprintln!("[smoke] Q symmetric ✓");
+
+        let basis = lll_qgram_8_rug(&q, prec);
+        eprintln!("[smoke] LLL done; basis = {:?}", basis);
+        let det = det8_exact(&basis).expect("det fits in i64");
+        assert!(
+            det == 1 || det == -1,
+            "LLL output non-unimodular at ε=1e-5: det = {det}",
+        );
+        eprintln!("[smoke] det(B_LLL) = {} ✓", det);
+
+        // Now Cholesky on G_LLL = B Q Bᵀ
+        let g_lll = compute_qgram_rug(&basis, &q, prec);
+        let l = cholesky_8_rug(&g_lll, prec).expect("Cholesky of G_LLL must succeed at 150-bit");
+        // Check diagonals are positive and finite
+        for i in 0..8 {
+            let d_f64 = l[i][i].to_f64();
+            assert!(d_f64.is_finite(), "L[{i}][{i}] non-finite");
+            assert!(d_f64 > 0.0, "L[{i}][{i}] non-positive: {d_f64}");
+        }
+        // Print diagonal magnitudes for inspection
+        for i in 0..8 {
+            eprintln!("[smoke]   L[{i}][{i}] = {:.4e}", l[i][i].to_f64());
+        }
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
