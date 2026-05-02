@@ -521,15 +521,25 @@ pub struct Synthesizer {
 impl Synthesizer {
     /// Create a synthesizer with the given precision and sensible defaults.
     ///
-    /// Sets `min_lde = floor(3/2 · log₂(1/ε))` — the lower bound below which
-    /// no generic rotation can be approximated to within ε.
+    /// Sets `min_lde = floor(2.8 · log₂(1/ε))` — the information-theoretic
+    /// lower bound below which no generic rotation can be approximated to
+    /// within ε.
+    ///
+    /// Sets `max_lde = max(50, ceil(3.1 · log₂(1/ε)) + 2)` — generous upper
+    /// bound that scales with ε so that worst-case angles (e.g. Rz(π/7) at
+    /// 1e-5 needs lde=51) still have headroom. The +2 covers parity-skipped
+    /// odd-t' lde values; the 3.1× coefficient is empirically tuned from the
+    /// observed T-count spread across angles in the bench.
     pub fn new(epsilon: Float) -> Self {
-        let min_lde = if epsilon > 0.0 && epsilon < 1.0 {
-            (2.8 * (1.0 / epsilon).log2()).floor() as u32
+        let (min_lde, max_lde) = if epsilon > 0.0 && epsilon < 1.0 {
+            let log_recip = (1.0 / epsilon).log2();
+            let min_lde = (2.8 * log_recip).floor() as u32;
+            let max_lde = ((3.1 * log_recip).ceil() as u32 + 2).max(50);
+            (min_lde, max_lde)
         } else {
-            0
+            (0, 50)
         };
-        Self { epsilon, max_lde: 50, min_lde, direct_limit: 6 }
+        Self { epsilon, max_lde, min_lde, direct_limit: 6 }
     }
 
     pub fn with_max_lde(mut self, max_lde: u32) -> Self {
@@ -639,10 +649,47 @@ impl Synthesizer {
     /// exhausted, the search was already exhaustive at this lde — skip pass 2 and let the
     /// caller advance to lde+1.
     fn try_at_lde(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResult> {
+        let trace = crate::synthesis::diag::trace_enabled();
         if t <= self.direct_limit {
-            self.direct_search(target, v, t)
+            let t_start = std::time::Instant::now();
+            let result = self.direct_search(target, v, t);
+            if trace {
+                eprintln!(
+                    "[trace] lde={:>2} direct_search    {:>9.1}ms  result={}",
+                    t,
+                    t_start.elapsed().as_secs_f64() * 1000.0,
+                    if result.is_some() { "FOUND" } else { "none" }
+                );
+            }
+            result
         } else {
+            if trace {
+                crate::synthesis::diag::reset_all();
+            }
+            let t_start = std::time::Instant::now();
             let (result, budget_hit) = self.dc_search(target, v, t, PASS1_CAP);
+            let pass1_ms = t_start.elapsed().as_secs_f64() * 1000.0;
+            if trace {
+                let s = crate::synthesis::diag::snapshot();
+                eprintln!(
+                    "[trace] lde={:>2} pass1 t'={:>2} prefixes={:>6} mat_uv_rej={:>6} \
+                     low(att/found/esc)={}/{}/{} high(att/found)={}/{} se_cb={:>9} \
+                     budget={} {:>9.1}ms result={}",
+                    t,
+                    optimal_t_prime(t, self.epsilon),
+                    s.prefixes,
+                    s.mat_to_uv_rejected,
+                    s.low_attempt,
+                    s.low_found,
+                    s.low_escalate,
+                    s.high_attempt,
+                    s.high_found,
+                    s.se_callbacks,
+                    budget_hit as u8,
+                    pass1_ms,
+                    if result.is_some() { "FOUND" } else { "none" }
+                );
+            }
             if result.is_some() {
                 return result;
             }
@@ -651,7 +698,33 @@ impl Synthesizer {
                 return None;
             }
             // Some prefix's budget was exhausted; the solution might be deeper.
-            self.dc_search(target, v, t, PASS2_CAP).0
+            if trace {
+                crate::synthesis::diag::reset_all();
+            }
+            let t_start2 = std::time::Instant::now();
+            let (result2, budget_hit2) = self.dc_search(target, v, t, PASS2_CAP);
+            if trace {
+                let s = crate::synthesis::diag::snapshot();
+                eprintln!(
+                    "[trace] lde={:>2} pass2 t'={:>2} prefixes={:>6} mat_uv_rej={:>6} \
+                     low(att/found/esc)={}/{}/{} high(att/found)={}/{} se_cb={:>9} \
+                     budget={} {:>9.1}ms result={}",
+                    t,
+                    optimal_t_prime(t, self.epsilon),
+                    s.prefixes,
+                    s.mat_to_uv_rejected,
+                    s.low_attempt,
+                    s.low_found,
+                    s.low_escalate,
+                    s.high_attempt,
+                    s.high_found,
+                    s.se_callbacks,
+                    budget_hit2 as u8,
+                    t_start2.elapsed().as_secs_f64() * 1000.0,
+                    if result2.is_some() { "FOUND" } else { "none" }
+                );
+            }
+            result2
         }
     }
 
@@ -781,6 +854,10 @@ impl Synthesizer {
         };
 
         let prefixes = build_l(t_prime);
+        if crate::synthesis::diag::trace_enabled() {
+            crate::synthesis::diag::N_PREFIXES
+                .fetch_add(prefixes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
 
         // Parallel search over all left prefixes.
         // find_map_any stops all threads as soon as any one returns Some(...).
@@ -805,7 +882,11 @@ impl Synthesizer {
                     let m_inner = u2t_dag_times_mat2(u_l, target);
                     let v_inner = match mat_to_uv(&m_inner) {
                         Some(v) => v,
-                        None => return None,
+                        None => {
+                            crate::synthesis::diag::N_MAT_TO_UV_REJECTED
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return None;
+                        }
                     };
 
                     // Even inner branch: U_L · U_R ≈ target
@@ -821,6 +902,8 @@ impl Synthesizer {
                                 distance: dist,
                             });
                         }
+                        crate::synthesis::diag::N_DIST_REJECTED
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
 
                     // Odd inner branch: U_L · U_R · T ≈ target
@@ -838,6 +921,8 @@ impl Synthesizer {
                                     distance: dist,
                                 });
                             }
+                            crate::synthesis::diag::N_DIST_REJECTED
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
 
