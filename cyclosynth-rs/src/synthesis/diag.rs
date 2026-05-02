@@ -62,6 +62,38 @@ pub static T_CHOLESKY_NS: AtomicU64 = AtomicU64::new(0);
 pub static T_LU_NS: AtomicU64 = AtomicU64::new(0);
 pub static T_SE_NS: AtomicU64 = AtomicU64::new(0);
 
+// ─── LLL iteration telemetry ─────────────────────────────────────────────────
+//
+// Sum of LLL inner-loop iterations across all phase1_lenstra_attempt calls in
+// the current dc_search, plus the single-call max. If the per-call max
+// approaches the 10_000 safety cap, the LLL is cycling at the active precision
+// (the basis-swap heuristic toggles back-and-forth without converging) and we
+// burn ~7-8x the work of a healthy run before bailing.
+
+pub static N_LLL_ITERS_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static N_LLL_ITERS_MAX: AtomicU64 = AtomicU64::new(0);
+pub static N_LLL_AT_CAP: AtomicU64 = AtomicU64::new(0);
+
+/// Atomic max-update on N_LLL_ITERS_MAX. Idiomatic compare-exchange loop.
+pub fn record_lll_iters(iters: u64, cap: u64) {
+    N_LLL_ITERS_TOTAL.fetch_add(iters, Ordering::Relaxed);
+    if iters >= cap {
+        N_LLL_AT_CAP.fetch_add(1, Ordering::Relaxed);
+    }
+    let mut current = N_LLL_ITERS_MAX.load(Ordering::Relaxed);
+    while iters > current {
+        match N_LLL_ITERS_MAX.compare_exchange_weak(
+            current,
+            iters,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
 pub fn reset_all() {
     for c in [
         &N_PREFIXES,
@@ -78,6 +110,9 @@ pub fn reset_all() {
         &T_CHOLESKY_NS,
         &T_LU_NS,
         &T_SE_NS,
+        &N_LLL_ITERS_TOTAL,
+        &N_LLL_ITERS_MAX,
+        &N_LLL_AT_CAP,
     ] {
         c.store(0, Ordering::Relaxed);
     }
@@ -99,6 +134,9 @@ pub struct Snapshot {
     pub t_cholesky_ms: f64,
     pub t_lu_ms: f64,
     pub t_se_ms: f64,
+    pub lll_iters_total: u64,
+    pub lll_iters_max: u64,
+    pub lll_at_cap: u64,
 }
 
 pub fn snapshot() -> Snapshot {
@@ -117,5 +155,8 @@ pub fn snapshot() -> Snapshot {
         t_cholesky_ms: T_CHOLESKY_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
         t_lu_ms: T_LU_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
         t_se_ms: T_SE_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
+        lll_iters_total: N_LLL_ITERS_TOTAL.load(Ordering::Relaxed),
+        lll_iters_max: N_LLL_ITERS_MAX.load(Ordering::Relaxed),
+        lll_at_cap: N_LLL_AT_CAP.load(Ordering::Relaxed),
     }
 }
