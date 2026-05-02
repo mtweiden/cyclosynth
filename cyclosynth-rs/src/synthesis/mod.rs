@@ -3,6 +3,7 @@ pub mod decomposer;
 pub mod diag;
 pub mod lenstra;
 pub mod lenstra_heavy;
+pub mod lenstra_integer;
 pub mod lenstra_light;
 #[cfg(test)]
 pub mod lenstra_quad_audit;
