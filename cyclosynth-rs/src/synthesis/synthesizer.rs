@@ -963,14 +963,16 @@ fn phase1_enumerate(
             if a1 * a1 > target_norm { continue; }
             let rem_a1 = target_norm - a1 * a1;
             let dot_a1 = a1 as Float * y[0];
-            if dot_a1.abs() + (rem_a1 as Float * y_sq_no_a1).sqrt() < thresh {
+            let gap_a1 = thresh - dot_a1.abs();
+            if gap_a1 > 0.0 && (rem_a1 as Float) * y_sq_no_a1 < gap_a1 * gap_a1 {
                 continue;
             }
             for c1 in CenteredRange::new(c1_c, max_outer).take(outer_take) {
                 if a1*a1 + c1*c1 > target_norm { continue; }
                 let rem_c1 = target_norm - a1*a1 - c1*c1;
                 let dot_a1c1 = dot_a1 + c1 as Float * y[2];
-                if dot_a1c1.abs() + (rem_c1 as Float * y_sq_no_a1_c1).sqrt() < thresh {
+                let gap_c1 = thresh - dot_a1c1.abs();
+                if gap_c1 > 0.0 && (rem_c1 as Float) * y_sq_no_a1_c1 < gap_c1 * gap_c1 {
                     continue;
                 }
                 v.push((a1, c1, rem_c1, dot_a1c1));
@@ -1006,7 +1008,8 @@ fn phase1_enumerate(
             if a2*a2 > rem_c1 { continue; }
             let rem_a2 = rem_c1 - a2*a2;
             let dot_3 = dot_a1c1 + a2 as Float * y[4];
-            if dot_3.abs() + (rem_a2 as Float * y_sq_no_a1_c1_a2).sqrt() < thresh {
+            let gap_a2 = thresh - dot_3.abs();
+            if gap_a2 > 0.0 && (rem_a2 as Float) * y_sq_no_a1_c1_a2 < gap_a2 * gap_a2 {
                 continue;
             }
             for c2 in CenteredRange::new(c2_c, max_outer).take(outer_take) {
@@ -1022,7 +1025,11 @@ fn phase1_enumerate(
                 } else {
                     y_sq_inner
                 };
-                if dot_outer.abs() + (r as Float * y_inner_proj_sq).sqrt() < thresh {
+                // Avoid sqrt: if abs(dot_outer) + sqrt(r·proj) < thresh, then either
+                //   thresh - abs(dot_outer) > 0 AND r·proj < (thresh - abs(dot_outer))²
+                let abs_dot = dot_outer.abs();
+                let gap = thresh - abs_dot;
+                if gap > 0.0 && (r as Float) * y_inner_proj_sq < gap * gap {
                     continue;
                 }
                 // Cap check: bail out if budget exhausted.
