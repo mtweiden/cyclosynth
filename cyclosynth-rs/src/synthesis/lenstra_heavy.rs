@@ -455,8 +455,8 @@ fn gs_qgram_inplace(scratch: &mut HeavyScratch) {
 /// `scratch.q` as the inner product metric, δ = 0.75.
 pub fn lll_qgram_8(scratch: &mut HeavyScratch) {
     scratch.reset_basis();
-    let max_iter = 10_000usize;
-    let mut iters = 0usize;
+    let max_iter: usize = 10_000;
+    let mut iters: usize = 0;
     let mut k = 1usize;
     while k < 8 && iters < max_iter {
         iters += 1;
@@ -489,6 +489,9 @@ pub fn lll_qgram_8(scratch: &mut HeavyScratch) {
             scratch.basis.swap(k, k - 1);
             k = k.saturating_sub(1).max(1);
         }
+    }
+    if crate::synthesis::diag::trace_enabled() {
+        crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
     }
 }
 
