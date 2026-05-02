@@ -51,11 +51,22 @@ pub const TARGET_BITS: u32 = 180;
 /// B-growth at deep ε (rare in practice because LLL output basis is small).
 pub const GRAM_OVERFLOW_THRESHOLD_BITS: u32 = 240;
 
-/// MPFR precision used for μ values during LLL. Only needs enough bits to
-/// distinguish Lovász-boundary cases — μ² has dynamic range up to κ(Q) ≈ 2^137
-/// at ε=1e-10. 256 bits keeps comfortable margin without paying for full Q
-/// precision.
-pub const MU_PREC: u32 = 256;
+/// MPFR precision used for μ values during LLL, scaled by ε. Lovász decisions
+/// need enough margin to distinguish boundary cases — the relevant precision
+/// floor is `log₂(κ(Q)) ≈ 4·log₂(1/ε) + 4`. We use a safety margin of ~50 bits
+/// and round up to the nearest 64-bit MPFR limb boundary.
+///
+/// MPFR mul/sub cost scales as O(limb_count²), so dropping from 256→192 at
+/// moderate ε (3 limbs vs 4) saves ~44% per op. At very deep ε (≤1e-10) we
+/// keep 256 to preserve all i256 bits across GS subtractions.
+pub fn compute_mu_prec(eps: Float) -> u32 {
+    let log_recip = (1.0 / eps).log2().max(1.0);
+    // need: ~4·log_recip (κ exponent) + ~50 (safety margin)
+    let bits = (4.0 * log_recip + 60.0).ceil() as u32;
+    // Round up to 64-bit limb boundary; floor at 192, ceiling at 256.
+    let rounded = ((bits + 63) / 64) * 64;
+    rounded.clamp(192, 256)
+}
 
 /// Compute the bit-shift `B` such that round(2^B · Q[i][j]) lands in i256 with
 /// max entry ≈ 2^TARGET_BITS. Returns `B`. Caller-supplied `max_q_log2` is
@@ -253,7 +264,7 @@ fn fill_sigma(sigma: &mut [[RFloat; 8]; 8], prec: u32) {
 impl IntScratch {
     pub fn new(eps: Float) -> Self {
         let prec_q = compute_prec_q(eps);
-        let prec_mu = MU_PREC;
+        let prec_mu = compute_mu_prec(eps);
         let mut s = Self {
             prec_q,
             prec_mu,
