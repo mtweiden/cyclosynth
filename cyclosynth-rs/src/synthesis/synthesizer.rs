@@ -1078,7 +1078,17 @@ fn lll_aligned_search(
         return Vec::new();
     }
     let y = uv_to_xy(v, k);
-    let sols = phase1_enumerate(&y, k, eps, max_phase2_calls, budget_hit);
+    // Path selector: env var CYCLOSYNTH_USE_LENSTRA=1 enables the experimental
+    // Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816); default
+    // is the existing 4D-outer + 3D-inner enumeration.
+    let use_lenstra = std::env::var("CYCLOSYNTH_USE_LENSTRA")
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    let sols = if use_lenstra {
+        crate::synthesis::lenstra::phase1_lenstra(&y, k, eps, max_phase2_calls, budget_hit)
+    } else {
+        phase1_enumerate(&y, k, eps, max_phase2_calls, budget_hit)
+    };
     if max_solutions >= sols.len() {
         sols
     } else {
