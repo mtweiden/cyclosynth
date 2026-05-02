@@ -299,17 +299,364 @@ pub fn det8_exact(m: &IMat8) -> Option<i64> {
     }
 }
 
-// ─── phase1_lenstra stub ──────────────────────────────────────────────────────
+// ─── Anisotropic Q and center c (twofloat) ────────────────────────────────────
 
-/// Session A stub: full SE pipeline lands in Session B.
+/// Σ matrix from arXiv:2510.05816 eq (3.15), as 8×8 entries (twofloat). The
+/// first 4 rows are Σ_top (mapping x ∈ ℝ⁸ to (Re u₁, Im u₁, Re u₂, Im u₂)·√2^k);
+/// the last 4 rows are Σ_bot (mapping to (Re u•₁, Im u•₁, Re u•₂, Im u•₂)·√2^k).
+fn sigma_matrix() -> [[Tf; 8]; 8] {
+    let r2 = TwoFloat::new_div(1.0, 2.0_f64.sqrt()); // 1/√2 with full twofloat precision
+    let nr2 = TwoFloat::new_div(-1.0, 2.0_f64.sqrt());
+    let z = tf(0.0);
+    let o = tf(1.0);
+    [
+        [o,  r2, z,  nr2, z,  z,  z,  z  ], // Σ_top row 0
+        [z,  r2, o,  r2,  z,  z,  z,  z  ], // Σ_top row 1
+        [z,  z,  z,  z,   o,  r2, z,  nr2], // Σ_top row 2
+        [z,  z,  z,  z,   z,  r2, o,  r2 ], // Σ_top row 3
+        [o,  nr2,z,  r2,  z,  z,  z,  z  ], // Σ_bot row 0
+        [z,  nr2,o,  nr2, z,  z,  z,  z  ], // Σ_bot row 1
+        [z,  z,  z,  z,   o,  nr2,z,  r2 ], // Σ_bot row 2
+        [z,  z,  z,  z,   z,  nr2,o,  nr2], // Σ_bot row 3
+    ]
+}
+
+/// Compute the 8×8 anisotropic Q matrix (twofloat) defining the ellipsoid that
+/// bounds the body S = sphere ∩ alignment-cap × sphere. Three eigenvalue
+/// scales: 1/Δ_y² along ŷ (alignment, super-thin), 1/Δ_⊥² for the 3
+/// orthogonal directions in the u-subspace (thin), 1/R² for the 4 directions
+/// in the u•-subspace (full ball width).
+///
+/// Q = (1/Δ_y²)·ŷŷᵀ + (1/Δ_⊥²)·(P_u − ŷŷᵀ) + (1/R²)·P_{u•}
+///
+/// where P_u = ½·Σ_topᵀ·Σ_top is the projector onto u-subspace and similarly
+/// for P_{u•}. ŷ = y/‖y‖ (and lies entirely within the u-subspace by
+/// construction since y = Σ_topᵀ·v).
+pub fn build_q(y: &[Tf; 8], k: u32, eps: Tf) -> Mat8 {
+    let r_sq = tf((1u64 << k) as f64); // 2^k
+    let r = r_sq.sqrt();
+    let one = tf(1.0);
+    let two = tf(2.0);
+
+    // Δ_y = R · ε² / (2·(1 + √(1−ε²))) — safe form, avoids 1 − √(1−ε²) cancellation
+    let one_minus_eps2 = one - eps * eps;
+    let sqrt_1m = one_minus_eps2.sqrt();
+    let delta_y = r * (eps * eps) / (two * (one + sqrt_1m));
+    let delta_perp = r * eps;
+
+    let inv_dy_sq = one / (delta_y * delta_y);
+    let inv_dp_sq = one / (delta_perp * delta_perp);
+    let inv_r_sq = one / r_sq;
+
+    // y_norm_sq, then ŷŷᵀ
+    let mut y_norm_sq = tf(0.0);
+    for i in 0..8 {
+        y_norm_sq = y_norm_sq + y[i] * y[i];
+    }
+    let inv_y_norm_sq = one / y_norm_sq;
+    let mut yhat_yhat_t = [[tf(0.0); 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            yhat_yhat_t[i][j] = y[i] * y[j] * inv_y_norm_sq;
+        }
+    }
+
+    // Σ_top, Σ_bot → P_u, P_{u•}
+    let sigma = sigma_matrix();
+    let mut p_u = [[tf(0.0); 8]; 8];
+    let mut p_ub = [[tf(0.0); 8]; 8];
+    let half = tf(0.5);
+    for i in 0..8 {
+        for j in 0..8 {
+            let mut su = tf(0.0);
+            let mut sb = tf(0.0);
+            for r_idx in 0..4 {
+                su = su + sigma[r_idx][i] * sigma[r_idx][j];
+                sb = sb + sigma[r_idx + 4][i] * sigma[r_idx + 4][j];
+            }
+            p_u[i][j] = su * half;
+            p_ub[i][j] = sb * half;
+        }
+    }
+
+    // Assemble Q
+    let mut q = [[tf(0.0); 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            q[i][j] = inv_dy_sq * yhat_yhat_t[i][j]
+                + inv_dp_sq * (p_u[i][j] - yhat_yhat_t[i][j])
+                + inv_r_sq * p_ub[i][j];
+        }
+    }
+    q
+}
+
+/// Compute the cap center along the alignment direction. Subtle point: the
+/// body in our convention has ŷ·x ranging over `[‖y‖·√(1−ε²), ‖y‖]` (since
+/// ŷ·x = ‖y‖ · u·v and u·v ∈ [√(1−ε²), 1]). The midpoint along ŷ is therefore
+/// `‖y‖·(1+√(1−ε²))/2`. Since ŷ = y/‖y‖, the 8D center vector is
+/// `c = ŷ · ‖y‖·cap_mid = y · cap_mid`, where `cap_mid = (1+√(1−ε²))/2`.
+///
+/// (The buddy's formula `c = ŷ · R · cap_mid` over-shoots by a factor of
+/// √2 — that formula is correct for a cap on the **8D sphere of radius R**,
+/// but our body's alignment direction only reaches `‖y‖ = R/√2`, not `R`.)
+pub fn build_center(y: &[Tf; 8], _k: u32, eps: Tf) -> Vec8 {
+    let one = tf(1.0);
+    let two = tf(2.0);
+    let sqrt_1m = (one - eps * eps).sqrt();
+    let cap_mid = (one + sqrt_1m) / two;
+    let mut c = [tf(0.0); 8];
+    for i in 0..8 {
+        c[i] = y[i] * cap_mid;
+    }
+    c
+}
+
+// ─── 8D Schnorr-Euchner search in f64 ─────────────────────────────────────────
+
+/// Enumerate integer points z ∈ ℤ⁸ with ‖R_chol·(z − z_c)‖² ≤ bound, where
+/// R_chol is upper-triangular. Iterates z[7] (largest GS direction) outermost,
+/// outward from z_c.round(); recurses to z[0]. For each candidate z that
+/// satisfies the bound, calls `callback(&z)`. If callback returns `Some`, the
+/// search short-circuits.
+fn se_8d_f64<F>(
+    r_chol: &[[f64; 8]; 8],
+    z_c: &[f64; 8],
+    bound: f64,
+    mut callback: F,
+) -> Option<[i64; 8]>
+where
+    F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
+{
+    let mut z = [0i64; 8];
+    let result = std::cell::RefCell::new(None);
+
+    fn recurse<F>(
+        depth: i32, // 7..=−1; −1 means all fixed
+        r_chol: &[[f64; 8]; 8],
+        z_c: &[f64; 8],
+        bound: f64,
+        z: &mut [i64; 8],
+        partial: f64,
+        callback: &mut F,
+        result: &std::cell::RefCell<Option<[i64; 8]>>,
+    ) where
+        F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
+    {
+        if result.borrow().is_some() {
+            return;
+        }
+        if depth < 0 {
+            if let Some(r) = callback(z) {
+                *result.borrow_mut() = Some(r);
+            }
+            return;
+        }
+        let d = depth as usize;
+        let r_dd = r_chol[d][d];
+        if r_dd.abs() < 1e-30 {
+            // Degenerate dim — only z[d] = z_c[d].round() is feasible
+            z[d] = z_c[d].round() as i64;
+            recurse(depth - 1, r_chol, z_c, bound, z, partial, callback, result);
+            return;
+        }
+        // tail = ∑_{j > d} R_chol[d][j] · (z[j] − z_c[j])
+        let mut tail = 0.0;
+        for j in (d + 1)..8 {
+            tail += r_chol[d][j] * (z[j] as f64 - z_c[j]);
+        }
+        // We need (R_chol[d][d]·(z[d]−z_c[d]) + tail)² ≤ rem,
+        // i.e. r_dd·(z[d] − z_c[d]) ∈ [−√rem − tail, +√rem − tail]
+        // ⇒ z[d] ∈ z_c[d] + [(−√rem − tail)/r_dd, (+√rem − tail)/r_dd]
+        let rem = bound - partial;
+        if rem < 0.0 {
+            return;
+        }
+        let rem_sqrt = rem.sqrt();
+        let center_off = -tail / r_dd; // z[d] − z_c[d] center
+        let span = rem_sqrt / r_dd.abs();
+        let z_low = (z_c[d] + center_off - span).ceil() as i64;
+        let z_high = (z_c[d] + center_off + span).floor() as i64;
+        let z_mid = (z_c[d] + center_off).round() as i64;
+        let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
+
+        // Outward iteration: z_mid, z_mid+1, z_mid−1, z_mid+2, z_mid−2, ...
+        for raw in 0..=(2 * max_off + 1) {
+            if result.borrow().is_some() {
+                return;
+            }
+            let off = if raw == 0 {
+                0
+            } else if raw % 2 == 1 {
+                (raw + 1) / 2
+            } else {
+                -(raw / 2)
+            };
+            let zd = z_mid + off;
+            if zd < z_low || zd > z_high {
+                continue;
+            }
+            let level = r_dd * (zd as f64 - z_c[d]) + tail;
+            let new_partial = partial + level * level;
+            if new_partial > bound + 1e-9 {
+                continue;
+            }
+            z[d] = zd;
+            recurse(depth - 1, r_chol, z_c, bound, z, new_partial, callback, result);
+        }
+    }
+
+    recurse(7, r_chol, z_c, bound, &mut z, 0.0, &mut callback, &result);
+    result.into_inner()
+}
+
+// ─── phase1_lenstra: full pipeline ────────────────────────────────────────────
+
+/// Bilinear unitarity form B(x) = a₁b₁ − a₁d₁ + b₁c₁ + c₁d₁ + a₂b₂ − a₂d₂ +
+/// b₂c₂ + c₂d₂. Equals (‖u‖² − ‖u•‖²)/√2; B(x) = 0 + ‖x‖² = 2^k forces both
+/// halves to be unit-norm and the matrix to be unitary.
+#[inline]
+fn bilinear_b(x: &[i64; 8]) -> i64 {
+    let (a1, b1, c1, d1) = (x[0], x[1], x[2], x[3]);
+    let (a2, b2, c2, d2) = (x[4], x[5], x[6], x[7]);
+    a1 * b1 - a1 * d1 + b1 * c1 + c1 * d1 + a2 * b2 - a2 * d2 + b2 * c2 + c2 * d2
+}
+
+/// Reconstruct x = B_LLL · z (i64 exact).
+#[inline]
+fn reconstruct_x(b_lll: &IMat8, z: &[i64; 8]) -> [i64; 8] {
+    let mut x = [0i64; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            x[j] += z[i] * b_lll[i][j];
+        }
+    }
+    x
+}
+
 pub fn phase1_lenstra(
-    _y: &[Float; 8],
-    _k: u32,
-    _eps: Float,
-    _max_phase2_calls: u64,
-    _budget_hit: &AtomicBool,
+    y: &[Float; 8],
+    k: u32,
+    eps: Float,
+    max_phase2_calls: u64,
+    budget_hit: &AtomicBool,
 ) -> Vec<[i64; 8]> {
-    Vec::new()
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let target_norm: i64 = 1i64 << k;
+    let threshold_xy = (1i64 << (2 * k)) as Float / 4.0 * (1.0 - eps * eps);
+
+    // Convert y to twofloat for setup.
+    let y_tf: [Tf; 8] = std::array::from_fn(|i| tf(y[i]));
+    let eps_tf = tf(eps);
+
+    // Step 1: Build Q and center c
+    let q = build_q(&y_tf, k, eps_tf);
+    let c = build_center(&y_tf, k, eps_tf);
+
+    // Step 2: LLL with Q metric
+    let b_lll = lll_qgram_8(&q);
+
+    // Step 3: assert det = ±1 (catches twofloat exhaustion)
+    match det8_exact(&b_lll) {
+        Some(1) | Some(-1) => {}
+        Some(d) => {
+            eprintln!(
+                "[lenstra] LLL produced non-unimodular basis (det={}); k={}, ε={:e}; bailing.",
+                d, k, eps
+            );
+            return Vec::new();
+        }
+        None => {
+            eprintln!("[lenstra] det8_exact overflow (basis corrupted?); k={}, ε={:e}; bailing.", k, eps);
+            return Vec::new();
+        }
+    }
+
+    // Step 4: Cholesky of G_LLL = B_LLL · Q · B_LLLᵀ → L (lower); R_chol = Lᵀ
+    let g_lll = compute_qgram(&b_lll, &q);
+    let l = match cholesky_8(&g_lll) {
+        Some(l) => l,
+        None => {
+            eprintln!("[lenstra] Cholesky failed (G not PD or precision lost); k={}, ε={:e}; bailing.", k, eps);
+            return Vec::new();
+        }
+    };
+    // R_chol = Lᵀ; downcast to f64
+    let mut r_chol_f64 = [[0.0_f64; 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            r_chol_f64[i][j] = f64::from(l[j][i]);
+        }
+    }
+
+    // Step 5: solve B_LLL · z_c = c via twofloat LU with partial pivoting
+    let b_lll_tf: Mat8 = std::array::from_fn(|i| {
+        std::array::from_fn(|j| tf_i(b_lll[i][j]))
+    });
+    // B_LLL has rows = basis vectors, so x = ∑ z[i]·b_lll[i] = B_LLLᵀ · z.
+    // To solve x = c for z: B_LLLᵀ · z = c. So we transpose for the LU input.
+    let mut b_lll_t = [[tf(0.0); 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            b_lll_t[i][j] = b_lll_tf[j][i];
+        }
+    }
+    let z_c_tf = match lu_solve_8(&b_lll_t, &c) {
+        Some(zc) => zc,
+        None => {
+            eprintln!("[lenstra] LU solve failed for B_LLL·z_c = c; bailing.");
+            return Vec::new();
+        }
+    };
+    let z_c_f64: [f64; 8] = std::array::from_fn(|i| f64::from(z_c_tf[i]));
+
+    // Step 6: 8D SE in f64 with bound 1.51.
+    //
+    // Bound derivation: max (x − c)ᵀ Q (x − c) over the body (cap × ball with
+    // sphere shell) is 1.5 — three independent corner contributions, each 0.5,
+    // because the buddy's Δ formulas (Δ_y = R·ε²/(2(1+√(1−ε²))), Δ_⊥ = R·ε,
+    // Δ_{u•} = R) over-state our actual body extents by √2 in each direction.
+    // (Our body's alignment direction reaches only ‖y‖ = R/√2, not R, because
+    // y = Σ_topᵀ·v has ‖y‖² = 2 not 4 for unit v.) +0.01 absorbs f64 downcast
+    // noise.
+    let count = AtomicU64::new(0);
+    let result = se_8d_f64(&r_chol_f64, &z_c_f64, 1.51, |z: &[i64; 8]| {
+        // Cap check
+        if count.load(Ordering::Relaxed) >= max_phase2_calls {
+            budget_hit.store(true, Ordering::Relaxed);
+            return None;
+        }
+        count.fetch_add(1, Ordering::Relaxed);
+
+        // Reconstruct x exactly
+        let x = reconstruct_x(&b_lll, z);
+
+        // Norm equality (sphere shell, not interior)
+        let n: i64 = x.iter().map(|&v| v * v).sum();
+        if n != target_norm {
+            return None;
+        }
+        // Bilinear unitarity
+        if bilinear_b(&x) != 0 {
+            return None;
+        }
+        // Alignment cap
+        let dot: Float = x
+            .iter()
+            .zip(y.iter())
+            .map(|(a, b)| *a as Float * b)
+            .sum();
+        if dot * dot < threshold_xy {
+            return None;
+        }
+        Some(x)
+    });
+
+    match result {
+        Some(x) => vec![x],
+        None => Vec::new(),
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -508,6 +855,64 @@ mod tests {
         let basis = lll_qgram_8(&q);
         let det = det8_exact(&basis).expect("det fits in i64");
         assert!(det == 1 || det == -1, "det = {}", det);
+    }
+
+    #[test]
+    fn phase1_lenstra_smoke_at_low_k() {
+        // Sanity check on a small case: identity-like alignment, k=4, ε=0.5.
+        // Should at minimum not hang and not panic. Whether it returns a
+        // valid solution depends on whether one exists at this k; for k=4,
+        // ‖x‖²=16 has many integer points and the cap (with ε=0.5, fairly loose)
+        // is reasonably wide. We don't assert correctness yet; just that the
+        // pipeline runs end to end in finite time.
+        use std::sync::atomic::AtomicBool;
+        let r2 = 1.0 / 2.0_f64.sqrt();
+        let s = (1u64 << 4) as f64; // 2^4=16, sqrt=4. y scale = sqrt(2^k)/2 = 2.
+        let s = s.sqrt() / 2.0;
+        let y: [Float; 8] = [s, s * r2, 0.0, -s * r2, 0.0, 0.0, 0.0, 0.0];
+        let budget_hit = AtomicBool::new(false);
+        let result = phase1_lenstra(&y, 4, 0.5, 1_000, &budget_hit);
+        // Just check it returned (didn't hang or panic). Empty is OK at k=4.
+        // Print result for diagnostic.
+        eprintln!(
+            "[smoke] k=4 ε=0.5 result.len={} budget_hit={}",
+            result.len(),
+            budget_hit.load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
+
+    #[test]
+    fn q_is_symmetric_and_pd_for_typical_inputs() {
+        // y for v = (1, 0, 0, 0) (identity-target alignment direction), k=10, ε=0.3
+        // y = compute_align_vec(v) · √2^k/2 = (1, 1/√2, 0, -1/√2, 0, 0, 0, 0) · √2^10/2
+        //   = (1, 1/√2, 0, -1/√2, 0, 0, 0, 0) · 16
+        let scale = (1u64 << 10) as f64 / 4.0; // sqrt(2^10)/2 squared... actually this is just for shape
+        let s = 16.0; // √(2^10)/2
+        let r2 = 1.0 / 2.0_f64.sqrt();
+        let y = [
+            tf(s),
+            tf(s * r2),
+            tf(0.0),
+            tf(-s * r2),
+            tf(0.0),
+            tf(0.0),
+            tf(0.0),
+            tf(0.0),
+        ];
+        let _ = scale;
+        let q = build_q(&y, 10, tf(0.3));
+        // Symmetric check
+        for i in 0..8 {
+            for j in 0..i {
+                let diff = (q[i][j] - q[j][i]).abs();
+                let mag = q[i][j].abs() + q[j][i].abs() + tf(1e-30);
+                let rel = f64::from(diff / mag);
+                assert!(rel < 1e-25, "Q not symmetric at ({},{}): rel={:e}", i, j, rel);
+            }
+        }
+        // PD via Cholesky success
+        let l = cholesky_8(&q);
+        assert!(l.is_some(), "Q not PD for typical inputs");
     }
 
     #[test]
