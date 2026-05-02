@@ -638,48 +638,57 @@ fn i256_log2_ceil(v: &i256) -> i32 {
 
 /// Gram-Schmidt orthogonalization in Q metric, reading `scratch.gram` (i256)
 /// and writing `scratch.mu`, `scratch.gnorm_sq`, `scratch.g_star` (all MPFR).
+/// Computes only rows 0..=k_max of the GS table — the LLL frontier index k
+/// is `k_max` here. Pass `7` for the full GS.
 ///
-/// Standard recurrence:
-///   for j = 0..8:
-///     for i = j..8:
+/// Standard recurrence (bounded by k_max):
+///   for j = 0..=k_max:
+///     for i = j..=k_max:
 ///       g_star[i][j] = G[i][j] - Σ_{l<j} μ[j][l] · g_star[i][l]
 ///     gnorm[j] = g_star[j][j]
-///     for i = j+1..8: μ[i][j] = g_star[i][j] / gnorm[j]
+///     for i = j+1..=k_max: μ[i][j] = g_star[i][j] / gnorm[j]
 ///
 /// G entries are converted on-demand via `i256_to_rfloat`. Only the lower
 /// triangle (j ≤ i) is read.
-pub fn gs_int_inplace(scratch: &mut IntScratch) {
+///
+/// Cost vs full GS (k_max=7): k_max=4 does 35/120 = 29% of full work; for
+/// typical mid-LLL k, this is the dominant per-iter saving after the
+/// incremental Gram update.
+pub fn gs_int_partial(scratch: &mut IntScratch, k_max: usize) {
     let prec = scratch.prec_mu;
     let mut acc = rfz(prec);
     let mut tmp = rfz(prec);
 
-    for j in 0..8 {
-        for i in j..8 {
+    let bound = k_max + 1; // exclusive upper bound for inner loops
+
+    for j in 0..bound {
+        for i in j..bound {
             // acc = G[i][j] (converted from i256 to MPFR)
             i256_to_rfloat(&scratch.gram[i][j], &mut acc);
             for l in 0..j {
                 // tmp = μ[j][l] * g_star[i][l]
                 tmp.assign(&scratch.mu[j][l] * &scratch.g_star[i][l]);
-                // acc -= tmp (in-place; no clone)
                 acc -= &tmp;
             }
             scratch.g_star[i][j].assign(&acc);
         }
         scratch.gnorm_sq[j].assign(&scratch.g_star[j][j]);
-        // Cheap zero/tiny check: bypass clone via raw exponent inspection. RFloat
-        // is ≥ tiny iff non-zero and exponent ≥ exp(tiny). For our use, just
-        // check is_zero AND not too-small via to_f64.
         let gn = scratch.gnorm_sq[j].to_f64();
         if !gn.is_finite() || gn.abs() < 1e-300 {
-            for i in (j + 1)..8 {
+            for i in (j + 1)..bound {
                 scratch.mu[i][j].assign(0.0_f64);
             }
             continue;
         }
-        for i in (j + 1)..8 {
+        for i in (j + 1)..bound {
             scratch.mu[i][j].assign(&scratch.g_star[i][j] / &scratch.gnorm_sq[j]);
         }
     }
+}
+
+/// Full-table GS (kept for tests + as a convenience wrapper).
+pub fn gs_int_inplace(scratch: &mut IntScratch) {
+    gs_int_partial(scratch, 7);
 }
 
 // ─── LLL inner loop (i256 Gram + MPFR GS) ────────────────────────────────────
@@ -743,8 +752,10 @@ pub fn lll_int_8(scratch: &mut IntScratch) -> LllResult {
     while k < 8 && iters < max_iter {
         iters += 1;
 
-        // GS using current Gram (up to date via incremental tracking).
-        gs_int_inplace(scratch);
+        // Partial GS: only need rows 0..=k for size-reduce μ values and
+        // Lovász check. Skipping rows k+1..7 saves ~70% of GS work for
+        // typical k=4.
+        gs_int_partial(scratch, k);
 
         // Size reduce row k against rows 0..k. Each non-zero r updates
         // both the basis (i64) and the Gram (i256) incrementally.
@@ -768,7 +779,7 @@ pub fn lll_int_8(scratch: &mut IntScratch) -> LllResult {
         }
 
         // GS again with updated Gram → fresh μ for Lovász.
-        gs_int_inplace(scratch);
+        gs_int_partial(scratch, k);
 
         // Lovász: gnorm[k] ≥ (δ − μ[k][k-1]²) · gnorm[k-1]
         scratch.lov_t1.assign(&scratch.mu[k][k - 1] * &scratch.mu[k][k - 1]);
