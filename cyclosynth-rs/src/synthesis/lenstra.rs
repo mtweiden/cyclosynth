@@ -107,12 +107,28 @@ pub fn lu_solve_8(a: &Mat8, b: &Vec8) -> Option<Vec8> {
 // ─── 8×8 Cholesky (twofloat) ──────────────────────────────────────────────────
 
 /// Cholesky decomposition: `g = L · Lᵀ` for symmetric positive-definite `g`.
-/// Returns lower-triangular `L`. `None` if a diagonal element comes out
-/// non-positive (indicating `g` is not PD or is too ill-conditioned for the
-/// available precision).
+/// Returns lower-triangular `L`. `None` if a diagonal element computes as
+/// substantially negative (indicating `g` is not PD).
+///
+/// At very tight ε (κ(Q) ≳ 1e20), twofloat catastrophic cancellation can
+/// produce a slightly-negative diagonal value where the true value is barely
+/// positive. To cope, diagonal values within `[−tol, tol]` are clamped up to
+/// `tol`, where `tol = 1e-25 · max(|g[i][i]|)`. This perturbs the bounding
+/// ellipsoid by at most `√tol/scale ≈ 1e-12.5` of its smallest axis — well
+/// below the SE bound's 0.01 noise margin.
 pub fn cholesky_8(g: &Mat8) -> Option<Mat8> {
     let zero = tf(0.0);
     let mut l: Mat8 = [[zero; 8]; 8];
+
+    // Compute regularization tolerance from the scale of g's diagonal.
+    let mut max_diag = zero;
+    for i in 0..8 {
+        let d = g[i][i].abs();
+        if d > max_diag {
+            max_diag = d;
+        }
+    }
+    let reg = max_diag * tf(1e-25);
 
     for i in 0..8 {
         for j in 0..=i {
@@ -121,10 +137,13 @@ pub fn cholesky_8(g: &Mat8) -> Option<Mat8> {
                 s = s - l[i][k] * l[j][k];
             }
             if i == j {
-                if s <= zero {
+                // Reject only on substantially-negative s; clamp tiny / slightly-
+                // negative values to `reg` to absorb twofloat cancellation noise.
+                if s < -reg {
                     return None;
                 }
-                l[i][i] = s.sqrt();
+                let s_clamped = if s < reg { reg } else { s };
+                l[i][i] = s_clamped.sqrt();
             } else {
                 l[i][j] = s / l[j][j];
             }
@@ -534,13 +553,22 @@ fn reconstruct_x(b_lll: &IMat8, z: &[i64; 8]) -> [i64; 8] {
     x
 }
 
+/// Run the Lenstra 8D pipeline. Return values:
+///   - `Some(vec)`  — pipeline ran cleanly. `vec` is empty if no integer
+///                    solution exists at this `k` (the actual mathematical
+///                    answer); non-empty if a valid 8-vector was found.
+///   - `None`       — numerical failure during setup (LLL produced a
+///                    non-unimodular basis, Cholesky failed PD, or LU
+///                    couldn't solve). Caller should fall back to a
+///                    legacy/exact-arithmetic path. **This is not "no
+///                    solution exists" — it means we couldn't tell.**
 pub fn phase1_lenstra(
     y: &[Float; 8],
     k: u32,
     eps: Float,
     max_phase2_calls: u64,
     budget_hit: &AtomicBool,
-) -> Vec<[i64; 8]> {
+) -> Option<Vec<[i64; 8]>> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     let target_norm: i64 = 1i64 << k;
@@ -562,14 +590,14 @@ pub fn phase1_lenstra(
         Some(1) | Some(-1) => {}
         Some(d) => {
             eprintln!(
-                "[lenstra] LLL produced non-unimodular basis (det={}); k={}, ε={:e}; bailing.",
+                "[lenstra] LLL produced non-unimodular basis (det={}); k={}, ε={:e}; falling back.",
                 d, k, eps
             );
-            return Vec::new();
+            return None;
         }
         None => {
-            eprintln!("[lenstra] det8_exact overflow (basis corrupted?); k={}, ε={:e}; bailing.", k, eps);
-            return Vec::new();
+            eprintln!("[lenstra] det8_exact overflow (basis corrupted?); k={}, ε={:e}; falling back.", k, eps);
+            return None;
         }
     }
 
@@ -578,8 +606,8 @@ pub fn phase1_lenstra(
     let l = match cholesky_8(&g_lll) {
         Some(l) => l,
         None => {
-            eprintln!("[lenstra] Cholesky failed (G not PD or precision lost); k={}, ε={:e}; bailing.", k, eps);
-            return Vec::new();
+            eprintln!("[lenstra] Cholesky failed (G not PD or precision lost); k={}, ε={:e}; falling back.", k, eps);
+            return None;
         }
     };
     // R_chol = Lᵀ; downcast to f64
@@ -605,8 +633,8 @@ pub fn phase1_lenstra(
     let z_c_tf = match lu_solve_8(&b_lll_t, &c) {
         Some(zc) => zc,
         None => {
-            eprintln!("[lenstra] LU solve failed for B_LLL·z_c = c; bailing.");
-            return Vec::new();
+            eprintln!("[lenstra] LU solve failed for B_LLL·z_c = c; falling back.");
+            return None;
         }
     };
     let z_c_f64: [f64; 8] = std::array::from_fn(|i| f64::from(z_c_tf[i]));
@@ -653,10 +681,10 @@ pub fn phase1_lenstra(
         Some(x)
     });
 
-    match result {
+    Some(match result {
         Some(x) => vec![x],
         None => Vec::new(),
-    }
+    })
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -871,7 +899,8 @@ mod tests {
         let s = s.sqrt() / 2.0;
         let y: [Float; 8] = [s, s * r2, 0.0, -s * r2, 0.0, 0.0, 0.0, 0.0];
         let budget_hit = AtomicBool::new(false);
-        let result = phase1_lenstra(&y, 4, 0.5, 1_000, &budget_hit);
+        let result = phase1_lenstra(&y, 4, 0.5, 1_000, &budget_hit)
+            .expect("Lenstra should not numerically fail at k=4");
         // Just check it returned (didn't hang or panic). Empty is OK at k=4.
         // Print result for diagnostic.
         eprintln!(
