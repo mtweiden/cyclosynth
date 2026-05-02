@@ -30,11 +30,21 @@ const LIGHT_EPS_FLOOR: Float = 1e-4;
 /// Per-worker scratch holding pre-allocated buffers for whichever precision
 /// path is active. Allocate once via rayon's `map_init`, reuse across all MA
 /// prefixes that worker handles.
+///
+/// The `Heavy` variant carries TWO HeavyScratch buffers — a low-precision
+/// scratch that handles the typical prefix and a full-precision scratch used
+/// only when the low-precision attempt signals escalation (det/Cholesky/LU
+/// failure or SE-node circuit breaker tripped). Pre-allocating both eliminates
+/// per-prefix allocation cost on escalation; memory cost is ~2× per worker
+/// (~10 KB) which is negligible.
 pub enum LenstraScratch {
     /// twofloat path — no scratch needed (TwoFloat is `Copy` and stack-allocated).
     Light,
-    /// rug path — pre-allocated MPFR buffers at the right precision.
-    Heavy(crate::synthesis::lenstra_heavy::HeavyScratch),
+    /// rug path — adaptive: try `low` first, escalate to `high` if needed.
+    Heavy {
+        low: crate::synthesis::lenstra_heavy::HeavyScratch,
+        high: crate::synthesis::lenstra_heavy::HeavyScratch,
+    },
 }
 
 impl LenstraScratch {
@@ -43,8 +53,12 @@ impl LenstraScratch {
         if eps >= LIGHT_EPS_FLOOR {
             LenstraScratch::Light
         } else {
-            let prec = crate::synthesis::lenstra_heavy::compute_prec(eps);
-            LenstraScratch::Heavy(crate::synthesis::lenstra_heavy::HeavyScratch::new(prec))
+            let prec_low = crate::synthesis::lenstra_heavy::compute_prec_low(eps);
+            let prec_high = crate::synthesis::lenstra_heavy::compute_prec(eps);
+            LenstraScratch::Heavy {
+                low: crate::synthesis::lenstra_heavy::HeavyScratch::new(prec_low),
+                high: crate::synthesis::lenstra_heavy::HeavyScratch::new(prec_high),
+            }
         }
     }
 }
@@ -52,6 +66,12 @@ impl LenstraScratch {
 /// Run the full 8D Lenstra pipeline. Dispatches to Light or Heavy based on
 /// the variant of `scratch`. Both paths return integer 8-vectors satisfying
 /// the same constraints (‖x‖² = 2^k, B(x) = 0, alignment ≥ thresh).
+///
+/// In the Heavy path, the low-precision scratch is tried first. If it returns
+/// `should_escalate` (det/Cholesky/LU failure or SE-node count > threshold
+/// without finding a solution), the high-precision scratch retries the same
+/// prefix. The basis must be reset between attempts since the low-prec attempt
+/// already mutated it.
 pub fn phase1_lenstra(
     scratch: &mut LenstraScratch,
     y: &[Float; 8],
@@ -64,9 +84,20 @@ pub fn phase1_lenstra(
         LenstraScratch::Light => crate::synthesis::lenstra_light::phase1_lenstra(
             y, k, eps, max_phase2_calls, budget_hit,
         ),
-        LenstraScratch::Heavy(s) => crate::synthesis::lenstra_heavy::phase1_lenstra(
-            s, y, k, eps, max_phase2_calls, budget_hit,
-        ),
+        LenstraScratch::Heavy { low, high } => {
+            low.reset_basis();
+            let outcome = crate::synthesis::lenstra_heavy::phase1_lenstra_attempt(
+                low, y, k, eps, max_phase2_calls, budget_hit, true,
+            );
+            if !outcome.should_escalate {
+                return outcome.solutions;
+            }
+            high.reset_basis();
+            crate::synthesis::lenstra_heavy::phase1_lenstra_attempt(
+                high, y, k, eps, max_phase2_calls, budget_hit, false,
+            )
+            .solutions
+        }
     }
 }
 
@@ -107,7 +138,7 @@ mod tests {
     #[test]
     fn heavy_path_at_eps_1e_5_runs() {
         let mut scratch = LenstraScratch::new(1e-5);
-        assert!(matches!(scratch, LenstraScratch::Heavy(_)));
+        assert!(matches!(scratch, LenstraScratch::Heavy { .. }));
         let y = realistic_y(21);
         let budget_hit = AtomicBool::new(false);
         let _ = phase1_lenstra(&mut scratch, &y, 21, 1e-5, 1_000, &budget_hit);

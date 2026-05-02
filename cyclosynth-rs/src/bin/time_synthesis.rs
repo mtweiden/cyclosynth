@@ -45,17 +45,20 @@ fn u3(a: f64, b: f64, c: f64) -> Mat2 {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut num_threads: Option<usize> = Some(8);
-    let mut max_lde: u32 = 50;
+    let mut max_lde: Option<u32> = None;
     let mut n_trials: usize = 3;
     let mut skip_tight = false;
+
+    let mut filter: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--threads" => { i += 1; num_threads = Some(args[i].parse().expect("--threads N")); }
-            "--max-lde" => { i += 1; max_lde = args[i].parse().expect("--max-lde N"); }
+            "--max-lde" => { i += 1; max_lde = Some(args[i].parse().expect("--max-lde N")); }
             "--trials"  => { i += 1; n_trials = args[i].parse().expect("--trials N"); }
             "--skip-tight" => { skip_tight = true; }
+            "--filter"  => { i += 1; filter = Some(args[i].clone()); }
             _ => {}
         }
         i += 1;
@@ -83,28 +86,32 @@ fn main() {
     // Tight eps=1e-4
     let cases: Vec<(&str, Mat2, f64)> = vec![
         // ── eps = 1e-2 ─────────────────────────────────────────────────────────
-        ("identity",           id,                      1e-2),
-        ("H",                  h,                       1e-2),
-        ("T",                  rz(PI / 4.0),            1e-2),
-        ("Rz(0.30)_1e-2",     rz(0.3),                 1e-2),
-        ("Rz(1.34)_1e-2",     rz(1.34),                1e-2),
-        ("Rz(pi/7)_1e-2",     rz(PI / 7.0),            1e-2),
-        ("Ry(0.50)_1e-2",     ry(0.5),                  1e-2),
+        ("identity",             id,                  1e-2),
+        ("H",                    h,                   1e-2),
+        ("T",                    rz(PI / 4.0),        1e-2),
+        ("Rz(0.30)_1e-2",        rz(0.3),             1e-2),
+        ("Rz(1.34)_1e-2",        rz(1.34),            1e-2),
+        ("Rz(pi/7)_1e-2",        rz(PI / 7.0),        1e-2),
+        ("Ry(0.50)_1e-2",        ry(0.5),             1e-2),
         ("U3(0.3,0.7,1.2)_1e-2", u3(0.3, 0.7, 1.2),   1e-2),
         ("U3(1.1,0.4,2.3)_1e-2", u3(1.1, 0.4, 2.3),   1e-2),
         // ── eps = 1e-3 ─────────────────────────────────────────────────────────
-        ("Rz(0.30)_1e-3",     rz(0.3),                 1e-3),
-        ("Rz(1.34)_1e-3",     rz(1.34),                1e-3),
-        ("Rz(pi/7)_1e-3",     rz(PI / 7.0),            1e-3),
-        ("Ry(0.50)_1e-3",     ry(0.5),                  1e-3),
+        ("Rz(0.30)_1e-3",        rz(0.3),             1e-3),
+        ("Rz(1.34)_1e-3",        rz(1.34),            1e-3),
+        ("Rz(pi/7)_1e-3",        rz(PI / 7.0),        1e-3),
+        ("Ry(0.50)_1e-3",        ry(0.5),             1e-3),
         ("U3(0.3,0.7,1.2)_1e-3", u3(0.3, 0.7, 1.2),   1e-3),
     ];
 
     let tight_cases: Vec<(&str, Mat2, f64)> = vec![
         // ── eps = 1e-4 (slow, skip with --skip-tight) ───────────────────────────
-        ("Rz(0.30)_1e-4",     rz(0.3),                 1e-4),
-        ("Rz(pi/7)_1e-4",     rz(PI / 7.0),            1e-4),
+        ("Rz(0.30)_1e-4",        rz(0.3),             1e-4),
+        ("Rz(pi/7)_1e-4",        rz(PI / 7.0),        1e-4),
         ("U3(0.3,0.7,1.2)_1e-4", u3(0.3, 0.7, 1.2),   1e-4),
+        // ── eps = 1e-10 (slow, skip with --skip-tight) ───────────────────────────
+        ("Rz(0.30)_1e-5",        rz(0.3),             1e-5),
+        ("Rz(pi/7)_1e-5",        rz(PI / 7.0),        1e-5),
+        ("U3(0.3,0.7,1.2)_1e-5", u3(0.3, 0.7, 1.2),   1e-5),
     ];
 
     let cases: Vec<(&str, Mat2, f64)> = if skip_tight {
@@ -113,7 +120,14 @@ fn main() {
         cases.into_iter().chain(tight_cases.into_iter()).collect()
     };
 
-    println!("threads: {n_threads}  max_lde: {max_lde}  trials: {n_trials}");
+    let cases: Vec<(&str, Mat2, f64)> = if let Some(f) = &filter {
+        cases.into_iter().filter(|(n, _, _)| n.contains(f.as_str())).collect()
+    } else {
+        cases
+    };
+
+    let max_lde_label = max_lde.map(|v| v.to_string()).unwrap_or_else(|| "auto".to_string());
+    println!("threads: {n_threads}  max_lde: {max_lde_label}  trials: {n_trials}");
     println!("{:<26} {:>6}  {:>4}  {:>10}  {:>10}  {:>10}",
              "name", "eps", "lde", "dist", "min_ms", "avg_ms");
     println!("{}", "-".repeat(76));
@@ -121,7 +135,10 @@ fn main() {
     let mut total_min_ms = 0.0_f64;
 
     for (name, target, eps) in &cases {
-        let synth = Synthesizer::new(*eps).with_max_lde(max_lde);
+        let synth = match max_lde {
+            Some(v) => Synthesizer::new(*eps).with_max_lde(v),
+            None => Synthesizer::new(*eps),
+        };
 
         let mut times = Vec::with_capacity(n_trials);
         let mut last_result = None;
@@ -149,8 +166,8 @@ fn main() {
                 name, eps, r.lde, r.distance, min_ms, avg_ms
             ),
             None => println!(
-                "{:<26} {:>6.0e}  FAILED (no solution within max_lde={max_lde})",
-                name, eps
+                "{:<26} {:>6.0e}  FAILED (no solution within max_lde={})",
+                name, eps, synth.max_lde
             ),
         }
 
