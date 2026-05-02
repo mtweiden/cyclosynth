@@ -176,6 +176,10 @@ pub struct IntScratch {
     pub gnorm_sq: [RFloat; 8],
     pub g_star: [[RFloat; 8]; 8],
     pub delta_lll: RFloat,
+
+    // ── prec_mu temporaries for Lovász check ──
+    pub lov_t1: RFloat,
+    pub lov_t2: RFloat,
 }
 
 fn rfz(prec: u32) -> RFloat {
@@ -280,6 +284,8 @@ impl IntScratch {
             gnorm_sq: rvec_zero(prec_mu),
             g_star: rmat_zero(prec_mu),
             delta_lll: rfv(prec_mu, 0.75),
+            lov_t1: rfz(prec_mu),
+            lov_t2: rfz(prec_mu),
         };
         fill_sigma(&mut s.sigma, prec_q);
         s
@@ -596,6 +602,92 @@ pub fn gs_int_inplace(scratch: &mut IntScratch) {
     }
 }
 
+// ─── LLL inner loop (i256 Gram + MPFR GS) ────────────────────────────────────
+
+/// Result of `lll_int_8`. `Ok` on convergence with a unimodular basis;
+/// `Err(reason)` on overflow or iteration cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LllResult {
+    /// LLL converged (within `max_iter` iterations and no overflow).
+    Converged,
+    /// Gram entry exceeded GRAM_OVERFLOW_THRESHOLD_BITS (transient B-growth
+    /// at deep ε beyond what TARGET_BITS=180 can absorb). Caller should
+    /// fall back to the heavy MPFR LLL or another strategy.
+    GramOverflow,
+    /// Reached the iteration cap without convergence (cycling or near-
+    /// boundary precision noise). Diagnostic only.
+    IterCap,
+}
+
+/// LLL with δ=0.75 in the Q metric, using i256 Gram and MPFR μ. Resets the
+/// basis to identity, then runs the standard size-reduce + Lovász loop.
+/// Returns the convergence status.
+///
+/// Implementation mirrors `lenstra_heavy::lll_qgram_8` but with the per-iter
+/// Gram recompute moved to i256 (cheap) and the GS to MPFR-reading-from-i256
+/// (still cheap because the ~36 i256→MPFR conversions sum to a few μs).
+pub fn lll_int_8(scratch: &mut IntScratch) -> LllResult {
+    scratch.reset_basis();
+    let max_iter: usize = 10_000;
+    let mut iters: usize = 0;
+    let mut k = 1usize;
+
+    while k < 8 && iters < max_iter {
+        iters += 1;
+
+        // Step 1: Gram + GS for size-reduction
+        if !compute_gram_int(scratch) {
+            if crate::synthesis::diag::trace_enabled() {
+                crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
+            }
+            return LllResult::GramOverflow;
+        }
+        gs_int_inplace(scratch);
+
+        // Step 2: size reduce row k against rows 0..k
+        for j in (0..k).rev() {
+            let r_round = scratch.mu[k][j].to_f64().round() as i64;
+            if r_round != 0 {
+                for c in 0..8 {
+                    scratch.basis[k][c] -= r_round * scratch.basis[j][c];
+                }
+            }
+        }
+
+        // Step 3: re-Gram + GS to check Lovász
+        if !compute_gram_int(scratch) {
+            if crate::synthesis::diag::trace_enabled() {
+                crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
+            }
+            return LllResult::GramOverflow;
+        }
+        gs_int_inplace(scratch);
+
+        // Step 4: Lovász: gnorm[k] ≥ (δ − μ[k][k-1]²) · gnorm[k-1]
+        // lov_t1 = μ[k][k-1]²
+        scratch.lov_t1.assign(&scratch.mu[k][k - 1] * &scratch.mu[k][k - 1]);
+        // lov_t2 = δ − μ[k][k-1]²
+        scratch.lov_t2.assign(&scratch.delta_lll - &scratch.lov_t1);
+        // lov_t1 = (δ − μ²) · gnorm[k-1]
+        scratch.lov_t1.assign(&scratch.lov_t2 * &scratch.gnorm_sq[k - 1]);
+        if scratch.gnorm_sq[k] >= scratch.lov_t1 {
+            k += 1;
+        } else {
+            scratch.basis.swap(k, k - 1);
+            k = k.saturating_sub(1).max(1);
+        }
+    }
+
+    if crate::synthesis::diag::trace_enabled() {
+        crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
+    }
+    if iters >= max_iter {
+        LllResult::IterCap
+    } else {
+        LllResult::Converged
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -899,6 +991,76 @@ mod tests {
     #[test]
     fn gs_int_matches_mpfr_at_eps_1e_10() {
         check_gs_int_matches_mpfr(1e-10, 100);
+    }
+
+    /// Run the integer LLL for given (eps, k) and assert det = ±1
+    /// (unimodular basis output). Uses the heavy module's det8_exact for the
+    /// integer determinant check.
+    fn check_lll_unimodular(eps: Float, k: u32) -> LllResult {
+        let y = realistic_y(k);
+        let mut s = IntScratch::new(eps);
+        build_q_mpfr(&mut s, &y, k, eps);
+        build_q_int(&mut s);
+        let result = lll_int_8(&mut s);
+        // Allow IterCap as a soft outcome (LLL is "noisy" at deep ε); the
+        // unimodular check is a hard invariant either way.
+        if let LllResult::GramOverflow = result {
+            return result;
+        }
+        let det = crate::synthesis::lenstra_heavy::det8_exact(&s.basis)
+            .expect("det8_exact overflow");
+        assert!(
+            det == 1 || det == -1,
+            "lll output non-unimodular: det={}, eps={:e}, k={}, result={:?}",
+            det, eps, k, result
+        );
+        result
+    }
+
+    #[test]
+    fn lll_unimodular_at_eps_1e_3() {
+        let r = check_lll_unimodular(1e-3, 14);
+        assert_eq!(r, LllResult::Converged);
+    }
+
+    #[test]
+    fn lll_unimodular_at_eps_1e_5() {
+        let r = check_lll_unimodular(1e-5, 21);
+        assert_eq!(r, LllResult::Converged);
+    }
+
+    #[test]
+    fn lll_unimodular_at_eps_1e_6() {
+        let r = check_lll_unimodular(1e-6, 28);
+        assert_eq!(r, LllResult::Converged);
+    }
+
+    #[test]
+    fn lll_unimodular_at_eps_1e_7() {
+        let r = check_lll_unimodular(1e-7, 49);
+        // ε=1e-7 is comfortably within precision budget (κ≈2^93,
+        // TARGET_BITS=180, post-GS ~87 bits). Convergence expected.
+        assert_eq!(r, LllResult::Converged);
+    }
+
+    #[test]
+    fn lll_unimodular_at_eps_1e_8() {
+        // Stretch goal: ε=1e-8. κ≈2^107, post-GS ~73 bits. Should converge
+        // unless transient B-growth triggers Gram overflow.
+        let r = check_lll_unimodular(1e-8, 70);
+        assert!(
+            matches!(r, LllResult::Converged | LllResult::IterCap),
+            "unexpected result at eps=1e-8: {:?}", r
+        );
+    }
+
+    #[test]
+    fn lll_unimodular_at_eps_1e_10() {
+        // Deep end of target range: κ≈2^137, post-GS ~43 bits. Likely
+        // produces non-LLL-reduced but still unimodular basis (size-reduce
+        // is robust; Lovász decisions are noisy). Document outcome.
+        let r = check_lll_unimodular(1e-10, 100);
+        eprintln!("lll_unimodular_at_eps_1e_10: result = {:?}", r);
     }
 
     #[test]
