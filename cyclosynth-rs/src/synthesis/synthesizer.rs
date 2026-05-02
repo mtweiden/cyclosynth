@@ -1092,7 +1092,15 @@ fn lll_aligned_search(
     let sols = if use_legacy {
         phase1_enumerate(&y, k, eps, max_phase2_calls, budget_hit)
     } else {
-        crate::synthesis::lenstra::phase1_lenstra(&y, k, eps, max_phase2_calls, budget_hit)
+        // Lenstra path; falls back to the legacy enumerate on numerical
+        // failure (LLL/Cholesky/LU returning None signals precision exhaustion
+        // at very tight ε, NOT "no solution exists at this k").
+        match crate::synthesis::lenstra::phase1_lenstra(
+            &y, k, eps, max_phase2_calls, budget_hit,
+        ) {
+            Some(v) => v,
+            None => phase1_enumerate(&y, k, eps, max_phase2_calls, budget_hit),
+        }
     };
     if max_solutions >= sols.len() {
         sols
