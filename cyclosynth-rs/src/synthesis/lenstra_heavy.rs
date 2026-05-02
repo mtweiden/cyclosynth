@@ -25,6 +25,7 @@
 use crate::rings::Float;
 use rug::{Assign, Float as RFloat};
 use std::sync::atomic::AtomicBool;
+use twofloat::TwoFloat as Tf;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -619,6 +620,136 @@ pub fn det8_exact(m: &IMat8) -> Option<i64> {
 
 // ─── 8D Schnorr-Euchner (f64) ─────────────────────────────────────────────────
 
+/// Convert a `rug::Float` to a `TwoFloat`, preserving precision up to the
+/// ~104-bit mantissa of double-double. Used to produce a higher-precision
+/// `R_chol` and `z_c` for the SE step at extreme ε where f64's 53-bit mantissa
+/// would lose enough precision in the squared-norm sum to mis-bound the SE
+/// (ghost-node blowup at L_diag ratio ≳ 10¹⁰).
+fn rug_to_tf(r: &RFloat) -> Tf {
+    // Shannon decomposition: hi = nearest f64 to r; lo = nearest f64 to (r − hi).
+    let hi = r.to_f64();
+    let mut resid = r.clone();
+    resid -= hi;
+    let lo = resid.to_f64();
+    Tf::new_add(hi, lo)
+}
+
+/// 8D Schnorr-Euchner enumeration in `TwoFloat` precision (~32 decimal digits).
+/// Used by the Heavy (rug) path when the L_diag ratio exceeds f64's working
+/// margin. Otherwise structurally identical to `se_8d_f64`.
+fn se_8d_tf<F>(
+    r_chol: &[[Tf; 8]; 8],
+    z_c: &[Tf; 8],
+    bound: Tf,
+    mut callback: F,
+) -> Option<[i64; 8]>
+where
+    F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
+{
+    let mut z = [0i64; 8];
+    let result = std::cell::RefCell::new(None);
+    let zero = Tf::from(0.0_f64);
+
+    fn recurse<F>(
+        depth: i32,
+        r_chol: &[[Tf; 8]; 8],
+        z_c: &[Tf; 8],
+        bound: Tf,
+        z: &mut [i64; 8],
+        partial: Tf,
+        callback: &mut F,
+        result: &std::cell::RefCell<Option<[i64; 8]>>,
+    ) where
+        F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
+    {
+        if result.borrow().is_some() {
+            return;
+        }
+        if depth < 0 {
+            if let Some(r) = callback(z) {
+                *result.borrow_mut() = Some(r);
+            }
+            return;
+        }
+        let d = depth as usize;
+        let r_dd = r_chol[d][d];
+        // Use f64 magnitude for the threshold check (cheap, only matters as a
+        // structural guard against zero diagonals).
+        if f64::from(r_dd.abs()) < 1e-30 {
+            z[d] = f64::from(z_c[d]).round() as i64;
+            recurse(depth - 1, r_chol, z_c, bound, z, partial, callback, result);
+            return;
+        }
+        // tail = ∑_{j>d} R[d][j] · (z[j] − z_c[j])
+        let mut tail = Tf::from(0.0_f64);
+        for j in (d + 1)..8 {
+            let zj = Tf::from(z[j] as f64);
+            let diff = zj - z_c[j];
+            tail = tail + r_chol[d][j] * diff;
+        }
+        let rem = bound - partial;
+        if f64::from(rem) < 0.0 {
+            return;
+        }
+        let rem_sqrt = rem.sqrt();
+        // For deciding the integer iteration range we drop to f64 — the range
+        // is computed via center ± span, and we want integer bounds. Twofloat
+        // precision in the bounds doesn't change which integers fall inside
+        // them (only matters at the unlikely 1-ULP edge).
+        let r_dd_f = f64::from(r_dd);
+        let z_c_d_f = f64::from(z_c[d]);
+        let center_off = -f64::from(tail) / r_dd_f;
+        let span = f64::from(rem_sqrt) / r_dd_f.abs();
+        let z_low = (z_c_d_f + center_off - span).ceil() as i64;
+        let z_high = (z_c_d_f + center_off + span).floor() as i64;
+        let z_mid = (z_c_d_f + center_off).round() as i64;
+        let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
+
+        for raw in 0..=(2 * max_off + 1) {
+            if result.borrow().is_some() {
+                return;
+            }
+            let off = if raw == 0 {
+                0
+            } else if raw % 2 == 1 {
+                (raw + 1) / 2
+            } else {
+                -(raw / 2)
+            };
+            let zd = z_mid + off;
+            if zd < z_low || zd > z_high {
+                continue;
+            }
+            // The squared distance accumulation IS in twofloat — this is the
+            // bit that f64 was getting wrong.
+            let zd_tf = Tf::from(zd as f64);
+            let level = r_dd * (zd_tf - z_c[d]) + tail;
+            let level_sq = level * level;
+            let new_partial = partial + level_sq;
+            // 1e-9 noise margin in the bound check — twofloat precision is
+            // ample to make this exact, but keep the slack for safety.
+            if f64::from(new_partial - bound) > 1e-9 {
+                continue;
+            }
+            z[d] = zd;
+            recurse(
+                depth - 1,
+                r_chol,
+                z_c,
+                bound,
+                z,
+                new_partial,
+                callback,
+                result,
+            );
+        }
+    }
+
+    recurse(7, r_chol, z_c, bound, &mut z, zero, &mut callback, &result);
+    result.into_inner()
+}
+
+#[allow(dead_code)] // kept for diagnostic / fallback comparison; Heavy path uses se_8d_tf
 fn se_8d_f64<F>(
     r_chol: &[[f64; 8]; 8],
     z_c: &[f64; 8],
@@ -780,13 +911,13 @@ pub fn phase1_lenstra(
         return Vec::new();
     }
 
-    // Downcast R_chol = Lᵀ to f64 for the SE step
-    let mut r_chol_f64 = [[0.0_f64; 8]; 8];
-    for i in 0..8 {
-        for j in 0..8 {
-            r_chol_f64[i][j] = scratch.l[j][i].to_f64();
-        }
-    }
+    // Convert R_chol = Lᵀ to TwoFloat (~104 bits) for the SE step. f64
+    // (53 bits) was insufficient at ε ≤ 1e-5 — the L_diag entry ratios reach
+    // ~10¹⁰, leaving only 5 digits of working margin in the squared-norm sum
+    // and causing "ghost node" SE blowups (millions of false candidates).
+    let r_chol_tf: [[Tf; 8]; 8] = std::array::from_fn(|i| {
+        std::array::from_fn(|j| rug_to_tf(&scratch.l[j][i]))
+    });
 
     // Step 5: solve B_LLLᵀ · z_c = c via LU with partial pivoting.
     // (B_LLL has rows = basis vectors, so x = B_LLLᵀ · z. To find z given x = c,
@@ -801,11 +932,15 @@ pub fn phase1_lenstra(
         eprintln!("[lenstra] LU solve failed; bailing.");
         return Vec::new();
     }
-    let z_c_f64: [f64; 8] = std::array::from_fn(|i| scratch.lu_x[i].to_f64());
+    let z_c_tf: [Tf; 8] = std::array::from_fn(|i| rug_to_tf(&scratch.lu_x[i]));
 
-    // Step 6: 8D SE in f64 with bound 1.51 (cap volume max + 0.01 noise)
+    // Step 6: 8D SE in twofloat with bound 1.51 (cap volume max + 0.01 noise).
+    // Twofloat precision keeps the squared-norm bound check exact even when
+    // R_chol diagonals span 10¹⁰+, so we don't visit ghost nodes from f64
+    // absorption.
     let count = AtomicU64::new(0);
-    let result = se_8d_f64(&r_chol_f64, &z_c_f64, 1.51, |z: &[i64; 8]| {
+    let bound_tf = Tf::from(1.51_f64);
+    let result = se_8d_tf(&r_chol_tf, &z_c_tf, bound_tf, |z: &[i64; 8]| {
         if count.load(Ordering::Relaxed) >= max_phase2_calls {
             budget_hit.store(true, Ordering::Relaxed);
             return None;
