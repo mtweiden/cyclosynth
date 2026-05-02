@@ -63,6 +63,30 @@ pub fn compute_prec(eps: Float) -> u32 {
     bits.max(100)
 }
 
+/// Reduced precision for the first attempt of the adaptive Heavy pipeline.
+/// 100-bit floor keeps the Stehlé-Pujol bound for ε ≥ 1e-6 while staying
+/// within the 2-limb (128-bit storage) MPFR tier — same per-op cost band as
+/// the floor, ~2× cheaper than the 3-limb tier that `compute_prec` reaches at
+/// ε=1e-5. Failures (det/Cholesky/LU or SE blowup) escalate to `compute_prec`.
+///
+/// Bit-counts (for reference):
+///   ε=1e-4 → 100  (full: 107)
+///   ε=1e-5 → 100  (full: 134)   ← key savings here (2 limbs vs 3)
+///   ε=1e-6 → 100  (full: 160)
+///   ε=1e-7 → 117  (full: 187)
+pub fn compute_prec_low(eps: Float) -> u32 {
+    let log_recip = (1.0 / eps).log2().max(1.0);
+    let bits = (5.0 * log_recip).ceil() as u32;
+    bits.max(100)
+}
+
+/// SE callback-count threshold. If the inner loop evaluates more leaves than
+/// this without finding a solution, treat the LLL/Cholesky setup as having
+/// silently lost orthogonalization precision (fat-ellipsoid signature) and
+/// signal escalation to full precision. Tuned empirically: healthy SE walks
+/// at ε=1e-5 visit ~50–500 leaves.
+pub const SE_ESCALATE_THRESHOLD: u64 = 5_000;
+
 // ─── In-place rug op macros ───────────────────────────────────────────────────
 //
 // `&a OP &b` returns a `_Incomplete<'_>`; assigning that to a `&mut Float`
@@ -634,18 +658,74 @@ fn rug_to_tf(r: &RFloat) -> Tf {
     Tf::new_add(hi, lo)
 }
 
-/// 8D Schnorr-Euchner enumeration in `TwoFloat` precision (~32 decimal digits).
-/// Used by the Heavy (rug) path when the L_diag ratio exceeds f64's working
-/// margin. Otherwise structurally identical to `se_8d_f64`.
+/// Compute the upper-triangular Cholesky factor R of B·Bᵀ for an integer LLL
+/// basis B. Used for the Euclidean-norm partial-prune below: at SE depth d,
+/// ∑_{i≥d} (Rz)_i² is a strict lower bound on ‖x‖² regardless of how the
+/// remaining z[<d] are chosen (each level contributes a non-negative
+/// squared term in the GS decomposition).
+fn compute_r_eucl(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
+    // Gram = B · Bᵀ, exact i64
+    let mut gram = [[0_i64; 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            let mut s = 0_i64;
+            for k in 0..8 {
+                s += basis[i][k] * basis[j][k];
+            }
+            gram[i][j] = s;
+        }
+    }
+    // Cholesky in f64 (gram entries up to ~10⁹ for typical LLL output, well
+    // within f64's 15-digit margin)
+    let mut l = [[0.0_f64; 8]; 8];
+    for i in 0..8 {
+        for j in 0..=i {
+            let mut s = gram[i][j] as f64;
+            for k in 0..j {
+                s -= l[i][k] * l[j][k];
+            }
+            if i == j {
+                if s <= 0.0 {
+                    return None;
+                }
+                l[i][i] = s.sqrt();
+            } else {
+                l[i][j] = s / l[j][j];
+            }
+        }
+    }
+    // Transpose to upper-triangular R = Lᵀ
+    let mut r = [[0.0_f64; 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            r[i][j] = l[j][i];
+        }
+    }
+    Some(r)
+}
+
+/// 8D Schnorr-Euchner enumeration in `TwoFloat` precision (~32 decimal digits)
+/// for the Q-metric ellipsoid bound, with an additional f64 Euclidean-norm
+/// prune (`r_eucl_opt`) to short-circuit branches whose partial GS norm
+/// already exceeds 2^k. Pass `None` for `r_eucl_opt` to disable the prune.
+///
+/// `abort` is checked at every recursion entry — when set, the enumeration
+/// returns immediately without setting `result`. The caller (in `phase1_lenstra`)
+/// uses this for the SE-node-count circuit breaker that triggers precision
+/// escalation in the adaptive Heavy pipeline.
 fn se_8d_tf<F>(
     r_chol: &[[Tf; 8]; 8],
     z_c: &[Tf; 8],
     bound: Tf,
+    r_eucl_opt: Option<&[[f64; 8]; 8]>,
+    target_norm_f: f64,
+    abort: &std::sync::atomic::AtomicBool,
     mut callback: F,
 ) -> Option<[i64; 8]>
 where
     F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
 {
+    use std::sync::atomic::Ordering;
     let mut z = [0i64; 8];
     let result = std::cell::RefCell::new(None);
     let zero = Tf::from(0.0_f64);
@@ -655,14 +735,18 @@ where
         r_chol: &[[Tf; 8]; 8],
         z_c: &[Tf; 8],
         bound: Tf,
+        r_eucl_opt: Option<&[[f64; 8]; 8]>,
+        target_norm_f: f64,
+        partial_eucl: f64,
         z: &mut [i64; 8],
         partial: Tf,
+        abort: &std::sync::atomic::AtomicBool,
         callback: &mut F,
         result: &std::cell::RefCell<Option<[i64; 8]>>,
     ) where
         F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
     {
-        if result.borrow().is_some() {
+        if result.borrow().is_some() || abort.load(Ordering::Relaxed) {
             return;
         }
         if depth < 0 {
@@ -677,7 +761,10 @@ where
         // structural guard against zero diagonals).
         if f64::from(r_dd.abs()) < 1e-30 {
             z[d] = f64::from(z_c[d]).round() as i64;
-            recurse(depth - 1, r_chol, z_c, bound, z, partial, callback, result);
+            recurse(
+                depth - 1, r_chol, z_c, bound, r_eucl_opt, target_norm_f,
+                partial_eucl, z, partial, abort, callback, result,
+            );
             return;
         }
         // tail = ∑_{j>d} R[d][j] · (z[j] − z_c[j])
@@ -705,8 +792,20 @@ where
         let z_mid = (z_c_d_f + center_off).round() as i64;
         let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
+        // Pre-compute the Euclidean tail for the GS-decomposition contribution
+        // at level d (uses fixed levels j > d).
+        let tail_eucl = if let Some(r_eucl) = r_eucl_opt {
+            let mut t = 0.0_f64;
+            for j in (d + 1)..8 {
+                t += r_eucl[d][j] * (z[j] as f64);
+            }
+            t
+        } else {
+            0.0
+        };
+
         for raw in 0..=(2 * max_off + 1) {
-            if result.borrow().is_some() {
+            if result.borrow().is_some() || abort.load(Ordering::Relaxed) {
                 return;
             }
             let off = if raw == 0 {
@@ -731,21 +830,33 @@ where
             if f64::from(new_partial - bound) > 1e-9 {
                 continue;
             }
+            // Euclidean norm prune (when r_eucl provided): partial GS sum
+            // ∑_{i≥d} (Rz)_i² is a strict lower bound on ‖x‖². If this
+            // already exceeds 2^k by more than f64-noise margin, the
+            // unitarity-shell constraint can't be met. Margin generous (1.0)
+            // to absorb f64 accumulation noise.
+            let new_partial_eucl = if let Some(r_eucl) = r_eucl_opt {
+                let level_eucl = r_eucl[d][d] * (zd as f64) + tail_eucl;
+                let p = partial_eucl + level_eucl * level_eucl;
+                if p > target_norm_f + 1.0 {
+                    continue;
+                }
+                p
+            } else {
+                partial_eucl
+            };
             z[d] = zd;
             recurse(
-                depth - 1,
-                r_chol,
-                z_c,
-                bound,
-                z,
-                new_partial,
-                callback,
-                result,
+                depth - 1, r_chol, z_c, bound, r_eucl_opt, target_norm_f,
+                new_partial_eucl, z, new_partial, abort, callback, result,
             );
         }
     }
 
-    recurse(7, r_chol, z_c, bound, &mut z, zero, &mut callback, &result);
+    recurse(
+        7, r_chol, z_c, bound, r_eucl_opt, target_norm_f, 0.0,
+        &mut z, zero, abort, &mut callback, &result,
+    );
     result.into_inner()
 }
 
@@ -855,9 +966,18 @@ fn reconstruct_x(b_lll: &IMat8, z: &[i64; 8]) -> [i64; 8] {
     x
 }
 
-/// Run the full 8D Lenstra pipeline for one MA-prefix's `(y, k, eps)` setup.
-/// Pre-allocated `scratch` is reused (typically allocated per-rayon-worker via
-/// `map_init`). Returns `Some(vec)` with up to one valid 8-vector solution.
+/// Outcome of one `phase1_lenstra_attempt` call. The `should_escalate` flag
+/// signals to the dispatch layer that this attempt's precision was insufficient
+/// — either a hard fail (det/Cholesky/LU) or a soft fail (SE-node circuit
+/// breaker tripped without a solution). On `true`, the dispatch should retry
+/// at higher precision before reporting "no solution at this lde".
+pub struct AttemptOutcome {
+    pub solutions: Vec<[i64; 8]>,
+    pub should_escalate: bool,
+}
+
+/// Wrapper preserving the original signature for any external callers / tests.
+/// Runs as a single non-escalating attempt (no SE-node circuit breaker).
 pub fn phase1_lenstra(
     scratch: &mut HeavyScratch,
     y: &[Float; 8],
@@ -866,7 +986,35 @@ pub fn phase1_lenstra(
     max_phase2_calls: u64,
     budget_hit: &AtomicBool,
 ) -> Vec<[i64; 8]> {
+    phase1_lenstra_attempt(scratch, y, k, eps, max_phase2_calls, budget_hit, false).solutions
+}
+
+/// Run the full 8D Lenstra pipeline for one MA-prefix's `(y, k, eps)` setup.
+/// Pre-allocated `scratch` is reused (typically allocated per-rayon-worker via
+/// `map_init`). Returns an `AttemptOutcome` with up to one valid 8-vector
+/// solution and a flag indicating whether the dispatch should retry at higher
+/// precision.
+///
+/// `enable_escalation` controls whether the SE-node circuit breaker is active.
+/// Pass `true` for the low-precision attempt (will signal escalation on
+/// excessive node count) and `false` for the high-precision attempt (the SE
+/// runs to completion, bounded only by `max_phase2_calls`).
+pub fn phase1_lenstra_attempt(
+    scratch: &mut HeavyScratch,
+    y: &[Float; 8],
+    k: u32,
+    eps: Float,
+    max_phase2_calls: u64,
+    budget_hit: &AtomicBool,
+    enable_escalation: bool,
+) -> AttemptOutcome {
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    if enable_escalation {
+        crate::synthesis::diag::N_LOW_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+    } else {
+        crate::synthesis::diag::N_HIGH_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+    }
 
     let target_norm: i64 = 1i64 << k;
     let threshold_xy = (1i64 << (2 * k)) as Float / 4.0 * (1.0 - eps * eps);
@@ -878,24 +1026,33 @@ pub fn phase1_lenstra(
     // Step 2: LLL-reduce ℤ⁸ identity using Q metric
     lll_qgram_8(scratch);
 
-    // Step 3: assert det = ±1 (catches genuine pathology — should not fire at
-    // any reasonable ε given adaptive precision)
+    // Step 3: assert det = ±1 (catches genuine pathology — escalate on failure
+    // since loss of unimodularity at this precision means the LLL's GS
+    // orthogonalization broke down silently)
     let basis = scratch.basis;
     match det8_exact(&basis) {
         Some(1) | Some(-1) => {}
         Some(d) => {
-            eprintln!(
-                "[lenstra] LLL produced non-unimodular basis (det={}); k={}, ε={:e}; bailing.",
-                d, k, eps
-            );
-            return Vec::new();
+            if enable_escalation {
+                crate::synthesis::diag::N_LOW_ESCALATE.fetch_add(1, Ordering::Relaxed);
+            } else {
+                eprintln!(
+                    "[lenstra] LLL non-unimodular (det={}) at full prec; k={}, ε={:e}; bailing.",
+                    d, k, eps
+                );
+            }
+            return AttemptOutcome { solutions: Vec::new(), should_escalate: enable_escalation };
         }
         None => {
-            eprintln!(
-                "[lenstra] det8_exact overflow at k={}, ε={:e}; bailing.",
-                k, eps
-            );
-            return Vec::new();
+            if enable_escalation {
+                crate::synthesis::diag::N_LOW_ESCALATE.fetch_add(1, Ordering::Relaxed);
+            } else {
+                eprintln!(
+                    "[lenstra] det8_exact overflow at full prec; k={}, ε={:e}; bailing.",
+                    k, eps
+                );
+            }
+            return AttemptOutcome { solutions: Vec::new(), should_escalate: enable_escalation };
         }
     }
 
@@ -904,11 +1061,15 @@ pub fn phase1_lenstra(
     // for the post-swap basis).
     compute_qgram_inplace(scratch);
     if !cholesky_8(scratch) {
-        eprintln!(
-            "[lenstra] Cholesky failed at k={}, ε={:e} (Q not PD?); bailing.",
-            k, eps
-        );
-        return Vec::new();
+        if enable_escalation {
+            crate::synthesis::diag::N_LOW_ESCALATE.fetch_add(1, Ordering::Relaxed);
+        } else {
+            eprintln!(
+                "[lenstra] Cholesky failed at full prec; k={}, ε={:e}; bailing.",
+                k, eps
+            );
+        }
+        return AttemptOutcome { solutions: Vec::new(), should_escalate: enable_escalation };
     }
 
     // Convert R_chol = Lᵀ to TwoFloat (~104 bits) for the SE step. f64
@@ -929,20 +1090,37 @@ pub fn phase1_lenstra(
         scratch.lu_rhs[i].assign(&scratch.c[i]);
     }
     if !lu_solve_inplace(scratch) {
-        eprintln!("[lenstra] LU solve failed; bailing.");
-        return Vec::new();
+        if enable_escalation {
+            crate::synthesis::diag::N_LOW_ESCALATE.fetch_add(1, Ordering::Relaxed);
+        } else {
+            eprintln!("[lenstra] LU solve failed at full prec; bailing.");
+        }
+        return AttemptOutcome { solutions: Vec::new(), should_escalate: enable_escalation };
     }
     let z_c_tf: [Tf; 8] = std::array::from_fn(|i| rug_to_tf(&scratch.lu_x[i]));
 
+    // Compute R_eucl (Euclidean Cholesky factor of B B^T) for the safe
+    // Euclidean-norm pruner inside SE. Skipped silently if not PD (rare).
+    let r_eucl = compute_r_eucl(&basis);
+    let target_norm_f = target_norm as f64;
+
     // Step 6: 8D SE in twofloat with bound 1.51 (cap volume max + 0.01 noise).
-    // Twofloat precision keeps the squared-norm bound check exact even when
-    // R_chol diagonals span 10¹⁰+, so we don't visit ghost nodes from f64
-    // absorption.
+    // The `abort` flag is set by the callback when the SE-node circuit breaker
+    // trips (count > SE_ESCALATE_THRESHOLD), signalling fat-ellipsoid loss of
+    // GS bounds at the current precision. The dispatch retries at higher
+    // precision when this fires without finding a solution.
     let count = AtomicU64::new(0);
+    let abort = AtomicBool::new(false);
     let bound_tf = Tf::from(1.51_f64);
-    let result = se_8d_tf(&r_chol_tf, &z_c_tf, bound_tf, |z: &[i64; 8]| {
-        if count.load(Ordering::Relaxed) >= max_phase2_calls {
+    let escalate_at = if enable_escalation { SE_ESCALATE_THRESHOLD } else { u64::MAX };
+    let result = se_8d_tf(&r_chol_tf, &z_c_tf, bound_tf, r_eucl.as_ref(), target_norm_f, &abort, |z: &[i64; 8]| {
+        let n_so_far = count.load(Ordering::Relaxed);
+        if n_so_far >= max_phase2_calls {
             budget_hit.store(true, Ordering::Relaxed);
+            return None;
+        }
+        if n_so_far >= escalate_at {
+            abort.store(true, Ordering::Relaxed);
             return None;
         }
         count.fetch_add(1, Ordering::Relaxed);
@@ -965,9 +1143,24 @@ pub fn phase1_lenstra(
         Some(x)
     });
 
+    crate::synthesis::diag::N_SE_CALLBACKS
+        .fetch_add(count.load(Ordering::Relaxed), Ordering::Relaxed);
+    let aborted = abort.load(Ordering::Relaxed);
     match result {
-        Some(x) => vec![x],
-        None => Vec::new(),
+        Some(x) => {
+            if enable_escalation {
+                crate::synthesis::diag::N_LOW_FOUND.fetch_add(1, Ordering::Relaxed);
+            } else {
+                crate::synthesis::diag::N_HIGH_FOUND.fetch_add(1, Ordering::Relaxed);
+            }
+            AttemptOutcome { solutions: vec![x], should_escalate: false }
+        }
+        None => {
+            if aborted {
+                crate::synthesis::diag::N_LOW_ESCALATE.fetch_add(1, Ordering::Relaxed);
+            }
+            AttemptOutcome { solutions: Vec::new(), should_escalate: aborted }
+        }
     }
 }
 
