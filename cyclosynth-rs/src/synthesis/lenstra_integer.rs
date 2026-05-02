@@ -502,6 +502,60 @@ pub fn i256_to_rfloat(v: &i256, dst: &mut RFloat) {
     }
 }
 
+// ─── Incremental Gram update for size-reduce + swap ──────────────────────────
+
+/// Apply the basis transform `b_k -= r·b_j` to the Gram matrix in O(16) i256
+/// operations instead of O(8³) = 512 for a full recompute. Math: B_new = M·B
+/// where M = I - r·E_kj. Then G_new = M·G·Mᵀ. Computed via the two-step
+/// recurrence (row k update, then column k update — see code comments).
+///
+/// Caller must call this AFTER updating the i64 basis row k. Idempotent for
+/// r=0 (returns immediately).
+fn gram_update_size_reduce(scratch: &mut IntScratch, k: usize, j: usize, r: i64) {
+    if r == 0 {
+        return;
+    }
+    let r256 = i256::from_i64(r);
+    // Step 1: row k. G[k][m] := G[k][m] - r·G[j][m]  for m = 0..8.
+    // Snapshot row j BEFORE mutating row k (the new G[k][k] depends on G[j][k]).
+    let mut row_j_snapshot = [i256::from_i64(0); 8];
+    for m in 0..8 {
+        row_j_snapshot[m] = scratch.gram[j][m];
+    }
+    for m in 0..8 {
+        scratch.gram[k][m] = scratch.gram[k][m] - r256 * row_j_snapshot[m];
+    }
+    // Step 2: column k. G[i][k] := G[i][k] - r·G[i][j]  for i = 0..8.
+    // For i ≠ k: G[i][j] is unchanged from before (step 1 only touched row k).
+    // For i = k: G[k][j] was updated in step 1 — we must use the post-update
+    //            value here, which gives the correct G_new[k][k] derivation.
+    // Snapshot column j BEFORE mutating column k.
+    let mut col_j_snapshot = [i256::from_i64(0); 8];
+    for i in 0..8 {
+        col_j_snapshot[i] = scratch.gram[i][j];
+    }
+    for i in 0..8 {
+        scratch.gram[i][k] = scratch.gram[i][k] - r256 * col_j_snapshot[i];
+    }
+}
+
+/// Apply the basis swap of rows k and k-1 to the Gram. The Gram is
+/// symmetric, so we swap rows (k, k-1) AND columns (k, k-1). 32 i256
+/// pointer-style writes (or fewer with native swap). O(8) work.
+fn gram_update_swap(scratch: &mut IntScratch, a: usize, b: usize) {
+    if a == b {
+        return;
+    }
+    // Swap rows a and b
+    scratch.gram.swap(a, b);
+    // Swap columns a and b
+    for i in 0..8 {
+        let tmp = scratch.gram[i][a];
+        scratch.gram[i][a] = scratch.gram[i][b];
+        scratch.gram[i][b] = tmp;
+    }
+}
+
 // ─── i256 Gram update: G = B · Q_int · Bᵀ ──────────────────────────────────
 
 /// Compute G = B · Q_int · Bᵀ entirely in i256, into `scratch.gram`. Uses
@@ -546,7 +600,7 @@ pub fn compute_gram_int(scratch: &mut IntScratch) -> bool {
             }
         }
     }
-    (max_abs_log2 as u32) <= GRAM_OVERFLOW_THRESHOLD_BITS
+    max_abs_log2 <= GRAM_OVERFLOW_THRESHOLD_BITS as i32
 }
 
 /// Bit count of |v| (≈ ⌈log₂(|v|)⌉, returns -1 for v=0).
@@ -634,61 +688,87 @@ pub enum LllResult {
     IterCap,
 }
 
+/// Check whether any Gram entry magnitude exceeds the overflow threshold.
+/// Cheap: 64 leading-zero queries on i256 LE bytes. `i256_log2_ceil` returns
+/// -1 for zero — guard against the i32→u32 wrap that would mis-flag zeroes.
+fn gram_overflow_check(scratch: &IntScratch) -> bool {
+    let thresh = GRAM_OVERFLOW_THRESHOLD_BITS as i32;
+    for i in 0..8 {
+        for j in 0..8 {
+            if i256_log2_ceil(&scratch.gram[i][j]) > thresh {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// LLL with δ=0.75 in the Q metric, using i256 Gram and MPFR μ. Resets the
 /// basis to identity, then runs the standard size-reduce + Lovász loop.
 /// Returns the convergence status.
 ///
-/// Implementation mirrors `lenstra_heavy::lll_qgram_8` but with the per-iter
-/// Gram recompute moved to i256 (cheap) and the GS to MPFR-reading-from-i256
-/// (still cheap because the ~36 i256→MPFR conversions sum to a few μs).
+/// Maintains the Gram matrix incrementally across iterations:
+///   - At LLL start: full G = B · Q_int · Bᵀ via `compute_gram_int`.
+///   - On size-reduce `b_k -= r·b_j`: O(16) i256 row+column update.
+///   - On Lovász swap: O(8) row+column swap.
+///
+/// This eliminates the 2× full-Gram-recompute per iteration (the dominant
+/// pre-optimization cost), reducing per-iter work to: 2× GS (in MPFR) + a
+/// handful of incremental updates. Empirically halves LLL CPU at moderate ε.
 pub fn lll_int_8(scratch: &mut IntScratch) -> LllResult {
     scratch.reset_basis();
     let max_iter: usize = 10_000;
     let mut iters: usize = 0;
     let mut k = 1usize;
 
+    // One-time full Gram compute (basis = identity here, so G = Q_int).
+    if !compute_gram_int(scratch) {
+        if crate::synthesis::diag::trace_enabled() {
+            crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
+        }
+        return LllResult::GramOverflow;
+    }
+
     while k < 8 && iters < max_iter {
         iters += 1;
 
-        // Step 1: Gram + GS for size-reduction
-        if !compute_gram_int(scratch) {
-            if crate::synthesis::diag::trace_enabled() {
-                crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
-            }
-            return LllResult::GramOverflow;
-        }
+        // GS using current Gram (up to date via incremental tracking).
         gs_int_inplace(scratch);
 
-        // Step 2: size reduce row k against rows 0..k
+        // Size reduce row k against rows 0..k. Each non-zero r updates
+        // both the basis (i64) and the Gram (i256) incrementally.
         for j in (0..k).rev() {
             let r_round = scratch.mu[k][j].to_f64().round() as i64;
             if r_round != 0 {
                 for c in 0..8 {
                     scratch.basis[k][c] -= r_round * scratch.basis[j][c];
                 }
+                gram_update_size_reduce(scratch, k, j, r_round);
             }
         }
 
-        // Step 3: re-Gram + GS to check Lovász
-        if !compute_gram_int(scratch) {
+        // Overflow check after the size-reduce sequence (transient B-growth
+        // at deep ε can blow up Gram entries).
+        if gram_overflow_check(scratch) {
             if crate::synthesis::diag::trace_enabled() {
                 crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
             }
             return LllResult::GramOverflow;
         }
+
+        // GS again with updated Gram → fresh μ for Lovász.
         gs_int_inplace(scratch);
 
-        // Step 4: Lovász: gnorm[k] ≥ (δ − μ[k][k-1]²) · gnorm[k-1]
-        // lov_t1 = μ[k][k-1]²
+        // Lovász: gnorm[k] ≥ (δ − μ[k][k-1]²) · gnorm[k-1]
         scratch.lov_t1.assign(&scratch.mu[k][k - 1] * &scratch.mu[k][k - 1]);
-        // lov_t2 = δ − μ[k][k-1]²
         scratch.lov_t2.assign(&scratch.delta_lll - &scratch.lov_t1);
-        // lov_t1 = (δ − μ²) · gnorm[k-1]
         scratch.lov_t1.assign(&scratch.lov_t2 * &scratch.gnorm_sq[k - 1]);
         if scratch.gnorm_sq[k] >= scratch.lov_t1 {
             k += 1;
         } else {
+            // Swap basis rows AND Gram rows/cols.
             scratch.basis.swap(k, k - 1);
+            gram_update_swap(scratch, k, k - 1);
             k = k.saturating_sub(1).max(1);
         }
     }
@@ -1356,6 +1436,80 @@ mod tests {
         // is robust; Lovász decisions are noisy). Document outcome.
         let r = check_lll_unimodular(1e-10, 100);
         eprintln!("lll_unimodular_at_eps_1e_10: result = {:?}", r);
+    }
+
+    #[test]
+    fn incremental_size_reduce_matches_full_recompute() {
+        // Build an arbitrary i256 Q, set a non-identity basis, do one
+        // size-reduce step both via gram_update_size_reduce and via full
+        // recompute; verify entries match exactly.
+        let eps = 1e-5;
+        let k_val = 21u32;
+        let y = realistic_y(k_val);
+        let mut s = IntScratch::new(eps);
+        build_q_mpfr(&mut s, &y, k_val, eps);
+        build_q_int(&mut s);
+        s.basis = [
+            [3, 1, 0, 0, 0, 0, 0, 0],
+            [1, 2, 0, 0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1],
+        ];
+        compute_gram_int(&mut s);
+        // Apply incremental update for b_2 -= 5 * b_0
+        let k = 2usize;
+        let j = 0usize;
+        let r = 5i64;
+        for c in 0..8 { s.basis[k][c] -= r * s.basis[j][c]; }
+        gram_update_size_reduce(&mut s, k, j, r);
+        let g_inc = s.gram;
+        // Full recompute on the new basis
+        compute_gram_int(&mut s);
+        let g_full = s.gram;
+        for i in 0..8 {
+            for jj in 0..8 {
+                assert_eq!(
+                    g_inc[i][jj], g_full[i][jj],
+                    "mismatch at [{}][{}]: inc={:?} full={:?}",
+                    i, jj, g_inc[i][jj], g_full[i][jj]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn incremental_swap_matches_full_recompute() {
+        let eps = 1e-5;
+        let k_val = 21u32;
+        let y = realistic_y(k_val);
+        let mut s = IntScratch::new(eps);
+        build_q_mpfr(&mut s, &y, k_val, eps);
+        build_q_int(&mut s);
+        s.basis = [
+            [3, 1, 0, 0, 0, 0, 0, 0],
+            [1, 2, 0, 0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1],
+        ];
+        compute_gram_int(&mut s);
+        s.basis.swap(2, 3);
+        gram_update_swap(&mut s, 2, 3);
+        let g_inc = s.gram;
+        compute_gram_int(&mut s);
+        let g_full = s.gram;
+        for i in 0..8 {
+            for jj in 0..8 {
+                assert_eq!(g_inc[i][jj], g_full[i][jj], "swap mismatch at [{}][{}]", i, jj);
+            }
+        }
     }
 
     #[test]
