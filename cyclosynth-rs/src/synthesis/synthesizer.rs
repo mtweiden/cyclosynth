@@ -689,6 +689,13 @@ impl Synthesizer {
                     pass1_ms,
                     if result.is_some() { "FOUND" } else { "none" }
                 );
+                let phase_total = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
+                if phase_total > 0.0 {
+                    eprintln!(
+                        "[trace]            phase_ms (cpu-summed) build={:>7.1} lll={:>7.1} chol={:>7.1} lu={:>7.1} se={:>7.1} sum={:>7.1}",
+                        s.t_build_ms, s.t_lll_ms, s.t_cholesky_ms, s.t_lu_ms, s.t_se_ms, phase_total
+                    );
+                }
             }
             if result.is_some() {
                 return result;
@@ -723,6 +730,13 @@ impl Synthesizer {
                     t_start2.elapsed().as_secs_f64() * 1000.0,
                     if result2.is_some() { "FOUND" } else { "none" }
                 );
+                let phase_total = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
+                if phase_total > 0.0 {
+                    eprintln!(
+                        "[trace]            phase_ms (cpu-summed) build={:>7.1} lll={:>7.1} chol={:>7.1} lu={:>7.1} se={:>7.1} sum={:>7.1}",
+                        s.t_build_ms, s.t_lll_ms, s.t_cholesky_ms, s.t_lu_ms, s.t_se_ms, phase_total
+                    );
+                }
             }
             result2
         }
