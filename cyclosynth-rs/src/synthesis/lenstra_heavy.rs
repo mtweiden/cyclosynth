@@ -652,7 +652,7 @@ pub fn det8_exact(m: &IMat8) -> Option<i64> {
 /// `R_chol` and `z_c` for the SE step at extreme ε where f64's 53-bit mantissa
 /// would lose enough precision in the squared-norm sum to mis-bound the SE
 /// (ghost-node blowup at L_diag ratio ≳ 10¹⁰).
-fn rug_to_tf(r: &RFloat) -> Tf {
+pub(crate) fn rug_to_tf(r: &RFloat) -> Tf {
     // Shannon decomposition: hi = nearest f64 to r; lo = nearest f64 to (r − hi).
     let hi = r.to_f64();
     let mut resid = r.clone();
@@ -666,7 +666,7 @@ fn rug_to_tf(r: &RFloat) -> Tf {
 /// ∑_{i≥d} (Rz)_i² is a strict lower bound on ‖x‖² regardless of how the
 /// remaining z[<d] are chosen (each level contributes a non-negative
 /// squared term in the GS decomposition).
-fn compute_r_eucl(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
+pub(crate) fn compute_r_eucl(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
     // Gram = B · Bᵀ, exact i64
     let mut gram = [[0_i64; 8]; 8];
     for i in 0..8 {
@@ -716,7 +716,7 @@ fn compute_r_eucl(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
 /// returns immediately without setting `result`. The caller (in `phase1_lenstra`)
 /// uses this for the SE-node-count circuit breaker that triggers precision
 /// escalation in the adaptive Heavy pipeline.
-fn se_8d_tf<F>(
+pub(crate) fn se_8d_tf<F>(
     r_chol: &[[Tf; 8]; 8],
     z_c: &[Tf; 8],
     bound: Tf,
@@ -952,14 +952,14 @@ where
 // ─── Top-level phase1_lenstra ─────────────────────────────────────────────────
 
 #[inline]
-fn bilinear_b(x: &[i64; 8]) -> i64 {
+pub(crate) fn bilinear_b(x: &[i64; 8]) -> i64 {
     let (a1, b1, c1, d1) = (x[0], x[1], x[2], x[3]);
     let (a2, b2, c2, d2) = (x[4], x[5], x[6], x[7]);
     a1 * b1 - a1 * d1 + b1 * c1 + c1 * d1 + a2 * b2 - a2 * d2 + b2 * c2 + c2 * d2
 }
 
 #[inline]
-fn reconstruct_x(b_lll: &IMat8, z: &[i64; 8]) -> [i64; 8] {
+pub(crate) fn reconstruct_x(b_lll: &IMat8, z: &[i64; 8]) -> [i64; 8] {
     let mut x = [0i64; 8];
     for i in 0..8 {
         for j in 0..8 {
