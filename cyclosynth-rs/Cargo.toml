@@ -13,7 +13,7 @@ num-complex = "0.4"
 i256 = "0.2.3"
 rayon = "1.10"
 twofloat = "0.8"
-rug = { version = "1", default-features = false, features = ["float"] }
+rug = { version = "1", default-features = false, features = ["float", "integer"] }
 hyperprec = "0.3"
 
 [dev-dependencies]
