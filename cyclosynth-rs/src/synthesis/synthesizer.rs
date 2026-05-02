@@ -1067,6 +1067,7 @@ fn phase1_enumerate(
 /// `max_phase2_calls` caps the per-phase1 phase2_pq dispatch budget; if reached, the
 /// shared `budget_hit` flag is set so dc_search can decide whether to retry.
 fn lll_aligned_search(
+    scratch: &mut crate::synthesis::lenstra::LenstraScratch,
     v: [Float; 4],
     k: u32,
     eps: Float,
@@ -1078,30 +1079,13 @@ fn lll_aligned_search(
         return Vec::new();
     }
     let y = uv_to_xy(v, k);
-    // Default: Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816)
-    // via the bounding-ellipsoid pipeline in `synthesis::lenstra`. ~2000× faster
-    // than the legacy 4D-outer + 3D-inner enumeration on the benchmark suite.
-    //
-    // Env var `CYCLOSYNTH_USE_LEGACY=1` opts back into `phase1_enumerate` for
-    // debugging or precision fallback (e.g., if we hit twofloat exhaustion at
-    // very small ε; the legacy path uses i256 ring arithmetic and is robust at
-    // any ε but much slower).
-    let use_legacy = std::env::var("CYCLOSYNTH_USE_LEGACY")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
-    let sols = if use_legacy {
-        phase1_enumerate(&y, k, eps, max_phase2_calls, budget_hit)
-    } else {
-        // Lenstra path; falls back to the legacy enumerate on numerical
-        // failure (LLL/Cholesky/LU returning None signals precision exhaustion
-        // at very tight ε, NOT "no solution exists at this k").
-        match crate::synthesis::lenstra::phase1_lenstra(
-            &y, k, eps, max_phase2_calls, budget_hit,
-        ) {
-            Some(v) => v,
-            None => phase1_enumerate(&y, k, eps, max_phase2_calls, budget_hit),
-        }
-    };
+    // Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816), with
+    // MPFR (rug) at adaptive precision in the LLL+Cholesky setup phase. The
+    // SE step downcasts to f64. Scratch is reused across all prefixes within
+    // one rayon worker via map_init in dc_search.
+    let sols = crate::synthesis::lenstra::phase1_lenstra(
+        scratch, &y, k, eps, max_phase2_calls, budget_hit,
+    );
     if max_solutions >= sols.len() {
         sols
     } else {
@@ -1429,46 +1413,65 @@ impl Synthesizer {
         let n_threads = rayon::current_num_threads();
         let chunk = (prefixes.len() / n_threads).max(1);
         let budget_hit = std::sync::atomic::AtomicBool::new(false);
-        let result = prefixes.par_iter().with_min_len(chunk).find_map_any(|u_l| {
-            // Compute U_L† · target as a full float matrix, then extract uv via
-            // mat_to_uv which tries all 8 global phases (matches bandb6.py).
-            let m_inner = u2t_dag_times_mat2(u_l, target);
-            let v_inner = match mat_to_uv(&m_inner) {
-                Some(v) => v,
-                None => return None,
-            };
 
-            // Even inner branch: U_L · U_R ≈ target
-            for sol in lll_aligned_search(v_inner, k_inner, eps, 1, max_phase2_calls, &budget_hit) {
-                let u2t = *u_l * solution_to_u2t(&sol, k_inner);
-                let dist = diamond_distance_u2t_float(&u2t, target);
-                if dist < eps {
-                    return Some(SynthResult {
-                        gates: Some(BlochDecomposer.decompose(&u2t)),
-                        lde: t,
-                        distance: dist,
-                    });
-                }
-            }
+        // Per-worker scratch: rayon's `map_init` allocates a `LenstraScratch`
+        // (incl. all rug Float buffers at the right precision) once per worker
+        // thread, then reuses it across all prefixes that worker handles.
+        // Without this, every prefix would allocate ~60K MPFR objects in the
+        // LLL inner loop, hammering the global allocator and serializing the
+        // 8-thread parallelism.
+        let prec = crate::synthesis::lenstra::compute_prec(eps);
+        let result = prefixes
+            .par_iter()
+            .with_min_len(chunk)
+            .map_init(
+                || crate::synthesis::lenstra::LenstraScratch::new(prec),
+                |scratch, u_l| -> Option<SynthResult> {
+                    let m_inner = u2t_dag_times_mat2(u_l, target);
+                    let v_inner = match mat_to_uv(&m_inner) {
+                        Some(v) => v,
+                        None => return None,
+                    };
 
-            // Odd inner branch: U_L · U_R · T ≈ target
-            if t_inner > 0 {
-                let v_inner_t = apply_t_dag_to_uv(v_inner);
-                for sol in lll_aligned_search(v_inner_t, k_inner, eps, 1, max_phase2_calls, &budget_hit) {
-                    let u2t = *u_l * solution_to_u2t(&sol, k_inner) * U2T::t();
-                    let dist = diamond_distance_u2t_float(&u2t, target);
-                    if dist < eps {
-                        return Some(SynthResult {
-                            gates: Some(BlochDecomposer.decompose(&u2t)),
-                            lde: t,
-                            distance: dist,
-                        });
+                    // Even inner branch: U_L · U_R ≈ target
+                    for sol in lll_aligned_search(
+                        scratch, v_inner, k_inner, eps, 1, max_phase2_calls, &budget_hit,
+                    ) {
+                        let u2t = *u_l * solution_to_u2t(&sol, k_inner);
+                        let dist = diamond_distance_u2t_float(&u2t, target);
+                        if dist < eps {
+                            return Some(SynthResult {
+                                gates: Some(BlochDecomposer.decompose(&u2t)),
+                                lde: t,
+                                distance: dist,
+                            });
+                        }
                     }
-                }
-            }
 
-            None
-        });
+                    // Odd inner branch: U_L · U_R · T ≈ target
+                    if t_inner > 0 {
+                        let v_inner_t = apply_t_dag_to_uv(v_inner);
+                        for sol in lll_aligned_search(
+                            scratch, v_inner_t, k_inner, eps, 1, max_phase2_calls, &budget_hit,
+                        ) {
+                            let u2t = *u_l * solution_to_u2t(&sol, k_inner) * U2T::t();
+                            let dist = diamond_distance_u2t_float(&u2t, target);
+                            if dist < eps {
+                                return Some(SynthResult {
+                                    gates: Some(BlochDecomposer.decompose(&u2t)),
+                                    lde: t,
+                                    distance: dist,
+                                });
+                            }
+                        }
+                    }
+
+                    None
+                },
+            )
+            .find_any(|r| r.is_some())
+            .flatten();
+
         (result, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
     }
 }
@@ -1544,7 +1547,8 @@ mod tests {
     ///   3. Re-evaluated diamond distance to target matches result.distance
     ///   4. T-count of the gate string is consistent with the lde
     fn verify_synthesis_round_trip(target: &Mat2, eps: Float, label: &str) {
-        let synth = Synthesizer::new(eps);
+        // max_lde generously oversized so very tight ε (1e-5+) has room.
+        let synth = Synthesizer::new(eps).with_max_lde(80);
         let result = synth
             .synthesize(*target)
             .unwrap_or_else(|| panic!("{label}: synthesis returned None"));
@@ -1577,17 +1581,21 @@ mod tests {
         // small rounding from to_float()/diamond_distance_float() is expected,
         // but they should agree to ~1e-12).
         let dist_consistency = (recomputed_dist - result.distance).abs();
-        // Tolerance: ~10 ULPs at the distance scale. The synth and the rebuild
-        // both compute distance through floating-point matrix products; small
-        // round-off divergence is expected.
-        let tol = (result.distance.abs() * 1e-10).max(1e-11);
+        // Tolerance: diamond distance involves catastrophic cancellation in
+        // `1 − |tr(U·V†)|²/4` when U is close to V (i.e., when distance is
+        // small). The numerical noise floor on the distance itself is
+        // ~ε_machine / distance. Floor at 1e-10 covers all cases ε ≥ 1e-6 with
+        // long gate strings.
+        let n_gates = result.gates.as_ref().map(|s| s.len()).unwrap_or(0) as f64;
+        let tol = (n_gates * 1e-15 * 10.0).max(1e-10);
         assert!(
             dist_consistency < tol,
-            "{label}: rebuilt distance ({:.6e}) differs from reported ({:.6e}) by {:e} (tol={:e})",
+            "{label}: rebuilt distance ({:.6e}) differs from reported ({:.6e}) by {:e} (tol={:e}, gates_len={})",
             recomputed_dist,
             result.distance,
             dist_consistency,
-            tol
+            tol,
+            n_gates as usize
         );
 
         // Check 3: T-count of the gate string. result.lde holds the
@@ -1632,6 +1640,11 @@ mod tests {
     #[test]
     fn verify_correctness_at_1e_4_u3() {
         verify_synthesis_round_trip(&u3(0.3, 0.7, 1.2), 1e-4, "U3(0.3,0.7,1.2) @ 1e-4");
+    }
+
+    #[test]
+    fn verify_correctness_at_1e_5_rz_03() {
+        verify_synthesis_round_trip(&rz(0.30), 1e-5, "Rz(0.30) @ 1e-5");
     }
 
     #[test]
