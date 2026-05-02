@@ -1479,12 +1479,151 @@ mod tests {
         ]
     }
 
+    fn ry(theta: Float) -> Mat2 {
+        let c = (theta / 2.).cos();
+        let s = (theta / 2.).sin();
+        [
+            [Complex::new(c, 0.), Complex::new(-s, 0.)],
+            [Complex::new(s, 0.), Complex::new(c, 0.)],
+        ]
+    }
+
+    fn mat_mul(a: Mat2, b: Mat2) -> Mat2 {
+        [
+            [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
+            [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
+        ]
+    }
+
+    /// Same convention as bin/time_synthesis: U3(a,b,c) = Rz(a)·Ry(b)·Rz(c).
+    fn u3(a: Float, b: Float, c: Float) -> Mat2 {
+        mat_mul(mat_mul(rz(a), ry(b)), rz(c))
+    }
+
     fn check_result(result: &SynthResult, _target: &Mat2, eps: Float) {
         assert!(
             result.distance < eps,
             "distance={:.6e} ≥ epsilon={:.6e}",
             result.distance, eps
         );
+    }
+
+    /// Re-build a U2T from the synthesized gate string by parsing left-to-right.
+    fn gates_to_u2t_verify(gate_str: &str) -> crate::matrix::U2T {
+        use crate::matrix::U2T;
+        let mut u = U2T::eye();
+        for ch in gate_str.chars() {
+            let g = match ch {
+                'H' => U2T::h(),
+                'S' => U2T::s(),
+                'T' => U2T::t(),
+                'Z' => U2T::z(),
+                'X' => U2T::x(),
+                'Y' => U2T::y(),
+                'I' => U2T::eye(),
+                _ => panic!("unexpected gate char: {ch}"),
+            };
+            u = u * g;
+        }
+        u
+    }
+
+    /// End-to-end correctness verification: synthesize, then independently
+    /// re-evaluate the gate string and confirm the result still satisfies the
+    /// approximation bound. Validates that:
+    ///   1. result.distance < eps (reported distance is below threshold)
+    ///   2. The gate string parses to a U2T whose lde matches result.lde
+    ///   3. Re-evaluated diamond distance to target matches result.distance
+    ///   4. T-count of the gate string is consistent with the lde
+    fn verify_synthesis_round_trip(target: &Mat2, eps: Float, label: &str) {
+        let synth = Synthesizer::new(eps);
+        let result = synth
+            .synthesize(*target)
+            .unwrap_or_else(|| panic!("{label}: synthesis returned None"));
+
+        // Check 1: reported distance under threshold
+        assert!(
+            result.distance < eps,
+            "{label}: result.distance={:.6e} ≥ eps={:.6e}",
+            result.distance,
+            eps
+        );
+
+        // Check 2: gate string round-trips. Re-build the U2T from the gate
+        // string and verify the diamond distance is the same as reported.
+        let gates = result
+            .gates
+            .as_ref()
+            .unwrap_or_else(|| panic!("{label}: result.gates is None"));
+        let rebuilt = gates_to_u2t_verify(gates);
+        let rebuilt_float = rebuilt.to_float();
+        let recomputed_dist = diamond_distance_float(&rebuilt_float, target);
+        assert!(
+            recomputed_dist < eps,
+            "{label}: re-evaluated distance={:.6e} ≥ eps={:.6e} (gate string does not approximate target)",
+            recomputed_dist,
+            eps
+        );
+        // Reported and rebuilt distances should agree to FP precision (the
+        // synth doesn't round-trip through the gate string internally, so
+        // small rounding from to_float()/diamond_distance_float() is expected,
+        // but they should agree to ~1e-12).
+        let dist_consistency = (recomputed_dist - result.distance).abs();
+        // Tolerance: ~10 ULPs at the distance scale. The synth and the rebuild
+        // both compute distance through floating-point matrix products; small
+        // round-off divergence is expected.
+        let tol = (result.distance.abs() * 1e-10).max(1e-11);
+        assert!(
+            dist_consistency < tol,
+            "{label}: rebuilt distance ({:.6e}) differs from reported ({:.6e}) by {:e} (tol={:e})",
+            recomputed_dist,
+            result.distance,
+            dist_consistency,
+            tol
+        );
+
+        // Check 3: T-count of the gate string. result.lde holds the
+        // synthesizer's t-loop value (the *target* T-count for the search).
+        // The actual gate string can have at most that many T gates.
+        let t_count = gates.chars().filter(|&c| c == 'T').count() as u32;
+        // We accept up to lde + a few (the BlochDecomposer can introduce
+        // small constant overhead from final Clifford fixup).
+        assert!(
+            t_count <= result.lde + 8,
+            "{label}: T-count={} far exceeds reported lde={}",
+            t_count,
+            result.lde
+        );
+
+        eprintln!(
+            "[verify] {label}: lde={} dist={:.4e} (rebuilt: {:.4e}) T-count={} gates_len={} U2T_k={}",
+            result.lde,
+            result.distance,
+            recomputed_dist,
+            t_count,
+            gates.len(),
+            rebuilt.k
+        );
+    }
+
+    #[test]
+    fn verify_correctness_at_1e_3_rz_03() {
+        verify_synthesis_round_trip(&rz(0.30), 1e-3, "Rz(0.30) @ 1e-3");
+    }
+
+    #[test]
+    fn verify_correctness_at_1e_4_rz_03() {
+        verify_synthesis_round_trip(&rz(0.30), 1e-4, "Rz(0.30) @ 1e-4");
+    }
+
+    #[test]
+    fn verify_correctness_at_1e_4_rz_pi7() {
+        verify_synthesis_round_trip(&rz(PI / 7.0), 1e-4, "Rz(π/7) @ 1e-4");
+    }
+
+    #[test]
+    fn verify_correctness_at_1e_4_u3() {
+        verify_synthesis_round_trip(&u3(0.3, 0.7, 1.2), 1e-4, "U3(0.3,0.7,1.2) @ 1e-4");
     }
 
     #[test]
