@@ -393,7 +393,7 @@ pub fn build_center(scratch: &mut HeavyScratch, y: &[Float; 8], _k: u32, eps: Fl
 
 /// Compute G = B Q Bᵀ in `scratch.g_lll` from `scratch.basis` and `scratch.q`.
 /// Uses `scratch.temp_g` as intermediate (= B · Q).
-fn compute_qgram_inplace(scratch: &mut HeavyScratch) {
+pub(crate) fn compute_qgram_inplace(scratch: &mut HeavyScratch) {
     let prec = scratch.prec;
     // temp[i][b] = sum_a basis[i][a] · Q[a][b]
     for i in 0..8 {
