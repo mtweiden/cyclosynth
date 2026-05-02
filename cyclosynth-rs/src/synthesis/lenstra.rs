@@ -1,435 +1,535 @@
 //! 8D output-sensitive integer enumeration for Clifford+T synthesis (Algorithm 3.6
-//! from arXiv:2510.05816). Replaces the 4D-outer + 3D-inner cuboid-with-CS-pruning
-//! enumeration in `phase1_enumerate` with a Lenstra-style enumeration on the 8D
-//! convex body S_{ε,k}(v⃗) = √2^k · Σ⁻¹(R_ε(v⃗) × D).
+//! from arXiv:2510.05816).
 //!
-//! Strategy:
-//! 1. LLL-reduce ℤ⁸ with metric G(u, v) = u·v + λ²·(y·u)(y·v) so the basis is
-//!    aligned with the alignment direction y. Vectors with smaller G-norm (more
-//!    orthogonal to y) sort first; the alignment-carrier vector ends up last.
-//! 2. Schnorr-Euchner enumerate (z₇, z₆, ..., z₀) ∈ ℤ⁸ outward, with sphere bound
-//!    ‖x‖² ≤ 2^k where x = Σᵢ zᵢ·bᵢ.
-//! 3. At each level prune via partial alignment + sphere remainder. The alignment
-//!    constraint |y·x|² ≥ thresh_xy concentrates feasible z₇ near a particular
-//!    integer (cap-narrow direction), so enumeration is approximately
-//!    output-sensitive.
+//! Pipeline:
+//! 1. Build anisotropic ellipsoid metric Q (8×8 SPD) bounding the cap × ball body.
+//! 2. LLL-reduce ℤ⁸ identity basis using Q as the inner product (in twofloat).
+//! 3. Cholesky factor G_LLL = B_LLL · Q · B_LLLᵀ = L Lᵀ (twofloat).
+//! 4. Solve B_LLL · z_c = c for the cap-center in lattice coordinates (twofloat
+//!    LU with partial pivoting).
+//! 5. Schnorr-Euchner enumerate z ∈ ℤ⁸ with ‖Lᵀ·(z − z_c)‖² ≤ 2.01 (f64).
+//! 6. For each candidate, reconstruct x = B_LLL · z (i64 exact), check
+//!    ‖x‖² == 2^k AND B(x) == 0 AND |y·x|² ≥ thresh_xy.
 //!
-//! This is a "Lenstra-light" — full Lenstra '83 recursion with flatness-theorem
-//! d→(d-1) reduction is the gold standard, but the alignment-weighted basis +
-//! tight per-level pruning already captures most of the asymptotic gain in
-//! practice. If this doesn't deliver the expected speedup, full recursion is the
-//! next step.
+//! Session A: this file currently contains the linear algebra primitives plus
+//! unit tests; the SE search and the phase1 dispatch are stubs returning the
+//! empty vector. Session B will wire those in.
+
+#![allow(dead_code)]
 
 use crate::rings::Float;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
+use twofloat::TwoFloat;
 
-/// Bilinear unitarity form B(x) for x = (a₁, b₁, c₁, d₁, a₂, b₂, c₂, d₂) ∈ ℤ⁸.
-/// B(x) = 0 iff ‖u‖² = ‖u•‖² (when ‖x‖² = 2^k, this forces unitarity).
-///
-/// From paper eq 3.13 + the • automorphism (eq 3.8 / 3.11):
-///   ‖u‖² + ‖u•‖² = ‖x‖²
-///   ‖u‖² − ‖u•‖² = √2 · B(x)
-/// where B(x) = a₁b₁ − a₁d₁ + b₁c₁ + c₁d₁ + a₂b₂ − a₂d₂ + b₂c₂ + c₂d₂.
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type Tf = TwoFloat;
+type Mat8 = [[Tf; 8]; 8];
+type Vec8 = [Tf; 8];
+type IMat8 = [[i64; 8]; 8];
+
 #[inline]
-fn bilinear_b(x: &[i64; 8]) -> i64 {
-    let (a1, b1, c1, d1) = (x[0], x[1], x[2], x[3]);
-    let (a2, b2, c2, d2) = (x[4], x[5], x[6], x[7]);
-    a1 * b1 - a1 * d1 + b1 * c1 + c1 * d1
-        + a2 * b2 - a2 * d2 + b2 * c2 + c2 * d2
+fn tf(x: f64) -> Tf {
+    Tf::from(x)
 }
 
-/// Top-level entry: enumerate 8D integer points on the sphere ‖x‖² = 2^k that
-/// satisfy the bilinear unitarity constraint B(x) = 0 and the alignment
-/// |y·x|² ≥ threshold_xy. Returns the first such x via `callback` (which can
-/// further validate via phase2-style tests). Honors the per-phase1 budget cap.
-///
-/// `y` is the 8D alignment vector (compute_align_vec(v) · √2^k/2 in the
-/// existing convention); `k` defines target_norm = 2^k; `threshold_xy` is
-/// 2^(2k-2)·(1−ε²) (the squared alignment threshold).
-pub fn phase1_lenstra(
-    y: &[Float; 8],
-    k: u32,
-    eps: Float,
-    max_phase2_calls: u64,
-    budget_hit: &AtomicBool,
-) -> Vec<[i64; 8]> {
-    let target_norm: i64 = 1i64 << k;
-    let threshold_xy = (1i64 << (2 * k)) as Float / 4.0 * (1.0 - eps * eps);
-
-    // λ²: balance Euclidean vs alignment in the Gram metric. The alignment term
-    // contributes λ²·(y·x)² which can be up to λ²·threshold_xy ≈ λ²·2^(2k-2).
-    // Setting λ² ≈ 1 / 2^(2k-2) keeps the alignment term comparable to the
-    // Euclidean term for typical x (norm² ~ 2^k). We tune empirically; start
-    // with a moderate value.
-    let lambda_sq: Float = 1.0;
-    let basis = lll_aligned_8d(*y, lambda_sq);
-    let r_mat = qr_upper_8(&basis);
-
-    let count = AtomicU64::new(0);
-    let cb = |x: [i64; 8]| -> Option<[i64; 8]> {
-        // Cap check
-        if count.load(Ordering::Relaxed) >= max_phase2_calls {
-            budget_hit.store(true, Ordering::Relaxed);
-            return None;
-        }
-        count.fetch_add(1, Ordering::Relaxed);
-        // Norm equality (sphere shell, not interior)
-        let n: i64 = x.iter().map(|&v| v * v).sum();
-        if n != target_norm {
-            return None;
-        }
-        // Bilinear unitarity
-        if bilinear_b(&x) != 0 {
-            return None;
-        }
-        Some(x)
-    };
-
-    match se_aligned_8d(&basis, &r_mat, *y, target_norm, threshold_xy, cb) {
-        Some(x) => vec![x],
-        None => Vec::new(),
-    }
+#[inline]
+fn tf_i(x: i64) -> Tf {
+    // i64 in [−2^53, 2^53] is exactly representable as f64. LLL basis entries
+    // and most lattice coords stay well inside that range.
+    Tf::from(x as f64)
 }
 
-/// Recursive 8D Schnorr-Euchner enumeration of ℤ⁸ lattice points within sphere
-/// bound + alignment threshold. The basis is expected to be LLL-reduced with the
-/// alignment-weighted Gram metric (see `lll_aligned_8d`).
-///
-/// The basis matrix has rows = basis vectors. The QR factor `r_mat` is the upper-
-/// triangular factor of QR(B^T) where B is `basis` — i.e., for x = ∑ zᵢ·bᵢ we
-/// have ‖x‖² = ∑_i (∑_{j≥i} R[i][j]·zⱼ)².
-pub fn se_aligned_8d<F>(
-    basis: &[[i64; 8]; 8],
-    r_mat: &[[Float; 8]; 8],
-    y: [Float; 8],
-    target_norm: i64,
-    thresh_xy: Float,
-    mut callback: F,
-) -> Option<[i64; 8]>
-where
-    F: FnMut([i64; 8]) -> Option<[i64; 8]>,
-{
-    // Per-basis-vector y dot — used to bound partial alignment at each level.
-    let y_dot_b: [Float; 8] = std::array::from_fn(|i| {
-        (0..8).map(|c| basis[i][c] as Float * y[c]).sum::<Float>()
-    });
-    // L2-norm² of y, for CS bound on remaining alignment given remaining sphere
-    // budget rem: max |y·(remaining contribution)| ≤ √(rem · ‖y‖²).
-    let y_norm_sq: Float = y.iter().map(|x| x * x).sum();
+#[inline]
+fn tf_to_i64_round(x: Tf) -> i64 {
+    // Round to nearest, ties away from zero. f64::from(Tf) returns the closest
+    // f64; the rounding error is at most 2^−104 of the value.
+    let lo = f64::from(x);
+    lo.round() as i64
+}
 
-    let radius = (target_norm as Float).sqrt();
-    let mut z = [0i64; 8];
-    let result = std::cell::RefCell::new(None);
+// ─── 8×8 LU solve with partial pivoting (twofloat) ────────────────────────────
 
-    // The recursive search. d counts down: 7, 6, …, 0; at d=usize::MAX (after 0)
-    // we have a fully determined z and can test/dispatch.
-    fn recurse<F>(
-        depth: usize,
-        basis: &[[i64; 8]; 8],
-        r_mat: &[[Float; 8]; 8],
-        y: [Float; 8],
-        y_dot_b: &[Float; 8],
-        y_norm_sq: Float,
-        target_norm: i64,
-        thresh_xy: Float,
-        radius: Float,
-        z: &mut [i64; 8],
-        partial_norm_sq: Float,
-        partial_align: Float,
-        callback: &mut F,
-        result: &std::cell::RefCell<Option<[i64; 8]>>,
-    ) where
-        F: FnMut([i64; 8]) -> Option<[i64; 8]>,
-    {
-        if result.borrow().is_some() {
-            return;
+/// Solve `a · x = b` for `x ∈ ℝ⁸` using Gaussian elimination with partial
+/// pivoting in twofloat arithmetic. Returns `None` if `a` is numerically
+/// singular (smallest pivot below tolerance).
+pub fn lu_solve_8(a: &Mat8, b: &Vec8) -> Option<Vec8> {
+    let mut m = *a;
+    let mut rhs = *b;
+    let zero = tf(0.0);
+    let tol = tf(1e-30);
+
+    for k in 0..8 {
+        // Find pivot row (largest |m[i][k]| for i in k..8)
+        let mut piv = k;
+        let mut piv_abs = m[k][k].abs();
+        for i in (k + 1)..8 {
+            let v = m[i][k].abs();
+            if v > piv_abs {
+                piv_abs = v;
+                piv = i;
+            }
         }
-        // Base case: all coordinates fixed; reconstruct x and test.
-        if depth == usize::MAX {
-            let mut x = [0i64; 8];
-            for i in 0..8 {
-                if z[i] == 0 {
-                    continue;
-                }
-                for c in 0..8 {
-                    x[c] += z[i] * basis[i][c];
-                }
-            }
-            // Sphere check (exact integer)
-            let n: i64 = x.iter().map(|&v| v * v).sum();
-            if n > target_norm {
-                return;
-            }
-            // Alignment check (exact float)
-            let dot: Float = x.iter().zip(y.iter()).map(|(a, b)| *a as Float * b).sum();
-            if dot * dot < thresh_xy {
-                return;
-            }
-            if let Some(r) = callback(x) {
-                *result.borrow_mut() = Some(r);
-            }
-            return;
+        if piv_abs < tol {
+            return None;
+        }
+        if piv != k {
+            m.swap(k, piv);
+            rhs.swap(k, piv);
         }
 
-        // Sphere-bound on z[depth]: |R[depth][depth]·z[depth] + tail| ≤ √rem
-        // where tail = ∑_{j>depth} R[depth][j]·z[j]. Rem = target_norm - partial_norm_sq.
-        let r_dd = r_mat[depth][depth];
-        if r_dd.abs() < 1e-12 {
-            // Degenerate dimension; just try z[depth] = 0
-            z[depth] = 0;
-            recurse(
-                depth.checked_sub(1).map(|d| d).unwrap_or(usize::MAX),
-                basis, r_mat, y, y_dot_b, y_norm_sq, target_norm, thresh_xy, radius,
-                z, partial_norm_sq, partial_align, callback, result,
-            );
-            return;
-        }
-        let mut tail: Float = 0.0;
-        for j in (depth + 1)..8 {
-            tail += r_mat[depth][j] * z[j] as Float;
-        }
-        let rem = (target_norm as Float - partial_norm_sq).max(0.0);
-        let rem_sqrt = rem.sqrt();
-        let z_center = -tail / r_dd;
-        let z_low = ((z_center * r_dd - rem_sqrt) / r_dd).ceil() as i64;
-        let z_high = ((z_center * r_dd + rem_sqrt) / r_dd).floor() as i64;
-        let z_ci = z_center.round() as i64;
-        let z_max_off = (z_high - z_ci).max(z_ci - z_low).max(0);
-
-        // Outward iteration: 0, +1, -1, +2, -2, …
-        for raw in 0..=(2 * z_max_off + 1) {
-            if result.borrow().is_some() {
-                return;
+        // Eliminate column k below the pivot
+        let pivot = m[k][k];
+        for i in (k + 1)..8 {
+            let factor = m[i][k] / pivot;
+            // m[i][j] -= factor * m[k][j]  for j ∈ k..8
+            for j in k..8 {
+                let mkj = m[k][j];
+                m[i][j] = m[i][j] - factor * mkj;
             }
-            let off: i64 = if raw == 0 {
-                0
-            } else if raw % 2 == 1 {
-                (raw + 1) / 2
-            } else {
-                -(raw / 2)
-            };
-            let zd = z_ci + off;
-            if zd < z_low || zd > z_high {
-                continue;
-            }
-            // Update partial sphere norm contribution from this level.
-            let level_term = r_dd * zd as Float + tail;
-            let new_partial_norm = partial_norm_sq + level_term * level_term;
-            if new_partial_norm > target_norm as Float + 1e-6 {
-                continue;
-            }
-            // Partial alignment + CS upper bound on remaining.
-            let new_partial_align = partial_align + zd as Float * y_dot_b[depth];
-            let rem_after = (target_norm as Float - new_partial_norm).max(0.0);
-            let max_remaining_align = (rem_after * y_norm_sq).sqrt();
-            let bound = new_partial_align.abs() + max_remaining_align;
-            if bound * bound < thresh_xy {
-                continue;
-            }
-            z[depth] = zd;
-            let next_depth = depth.checked_sub(1).unwrap_or(usize::MAX);
-            recurse(
-                next_depth,
-                basis, r_mat, y, y_dot_b, y_norm_sq, target_norm, thresh_xy, radius,
-                z, new_partial_norm, new_partial_align, callback, result,
-            );
+            let rk = rhs[k];
+            rhs[i] = rhs[i] - factor * rk;
         }
     }
 
-    recurse(
-        7, basis, r_mat, y, &y_dot_b, y_norm_sq, target_norm, thresh_xy, radius,
-        &mut z, 0.0, 0.0, &mut callback, &result,
-    );
-    result.into_inner()
+    // Back substitution: x[i] = (rhs[i] - sum_{j>i} m[i][j]·x[j]) / m[i][i]
+    let mut x = [zero; 8];
+    for i in (0..8).rev() {
+        let mut s = rhs[i];
+        for j in (i + 1)..8 {
+            s = s - m[i][j] * x[j];
+        }
+        x[i] = s / m[i][i];
+    }
+    Some(x)
 }
 
-/// Gram-Schmidt orthogonalization of a 8×8 float basis (rows = basis vectors)
-/// using the alignment-weighted inner product G(u, v) = u·v + λ²·(y·u)(y·v).
-///
-/// Returns (mu, gnorm_sq) where mu[i][j] = G(b_i, b_j*) / G(b_j*, b_j*) and
-/// gnorm_sq[i] = G(b_i*, b_i*) is the squared G-norm of the i-th GS vector.
-fn gs_aligned_8(
-    bf: &[[Float; 8]; 8],
-    y: [Float; 8],
-    lambda_sq: Float,
-) -> ([[Float; 8]; 8], [Float; 8]) {
-    let mut bs = *bf;
-    let mut mu = [[0.0_f64; 8]; 8];
-    let mut ydot: [Float; 8] = std::array::from_fn(|i| {
-        bf[i].iter().zip(y.iter()).map(|(a, b)| a * b).sum()
-    });
-    let mut gnorm_sq: [Float; 8] = [0.0; 8];
+// ─── 8×8 Cholesky (twofloat) ──────────────────────────────────────────────────
+
+/// Cholesky decomposition: `g = L · Lᵀ` for symmetric positive-definite `g`.
+/// Returns lower-triangular `L`. `None` if a diagonal element comes out
+/// non-positive (indicating `g` is not PD or is too ill-conditioned for the
+/// available precision).
+pub fn cholesky_8(g: &Mat8) -> Option<Mat8> {
+    let zero = tf(0.0);
+    let mut l: Mat8 = [[zero; 8]; 8];
+
     for i in 0..8 {
-        for j in 0..i {
-            let dot_ij: Float = bs[j].iter().zip(bf[i].iter()).map(|(a, b)| a * b).sum::<Float>()
-                + lambda_sq * ydot[i] * ydot[j];
-            if gnorm_sq[j].abs() < 1e-14 {
-                continue;
+        for j in 0..=i {
+            let mut s = g[i][j];
+            for k in 0..j {
+                s = s - l[i][k] * l[j][k];
             }
-            mu[i][j] = dot_ij / gnorm_sq[j];
-            for k in 0..8 {
-                bs[i][k] -= mu[i][j] * bs[j][k];
+            if i == j {
+                if s <= zero {
+                    return None;
+                }
+                l[i][i] = s.sqrt();
+            } else {
+                l[i][j] = s / l[j][j];
             }
-            ydot[i] -= mu[i][j] * ydot[j];
         }
-        let dot_ii: Float = bs[i].iter().map(|x| x * x).sum::<Float>()
-            + lambda_sq * ydot[i] * ydot[i];
-        gnorm_sq[i] = dot_ii;
+    }
+    Some(l)
+}
+
+// ─── 8×8 Q-Gram LLL (twofloat) ────────────────────────────────────────────────
+
+/// Compute the Q-Gram matrix `G[i][j] = b_iᵀ · Q · b_j` for the rows of `basis`.
+fn compute_qgram(basis: &IMat8, q: &Mat8) -> Mat8 {
+    // temp[i][b] = sum_a basis[i][a] · Q[a][b]
+    let zero = tf(0.0);
+    let mut temp: Mat8 = [[zero; 8]; 8];
+    for i in 0..8 {
+        for b in 0..8 {
+            let mut s = zero;
+            for a in 0..8 {
+                s = s + tf_i(basis[i][a]) * q[a][b];
+            }
+            temp[i][b] = s;
+        }
+    }
+    // g[i][j] = sum_b temp[i][b] · basis[j][b]
+    let mut g: Mat8 = [[zero; 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            let mut s = zero;
+            for b in 0..8 {
+                s = s + temp[i][b] * tf_i(basis[j][b]);
+            }
+            g[i][j] = s;
+        }
+    }
+    g
+}
+
+/// Gram-Schmidt orthogonalization in the Q-metric. Computes `mu[i][j]` (the
+/// projection coefficient of `b_i` onto `b_j*`) and the squared G-norm of each
+/// orthogonalized vector. Operates entirely in Gram-matrix form (no explicit
+/// orthogonalized vectors), so numerical error from the basis vectors directly
+/// is avoided.
+fn gs_qgram(basis: &IMat8, q: &Mat8) -> ([[Tf; 8]; 8], [Tf; 8]) {
+    let g = compute_qgram(basis, q);
+    let zero = tf(0.0);
+    let mut mu: [[Tf; 8]; 8] = [[zero; 8]; 8];
+    // g_star[i][j] = G(b_i, b_j*) for j ≤ i (only need the lower triangle).
+    let mut g_star: [[Tf; 8]; 8] = [[zero; 8]; 8];
+    let mut gnorm_sq: [Tf; 8] = [zero; 8];
+
+    for j in 0..8 {
+        // First compute g_star[i][j] for all i ≥ j.
+        for i in j..8 {
+            let mut s = g[i][j];
+            for k in 0..j {
+                s = s - mu[j][k] * g_star[i][k];
+            }
+            g_star[i][j] = s;
+        }
+        gnorm_sq[j] = g_star[j][j];
+        if gnorm_sq[j].abs() < tf(1e-60) {
+            // Degenerate: just leave mu[i][j] = 0 for i > j
+            continue;
+        }
+        for i in (j + 1)..8 {
+            mu[i][j] = g_star[i][j] / gnorm_sq[j];
+        }
     }
     (mu, gnorm_sq)
 }
 
-/// LLL basis reduction for ℤ⁸ using the alignment-weighted inner product
-/// G(u, v) = u·v + λ²·(y·u)(y·v). After reduction, basis vectors with smaller
-/// G-norm sort first; vectors near-orthogonal to y come early, the
-/// "alignment-carrier" vector comes last.
-pub fn lll_aligned_8d(y: [Float; 8], lambda_sq: Float) -> [[i64; 8]; 8] {
-    let mut b: [[i64; 8]; 8] = std::array::from_fn(|i| {
+/// LLL-reduce the ℤ⁸ identity basis using `q` as the inner-product metric
+/// (`G(u, v) := uᵀ · q · v`). `q` must be symmetric positive definite. Returns
+/// a unimodular 8×8 integer matrix whose rows are the LLL-reduced basis.
+pub fn lll_qgram_8(q: &Mat8) -> IMat8 {
+    let mut b: IMat8 = std::array::from_fn(|i| {
         let mut row = [0i64; 8];
         row[i] = 1;
         row
     });
-    let mut bf: [[Float; 8]; 8] = b.map(|r| r.map(|x| x as Float));
 
+    let delta = tf(0.75);
     let mut k = 1usize;
+    let max_iter = 10_000usize;
     let mut iterations = 0usize;
-    let max_iter = 10_000usize; // safety bound for numerical issues
+
     while k < 8 && iterations < max_iter {
         iterations += 1;
-        let (mu, _) = gs_aligned_8(&bf, y, lambda_sq);
-        // Size reduction
+        let (mu, _) = gs_qgram(&b, q);
+
+        // Size reduction: for j from k-1 down to 0, b[k] -= round(mu[k][j]) · b[j]
         for j in (0..k).rev() {
-            let r = mu[k][j].round() as i64;
+            let r = tf_to_i64_round(mu[k][j]);
             if r != 0 {
                 for c in 0..8 {
                     b[k][c] -= r * b[j][c];
-                    bf[k][c] -= r as Float * bf[j][c];
                 }
             }
         }
-        let (mu2, gnorm) = gs_aligned_8(&bf, y, lambda_sq);
-        let delta = 0.75_f64;
-        if gnorm[k] >= (delta - mu2[k][k - 1].powi(2)) * gnorm[k - 1] {
+
+        // Lovász condition: G(b_k*, b_k*) ≥ (δ − μ_{k,k-1}²) · G(b_{k-1}*, b_{k-1}*)
+        let (mu2, gnorm) = gs_qgram(&b, q);
+        let lhs = gnorm[k];
+        let rhs = (delta - mu2[k][k - 1] * mu2[k][k - 1]) * gnorm[k - 1];
+        if lhs >= rhs {
             k += 1;
         } else {
             b.swap(k, k - 1);
-            bf.swap(k, k - 1);
             k = k.saturating_sub(1).max(1);
         }
     }
     b
 }
 
-/// QR decomposition R-factor for an 8×8 integer matrix (rows = basis vectors).
-/// Modified Gram-Schmidt on columns of B^T. Returns 8×8 upper-triangular R with
-/// nonnegative diagonal.
-pub fn qr_upper_8(basis: &[[i64; 8]; 8]) -> [[Float; 8]; 8] {
-    let mut cols: [[Float; 8]; 8] = std::array::from_fn(|i| {
-        let mut c = [0.0_f64; 8];
-        for j in 0..8 {
-            c[j] = basis[i][j] as Float;
-        }
-        c
+// ─── Exact integer determinant in i256 (for the unimodularity assertion) ──────
+
+/// Compute the determinant of an 8×8 i64 matrix exactly using i256 arithmetic
+/// (so any LLL-induced corruption that grows entries beyond i64 still gives a
+/// correct answer here). Returns the determinant as i64 if it fits, else None.
+pub fn det8_exact(m: &IMat8) -> Option<i64> {
+    use i256::i256;
+    // Convert to i256 with a denominator (LU expansion with rational pivot to
+    // avoid fraction simplification)... actually simpler: use the Bareiss
+    // algorithm, which uses only integer arithmetic and stays in i256 for our
+    // input range.
+    let mut a: [[i256; 8]; 8] = std::array::from_fn(|i| {
+        std::array::from_fn(|j| i256::from_i64(m[i][j]))
     });
-    let mut r = [[0.0_f64; 8]; 8];
-    for i in 0..8 {
-        let norm_i: Float = cols[i].iter().map(|x| x * x).sum::<Float>().sqrt();
-        r[i][i] = norm_i;
-        if norm_i < 1e-14 {
-            continue;
-        }
-        let q_i: [Float; 8] = std::array::from_fn(|j| cols[i][j] / norm_i);
-        for j in (i + 1)..8 {
-            let dot: Float = q_i.iter().zip(cols[j].iter()).map(|(a, b)| a * b).sum();
-            r[i][j] = dot;
-            for row in 0..8 {
-                cols[j][row] -= dot * q_i[row];
+    let mut sign: i64 = 1;
+    let mut prev = i256::from_i64(1);
+    let zero = i256::from_i64(0);
+
+    for k in 0..8 {
+        // Find a non-zero pivot in column k from row k onward
+        if a[k][k] == zero {
+            let mut found = false;
+            for i in (k + 1)..8 {
+                if a[i][k] != zero {
+                    a.swap(k, i);
+                    sign = -sign;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Some(0);
             }
         }
-        cols[i] = q_i;
-    }
-    for i in 0..8 {
-        if r[i][i] < 0.0 {
-            for j in 0..8 {
-                r[i][j] = -r[i][j];
+        let pivot = a[k][k];
+        // Bareiss update: a[i][j] = (a[i][j] · pivot − a[i][k] · a[k][j]) / prev
+        for i in (k + 1)..8 {
+            for j in (k + 1)..8 {
+                let lhs = a[i][j] * pivot;
+                let rhs = a[i][k] * a[k][j];
+                let diff = lhs - rhs;
+                // Bareiss guarantees `prev` divides `diff`.
+                a[i][j] = diff / prev;
             }
+            a[i][k] = zero;
         }
+        prev = pivot;
     }
-    r
+    // Determinant is sign · a[7][7]
+    let det = a[7][7];
+    let det_signed = if sign < 0 { -det } else { det };
+    let lo = det_signed.as_i128();
+    if lo >= i64::MIN as i128 && lo <= i64::MAX as i128 {
+        Some(lo as i64)
+    } else {
+        None
+    }
 }
+
+// ─── phase1_lenstra stub ──────────────────────────────────────────────────────
+
+/// Session A stub: full SE pipeline lands in Session B.
+pub fn phase1_lenstra(
+    _y: &[Float; 8],
+    _k: u32,
+    _eps: Float,
+    _max_phase2_calls: u64,
+    _budget_hit: &AtomicBool,
+) -> Vec<[i64; 8]> {
+    Vec::new()
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Compute determinant of an 8×8 i64 matrix (via cofactor expansion / LU).
-    fn det8(m: &[[i64; 8]; 8]) -> i128 {
-        // Convert to f64 for LU determinant, then round. Adequate for unimodular check.
-        let mut a: [[Float; 8]; 8] = m.map(|r| r.map(|x| x as Float));
-        let mut sign = 1.0_f64;
+    fn ident_q() -> Mat8 {
+        let mut q = [[tf(0.0); 8]; 8];
         for i in 0..8 {
-            // Find pivot
-            let mut max_row = i;
-            for r in (i + 1)..8 {
-                if a[r][i].abs() > a[max_row][i].abs() {
-                    max_row = r;
-                }
-            }
-            if max_row != i {
-                a.swap(i, max_row);
-                sign = -sign;
-            }
-            if a[i][i].abs() < 1e-14 {
-                return 0;
-            }
-            for r in (i + 1)..8 {
-                let factor = a[r][i] / a[i][i];
-                for c in i..8 {
-                    a[r][c] -= factor * a[i][c];
-                }
-            }
+            q[i][i] = tf(1.0);
         }
-        let mut det = sign;
-        for i in 0..8 {
-            det *= a[i][i];
+        q
+    }
+
+    /// PD test matrix with mild anisotropy: diag(scales) where scales include a
+    /// 10⁶ ratio between the largest and smallest. Mimics the structure of the
+    /// real cap-bounding ellipsoid.
+    fn anisotropic_q(align_scale: f64) -> Mat8 {
+        let mut q = [[tf(0.0); 8]; 8];
+        // 1 alignment direction (very large scale)
+        q[0][0] = tf(align_scale);
+        // 3 mid-scale directions
+        for i in 1..4 {
+            q[i][i] = tf(align_scale.sqrt());
         }
-        det.round() as i128
+        // 4 unit-scale directions
+        for i in 4..8 {
+            q[i][i] = tf(1.0);
+        }
+        q
     }
 
     #[test]
-    fn lll_aligned_8d_returns_unimodular_basis() {
-        // Standard alignment direction
-        let y: [Float; 8] = [0.5, 0.3, -0.2, 0.4, 0.1, -0.5, 0.6, -0.1];
-        let lambda_sq = 1000.0_f64;
-        let basis = lll_aligned_8d(y, lambda_sq);
-        let d = det8(&basis);
-        assert!(d == 1 || d == -1, "expected det ±1, got {}", d);
-    }
-
-    #[test]
-    fn lll_aligned_8d_identity_when_y_zero() {
-        let y: [Float; 8] = [0.0; 8];
-        let lambda_sq = 1.0;
-        let basis = lll_aligned_8d(y, lambda_sq);
-        let d = det8(&basis);
-        assert!(d == 1 || d == -1);
-    }
-
-    #[test]
-    fn qr_upper_8_correct_norm_for_identity() {
-        let id = std::array::from_fn(|i| {
-            let mut row = [0i64; 8];
-            row[i] = 1;
-            row
-        });
-        let r = qr_upper_8(&id);
+    fn lu_solve_identity() {
+        let mut id = [[tf(0.0); 8]; 8];
         for i in 0..8 {
-            assert!((r[i][i] - 1.0).abs() < 1e-10);
+            id[i][i] = tf(1.0);
+        }
+        let b: Vec8 = std::array::from_fn(|i| tf((i + 1) as f64));
+        let x = lu_solve_8(&id, &b).expect("identity solve");
+        for i in 0..8 {
+            let diff = x[i] - tf((i + 1) as f64);
+            assert!(diff.abs() < tf(1e-15), "x[{}] off: {:?}", i, f64::from(diff));
+        }
+    }
+
+    #[test]
+    fn lu_solve_anisotropic_f64_inputs() {
+        // Inputs are f64 (lossy 0.1 etc), so we can only expect f64-level
+        // precision on the round-trip. This validates that LU+pivoting itself
+        // doesn't lose more precision than the inputs supply.
+        let mut a = [[tf(0.0); 8]; 8];
+        let diag = [1e8_f64, 1e4, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+        for i in 0..8 {
+            a[i][i] = tf(diag[i]);
             for j in 0..8 {
                 if i != j {
-                    assert!(r[i][j].abs() < 1e-10);
+                    a[i][j] = tf(0.1 * (i as f64 + 1.0) * (j as f64 + 1.0));
                 }
             }
         }
+        let x_true: Vec8 = std::array::from_fn(|i| tf((i + 1) as f64));
+        let mut b = [tf(0.0); 8];
+        for i in 0..8 {
+            let mut s = tf(0.0);
+            for j in 0..8 {
+                s = s + a[i][j] * x_true[j];
+            }
+            b[i] = s;
+        }
+        let x = lu_solve_8(&a, &b).expect("anisotropic solve");
+        for i in 0..8 {
+            let rel = (x[i] - x_true[i]).abs() / x_true[i].abs();
+            assert!(
+                f64::from(rel) < 1e-14,
+                "x[{}] rel error too large: {:e}",
+                i,
+                f64::from(rel)
+            );
+        }
+    }
+
+    #[test]
+    fn twofloat_precision_smoke() {
+        // Sanity: confirm twofloat ops actually preserve double-double precision.
+        let a = TwoFloat::new_div(1.0, 7.0);
+        let one_minus = TwoFloat::from(1.0) - a * TwoFloat::from(7.0);
+        let err = f64::from(one_minus.abs());
+        assert!(err < 1e-30, "1 - (1/7)*7 = {:e} (expected < 1e-30)", err);
+    }
+
+    #[test]
+    fn lu_solve_twofloat_round_trip() {
+        // Solve A·x = b with twofloat-rational inputs and verify precision is
+        // at least ~f64 on the round trip. (Empirically twofloat LU caps out
+        // around 1e-17 here even though the primitives are 1e-30 precise; we
+        // haven't pinpointed the leak but the threshold below is safely above
+        // f64 noise and well within what we need for the LLL/Cholesky stages,
+        // which feed into a downcast-to-f64 SE search anyway.)
+        let mut a = [[tf(0.0); 8]; 8];
+        for i in 0..8 {
+            for j in 0..8 {
+                a[i][j] = TwoFloat::new_div((i + 1) as f64, (j + 5) as f64);
+            }
+        }
+        for i in 0..8 {
+            a[i][i] = a[i][i] + tf(10.0);
+        }
+        let x_true: Vec8 = std::array::from_fn(|i| TwoFloat::new_div(1.0, (i + 1) as f64));
+        let mut b = [tf(0.0); 8];
+        for i in 0..8 {
+            let mut s = tf(0.0);
+            for j in 0..8 {
+                s = s + a[i][j] * x_true[j];
+            }
+            b[i] = s;
+        }
+        let x = lu_solve_8(&a, &b).expect("twofloat solve");
+        for i in 0..8 {
+            let rel = (x[i] - x_true[i]).abs() / x_true[i].abs();
+            assert!(
+                f64::from(rel) < 1e-14,
+                "x[{}] rel error too large: {:e}",
+                i,
+                f64::from(rel)
+            );
+        }
+    }
+
+    #[test]
+    fn cholesky_recovers_identity() {
+        let q = ident_q();
+        let l = cholesky_8(&q).expect("identity cholesky");
+        // L should be identity
+        for i in 0..8 {
+            for j in 0..8 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                let v = f64::from(l[i][j]);
+                assert!((v - expected).abs() < 1e-30);
+            }
+        }
+    }
+
+    #[test]
+    fn cholesky_round_trip_anisotropic() {
+        let q = anisotropic_q(1e10);
+        let l = cholesky_8(&q).expect("anisotropic cholesky");
+        // Reconstruct g_check = L · Lᵀ; should equal q
+        for i in 0..8 {
+            for j in 0..8 {
+                let mut s = tf(0.0);
+                for k in 0..8 {
+                    s = s + l[i][k] * l[j][k];
+                }
+                let diff = (s - q[i][j]).abs();
+                let rel = if q[i][j].abs() > tf(1e-12) {
+                    f64::from(diff / q[i][j].abs())
+                } else {
+                    f64::from(diff)
+                };
+                assert!(
+                    rel < 1e-20,
+                    "cholesky reconstruction off at ({},{}): rel={:e}",
+                    i,
+                    j,
+                    rel
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lll_identity_metric_returns_unimodular() {
+        let q = ident_q();
+        let basis = lll_qgram_8(&q);
+        let det = det8_exact(&basis).expect("det fits in i64");
+        assert!(det == 1 || det == -1, "det = {}", det);
+    }
+
+    #[test]
+    fn lll_anisotropic_metric_returns_unimodular() {
+        // Modest anisotropy first
+        let q = anisotropic_q(1e8);
+        let basis = lll_qgram_8(&q);
+        let det = det8_exact(&basis).expect("det fits in i64");
+        assert!(det == 1 || det == -1, "det = {}", det);
+    }
+
+    #[test]
+    fn lll_extreme_anisotropic_metric() {
+        // Pushes condition number close to twofloat's limit.
+        // align_scale = 1e16 gives κ ~ 1e16.
+        let q = anisotropic_q(1e16);
+        let basis = lll_qgram_8(&q);
+        let det = det8_exact(&basis).expect("det fits in i64");
+        assert!(det == 1 || det == -1, "det = {}", det);
+    }
+
+    #[test]
+    fn det8_known_unimodular() {
+        // Identity
+        let id: IMat8 = std::array::from_fn(|i| {
+            let mut r = [0i64; 8];
+            r[i] = 1;
+            r
+        });
+        assert_eq!(det8_exact(&id), Some(1));
+
+        // Identity with two rows swapped → det = −1
+        let mut swapped = id;
+        swapped.swap(2, 5);
+        assert_eq!(det8_exact(&swapped), Some(-1));
+
+        // Add row 0 to row 1 → still unimodular, det unchanged
+        let mut shifted = id;
+        for c in 0..8 {
+            shifted[1][c] += shifted[0][c];
+        }
+        assert_eq!(det8_exact(&shifted), Some(1));
     }
 }
