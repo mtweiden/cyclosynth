@@ -1415,17 +1415,16 @@ impl Synthesizer {
         let budget_hit = std::sync::atomic::AtomicBool::new(false);
 
         // Per-worker scratch: rayon's `map_init` allocates a `LenstraScratch`
-        // (incl. all rug Float buffers at the right precision) once per worker
-        // thread, then reuses it across all prefixes that worker handles.
-        // Without this, every prefix would allocate ~60K MPFR objects in the
-        // LLL inner loop, hammering the global allocator and serializing the
-        // 8-thread parallelism.
-        let prec = crate::synthesis::lenstra::compute_prec(eps);
+        // (Light = no-op for twofloat; Heavy = pre-allocated MPFR buffers at
+        // the right precision) once per worker thread, then reuses it across
+        // all prefixes that worker handles. The Heavy variant prevents per-op
+        // allocation in the LLL inner loop. Dispatch to Light/Heavy is
+        // automatic based on `eps` (cutoff at 1e-4).
         let result = prefixes
             .par_iter()
             .with_min_len(chunk)
             .map_init(
-                || crate::synthesis::lenstra::LenstraScratch::new(prec),
+                || crate::synthesis::lenstra::LenstraScratch::new(eps),
                 |scratch, u_l| -> Option<SynthResult> {
                     let m_inner = u2t_dag_times_mat2(u_l, target);
                     let v_inner = match mat_to_uv(&m_inner) {
