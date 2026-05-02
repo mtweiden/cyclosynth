@@ -1078,16 +1078,21 @@ fn lll_aligned_search(
         return Vec::new();
     }
     let y = uv_to_xy(v, k);
-    // Path selector: env var CYCLOSYNTH_USE_LENSTRA=1 enables the experimental
-    // Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816); default
-    // is the existing 4D-outer + 3D-inner enumeration.
-    let use_lenstra = std::env::var("CYCLOSYNTH_USE_LENSTRA")
+    // Default: Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816)
+    // via the bounding-ellipsoid pipeline in `synthesis::lenstra`. ~2000× faster
+    // than the legacy 4D-outer + 3D-inner enumeration on the benchmark suite.
+    //
+    // Env var `CYCLOSYNTH_USE_LEGACY=1` opts back into `phase1_enumerate` for
+    // debugging or precision fallback (e.g., if we hit twofloat exhaustion at
+    // very small ε; the legacy path uses i256 ring arithmetic and is robust at
+    // any ε but much slower).
+    let use_legacy = std::env::var("CYCLOSYNTH_USE_LEGACY")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
-    let sols = if use_lenstra {
-        crate::synthesis::lenstra::phase1_lenstra(&y, k, eps, max_phase2_calls, budget_hit)
-    } else {
+    let sols = if use_legacy {
         phase1_enumerate(&y, k, eps, max_phase2_calls, budget_hit)
+    } else {
+        crate::synthesis::lenstra::phase1_lenstra(&y, k, eps, max_phase2_calls, budget_hit)
     };
     if max_solutions >= sols.len() {
         sols
