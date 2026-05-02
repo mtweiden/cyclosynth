@@ -49,6 +49,19 @@ pub static N_SE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 /// reconstructed unitary's distance to the target exceeded ε).
 pub static N_DIST_REJECTED: AtomicU64 = AtomicU64::new(0);
 
+// ─── Per-phase nanosecond accumulators (Heavy path only) ────────────────────
+//
+// Sum of nanoseconds spent in each phase across all phase1_lenstra_attempt
+// calls in the current dc_search. Reset alongside the counters above. The
+// total is computed by summing all four; that should approximately match
+// elapsed wall-time × n_threads in steady state.
+
+pub static T_BUILD_NS: AtomicU64 = AtomicU64::new(0);
+pub static T_LLL_NS: AtomicU64 = AtomicU64::new(0);
+pub static T_CHOLESKY_NS: AtomicU64 = AtomicU64::new(0);
+pub static T_LU_NS: AtomicU64 = AtomicU64::new(0);
+pub static T_SE_NS: AtomicU64 = AtomicU64::new(0);
+
 pub fn reset_all() {
     for c in [
         &N_PREFIXES,
@@ -60,6 +73,11 @@ pub fn reset_all() {
         &N_HIGH_FOUND,
         &N_SE_CALLBACKS,
         &N_DIST_REJECTED,
+        &T_BUILD_NS,
+        &T_LLL_NS,
+        &T_CHOLESKY_NS,
+        &T_LU_NS,
+        &T_SE_NS,
     ] {
         c.store(0, Ordering::Relaxed);
     }
@@ -76,6 +94,11 @@ pub struct Snapshot {
     pub high_found: u64,
     pub se_callbacks: u64,
     pub dist_rejected: u64,
+    pub t_build_ms: f64,
+    pub t_lll_ms: f64,
+    pub t_cholesky_ms: f64,
+    pub t_lu_ms: f64,
+    pub t_se_ms: f64,
 }
 
 pub fn snapshot() -> Snapshot {
@@ -89,5 +112,10 @@ pub fn snapshot() -> Snapshot {
         high_found: N_HIGH_FOUND.load(Ordering::Relaxed),
         se_callbacks: N_SE_CALLBACKS.load(Ordering::Relaxed),
         dist_rejected: N_DIST_REJECTED.load(Ordering::Relaxed),
+        t_build_ms: T_BUILD_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
+        t_lll_ms: T_LLL_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
+        t_cholesky_ms: T_CHOLESKY_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
+        t_lu_ms: T_LU_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
+        t_se_ms: T_SE_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
     }
 }
