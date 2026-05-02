@@ -695,6 +695,16 @@ impl Synthesizer {
                         "[trace]            phase_ms (cpu-summed) build={:>7.1} lll={:>7.1} chol={:>7.1} lu={:>7.1} se={:>7.1} sum={:>7.1}",
                         s.t_build_ms, s.t_lll_ms, s.t_cholesky_ms, s.t_lu_ms, s.t_se_ms, phase_total
                     );
+                    let n_lll_calls = s.low_attempt + s.high_attempt;
+                    let lll_avg = if n_lll_calls > 0 {
+                        s.lll_iters_total as f64 / n_lll_calls as f64
+                    } else {
+                        0.0
+                    };
+                    eprintln!(
+                        "[trace]            lll_iters total={} avg={:.0} max={} at_cap={} (cap=10000)",
+                        s.lll_iters_total, lll_avg, s.lll_iters_max, s.lll_at_cap
+                    );
                 }
             }
             if result.is_some() {
@@ -735,6 +745,16 @@ impl Synthesizer {
                     eprintln!(
                         "[trace]            phase_ms (cpu-summed) build={:>7.1} lll={:>7.1} chol={:>7.1} lu={:>7.1} se={:>7.1} sum={:>7.1}",
                         s.t_build_ms, s.t_lll_ms, s.t_cholesky_ms, s.t_lu_ms, s.t_se_ms, phase_total
+                    );
+                    let n_lll_calls = s.low_attempt + s.high_attempt;
+                    let lll_avg = if n_lll_calls > 0 {
+                        s.lll_iters_total as f64 / n_lll_calls as f64
+                    } else {
+                        0.0
+                    };
+                    eprintln!(
+                        "[trace]            lll_iters total={} avg={:.0} max={} at_cap={} (cap=10000)",
+                        s.lll_iters_total, lll_avg, s.lll_iters_max, s.lll_at_cap
                     );
                 }
             }
