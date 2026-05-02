@@ -691,6 +691,49 @@ pub fn gs_int_inplace(scratch: &mut IntScratch) {
     gs_int_partial(scratch, 7);
 }
 
+/// Row-k-only GS update. After a size-reduce that modified row k of the
+/// basis (and thus row/column k of the Gram), only g_star[k][*], gnorm[k],
+/// and μ[k][*] need recomputing — entries in rows < k are unchanged.
+///
+/// **Subtle correctness point**: at outer iteration j=k, the recurrence
+/// `g_star[k][k] = G[k][k] - Σ_{l<k} μ[k][l] · g_star[k][l]` requires fresh
+/// μ[k][l] values. The PREVIOUS gs_int_partial computed μ[k][l] using the
+/// pre-size-reduce g_star[k][l] — those are now stale. So we must compute
+/// the new μ[k][l] inline at each outer-j iteration, not at the end.
+pub fn gs_update_row_k(scratch: &mut IntScratch, k: usize) {
+    let prec = scratch.prec_mu;
+    let mut acc = rfz(prec);
+    let mut tmp = rfz(prec);
+
+    // For j = 0..=k:
+    //   1. Compute g_star[k][j] using μ[j][l] for l < j.
+    //      - If j < k: μ[j][l] from previous gs_int_partial (rows < k unchanged → valid).
+    //      - If j = k: μ[k][l] from THIS function's earlier iterations (fresh).
+    //   2. If j < k: compute μ[k][j] = g_star[k][j] / gnorm[j]  (so j=k iter sees fresh μ[k][l]).
+    //   3. If j = k: assign gnorm[k] = g_star[k][k].
+    for j in 0..=k {
+        i256_to_rfloat(&scratch.gram[k][j], &mut acc);
+        for l in 0..j {
+            tmp.assign(&scratch.mu[j][l] * &scratch.g_star[k][l]);
+            acc -= &tmp;
+        }
+        scratch.g_star[k][j].assign(&acc);
+
+        if j < k {
+            // Fresh μ[k][j] for the j=k recurrence to use.
+            let gn = scratch.gnorm_sq[j].to_f64();
+            if !gn.is_finite() || gn.abs() < 1e-300 {
+                scratch.mu[k][j].assign(0.0_f64);
+            } else {
+                scratch.mu[k][j].assign(&scratch.g_star[k][j] / &scratch.gnorm_sq[j]);
+            }
+        } else {
+            // j == k: gnorm[k] = g_star[k][k]
+            scratch.gnorm_sq[k].assign(&scratch.g_star[k][k]);
+        }
+    }
+}
+
 // ─── LLL inner loop (i256 Gram + MPFR GS) ────────────────────────────────────
 
 /// Result of `lll_int_8`. `Ok` on convergence with a unimodular basis;
@@ -778,8 +821,10 @@ pub fn lll_int_8(scratch: &mut IntScratch) -> LllResult {
             return LllResult::GramOverflow;
         }
 
-        // GS again with updated Gram → fresh μ for Lovász.
-        gs_int_partial(scratch, k);
+        // GS update for row k only — size-reduce only changed row k of Gram,
+        // so rows < k of the GS table are still valid. Cheaper than re-running
+        // the full partial GS.
+        gs_update_row_k(scratch, k);
 
         // Lovász: gnorm[k] ≥ (δ − μ[k][k-1]²) · gnorm[k-1]
         scratch.lov_t1.assign(&scratch.mu[k][k - 1] * &scratch.mu[k][k - 1]);
