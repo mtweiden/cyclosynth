@@ -1019,12 +1019,24 @@ pub fn phase1_lenstra_attempt(
     let target_norm: i64 = 1i64 << k;
     let threshold_xy = (1i64 << (2 * k)) as Float / 4.0 * (1.0 - eps * eps);
 
+    let trace = crate::synthesis::diag::trace_enabled();
+
     // Step 1: build Q and center c
+    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
     build_q(scratch, y, k, eps);
     build_center(scratch, y, k, eps);
+    if let Some(t0) = t_phase {
+        crate::synthesis::diag::T_BUILD_NS
+            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
 
     // Step 2: LLL-reduce ℤ⁸ identity using Q metric
+    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
     lll_qgram_8(scratch);
+    if let Some(t0) = t_phase {
+        crate::synthesis::diag::T_LLL_NS
+            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
 
     // Step 3: assert det = ±1 (catches genuine pathology — escalate on failure
     // since loss of unimodularity at this precision means the LLL's GS
@@ -1059,8 +1071,14 @@ pub fn phase1_lenstra_attempt(
     // Step 4: Cholesky of G_LLL = B Q Bᵀ (computed inline by the LLL's last
     // gram pass — but we need to recompute since LLL's last GS may have been
     // for the post-swap basis).
+    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
     compute_qgram_inplace(scratch);
-    if !cholesky_8(scratch) {
+    let chol_ok = cholesky_8(scratch);
+    if let Some(t0) = t_phase {
+        crate::synthesis::diag::T_CHOLESKY_NS
+            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+    if !chol_ok {
         if enable_escalation {
             crate::synthesis::diag::N_LOW_ESCALATE.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -1083,13 +1101,19 @@ pub fn phase1_lenstra_attempt(
     // Step 5: solve B_LLLᵀ · z_c = c via LU with partial pivoting.
     // (B_LLL has rows = basis vectors, so x = B_LLLᵀ · z. To find z given x = c,
     // solve B_LLLᵀ · z = c.)
+    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
     for i in 0..8 {
         for j in 0..8 {
             scratch.lu_a[i][j].assign(rfv(scratch.prec, basis[j][i] as f64));
         }
         scratch.lu_rhs[i].assign(&scratch.c[i]);
     }
-    if !lu_solve_inplace(scratch) {
+    let lu_ok = lu_solve_inplace(scratch);
+    if let Some(t0) = t_phase {
+        crate::synthesis::diag::T_LU_NS
+            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+    if !lu_ok {
         if enable_escalation {
             crate::synthesis::diag::N_LOW_ESCALATE.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -1113,6 +1137,7 @@ pub fn phase1_lenstra_attempt(
     let abort = AtomicBool::new(false);
     let bound_tf = Tf::from(1.51_f64);
     let escalate_at = if enable_escalation { SE_ESCALATE_THRESHOLD } else { u64::MAX };
+    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
     let result = se_8d_tf(&r_chol_tf, &z_c_tf, bound_tf, r_eucl.as_ref(), target_norm_f, &abort, |z: &[i64; 8]| {
         let n_so_far = count.load(Ordering::Relaxed);
         if n_so_far >= max_phase2_calls {
@@ -1143,6 +1168,10 @@ pub fn phase1_lenstra_attempt(
         Some(x)
     });
 
+    if let Some(t0) = t_phase {
+        crate::synthesis::diag::T_SE_NS
+            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
     crate::synthesis::diag::N_SE_CALLBACKS
         .fetch_add(count.load(Ordering::Relaxed), Ordering::Relaxed);
     let aborted = abort.load(Ordering::Relaxed);
