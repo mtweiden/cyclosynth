@@ -1,5 +1,6 @@
 pub mod cliffords;
 pub mod decomposer;
+pub mod lenstra;
 pub mod search;
 pub mod synthesizer;
 
