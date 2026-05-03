@@ -15,4 +15,6 @@ dist
 build
 scratch/
 synth/
-cyclosynth-rs/target/
+.claude
+target/
+.pytest_cache/

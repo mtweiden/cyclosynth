@@ -1,0 +1,18 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "cyclosynth"
+version = "0.1.0"
+description = "Optimal-T-count Clifford+T synthesis for single-qubit unitaries."
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "License :: OSI Approved :: MIT License",
+]
+
+[tool.maturin]
+features = ["python"]
+strip = true
