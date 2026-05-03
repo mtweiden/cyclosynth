@@ -385,6 +385,45 @@ fn solution_to_gates(sol: &[i64; 8], k: u32) -> String {
     BlochDecomposer.decompose(&solution_to_u2t(sol, k))
 }
 
+// ─── Trace output helper ─────────────────────────────────────────────────────
+
+/// Emit one pass of the per-lde diagnostic block on stderr. Called at the
+/// end of each `dc_search` invocation when `CYCLOSYNTH_TRACE=1` is set.
+fn trace_dump_pass(
+    t: u32,
+    t_prime: u32,
+    pass: u8,
+    s: &crate::synthesis::diag::Snapshot,
+    budget_hit: bool,
+    pass_ms: f64,
+    found: bool,
+) {
+    eprintln!(
+        "[trace] lde={:>2} pass{} t'={:>2} prefixes={:>6} mat_uv_rej={:>6} \
+         se_cb={:>9} budget={} {:>9.1}ms result={}",
+        t, pass, t_prime, s.prefixes, s.mat_to_uv_rejected, s.se_callbacks,
+        budget_hit as u8, pass_ms, if found { "FOUND" } else { "none" }
+    );
+    let phase_total = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
+    if phase_total > 0.0 {
+        eprintln!(
+            "[trace]            phase_ms (cpu-summed) build={:>7.1} lll={:>7.1} \
+             chol={:>7.1} lu={:>7.1} se={:>7.1} sum={:>7.1}",
+            s.t_build_ms, s.t_lll_ms, s.t_cholesky_ms, s.t_lu_ms, s.t_se_ms, phase_total
+        );
+        let n_lll_calls = s.prefixes.saturating_sub(s.mat_to_uv_rejected);
+        let lll_avg = if n_lll_calls > 0 {
+            s.lll_iters_total as f64 / n_lll_calls as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[trace]            lll_iters total={} avg={:.0} max={} at_cap={} (cap=10000)",
+            s.lll_iters_total, lll_avg, s.lll_iters_max, s.lll_at_cap
+        );
+    }
+}
+
 // ─── LLL-based aligned search (bandb5.py port) ────────────────────────────────
 
 /// Scale the alignment vector to the y-vector used in bandb5.py.
@@ -678,41 +717,7 @@ impl Synthesizer {
             let pass1_ms = t_start.elapsed().as_secs_f64() * 1000.0;
             if trace {
                 let s = crate::synthesis::diag::snapshot();
-                eprintln!(
-                    "[trace] lde={:>2} pass1 t'={:>2} prefixes={:>6} mat_uv_rej={:>6} \
-                     low(att/found/esc)={}/{}/{} high(att/found)={}/{} se_cb={:>9} \
-                     budget={} {:>9.1}ms result={}",
-                    t,
-                    optimal_t_prime(t, self.epsilon),
-                    s.prefixes,
-                    s.mat_to_uv_rejected,
-                    s.low_attempt,
-                    s.low_found,
-                    s.low_escalate,
-                    s.high_attempt,
-                    s.high_found,
-                    s.se_callbacks,
-                    budget_hit as u8,
-                    pass1_ms,
-                    if result.is_some() { "FOUND" } else { "none" }
-                );
-                let phase_total = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
-                if phase_total > 0.0 {
-                    eprintln!(
-                        "[trace]            phase_ms (cpu-summed) build={:>7.1} lll={:>7.1} chol={:>7.1} lu={:>7.1} se={:>7.1} sum={:>7.1}",
-                        s.t_build_ms, s.t_lll_ms, s.t_cholesky_ms, s.t_lu_ms, s.t_se_ms, phase_total
-                    );
-                    let n_lll_calls = s.low_attempt + s.high_attempt;
-                    let lll_avg = if n_lll_calls > 0 {
-                        s.lll_iters_total as f64 / n_lll_calls as f64
-                    } else {
-                        0.0
-                    };
-                    eprintln!(
-                        "[trace]            lll_iters total={} avg={:.0} max={} at_cap={} (cap=10000)",
-                        s.lll_iters_total, lll_avg, s.lll_iters_max, s.lll_at_cap
-                    );
-                }
+                trace_dump_pass(t, optimal_t_prime(t, self.epsilon), 1, &s, budget_hit, pass1_ms, result.is_some());
             }
             if result.is_some() {
                 return result;
@@ -729,41 +734,11 @@ impl Synthesizer {
             let (result2, budget_hit2) = self.dc_search(target, v, t, PASS2_CAP);
             if trace {
                 let s = crate::synthesis::diag::snapshot();
-                eprintln!(
-                    "[trace] lde={:>2} pass2 t'={:>2} prefixes={:>6} mat_uv_rej={:>6} \
-                     low(att/found/esc)={}/{}/{} high(att/found)={}/{} se_cb={:>9} \
-                     budget={} {:>9.1}ms result={}",
-                    t,
-                    optimal_t_prime(t, self.epsilon),
-                    s.prefixes,
-                    s.mat_to_uv_rejected,
-                    s.low_attempt,
-                    s.low_found,
-                    s.low_escalate,
-                    s.high_attempt,
-                    s.high_found,
-                    s.se_callbacks,
-                    budget_hit2 as u8,
+                trace_dump_pass(
+                    t, optimal_t_prime(t, self.epsilon), 2, &s, budget_hit2,
                     t_start2.elapsed().as_secs_f64() * 1000.0,
-                    if result2.is_some() { "FOUND" } else { "none" }
+                    result2.is_some(),
                 );
-                let phase_total = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
-                if phase_total > 0.0 {
-                    eprintln!(
-                        "[trace]            phase_ms (cpu-summed) build={:>7.1} lll={:>7.1} chol={:>7.1} lu={:>7.1} se={:>7.1} sum={:>7.1}",
-                        s.t_build_ms, s.t_lll_ms, s.t_cholesky_ms, s.t_lu_ms, s.t_se_ms, phase_total
-                    );
-                    let n_lll_calls = s.low_attempt + s.high_attempt;
-                    let lll_avg = if n_lll_calls > 0 {
-                        s.lll_iters_total as f64 / n_lll_calls as f64
-                    } else {
-                        0.0
-                    };
-                    eprintln!(
-                        "[trace]            lll_iters total={} avg={:.0} max={} at_cap={} (cap=10000)",
-                        s.lll_iters_total, lll_avg, s.lll_iters_max, s.lll_at_cap
-                    );
-                }
             }
             result2
         }
