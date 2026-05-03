@@ -215,20 +215,24 @@ impl fmt::Display for ZOmega {
 
 // ─── PyO3 ─────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 
 /// Python-facing ZOmega.
+#[cfg(feature = "python")]
 #[pyclass(name = "ZOmega", frozen)]
 pub struct PyZOmega {
     pub inner: ZOmega,
 }
 
+#[cfg(feature = "python")]
 impl PyZOmega {
     pub fn to_inner(&self) -> ZOmega { self.inner }
 
     pub fn from_inner(inner: ZOmega) -> Self { Self { inner } }
 }
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl PyZOmega {
     /// Python always passes 64-bit integers; cast to `Int` (may be wider than i64).

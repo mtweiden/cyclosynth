@@ -15,7 +15,9 @@ use std::ops::{Mul, Sub};
 use crate::rings::{ZOmega, ZZeta};
 use crate::rings::types::INT_ZERO;
 use crate::matrix::so3::{SO3, SO3T, SO3Q, SO3Ops, R2, R4, Ratio};
-use crate::matrix::u2::{U2, U2T, U2Q, PyU2, U2Variant, RingElem};
+use crate::matrix::u2::{U2, U2T, U2Q, RingElem};
+#[cfg(feature = "python")]
+use crate::matrix::u2::{PyU2, U2Variant};
 use crate::matrix::{rz_pos, rx_pos, ry_pos, rz_pos_q, rx_pos_q, ry_pos_q};
 use crate::matrix::{rz_neg, rx_neg, ry_neg, rz_neg_q, rx_neg_q, ry_neg_q};
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
@@ -295,15 +297,17 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
 
 // ─── PyO3 ─────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 
 /// Python-facing BlochDecomposer.
 ///
 /// Stateless: construct once, call decompose() with the U2T parameters.
+#[cfg(feature = "python")]
 #[pyclass(name = "BlochDecomposer")]
 pub struct PyBlochDecomposer;
 
-/// TODO: Use PyU2
+#[cfg(feature = "python")]
 #[pymethods]
 impl PyBlochDecomposer {
     #[new]

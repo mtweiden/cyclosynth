@@ -11,8 +11,12 @@
 use num_complex::Complex64;
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
-use crate::rings::zomega::{ZOmega, PyZOmega};
-use crate::rings::zzeta::{ZZeta, PyZZeta};
+use crate::rings::zomega::ZOmega;
+use crate::rings::zzeta::ZZeta;
+#[cfg(feature = "python")]
+use crate::rings::zomega::PyZOmega;
+#[cfg(feature = "python")]
+use crate::rings::zzeta::PyZZeta;
 
 // ─── Trait ────────────────────────────────────────────────────────────────────
 
@@ -186,9 +190,14 @@ pub type U2Q = U2<ZZeta>;
 
 // ─── PyO3 ─────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 
-// An enum to wrap the concrete generic instances for different ring types
+/// Tagged-enum wrapper over the two concrete `U2` instantiations.
+///
+/// Used by `PyU2` to expose a single Python class regardless of the underlying
+/// ring (`ZOmega` for Clifford+T, `ZZeta` for Clifford+√T).
+#[cfg(feature = "python")]
 #[derive(Clone)]
 pub enum U2Variant {
     Omega(U2T),
@@ -196,15 +205,18 @@ pub enum U2Variant {
 }
 
 /// Python-facing U2 classes
+#[cfg(feature = "python")]
 #[pyclass(name = "U2")]
 pub struct PyU2 {
     inner: U2Variant,
 }
 
+#[cfg(feature = "python")]
 impl PyU2 {
     pub fn to_inner(&self) -> &U2Variant { &self.inner }
 }
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl PyU2 {
     #[new]

@@ -8,13 +8,13 @@ name = "cyclosynth"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"] }
 num-complex = "0.4"
 i256 = "0.2.3"
 rayon = "1.10"
 twofloat = "0.8"
 rug = { version = "1", default-features = false, features = ["float", "integer"] }
 gmp-mpfr-sys = "1.7"
+pyo3 = { version = "0.22", optional = true, features = ["extension-module"] }
 
 [dev-dependencies]
 rand = "0.9"
@@ -23,5 +23,6 @@ rand = "0.9"
 debug = 1
 
 [features]
-python = []
+default = []
+python = ["dep:pyo3"]
 profiling = []
