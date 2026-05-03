@@ -76,9 +76,8 @@ impl GateRing for ZOmega {
 
     fn rx_pos_u2() -> U2T { U2T::h() * U2T::t() * U2T::h() }
     fn ry_pos_u2() -> U2T {
-        // Ry(π/4) = S·Rx(π/4)·S† = (S†)³·H·T·H·S†  (using U2T::s() = S†)
-        let s3 = U2T::s() * U2T::s() * U2T::s();
-        s3 * U2T::h() * U2T::t() * U2T::h() * U2T::s()
+        // Ry(π/4) = S · Rx(π/4) · S†
+        U2T::s() * U2T::h() * U2T::t() * U2T::h() * U2T::s().dagger()
     }
     fn rz_pos_u2() -> U2T { U2T::t() }
 
@@ -134,8 +133,8 @@ impl GateRing for ZZeta {
 
     fn rx_pos_u2() -> U2Q { U2Q::h() * U2Q::q() * U2Q::h() }
     fn ry_pos_u2() -> U2Q {
-        let s3 = U2Q::s() * U2Q::s() * U2Q::s();
-        s3 * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s()
+        // Ry(π/4) = S · Rx(π/4) · S†
+        U2Q::s() * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s().dagger()
     }
     fn rz_pos_u2() -> U2Q { U2Q::q() }
 
@@ -190,9 +189,9 @@ impl BlochDecomposer {
 
 /// Translate a raw `{x,y,z,Clifford}` decomposition string into a gate string.
 ///
-/// Rotation encoding (leftmost gate = first applied):
+/// Rotation encoding (leftmost gate = leftmost matrix factor):
 ///   'x' → H·magic·H        (Rx step)
-///   'y' → S³·H·magic·H·S   (Ry step, using Ry = S·Rx·S†)
+///   'y' → S·H·magic·H·S³   (Ry step: Ry(θ) = S · Rx(θ) · S†, with S† = S³)
 ///   'z' → magic             (Rz step)
 ///
 /// `magic` is `"T"` for Clifford+T or `"Q"` for Clifford+√T.
@@ -200,7 +199,7 @@ impl BlochDecomposer {
 fn translate(raw: &str, magic: &str) -> String {
     let mut s = raw
         .replace('x', &format!("H{}H", magic))
-        .replace('y', &format!("SSSH{}HS", magic))
+        .replace('y', &format!("SH{}HSSS", magic))
         .replace('z', magic);
 
     let mut prev = String::new();
@@ -388,7 +387,15 @@ mod tests {
     fn test_known_sequence_1() {
         let gates = "SSSHTHS";
         let decomp = decompose_from_gates_t(gates);
-        assert_eq!(decomp, "ZSHTHS");
+        let u_in = gates_to_u2t(gates);
+        let u_out = gates_to_u2t(&decomp);
+        // diamond_distance routes through to_complex()/f64; the sqrt(1 - x²)
+        // branch where x ≈ 1 gives the sqrt-of-f64-epsilon noise floor (~1.5e-8).
+        let dist = u_in.diamond_distance(&u_out);
+        assert!(
+            dist < 1e-7,
+            "decomp \"{decomp}\" doesn't match input \"{gates}\": dist={dist:.3e}",
+        );
     }
 
     #[test]
@@ -568,7 +575,9 @@ mod tests {
         }
         let mut mat = id;
         for ch in gates.chars() {
-            mat = mmul(match ch { 'H'=>h, 'S'=>s, 'Z'=>z, 'X'=>x, 'T'=>t, _=>id }, mat);
+            // Right-multiply: leftmost gate is the leftmost matrix factor,
+            // matching the synthesis-side `gates_to_u2t` convention.
+            mat = mmul(mat, match ch { 'H'=>h, 'S'=>s, 'Z'=>z, 'X'=>x, 'T'=>t, _=>id });
         }
         mat
     }

@@ -121,9 +121,9 @@ impl <R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
         Self::new(R::one(), R::one(), R::one(), -R::one(), 1)
     }
 
-    /// S gate: [[1,0],[0,i]] / √2^0.
+    /// S gate: diag(1, i).
     pub fn s() -> Self {
-        Self::new(R::one(), R::zero(), R::zero(), R::i().conj(), 0)
+        Self::new(R::one(), R::zero(), R::zero(), R::i(), 0)
     }
 
     /// T gate: [[1,0],[0,ω]] / √2^0 (for U2T)
