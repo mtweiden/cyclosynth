@@ -14,3 +14,7 @@ dask-worker-space
 dist
 build
 scratch/
+synth/
+.claude
+target/
+.pytest_cache/

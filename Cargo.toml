@@ -1,0 +1,29 @@
+[package]
+name = "cyclosynth"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "cyclosynth"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+num-complex = "0.4"
+i256 = "0.2.3"
+rayon = "1.10"
+twofloat = "0.8"
+rug = { version = "1", default-features = false, features = ["float", "integer"] }
+gmp-mpfr-sys = "1.7"
+pyo3 = { version = "0.22", optional = true, features = ["extension-module", "num-complex"] }
+numpy = { version = "0.22", optional = true }
+
+[dev-dependencies]
+rand = "0.9"
+
+[profile.release]
+debug = 1
+
+[features]
+default = []
+python = ["dep:pyo3", "dep:numpy"]
+profiling = []
