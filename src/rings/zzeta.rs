@@ -252,20 +252,24 @@ impl fmt::Display for ZZeta {
 
 // ─── PyO3 ─────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "python")]
 use pyo3::prelude::*;
 
 /// Python-facing ZZeta.
+#[cfg(feature = "python")]
 #[pyclass(name = "ZZeta", frozen)]
 pub struct PyZZeta {
     pub inner: ZZeta,
 }
 
+#[cfg(feature = "python")]
 impl PyZZeta {
     pub fn to_inner(&self) -> ZZeta { self.inner }
 
     pub fn from_inner(inner: ZZeta) -> Self { Self { inner } }
 }
 
+#[cfg(feature = "python")]
 #[pymethods]
 impl PyZZeta {
     /// Python always passes 64-bit integers; cast to `Int` (may be wider than i64).

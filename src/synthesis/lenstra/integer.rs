@@ -1649,35 +1649,4 @@ mod tests {
             }
         }
     }
-
-
-    #[test]
-    #[ignore]
-    fn scale_bits_sweep_diagnostic() {
-        // Diagnostic only: print the chosen scale_bits across ε
-        let cases = [(1e-3_f64, 14), (1e-4, 17), (1e-5, 21), (1e-6, 28),
-                     (1e-7, 49), (1e-8, 70), (1e-9, 85), (1e-10, 100)];
-        for (eps, k) in cases {
-            let y = realistic_y(k);
-            let mut s = IntScratch::new(eps);
-            build_q_mpfr(&mut s, &y, k, eps);
-            build_q_int(&mut s);
-            let mut max_log2: i32 = i32::MIN;
-            for i in 0..8 {
-                for j in 0..8 {
-                    let v = s.q_mpfr[i][j].clone().abs();
-                    if !v.is_zero() {
-                        let e = v.get_exp().unwrap_or(0);
-                        if e > max_log2 {
-                            max_log2 = e;
-                        }
-                    }
-                }
-            }
-            eprintln!(
-                "  eps={:e}  k={:>3}  max_q_log2={:>4}  scale_bits={:>4}",
-                eps, k, max_log2, s.scale_bits
-            );
-        }
-    }
 }
