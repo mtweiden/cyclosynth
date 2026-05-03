@@ -992,8 +992,17 @@ pub fn phase1_lenstra_int(
 ) -> IntAttemptOutcome {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    let target_norm: i64 = 1i64 << k;
-    let threshold_xy = (1u128 << (2 * k)) as Float / 4.0 * (1.0 - eps * eps);
+    // Use i128 so target_norm = 2^k stays correct for k ≥ 63 (where i64 would
+    // overflow). At k=82 (ε=1e-8), target_norm = 2^82 ≈ 5e24 — fits in i128.
+    let target_norm: i128 = 1i128 << k;
+    // Fast path: when k ≤ 62, ‖x‖² and the target both fit in i64. The SE
+    // callback is the hot loop (millions of invocations); the i128 path is
+    // ~3-5× slower per op on aarch64. Hoist the branch outside the callback.
+    let use_i64_path = k <= 62;
+    let target_norm_i64: i64 = if use_i64_path { 1i64 << k } else { 0 };
+    // 2^(2k) overflows u128 at k ≥ 64 (2k ≥ 128). Compute the threshold in
+    // f64 directly via powi; f64 represents 2^k exactly for any k ≤ 1023.
+    let threshold_xy = 2.0_f64.powi(2 * k as i32) / 4.0 * (1.0 - eps * eps);
 
     let trace = crate::synthesis::diag::trace_enabled();
 
@@ -1102,9 +1111,19 @@ pub fn phase1_lenstra_int(
             }
             count.fetch_add(1, Ordering::Relaxed);
             let x = crate::synthesis::lenstra_heavy::reconstruct_x(&basis, z);
-            let n: i64 = x.iter().map(|&v| v * v).sum();
-            if n != target_norm {
-                return None;
+            // Norm check: i64 fast path for k ≤ 62, i128 path otherwise.
+            // Most SE candidates fail this check, so it's the hottest test;
+            // keeping it in i64 when safe is worth the branch.
+            if use_i64_path {
+                let n: i64 = x.iter().map(|&v| v * v).sum();
+                if n != target_norm_i64 {
+                    return None;
+                }
+            } else {
+                let n: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
+                if n != target_norm {
+                    return None;
+                }
             }
             if crate::synthesis::lenstra_heavy::bilinear_b(&x) != 0 {
                 return None;
