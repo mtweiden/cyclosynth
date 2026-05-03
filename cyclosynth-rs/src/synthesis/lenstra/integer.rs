@@ -842,9 +842,10 @@ fn i256_log2_ceil(v: &i256) -> i32 {
 pub enum LllResult {
     /// LLL converged (within `max_iter` iterations and no overflow).
     Converged,
-    /// Gram entry exceeded GRAM_OVERFLOW_THRESHOLD_BITS (transient B-growth
-    /// at deep ε beyond what TARGET_BITS=180 can absorb). Caller should
-    /// fall back to the heavy MPFR LLL or another strategy.
+    /// A Gram entry's magnitude exceeded `GRAM_OVERFLOW_THRESHOLD_BITS`
+    /// during transient basis growth. Indicates the i256 buffer is no
+    /// longer wide enough for the current ε regime; the caller should
+    /// reject this prefix.
     GramOverflow,
     /// Reached the iteration cap without convergence (cycling or near-
     /// boundary precision noise). Diagnostic only.
@@ -866,20 +867,27 @@ fn gram_overflow_check(scratch: &IntScratch) -> bool {
     false
 }
 
-/// L²-LLL (Nguyen-Stehlé 2009, Figure 6). Pure-f64 GS with exact i256 Gram.
+/// L²-LLL (Nguyen-Stehlé 2009, Figure 6) on the 8×8 Q-metric Gram already
+/// snapshotted into `scratch.gram`. Builds an LLL-reduced basis and
+/// records it in `scratch.basis`; intermediate state lives in
+/// `scratch.r_bar` / `mu_bar` / `s_bar` and the i256 `gram`.
 ///
-/// Replaces the previous SWAP-based MPFR LLL with INSERT-based f64 LLL:
-///  - GS coefficients (r̄, μ̄, s̄) live in f64 throughout (no MPFR per iter)
-///  - i256 Gram is exact (read on demand for CFA, updated on basis changes)
-///  - Lazy size-reduction (Figure 5): iterate CFA + reduce until |μ̄| ≤ η̄
-///  - Lovász cascade: descend κ to find deepest insert position κ_insert,
-///    then rotate b_{κ_orig} to position κ_insert in one step (collapses
-///    multiple SWAPs into one INSERT)
+/// The algorithm walks rows κ = 1..d, maintaining the invariant that
+/// rows 0..κ-1 are (δ,η)-L³-reduced. At each κ it:
+///   1. Lazily size-reduces row κ (interleaved CFA and basis reduction)
+///      until `|μ̄_{κ,j}| ≤ η̄` for all j < κ.
+///   2. Finds the deepest insertion position κ_insert by walking the
+///      Lovász condition downward.
+///   3. If κ_insert < κ, rotates the basis (and Gram) so that the
+///      reduced row lands at position κ_insert; otherwise leaves it.
+///   4. Advances κ to the next row.
 ///
-/// Per Theorem 3 of the paper, f64 precision suffices for our d=8 with
-/// (δ=0.75, η=0.55): required ℓ ≥ 5 + 2·log d − log ε + d·log ρ ≈ 33.6 bits.
-/// f64 (ℓ=52) has 18-bit margin under the L² invariant (rows 0..κ-1 kept
-/// L³-reduced as κ advances).
+/// Per Theorem 3 of the paper, f64 precision (53 mantissa bits) suffices
+/// for d=8 at (δ=0.75, η=0.55): the required precision is
+/// `ℓ ≥ 5 + 2·log d − log ε + d·log ρ ≈ 34 bits`, leaving ~18 bits of
+/// margin. The L³-reduction invariant on the prefix is what makes the
+/// f64 GS coefficients accurate enough; running CFA on an unreduced
+/// basis would suffer catastrophic cancellation at deep ε.
 pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
     scratch.reset_basis();
     let max_iter: usize = 10_000;
@@ -927,10 +935,10 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
             kappa -= 1;
         }
 
-        // Step 6: if insertion position < original, rotate basis + Gram so
-        // that old basis[κ_orig] lands at position κ. Refresh row κ's GS
-        // state via cfa_row (replaces the paper's step 5 explicit copy
-        // with an equivalent recompute from updated Gram).
+        // If the insertion position is shallower than the current frontier,
+        // rotate the basis and Gram so the (now-reduced) frontier row lands
+        // at the new position, then recompute that row's GS state from the
+        // updated Gram.
         if kappa < kappa_orig {
             basis_insert(scratch, kappa_orig, kappa);
             cfa_row(scratch, kappa);
