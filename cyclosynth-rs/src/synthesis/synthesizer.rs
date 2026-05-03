@@ -392,7 +392,9 @@ fn solution_to_gates(sol: &[i64; 8], k: u32) -> String {
 /// y = compute_align_vec(v) * sqrt(2^k) / 2.
 /// Property: ||y||² = 2^(k-1).
 fn uv_to_xy(v: [Float; 4], k: u32) -> [Float; 8] {
-    let scale = ((1i64 << k) as Float).sqrt() / 2.0;
+    // sqrt(2^k) / 2 = 2^(k/2 - 1). For k ≥ 64, `1i64 << k` is UB; powf is
+    // safe for any k ≤ 1023.
+    let scale = 2.0_f64.powf(k as f64 / 2.0 - 1.0);
     compute_align_vec(v).map(|x| x * scale)
 }
 
@@ -427,7 +429,12 @@ fn lll_aligned_search(
     max_phase2_calls: u64,
     budget_hit: &std::sync::atomic::AtomicBool,
 ) -> Vec<[i64; 8]> {
-    if max_solutions == 0 || k > 62 {
+    // Old guard was `k > 62` because `target_norm = 1i64 << k` overflowed at
+    // k ≥ 63. Now that target_norm is i128 and uv_to_xy uses powf, the safe
+    // ceiling is much higher. Cap at 110 to stay comfortably below i128 range
+    // (target_norm = 2^k must fit, and Σ-products in bilinear_b can reach
+    // ~k+log₂(8) bits — 2^110 + log₂(8) ≈ 2^113, well within i128 = 2^127).
+    if max_solutions == 0 || k > 110 {
         return Vec::new();
     }
     let y = uv_to_xy(v, k);
