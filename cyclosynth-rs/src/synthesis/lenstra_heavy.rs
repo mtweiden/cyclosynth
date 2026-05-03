@@ -952,9 +952,12 @@ where
 // ─── Top-level phase1_lenstra ─────────────────────────────────────────────────
 
 #[inline]
-pub(crate) fn bilinear_b(x: &[i64; 8]) -> i64 {
-    let (a1, b1, c1, d1) = (x[0], x[1], x[2], x[3]);
-    let (a2, b2, c2, d2) = (x[4], x[5], x[6], x[7]);
+pub(crate) fn bilinear_b(x: &[i64; 8]) -> i128 {
+    // Returns i128 because at deep ε (k ≥ 63), individual x_i can reach ~2^41
+    // and products x_i·x_j hit ~2^82 — overflows i64 silently. Computed in
+    // i128 throughout so the == 0 check is correct at all k.
+    let (a1, b1, c1, d1) = (x[0] as i128, x[1] as i128, x[2] as i128, x[3] as i128);
+    let (a2, b2, c2, d2) = (x[4] as i128, x[5] as i128, x[6] as i128, x[7] as i128);
     a1 * b1 - a1 * d1 + b1 * c1 + c1 * d1 + a2 * b2 - a2 * d2 + b2 * c2 + c2 * d2
 }
 
