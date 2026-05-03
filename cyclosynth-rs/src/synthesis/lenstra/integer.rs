@@ -1,25 +1,40 @@
-//! Pure-Rust integer-arithmetic 8D LLL for Clifford+T synthesis.
+//! L²-LLL pipeline for the deep-ε path of Clifford+T synthesis.
 //!
-//! Replaces the all-MPFR `lenstra_heavy` pipeline. Key shift: the LLL inner
-//! loop's Gram-matrix arithmetic moves from `rug::Float` to `i256`, eliminating
-//! per-iteration MPFR allocation and the dominant per-iter cost. μ-values
-//! still live in MPFR (f64 was empirically insufficient at deep ε — see
-//! `project_paper_gap_analysis.md` negative findings).
+//! Implements the L² algorithm of Nguyen-Stehlé 2009 (SIAM J. Computing,
+//! "An LLL Algorithm with Quadratic Complexity") specialised to dimension 8
+//! with the anisotropic Q metric used by arXiv:2510.05816 Algorithm 3.6.
 //!
-//! Pipeline per phase1 call:
-//!  1. Build anisotropic Q in MPFR (unchanged from heavy; ~0.1% of CPU).
-//!  2. Snapshot S·Q to `q_int: [[i256; 8]; 8]` with adaptive scale S = 2^B
-//!     chosen so max(|Q_int|) ≈ 2^120. LLL μ-values are scale-invariant
-//!     ratios, so absolute scale of S only affects effective precision, not
-//!     correctness.
-//!  3. LLL with i256 Gram (G = B·Q_int·Bᵀ, all integer). GS μ in MPFR at
-//!     `prec_mu` bits (small — only the eight diagonals + above need MPFR).
-//!  4. Once LLL is converged, convert G back to MPFR for Cholesky and LU
-//!     (sub-1% of CPU; reuse heavy module's MPFR routines).
-//!  5. Schnorr-Euchner enumeration + post-SE filter unchanged.
+//! ## Per-phase1 call pipeline
 //!
-//! Adaptive ε range: validated for ε ∈ [1e-10, 1e-3], aspirational target
-//! 1e-8 at "reasonable" wallclock.
+//!  1. **Build Q** in MPFR (`build_q_mpfr`): the anisotropic ellipsoid
+//!     metric for the cap × ball intersection (eq 3.15 of the paper).
+//!     ~0.1% of phase1 CPU.
+//!
+//!  2. **Snapshot Q to i256** (`build_q_int`) with adaptive scale
+//!     `S = 2^B` chosen so `max(|S·Q|) ≈ 2^TARGET_BITS`. The exact integer
+//!     Gram is the input to L²-LLL; LLL μ-values are scale-invariant
+//!     ratios, so the choice of `S` only affects the effective precision
+//!     of the snapshot, not the algorithm's correctness.
+//!
+//!  3. **L²-LLL** (`lll_l2_8`): pure-f64 Gram-Schmidt with the exact i256
+//!     Gram on the side. Per Theorem 2 + Figure 7 of the paper, f64
+//!     (ℓ=52 mantissa bits) is provably sufficient at d=8 with
+//!     (δ=0.75, η=0.55), giving 18-bit precision margin. INSERT semantics
+//!     + lazy size-reduction keep the basis L³-reduced incrementally,
+//!     which is the invariant required for the f64 sufficiency proof.
+//!
+//!  4. **Cholesky + LU** post-LLL: convert the i256 Gram for the reduced
+//!     basis to MPFR once (`snapshot_gram_to_mpfr`), Cholesky-factor it
+//!     (`cholesky_int_8`), and solve `Bᵀ·z_c = c` for the cap-center in
+//!     lattice coordinates (`lu_solve_int_inplace`). All ~1% of phase1.
+//!
+//!  5. **Schnorr-Euchner** ([`super::se::schnorr_euchner_8d`]): walk
+//!     candidate `z` values within the SE ellipsoid; for each, reconstruct
+//!     `x = B·z`, validate `‖x‖² == 2^k`, `B(x) == 0` (bilinear unitarity
+//!     constraint), and `|y·x|² ≥ thresh_xy` (alignment cap).
+//!
+//! Validated for `ε ∈ [1e-10, 1e-3]`. The `[`super::light`]` path
+//! covers `ε ≥ 1e-4` more cheaply via TwoFloat.
 
 #![allow(dead_code)]
 
@@ -110,8 +125,9 @@ fn rfloat_to_i256(x: &RFloat) -> i256 {
 
 // ─── IntScratch: per-thread pre-allocated working buffers ──────────────────
 
-/// MPFR precision for Q construction. Same ε-scaling as heavy's `compute_prec`,
-/// since the build_q step is identical.
+/// MPFR precision in bits used to construct the anisotropic Q metric.
+/// `8·log₂(1/ε)` covers κ(Q) ≈ 16/ε⁴ with safety margin; floor at 100 bits
+/// for moderate ε where the formula otherwise underflows.
 pub fn compute_prec_q(eps: Float) -> u32 {
     let log_recip = (1.0 / eps).log2().max(1.0);
     let bits = (8.0 * log_recip).ceil() as u32;
@@ -121,16 +137,18 @@ pub fn compute_prec_q(eps: Float) -> u32 {
 type IMat8 = [[i64; 8]; 8];
 type Mat256 = [[i256; 8]; 8];
 
-/// Per-thread scratch for the integer LLL pipeline. Holds:
-///   - MPFR working buffers for build_q + Cholesky + LU (small overhead).
-///   - i256 buffers for Q_int, Gram, intermediate B·Q during Gram update.
-///   - i64 basis matrix (LLL output).
-///   - MPFR μ matrix for the size-reduce + Lovász decisions.
+/// Per-thread scratch for the L²-LLL pipeline. Allocated once per rayon
+/// worker via `map_init`, reused across all MA prefixes that worker handles.
+/// All MPFR buffers are pre-allocated at `prec_q` bits up front; no
+/// allocation happens inside the LLL inner loop.
 pub struct IntScratch {
+    /// MPFR precision used for build_q + Cholesky + LU (post-LLL phases).
     pub prec_q: u32,
-    pub scale_bits: i32, // B such that Q_int[i][j] ≈ 2^B · Q[i][j]
+    /// Adaptive scale `B` such that `Q_int[i][j] ≈ 2^B · Q[i][j]`. Picked
+    /// per phase1 call so `max(|Q_int|) ≈ 2^TARGET_BITS`.
+    pub scale_bits: i32,
 
-    // ── MPFR buffers for build_q (subset of HeavyScratch fields) ──
+    // ── MPFR buffers for build_q (constants + per-call working values) ──
     pub q_mpfr: [[RFloat; 8]; 8],
     pub c: [RFloat; 8],
     pub sigma: [[RFloat; 8]; 8],
@@ -324,9 +342,10 @@ macro_rules! r_div {
 
 // ─── build_q_mpfr: identical to heavy's build_q, into scratch.q_mpfr ──────────
 
-/// Build the MPFR Q matrix using the same anisotropic ellipsoid metric formula
-/// as `lenstra_heavy::build_q`, into `scratch.q_mpfr`. Also computes the cap
-/// center into `scratch.c`.
+/// Build the anisotropic Q matrix in MPFR (eq 3.15 of arXiv:2510.05816)
+/// into `scratch.q_mpfr`. Also computes the cap center into `scratch.c`.
+/// Q is the metric used by the LLL; the cap center is the projection of the
+/// target onto the alignment direction, used by the post-LLL LU solve.
 pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float) {
     let prec = scratch.prec_q;
 
@@ -457,20 +476,12 @@ pub fn build_q_int(scratch: &mut IntScratch) {
     }
 }
 
-// ─── i256 → MPFR conversion + raw mpfr-sys GS hot loop ──────────────────────
+// ─── i256 → MPFR conversion (used post-LLL by snapshot_gram_to_mpfr) ────────
 //
-// Direct gmp_mpfr_sys access. Bypasses two layers of overhead:
-//   1. rug's `Incomplete` trait dispatch on `&a OP &b` (each binary op
-//      constructs a trait object captured by `assign` before the actual
-//      mpfr_* call — this indirection is non-trivial on small precisions).
-//   2. The per-call `rug::Integer` allocation that the previous
-//      i256_to_rfloat needed to convert i256 → MPFR. Replaced by a
-//      stack-allocated mpz_t view (read-only mpz_srcptr) into the i256 limbs,
-//      passed directly to `mpfr::set_z`. Zero allocation per conversion.
-//
-// All unsafe blocks call only the documented public mpfr/gmp API — no
-// internal field manipulation of mpfr_t. Bit-exact equivalent to the previous
-// rug-based path (validated via the shadow harness during cutover).
+// Direct `gmp_mpfr_sys` access via a stack-allocated read-only `mpz_t` view
+// of the i256 limbs, passed to `mpfr::set_z`. Zero allocation per conversion
+// — `rug::Integer` is bypassed entirely. All unsafe code uses only the
+// documented public mpfr/gmp API (no internal field manipulation of mpfr_t).
 
 use gmp_mpfr_sys::gmp;
 use gmp_mpfr_sys::mpfr;
@@ -482,7 +493,7 @@ use std::ptr::NonNull;
 /// negatives (caller's `dst` must be initialized with a precision adequate
 /// to represent the value exactly — 256 bits suffices for any i256).
 #[inline]
-pub fn i256_to_mpfr_raw(v: i256, dst: &mut RFloat) {
+pub fn i256_to_rfloat(v: i256, dst: &mut RFloat) {
     let zero = i256::from_i64(0);
     if v == zero {
         unsafe { mpfr::set_zero(dst.as_raw_mut(), 0) };
@@ -576,10 +587,10 @@ pub fn i256_to_f64(v: i256) -> f64 {
 ///   For j = 1..=i: s̄_{i,j} ← s̄_{i,j-1} - μ̄_{i,j-1} · r̄_{i,j-1}
 ///   r̄_{i,i} ← s̄_{i,i}
 ///
-/// IMPORTANT: assumes rows 0..i are already filled by prior `cfa_row_f64`
+/// IMPORTANT: assumes rows 0..i are already filled by prior `cfa_row`
 /// calls (or by initial setup). The L² main loop calls this at each new κ.
 #[inline]
-pub fn cfa_row_f64(scratch: &mut IntScratch, i: usize) {
+pub fn cfa_row(scratch: &mut IntScratch, i: usize) {
     // Off-diagonal entries: j = 0..i-1
     for j in 0..i {
         let mut r = i256_to_f64(scratch.gram[i][j]);
@@ -601,10 +612,10 @@ pub fn cfa_row_f64(scratch: &mut IntScratch, i: usize) {
 }
 
 /// Run CFA for ALL rows 0..d. Used for initial computation when L² starts.
-/// Equivalent to calling `cfa_row_f64` for i = 0, 1, ..., d-1 in order.
-pub fn cfa_full_f64(scratch: &mut IntScratch) {
+/// Equivalent to calling `cfa_row` for i = 0, 1, ..., d-1 in order.
+pub fn cfa_full(scratch: &mut IntScratch) {
     for i in 0..8 {
-        cfa_row_f64(scratch, i);
+        cfa_row(scratch, i);
     }
 }
 
@@ -625,12 +636,12 @@ pub fn cfa_full_f64(scratch: &mut IntScratch) {
 /// guards against pathological inputs).
 pub const MAX_LAZY_PASSES: usize = 32;
 
-pub fn lazy_size_reduce_row_kappa(scratch: &mut IntScratch, kappa: usize) -> usize {
+pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
     let mut x = [0i64; 8];
 
     for pass in 0..MAX_LAZY_PASSES {
         // Step 2: compute CFA for row κ (reads i256 Gram via i256_to_f64).
-        cfa_row_f64(scratch, kappa);
+        cfa_row(scratch, kappa);
 
         // Step 3: convergence check.
         let mut max_mu: f64 = 0.0;
@@ -737,7 +748,7 @@ fn gram_update_swap(scratch: &mut IntScratch, a: usize, b: usize) {
 /// of adjacent swaps so the i256 Gram is kept consistent via the existing
 /// gram_update_swap. After basis + Gram are rotated, the GS state for row
 /// kappa_insert needs to be REFRESHED (because the row's contents changed):
-/// caller is responsible for invoking `cfa_row_f64(scratch, kappa_insert)`.
+/// caller is responsible for invoking `cfa_row(scratch, kappa_insert)`.
 ///
 /// Cost: O(kappa_orig - kappa_insert) adjacent swaps, each O(d) for the
 /// gram column swap.
@@ -751,7 +762,7 @@ fn basis_insert(scratch: &mut IntScratch, kappa_orig: usize, kappa_insert: usize
     }
     // Note: GS state (r_bar, mu_bar, s_bar) for rows kappa_insert..kappa_orig
     // is now stale. The L² main loop must refresh row kappa_insert via
-    // cfa_row_f64 before the next iteration uses it. Rows above kappa_insert
+    // cfa_row before the next iteration uses it. Rows above kappa_insert
     // are recomputed naturally as κ advances and lazy_size_reduce calls CFA.
 }
 
@@ -767,7 +778,7 @@ fn basis_insert(scratch: &mut IntScratch, kappa_orig: usize, kappa_insert: usize
 /// to ~2^40 at deep ε; G entries can then approach 2^260 (overflow). Returns
 /// `false` if any Gram entry magnitude exceeds 2^GRAM_OVERFLOW_THRESHOLD_BITS,
 /// allowing the LLL caller to abort and trigger fallback.
-pub fn compute_gram_int(scratch: &mut IntScratch) -> bool {
+pub fn compute_gram_full(scratch: &mut IntScratch) -> bool {
     let zero = i256::from_i64(0);
 
     // temp_bq[i][b] = sum_a B[i][a] · Q_int[a][b]
@@ -875,7 +886,7 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
     let mut iters: usize = 0;
 
     // Step 1: compute exact integer Gram. Basis = identity → Gram = Q_int.
-    if !compute_gram_int(scratch) {
+    if !compute_gram_full(scratch) {
         if crate::synthesis::diag::trace_enabled() {
             crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
         }
@@ -883,7 +894,7 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
     }
 
     // Step 2: initialize r̄_{0,0} = ‖b_0‖² (CFA on row 0).
-    cfa_row_f64(scratch, 0);
+    cfa_row(scratch, 0);
     let mut kappa = 1usize;
 
     while kappa < 8 && iters < max_iter {
@@ -891,7 +902,7 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
 
         // Step 3: lazy size-reduce row κ. Updates basis (i64) + Gram (i256)
         // and refreshes r_bar/mu_bar/s_bar for row κ.
-        let _passes = lazy_size_reduce_row_kappa(scratch, kappa);
+        let _passes = lazy_size_reduce(scratch, kappa);
 
         if gram_overflow_check(scratch) {
             if crate::synthesis::diag::trace_enabled() {
@@ -918,11 +929,11 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
 
         // Step 6: if insertion position < original, rotate basis + Gram so
         // that old basis[κ_orig] lands at position κ. Refresh row κ's GS
-        // state via cfa_row_f64 (replaces the paper's step 5 explicit copy
+        // state via cfa_row (replaces the paper's step 5 explicit copy
         // with an equivalent recompute from updated Gram).
         if kappa < kappa_orig {
             basis_insert(scratch, kappa_orig, kappa);
-            cfa_row_f64(scratch, kappa);
+            cfa_row(scratch, kappa);
         }
         kappa += 1;
     }
@@ -937,32 +948,18 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
     }
 }
 
-// ─── DELETED ON L² CUTOVER ────────────────────────────────────────────────
-// `lll_int_8` (SWAP-based MPFR LLL using gs_int_partial / gs_update_row_k)
-// removed. Replaced by `lll_l2_8` (INSERT-based f64 LLL per Nguyen-Stehlé
-// 2009). Reproducible from git history (commit 4d2eb62 and prior) if the
-// MPFR LLL is ever needed as a reference implementation.
-//
-// Concretely deleted:
-//   - lll_int_8 (74 lines)
-//   - gs_int_partial / gs_update_row_k / gs_int_inplace (the MPFR GS hot
-//     loop, ~150 lines)
-//   - The MPFR scratch fields mu / g_star / gnorm_sq / lov_t1 / lov_t2 /
-//     gs_acc / gs_tmp / delta_lll
-// All replaced by f64 equivalents: r_bar / mu_bar / s_bar / cfa_row_f64 /
-// lazy_size_reduce_row_kappa / lll_l2_8.
 // ─── Convert i256 Gram → MPFR (post-LLL, into g_post_lll) ─────────────────────
 
-/// Convert the post-LLL i256 Gram matrix into MPFR (g_post_lll) so the
-/// existing Cholesky/LU pipeline can run on it. The integer Gram is divided
-/// by 2^scale_bits during conversion to recover the natural Q-metric scale.
+/// Convert the post-LLL i256 Gram into MPFR `g_post_lll` so Cholesky/LU
+/// can run on it. The integer Gram is divided by `2^scale_bits` during
+/// conversion to recover the natural Q-metric scale.
 fn snapshot_gram_to_mpfr(scratch: &mut IntScratch) {
     let prec = scratch.prec_q;
     let shift = scratch.scale_bits;
     let mut tmp = rfz(prec);
     for i in 0..8 {
         for j in 0..8 {
-            i256_to_mpfr_raw(scratch.gram[i][j], &mut tmp);
+            i256_to_rfloat(scratch.gram[i][j], &mut tmp);
             // Divide by 2^scale_bits to recover natural-scale G
             if shift > 0 {
                 tmp >>= shift as u32;
@@ -1257,17 +1254,6 @@ mod tests {
     use super::*;
     use super::super::se;
 
-    // ─── DELETED ON CUTOVER (commit history) ─────────────────────────────────
-    // Bit-exact shadow harness `assert_mpfr_bit_eq` / `shadow_gs_partial` /
-    // `shadow_gs_update_row_k` and 9 test cases across ε ∈ {1e-3, 1e-5, 1e-8,
-    // 1e-10}, k_max 1..7, identity + non-trivial bases, plus i256 edge cases.
-    // The harness ran the rug-based GS and raw mpfr-sys GS on identical
-    // scratch state and asserted bit-exact equality (mu, g_star, gnorm) before
-    // the rug bodies were eradicated. All cases passed. Reproducible from git
-    // history if any future change to gs_int_partial / gs_update_row_k or
-    // i256_to_mpfr_raw requires re-validation against a reference impl.
-
-
     fn realistic_y(k: u32) -> [Float; 8] {
         let r2 = 1.0 / 2.0_f64.sqrt();
         // 2^(k/2-1) — for k > 63 we can't do `(1u64 << k) as f64`, use powi
@@ -1378,7 +1364,7 @@ mod tests {
     }
 
 
-    /// Verify cfa_full_f64 maintains the algorithmic invariant
+    /// Verify cfa_full maintains the algorithmic invariant
     /// `r_bar[i][i] == s_bar[i][i]` for any input.
     ///
     /// IMPORTANT: this test does NOT assert r̄_{i,i} > 0. Running CFA on an
@@ -1398,8 +1384,8 @@ mod tests {
         let mut s = IntScratch::new(eps);
         build_q_mpfr(&mut s, &y, k, eps);
         build_q_int(&mut s);
-        compute_gram_int(&mut s);
-        cfa_full_f64(&mut s);
+        compute_gram_full(&mut s);
+        cfa_full(&mut s);
 
         for i in 0..8 {
             assert_eq!(s.r_bar[i][i], s.s_bar[i][i],
@@ -1463,7 +1449,7 @@ mod tests {
         // Size-reduction invariant: |μ̄_{i,j}| ≤ η for all i > j.
         // Compute final GS state via CFA (algorithm doesn't promise final
         // r_bar/mu_bar are valid; recompute fresh for the post-condition).
-        cfa_full_f64(&mut s);
+        cfa_full(&mut s);
         for i in 1..8 {
             for j in 0..i {
                 assert!(
@@ -1603,7 +1589,7 @@ mod tests {
             [0, 0, 0, 0, 0, 0, 1, 0],
             [0, 0, 0, 0, 0, 0, 0, 1],
         ];
-        compute_gram_int(&mut s);
+        compute_gram_full(&mut s);
         // Apply incremental update for b_2 -= 5 * b_0
         let k = 2usize;
         let j = 0usize;
@@ -1612,7 +1598,7 @@ mod tests {
         gram_update_size_reduce(&mut s, k, j, r);
         let g_inc = s.gram;
         // Full recompute on the new basis
-        compute_gram_int(&mut s);
+        compute_gram_full(&mut s);
         let g_full = s.gram;
         for i in 0..8 {
             for jj in 0..8 {
@@ -1643,11 +1629,11 @@ mod tests {
             [0, 0, 0, 0, 0, 0, 1, 0],
             [0, 0, 0, 0, 0, 0, 0, 1],
         ];
-        compute_gram_int(&mut s);
+        compute_gram_full(&mut s);
         s.basis.swap(2, 3);
         gram_update_swap(&mut s, 2, 3);
         let g_inc = s.gram;
-        compute_gram_int(&mut s);
+        compute_gram_full(&mut s);
         let g_full = s.gram;
         for i in 0..8 {
             for jj in 0..8 {
