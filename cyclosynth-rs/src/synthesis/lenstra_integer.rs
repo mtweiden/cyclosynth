@@ -192,6 +192,12 @@ pub struct IntScratch {
     pub lov_t1: RFloat,
     pub lov_t2: RFloat,
 
+    // ── prec_mu scratch for the GS hot loop. Pre-allocated so the inner loop
+    // does zero heap allocation. Used by `gs_int_partial_raw` /
+    // `gs_update_row_k_raw` (direct mpfr-sys path).
+    pub gs_acc: RFloat,
+    pub gs_tmp: RFloat,
+
     // ── post-LLL MPFR buffers for Cholesky + LU ──
     pub g_post_lll: [[RFloat; 8]; 8],
     pub l: [[RFloat; 8]; 8],
@@ -304,6 +310,8 @@ impl IntScratch {
             delta_lll: rfv(prec_mu, 0.75),
             lov_t1: rfz(prec_mu),
             lov_t2: rfz(prec_mu),
+            gs_acc: rfz(prec_mu),
+            gs_tmp: rfz(prec_mu),
             g_post_lll: rmat_zero(prec_q),
             l: rmat_zero(prec_q),
             lu_a: rmat_zero(prec_q),
@@ -477,39 +485,206 @@ pub fn build_q_int(scratch: &mut IntScratch) {
     }
 }
 
-// ─── i256 → MPFR conversion (per LLL iter, on demand) ────────────────────────
+// ─── i256 → MPFR conversion + raw mpfr-sys GS hot loop ──────────────────────
+//
+// Direct gmp_mpfr_sys access. Bypasses two layers of overhead:
+//   1. rug's `Incomplete` trait dispatch on `&a OP &b` (each binary op
+//      constructs a trait object captured by `assign` before the actual
+//      mpfr_* call — this indirection is non-trivial on small precisions).
+//   2. The per-call `rug::Integer` allocation that the previous
+//      i256_to_rfloat needed to convert i256 → MPFR. Replaced by a
+//      stack-allocated mpz_t view (read-only mpz_srcptr) into the i256 limbs,
+//      passed directly to `mpfr::set_z`. Zero allocation per conversion.
+//
+// All unsafe blocks call only the documented public mpfr/gmp API — no
+// internal field manipulation of mpfr_t. Bit-exact equivalent to the previous
+// rug-based path (validated via the shadow harness during cutover).
 
-/// Convert i256 `v` to MPFR, writing into `dst`. Caller's RFloat must have
-/// enough precision to represent the integer exactly (`prec ≥ 256` is safe;
-/// 200 bits is enough for our values which top out around 2^180).
-///
-/// Cost: ~100-200 ns per call (3 shifts + 4 adds in rug::Integer, then assign
-/// into RFloat). Called O(36) times per LLL iteration during GS — total
-/// ~5 μs/iter overhead, well below the per-iter savings from i256 Gram.
-pub fn i256_to_rfloat(v: &i256, dst: &mut RFloat) {
+use gmp_mpfr_sys::gmp;
+use gmp_mpfr_sys::mpfr;
+use std::ptr::NonNull;
+
+/// Set `dst` (an MPFR variable) to the value of i256 `v`. Zero-allocation.
+/// Constructs a stack-allocated read-only mpz_t view of the i256 limbs and
+/// passes it to `mpfr::set_z`. Safe for all i256 values including 0 and
+/// negatives (caller's `dst` must be initialized with a precision adequate
+/// to represent the value exactly — 256 bits suffices for any i256).
+#[inline]
+pub fn i256_to_mpfr_raw(v: i256, dst: &mut RFloat) {
     let zero = i256::from_i64(0);
-    if *v == zero {
-        dst.assign(0.0_f64);
+    if v == zero {
+        unsafe { mpfr::set_zero(dst.as_raw_mut(), 0) };
         return;
     }
-    let neg = *v < zero;
-    let abs = if neg { -*v } else { *v };
+    let neg = v < zero;
+    let abs = if neg { -v } else { v };
     let bytes = abs.to_le_bytes();
-    let limbs: [u64; 4] = std::array::from_fn(|i| {
+    let mut limbs: [gmp::limb_t; 4] = std::array::from_fn(|i| {
         let mut buf = [0u8; 8];
         buf.copy_from_slice(&bytes[i * 8..(i + 1) * 8]);
-        u64::from_le_bytes(buf)
+        u64::from_le_bytes(buf) as gmp::limb_t
     });
-    let mut int = rug::Integer::from(limbs[3]);
-    int <<= 64u32;
-    int += limbs[2];
-    int <<= 64u32;
-    int += limbs[1];
-    int <<= 64u32;
-    int += limbs[0];
-    dst.assign(&int);
-    if neg {
-        dst.neg_assign();
+    // Trim trailing-zero limbs to determine `_mp_size`.
+    let mut size: i32 = 4;
+    while size > 0 && limbs[(size - 1) as usize] == 0 {
+        size -= 1;
+    }
+    let signed_size = if neg { -size } else { size };
+    // Build a stack mpz_t view: alloc=0 means "non-owned", `mpfr_set_z` only
+    // reads from it. Safe per the GMP/MPFR API contract.
+    let mpz = gmp::mpz_t {
+        alloc: 0,
+        size: signed_size,
+        d: unsafe { NonNull::new_unchecked(limbs.as_mut_ptr()) },
+    };
+    unsafe {
+        mpfr::set_z(dst.as_raw_mut(), &mpz as *const _, mpfr::rnd_t::RNDN);
+    }
+    // limbs goes out of scope; mpfr::set_z has already copied the bits into dst.
+}
+
+/// Partial GS through row k_max, computed via direct mpfr-sys calls.
+///
+/// Standard Q-metric Gram-Schmidt recurrence (bounded by k_max):
+///   for j = 0..=k_max:
+///     for i = j..=k_max:
+///       g_star[i][j] = G[i][j] - Σ_{l<j} μ[j][l] · g_star[i][l]
+///     gnorm[j] = g_star[j][j]
+///     for i = j+1..=k_max: μ[i][j] = g_star[i][j] / gnorm[j]
+///
+/// G entries (i256) are converted on-demand to MPFR via `i256_to_mpfr_raw`
+/// (zero-allocation, mpz_t view + `mpfr_set_z`). All MPFR arithmetic uses
+/// gmp-mpfr-sys directly — no rug Incomplete/Assign trait dispatch, no
+/// `rug::Integer` intermediate, no per-call RFloat allocation. The hot loop
+/// is the dominant LLL cost; this function is bit-exact equivalent to the
+/// previous rug-based implementation (validated by the shadow harness during
+/// the cutover; equivalence proof recorded in commit history).
+///
+/// Cost vs full GS (k_max=7): k_max=4 does 35/120 = 29% of full work; for
+/// typical mid-LLL k, this dominates per-iter LLL CPU.
+pub fn gs_int_partial(scratch: &mut IntScratch, k_max: usize) {
+    use mpfr::rnd_t::RNDN;
+    let bound = k_max + 1;
+
+    // Hoist raw pointers. as_raw / as_raw_mut return *const / *mut mpfr_t with
+    // no Rust lifetime — once obtained, the pointers are valid for as long as
+    // their owning RFloat exists, which is the whole `&mut scratch` borrow.
+    // The borrow on each field is released as soon as as_raw/_mut returns.
+    let acc_p = scratch.gs_acc.as_raw_mut();
+    let tmp_p = scratch.gs_tmp.as_raw_mut();
+
+    for j in 0..bound {
+        for i in j..bound {
+            // acc = G[i][j] (i256 → MPFR, zero-alloc)
+            let g_val = scratch.gram[i][j];
+            i256_to_mpfr_raw(g_val, &mut scratch.gs_acc);
+
+            for l in 0..j {
+                // tmp = mu[j][l] * g_star[i][l]
+                unsafe {
+                    mpfr::mul(
+                        tmp_p,
+                        scratch.mu[j][l].as_raw(),
+                        scratch.g_star[i][l].as_raw(),
+                        RNDN,
+                    );
+                    // acc -= tmp
+                    mpfr::sub(acc_p, acc_p, tmp_p, RNDN);
+                }
+            }
+            // g_star[i][j] = acc
+            unsafe {
+                mpfr::set(scratch.g_star[i][j].as_raw_mut(), acc_p, RNDN);
+            }
+        }
+        // gnorm[j] = g_star[j][j]
+        unsafe {
+            mpfr::set(
+                scratch.gnorm_sq[j].as_raw_mut(),
+                scratch.g_star[j][j].as_raw(),
+                RNDN,
+            );
+        }
+        let gn = scratch.gnorm_sq[j].to_f64();
+        if !gn.is_finite() || gn.abs() < 1e-300 {
+            for i in (j + 1)..bound {
+                scratch.mu[i][j].assign(0.0_f64);
+            }
+            continue;
+        }
+        for i in (j + 1)..bound {
+            // mu[i][j] = g_star[i][j] / gnorm[j]
+            unsafe {
+                mpfr::div(
+                    scratch.mu[i][j].as_raw_mut(),
+                    scratch.g_star[i][j].as_raw(),
+                    scratch.gnorm_sq[j].as_raw(),
+                    RNDN,
+                );
+            }
+        }
+    }
+}
+
+/// Row-k-only GS update via direct mpfr-sys.
+///
+/// After a size-reduce that modified row k of the basis (and thus row/column k
+/// of the Gram), only g_star[k][*], gnorm[k], and μ[k][*] need recomputing —
+/// entries in rows < k are unchanged.
+///
+/// **Correctness invariant**: at outer iteration j=k, the recurrence
+/// `g_star[k][k] = G[k][k] - Σ_{l<k} μ[k][l] · g_star[k][l]` requires fresh
+/// μ[k][l]. The previous gs_int_partial computed μ[k][l] using the
+/// pre-size-reduce g_star[k][l] — those are now stale. So we compute the new
+/// μ[k][l] inline at each outer-j iteration, before the j=k iteration uses it.
+pub fn gs_update_row_k(scratch: &mut IntScratch, k: usize) {
+    use mpfr::rnd_t::RNDN;
+    let acc_p = scratch.gs_acc.as_raw_mut();
+    let tmp_p = scratch.gs_tmp.as_raw_mut();
+
+    for j in 0..=k {
+        let g_val = scratch.gram[k][j];
+        i256_to_mpfr_raw(g_val, &mut scratch.gs_acc);
+
+        for l in 0..j {
+            unsafe {
+                mpfr::mul(
+                    tmp_p,
+                    scratch.mu[j][l].as_raw(),
+                    scratch.g_star[k][l].as_raw(),
+                    RNDN,
+                );
+                mpfr::sub(acc_p, acc_p, tmp_p, RNDN);
+            }
+        }
+        unsafe {
+            mpfr::set(scratch.g_star[k][j].as_raw_mut(), acc_p, RNDN);
+        }
+
+        if j < k {
+            let gn = scratch.gnorm_sq[j].to_f64();
+            if !gn.is_finite() || gn.abs() < 1e-300 {
+                scratch.mu[k][j].assign(0.0_f64);
+            } else {
+                unsafe {
+                    mpfr::div(
+                        scratch.mu[k][j].as_raw_mut(),
+                        scratch.g_star[k][j].as_raw(),
+                        scratch.gnorm_sq[j].as_raw(),
+                        RNDN,
+                    );
+                }
+            }
+        } else {
+            // j == k: gnorm[k] = g_star[k][k]
+            unsafe {
+                mpfr::set(
+                    scratch.gnorm_sq[k].as_raw_mut(),
+                    scratch.g_star[k][k].as_raw(),
+                    RNDN,
+                );
+            }
+        }
     }
 }
 
@@ -634,104 +809,9 @@ fn i256_log2_ceil(v: &i256) -> i32 {
     (256 - leading_zeros as i32) - 1
 }
 
-// ─── GS in MPFR, reading from i256 Gram ───────────────────────────────────────
-
-/// Gram-Schmidt orthogonalization in Q metric, reading `scratch.gram` (i256)
-/// and writing `scratch.mu`, `scratch.gnorm_sq`, `scratch.g_star` (all MPFR).
-/// Computes only rows 0..=k_max of the GS table — the LLL frontier index k
-/// is `k_max` here. Pass `7` for the full GS.
-///
-/// Standard recurrence (bounded by k_max):
-///   for j = 0..=k_max:
-///     for i = j..=k_max:
-///       g_star[i][j] = G[i][j] - Σ_{l<j} μ[j][l] · g_star[i][l]
-///     gnorm[j] = g_star[j][j]
-///     for i = j+1..=k_max: μ[i][j] = g_star[i][j] / gnorm[j]
-///
-/// G entries are converted on-demand via `i256_to_rfloat`. Only the lower
-/// triangle (j ≤ i) is read.
-///
-/// Cost vs full GS (k_max=7): k_max=4 does 35/120 = 29% of full work; for
-/// typical mid-LLL k, this is the dominant per-iter saving after the
-/// incremental Gram update.
-pub fn gs_int_partial(scratch: &mut IntScratch, k_max: usize) {
-    let prec = scratch.prec_mu;
-    let mut acc = rfz(prec);
-    let mut tmp = rfz(prec);
-
-    let bound = k_max + 1; // exclusive upper bound for inner loops
-
-    for j in 0..bound {
-        for i in j..bound {
-            // acc = G[i][j] (converted from i256 to MPFR)
-            i256_to_rfloat(&scratch.gram[i][j], &mut acc);
-            for l in 0..j {
-                // tmp = μ[j][l] * g_star[i][l]
-                tmp.assign(&scratch.mu[j][l] * &scratch.g_star[i][l]);
-                acc -= &tmp;
-            }
-            scratch.g_star[i][j].assign(&acc);
-        }
-        scratch.gnorm_sq[j].assign(&scratch.g_star[j][j]);
-        let gn = scratch.gnorm_sq[j].to_f64();
-        if !gn.is_finite() || gn.abs() < 1e-300 {
-            for i in (j + 1)..bound {
-                scratch.mu[i][j].assign(0.0_f64);
-            }
-            continue;
-        }
-        for i in (j + 1)..bound {
-            scratch.mu[i][j].assign(&scratch.g_star[i][j] / &scratch.gnorm_sq[j]);
-        }
-    }
-}
-
-/// Full-table GS (kept for tests + as a convenience wrapper).
+/// Full-table GS (convenience wrapper around `gs_int_partial`).
 pub fn gs_int_inplace(scratch: &mut IntScratch) {
     gs_int_partial(scratch, 7);
-}
-
-/// Row-k-only GS update. After a size-reduce that modified row k of the
-/// basis (and thus row/column k of the Gram), only g_star[k][*], gnorm[k],
-/// and μ[k][*] need recomputing — entries in rows < k are unchanged.
-///
-/// **Subtle correctness point**: at outer iteration j=k, the recurrence
-/// `g_star[k][k] = G[k][k] - Σ_{l<k} μ[k][l] · g_star[k][l]` requires fresh
-/// μ[k][l] values. The PREVIOUS gs_int_partial computed μ[k][l] using the
-/// pre-size-reduce g_star[k][l] — those are now stale. So we must compute
-/// the new μ[k][l] inline at each outer-j iteration, not at the end.
-pub fn gs_update_row_k(scratch: &mut IntScratch, k: usize) {
-    let prec = scratch.prec_mu;
-    let mut acc = rfz(prec);
-    let mut tmp = rfz(prec);
-
-    // For j = 0..=k:
-    //   1. Compute g_star[k][j] using μ[j][l] for l < j.
-    //      - If j < k: μ[j][l] from previous gs_int_partial (rows < k unchanged → valid).
-    //      - If j = k: μ[k][l] from THIS function's earlier iterations (fresh).
-    //   2. If j < k: compute μ[k][j] = g_star[k][j] / gnorm[j]  (so j=k iter sees fresh μ[k][l]).
-    //   3. If j = k: assign gnorm[k] = g_star[k][k].
-    for j in 0..=k {
-        i256_to_rfloat(&scratch.gram[k][j], &mut acc);
-        for l in 0..j {
-            tmp.assign(&scratch.mu[j][l] * &scratch.g_star[k][l]);
-            acc -= &tmp;
-        }
-        scratch.g_star[k][j].assign(&acc);
-
-        if j < k {
-            // Fresh μ[k][j] for the j=k recurrence to use.
-            let gn = scratch.gnorm_sq[j].to_f64();
-            if !gn.is_finite() || gn.abs() < 1e-300 {
-                scratch.mu[k][j].assign(0.0_f64);
-            } else {
-                scratch.mu[k][j].assign(&scratch.g_star[k][j] / &scratch.gnorm_sq[j]);
-            }
-        } else {
-            // j == k: gnorm[k] = g_star[k][k]
-            scratch.gnorm_sq[k].assign(&scratch.g_star[k][k]);
-        }
-    }
 }
 
 // ─── LLL inner loop (i256 Gram + MPFR GS) ────────────────────────────────────
@@ -861,7 +941,7 @@ fn snapshot_gram_to_mpfr(scratch: &mut IntScratch) {
     let mut tmp = rfz(prec);
     for i in 0..8 {
         for j in 0..8 {
-            i256_to_rfloat(&scratch.gram[i][j], &mut tmp);
+            i256_to_mpfr_raw(scratch.gram[i][j], &mut tmp);
             // Divide by 2^scale_bits to recover natural-scale G
             if shift > 0 {
                 tmp >>= shift as u32;
@@ -1154,6 +1234,17 @@ pub fn phase1_lenstra_int(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── DELETED ON CUTOVER (commit history) ─────────────────────────────────
+    // Bit-exact shadow harness `assert_mpfr_bit_eq` / `shadow_gs_partial` /
+    // `shadow_gs_update_row_k` and 9 test cases across ε ∈ {1e-3, 1e-5, 1e-8,
+    // 1e-10}, k_max 1..7, identity + non-trivial bases, plus i256 edge cases.
+    // The harness ran the rug-based GS and raw mpfr-sys GS on identical
+    // scratch state and asserted bit-exact equality (mu, g_star, gnorm) before
+    // the rug bodies were eradicated. All cases passed. Reproducible from git
+    // history if any future change to gs_int_partial / gs_update_row_k or
+    // i256_to_mpfr_raw requires re-validation against a reference impl.
+
 
     fn realistic_y(k: u32) -> [Float; 8] {
         let r2 = 1.0 / 2.0_f64.sqrt();
@@ -1597,6 +1688,7 @@ mod tests {
             }
         }
     }
+
 
     #[test]
     #[ignore]
