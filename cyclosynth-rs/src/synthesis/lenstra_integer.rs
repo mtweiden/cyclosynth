@@ -198,6 +198,20 @@ pub struct IntScratch {
     pub gs_acc: RFloat,
     pub gs_tmp: RFloat,
 
+    // ── L²-LLL state (Nguyen-Stehlé 2009): pure f64. Theorem 2 + Figure 7
+    // prove this precision is sufficient for d ≤ 11; we operate at d=8.
+    //
+    // r̄_{i,j} = <b_i*, b_j*> for i ≥ j  (FP-approx of GSO inner products)
+    // μ̄_{i,j} = r̄_{i,j} / r̄_{j,j}     (FP-approx GSO coefficients)
+    // s̄_j^{(i)} = r̄_{i,i} - Σ_{k<j} μ̄_{i,k}·r̄_{i,k}  (Lovász partial sums)
+    //
+    // The exact integer Gram lives in `gram` (i256). f64 entries are derived
+    // on demand via i256→f64 (mantissa truncation; exponent has 1024-bit
+    // range so our 2^240 max gram entries fit with no overflow).
+    pub r_bar: [[f64; 8]; 8],
+    pub mu_bar: [[f64; 8]; 8],
+    pub s_bar: [[f64; 8]; 8],
+
     // ── post-LLL MPFR buffers for Cholesky + LU ──
     pub g_post_lll: [[RFloat; 8]; 8],
     pub l: [[RFloat; 8]; 8],
@@ -312,6 +326,9 @@ impl IntScratch {
             lov_t2: rfz(prec_mu),
             gs_acc: rfz(prec_mu),
             gs_tmp: rfz(prec_mu),
+            r_bar: [[0.0_f64; 8]; 8],
+            mu_bar: [[0.0_f64; 8]; 8],
+            s_bar: [[0.0_f64; 8]; 8],
             g_post_lll: rmat_zero(prec_q),
             l: rmat_zero(prec_q),
             lu_a: rmat_zero(prec_q),
@@ -541,6 +558,99 @@ pub fn i256_to_mpfr_raw(v: i256, dst: &mut RFloat) {
         mpfr::set_z(dst.as_raw_mut(), &mpz as *const _, mpfr::rnd_t::RNDN);
     }
     // limbs goes out of scope; mpfr::set_z has already copied the bits into dst.
+}
+
+// ─── L²-LLL (Nguyen-Stehlé 2009): pure-f64 path ──────────────────────────────
+//
+// All routines below operate on the f64 scratch fields (r_bar, mu_bar, s_bar)
+// and read the EXACT integer Gram (i256) on demand. Theorem 2 proves f64
+// suffices for d ≤ 11 with (δ=0.75, η=0.55); we operate at d=8 with
+// 32-bit precision margin.
+
+/// L² parameter η: relaxed size-reduction factor. Must satisfy 1/2 < η < √δ.
+/// Per Figure 7, (δ=0.75, η=0.55) supports d ≤ 11 in f64. Stored in code as a
+/// const so the inner loop optimizer can fold it.
+pub const L2_ETA: f64 = 0.55;
+/// L² parameter δ: Lovász factor. (δ=0.75 is the classical LLL value.)
+pub const L2_DELTA: f64 = 0.75;
+/// δ̄ = (δ + 1) / 2  (used by the main loop's Lovász test, per Figure 6 step 2).
+/// Slightly relaxed to take FP rounding into account.
+pub const L2_DELTA_BAR: f64 = (L2_DELTA + 1.0) / 2.0;
+/// η̄ = (η + 1/2) / 2 (used by lazy size-reduction, per Figure 5 step 1).
+pub const L2_ETA_BAR: f64 = (L2_ETA + 0.5) / 2.0;
+
+/// Convert i256 to f64. f64 has 53 mantissa bits + 11 exponent bits (range
+/// 2^±1023). Our gram values are bounded by ≈ 2^240, well within range.
+/// Mantissa rounding: low bits beyond 53 are dropped (round-to-nearest-even).
+/// L² algorithm only requires ≈ 20 bits of precision per Theorem 2 — f64
+/// gives 53 with no overflow risk for our magnitudes.
+#[inline]
+pub fn i256_to_f64(v: i256) -> f64 {
+    let zero = i256::from_i64(0);
+    if v == zero {
+        return 0.0;
+    }
+    let neg = v < zero;
+    let abs = if neg { -v } else { v };
+    let bytes = abs.to_le_bytes();
+    let l0 = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+    let l1 = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+    let l2 = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
+    let l3 = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
+    // Combine in increasing-precision order so the accumulation rounds the
+    // low bits, not the high bits.
+    let result = (l0 as f64)
+        + (l1 as f64) * 2f64.powi(64)
+        + (l2 as f64) * 2f64.powi(128)
+        + (l3 as f64) * 2f64.powi(192);
+    if neg { -result } else { result }
+}
+
+/// Cholesky Factorization Algorithm (Figure 4 of Nguyen-Stehlé 2009),
+/// row-at-a-time variant. Computes r_bar[i][*], mu_bar[i][*], s_bar[i][*]
+/// given rows 0..i are already populated.
+///
+/// Reads gram entries via `i256_to_f64`. All arithmetic in f64.
+///
+/// Per Figure 4 (with our 0-indexed convention):
+///   For j = 0..i-1:
+///     r̄_{i,j} ← <b_i, b_j>    (from i256 Gram)
+///     For k = 0..j-1: r̄_{i,j} ← r̄_{i,j} - μ̄_{j,k} · r̄_{i,k}
+///     μ̄_{i,j} ← r̄_{i,j} / r̄_{j,j}
+///   s̄_{i,0} ← <b_i, b_i>
+///   For j = 1..=i: s̄_{i,j} ← s̄_{i,j-1} - μ̄_{i,j-1} · r̄_{i,j-1}
+///   r̄_{i,i} ← s̄_{i,i}
+///
+/// IMPORTANT: assumes rows 0..i are already filled by prior `cfa_row_f64`
+/// calls (or by initial setup). The L² main loop calls this at each new κ.
+#[inline]
+pub fn cfa_row_f64(scratch: &mut IntScratch, i: usize) {
+    // Off-diagonal entries: j = 0..i-1
+    for j in 0..i {
+        let mut r = i256_to_f64(scratch.gram[i][j]);
+        for k in 0..j {
+            r -= scratch.mu_bar[j][k] * scratch.r_bar[i][k];
+        }
+        scratch.r_bar[i][j] = r;
+        // μ̄_{i,j} = r̄_{i,j} / r̄_{j,j}
+        let r_jj = scratch.r_bar[j][j];
+        scratch.mu_bar[i][j] = if r_jj.abs() < 1e-300 { 0.0 } else { r / r_jj };
+    }
+    // Diagonal: s̄_{i,*} sequence, r̄_{i,i} = s̄_{i,i}
+    scratch.s_bar[i][0] = i256_to_f64(scratch.gram[i][i]);
+    for j in 1..=i {
+        scratch.s_bar[i][j] =
+            scratch.s_bar[i][j - 1] - scratch.mu_bar[i][j - 1] * scratch.r_bar[i][j - 1];
+    }
+    scratch.r_bar[i][i] = scratch.s_bar[i][i];
+}
+
+/// Run CFA for ALL rows 0..d. Used for initial computation when L² starts.
+/// Equivalent to calling `cfa_row_f64` for i = 0, 1, ..., d-1 in order.
+pub fn cfa_full_f64(scratch: &mut IntScratch) {
+    for i in 0..8 {
+        cfa_row_f64(scratch, i);
+    }
 }
 
 /// Partial GS through row k_max, computed via direct mpfr-sys calls.
@@ -1543,6 +1653,67 @@ mod tests {
     #[test]
     fn gs_int_matches_mpfr_at_eps_1e_10() {
         check_gs_int_matches_mpfr(1e-10, 100);
+    }
+
+    /// Verify cfa_full_f64 maintains the algorithmic invariant
+    /// `r_bar[i][i] == s_bar[i][i]` for any input.
+    ///
+    /// IMPORTANT: this test does NOT assert r̄_{i,i} > 0. Running CFA on an
+    /// unreduced identity basis with a high-κ Gram (our deep-ε regime) can
+    /// produce cancellation noise that drives r̄_{i,i} negative — that is the
+    /// precise scenario L² is engineered to AVOID via lazy size-reduction
+    /// interleaved with CFA. The unit test here is a structural sanity check
+    /// only; correctness validation lives at the L²-loop integration level.
+    #[test]
+    fn cfa_f64_diagonal_invariant_eps_1e_3() {
+        // Use ε=1e-3 (κ ≈ 2^40) where f64 has comfortable margin even on
+        // unreduced identity basis. This isolates the structural bug
+        // detection (algorithm correctness) from the precision question.
+        let eps = 1e-3;
+        let k = 14u32;
+        let y = realistic_y(k);
+        let mut s = IntScratch::new(eps);
+        build_q_mpfr(&mut s, &y, k, eps);
+        build_q_int(&mut s);
+        compute_gram_int(&mut s);
+        cfa_full_f64(&mut s);
+
+        for i in 0..8 {
+            assert_eq!(s.r_bar[i][i], s.s_bar[i][i],
+                "r_bar[{}][{}] != s_bar[{}][{}]: structural invariant violated", i, i, i, i);
+        }
+        // At ε=1e-3 with d=8 and κ ≈ 2^40, f64 (53-bit mantissa) has 13+
+        // bits of margin even on unreduced identity. Diagonals should be
+        // positive at this benign ε.
+        for i in 0..8 {
+            assert!(s.r_bar[i][i] > 0.0,
+                "r_bar[{}][{}] = {} unexpectedly non-positive at ε=1e-3 (κ ≈ 2^40)",
+                i, i, s.r_bar[i][i]);
+        }
+    }
+
+    /// Verify i256_to_f64 produces correct values for various magnitudes.
+    #[test]
+    fn i256_to_f64_correctness() {
+        // Small positive
+        assert_eq!(i256_to_f64(i256::from_i64(0)), 0.0);
+        assert_eq!(i256_to_f64(i256::from_i64(1)), 1.0);
+        assert_eq!(i256_to_f64(i256::from_i64(-1)), -1.0);
+        assert_eq!(i256_to_f64(i256::from_i64(42)), 42.0);
+        // Powers of 2
+        let mut v = i256::from_i64(1);
+        for shift in [10, 30, 60, 100, 200] {
+            for _ in 0..shift { v = v + v; }  // v = 2^shift
+            let expected = 2f64.powi(shift);
+            let actual = i256_to_f64(v);
+            assert_eq!(actual, expected, "2^{} got {} expected {}", shift, actual, expected);
+            v = i256::from_i64(1);
+        }
+        // Negative large
+        let mut v = i256::from_i64(1);
+        for _ in 0..100 { v = v + v; }
+        let neg_v = -v;
+        assert_eq!(i256_to_f64(neg_v), -2f64.powi(100));
     }
 
     /// Run the integer LLL for given (eps, k) and assert det = ±1
