@@ -1,19 +1,22 @@
-//! 8D output-sensitive integer enumeration for Clifford+T synthesis (Algorithm 3.6
-//! from arXiv:2510.05816).
+//! 8D Lenstra enumeration in [`twofloat::TwoFloat`] precision (~104-bit
+//! mantissa) for the moderate-ε regime of Clifford+T synthesis.
+//! Implements Algorithm 3.6 of arXiv:2510.05816.
 //!
-//! Pipeline:
-//! 1. Build anisotropic ellipsoid metric Q (8×8 SPD) bounding the cap × ball body.
-//! 2. LLL-reduce ℤ⁸ identity basis using Q as the inner product (in twofloat).
-//! 3. Cholesky factor G_LLL = B_LLL · Q · B_LLLᵀ = L Lᵀ (twofloat).
-//! 4. Solve B_LLL · z_c = c for the cap-center in lattice coordinates (twofloat
-//!    LU with partial pivoting).
-//! 5. Schnorr-Euchner enumerate z ∈ ℤ⁸ with ‖Lᵀ·(z − z_c)‖² ≤ 2.01 (f64).
-//! 6. For each candidate, reconstruct x = B_LLL · z (i64 exact), check
-//!    ‖x‖² == 2^k AND B(x) == 0 AND |y·x|² ≥ thresh_xy.
+//! Per-call pipeline:
+//!   1. Build the anisotropic Q-metric (cap × ball constraint, eq 3.15
+//!      of the paper).
+//!   2. LLL-reduce the ℤ⁸ identity basis using Q as the inner product.
+//!   3. Cholesky-factor the post-LLL Q-Gram `B·Q·Bᵀ = L·Lᵀ`.
+//!   4. Solve `B·z_c = c` for the cap center in lattice coordinates
+//!      via LU with partial pivoting.
+//!   5. Schnorr-Euchner enumerate integer 8-tuples `z` inside the SE
+//!      ellipsoid `‖Lᵀ·(z − z_c)‖² ≤ 2.01` (f64 inner loop).
+//!   6. For each candidate, reconstruct `x = B·z` and validate the
+//!      integer constraints (norm shell, bilinear form, alignment).
 //!
-//! Session A: this file currently contains the linear algebra primitives plus
-//! unit tests; the SE search and the phase1 dispatch are stubs returning the
-//! empty vector. Session B will wire those in.
+//! Stack-allocated `Copy` arithmetic; no per-call heap allocations.
+//! Numerically stable for `ε ≥ 1e-4`; tighter ε goes through
+//! [`super::integer`] instead.
 
 #![allow(dead_code)]
 
