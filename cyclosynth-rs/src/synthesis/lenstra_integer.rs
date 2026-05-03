@@ -26,7 +26,6 @@
 use crate::rings::Float;
 use i256::i256;
 use rug::{Assign, Float as RFloat};
-use rug::ops::NegAssign;
 
 // ─── Adaptive scale ────────────────────────────────────────────────────────────
 
@@ -50,23 +49,6 @@ pub const TARGET_BITS: u32 = 180;
 /// 2^240, leaving 16-bit margin to i256::MAX. Triggered during transient
 /// B-growth at deep ε (rare in practice because LLL output basis is small).
 pub const GRAM_OVERFLOW_THRESHOLD_BITS: u32 = 240;
-
-/// MPFR precision used for μ values during LLL, scaled by ε. Lovász decisions
-/// need enough margin to distinguish boundary cases — the relevant precision
-/// floor is `log₂(κ(Q)) ≈ 4·log₂(1/ε) + 4`. We use a safety margin of ~50 bits
-/// and round up to the nearest 64-bit MPFR limb boundary.
-///
-/// MPFR mul/sub cost scales as O(limb_count²), so dropping from 256→192 at
-/// moderate ε (3 limbs vs 4) saves ~44% per op. At very deep ε (≤1e-10) we
-/// keep 256 to preserve all i256 bits across GS subtractions.
-pub fn compute_mu_prec(eps: Float) -> u32 {
-    let log_recip = (1.0 / eps).log2().max(1.0);
-    // need: ~4·log_recip (κ exponent) + ~50 (safety margin)
-    let bits = (4.0 * log_recip + 60.0).ceil() as u32;
-    // Round up to 64-bit limb boundary; floor at 192, ceiling at 256.
-    let rounded = ((bits + 63) / 64) * 64;
-    rounded.clamp(192, 256)
-}
 
 /// Compute the bit-shift `B` such that round(2^B · Q[i][j]) lands in i256 with
 /// max entry ≈ 2^TARGET_BITS. Returns `B`. Caller-supplied `max_q_log2` is
@@ -146,7 +128,6 @@ type Mat256 = [[i256; 8]; 8];
 ///   - MPFR μ matrix for the size-reduce + Lovász decisions.
 pub struct IntScratch {
     pub prec_q: u32,
-    pub prec_mu: u32,
     pub scale_bits: i32, // B such that Q_int[i][j] ≈ 2^B · Q[i][j]
 
     // ── MPFR buffers for build_q (subset of HeavyScratch fields) ──
@@ -181,22 +162,6 @@ pub struct IntScratch {
     pub basis: IMat8,
     pub gram: Mat256,        // G = B · Q_int · Bᵀ
     pub temp_bq: Mat256,     // intermediate = B · Q_int
-
-    // ── MPFR μ matrix and gnorm vector ──
-    pub mu: [[RFloat; 8]; 8],
-    pub gnorm_sq: [RFloat; 8],
-    pub g_star: [[RFloat; 8]; 8],
-    pub delta_lll: RFloat,
-
-    // ── prec_mu temporaries for Lovász check ──
-    pub lov_t1: RFloat,
-    pub lov_t2: RFloat,
-
-    // ── prec_mu scratch for the GS hot loop. Pre-allocated so the inner loop
-    // does zero heap allocation. Used by `gs_int_partial_raw` /
-    // `gs_update_row_k_raw` (direct mpfr-sys path).
-    pub gs_acc: RFloat,
-    pub gs_tmp: RFloat,
 
     // ── L²-LLL state (Nguyen-Stehlé 2009): pure f64. Theorem 2 + Figure 7
     // prove this precision is sufficient for d ≤ 11; we operate at d=8.
@@ -284,10 +249,8 @@ fn fill_sigma(sigma: &mut [[RFloat; 8]; 8], prec: u32) {
 impl IntScratch {
     pub fn new(eps: Float) -> Self {
         let prec_q = compute_prec_q(eps);
-        let prec_mu = compute_mu_prec(eps);
         let mut s = Self {
             prec_q,
-            prec_mu,
             scale_bits: 0,
             q_mpfr: rmat_zero(prec_q),
             c: rvec_zero(prec_q),
@@ -318,14 +281,6 @@ impl IntScratch {
             basis: identity_basis(),
             gram: imat_zero(),
             temp_bq: imat_zero(),
-            mu: rmat_zero(prec_mu),
-            gnorm_sq: rvec_zero(prec_mu),
-            g_star: rmat_zero(prec_mu),
-            delta_lll: rfv(prec_mu, 0.75),
-            lov_t1: rfz(prec_mu),
-            lov_t2: rfz(prec_mu),
-            gs_acc: rfz(prec_mu),
-            gs_tmp: rfz(prec_mu),
             r_bar: [[0.0_f64; 8]; 8],
             mu_bar: [[0.0_f64; 8]; 8],
             s_bar: [[0.0_f64; 8]; 8],
@@ -720,150 +675,6 @@ pub fn lazy_size_reduce_row_kappa(scratch: &mut IntScratch, kappa: usize) -> usi
     MAX_LAZY_PASSES
 }
 
-/// Partial GS through row k_max, computed via direct mpfr-sys calls.
-///
-/// Standard Q-metric Gram-Schmidt recurrence (bounded by k_max):
-///   for j = 0..=k_max:
-///     for i = j..=k_max:
-///       g_star[i][j] = G[i][j] - Σ_{l<j} μ[j][l] · g_star[i][l]
-///     gnorm[j] = g_star[j][j]
-///     for i = j+1..=k_max: μ[i][j] = g_star[i][j] / gnorm[j]
-///
-/// G entries (i256) are converted on-demand to MPFR via `i256_to_mpfr_raw`
-/// (zero-allocation, mpz_t view + `mpfr_set_z`). All MPFR arithmetic uses
-/// gmp-mpfr-sys directly — no rug Incomplete/Assign trait dispatch, no
-/// `rug::Integer` intermediate, no per-call RFloat allocation. The hot loop
-/// is the dominant LLL cost; this function is bit-exact equivalent to the
-/// previous rug-based implementation (validated by the shadow harness during
-/// the cutover; equivalence proof recorded in commit history).
-///
-/// Cost vs full GS (k_max=7): k_max=4 does 35/120 = 29% of full work; for
-/// typical mid-LLL k, this dominates per-iter LLL CPU.
-pub fn gs_int_partial(scratch: &mut IntScratch, k_max: usize) {
-    use mpfr::rnd_t::RNDN;
-    let bound = k_max + 1;
-
-    // Hoist raw pointers. as_raw / as_raw_mut return *const / *mut mpfr_t with
-    // no Rust lifetime — once obtained, the pointers are valid for as long as
-    // their owning RFloat exists, which is the whole `&mut scratch` borrow.
-    // The borrow on each field is released as soon as as_raw/_mut returns.
-    let acc_p = scratch.gs_acc.as_raw_mut();
-    let tmp_p = scratch.gs_tmp.as_raw_mut();
-
-    for j in 0..bound {
-        for i in j..bound {
-            // acc = G[i][j] (i256 → MPFR, zero-alloc)
-            let g_val = scratch.gram[i][j];
-            i256_to_mpfr_raw(g_val, &mut scratch.gs_acc);
-
-            for l in 0..j {
-                // tmp = mu[j][l] * g_star[i][l]
-                unsafe {
-                    mpfr::mul(
-                        tmp_p,
-                        scratch.mu[j][l].as_raw(),
-                        scratch.g_star[i][l].as_raw(),
-                        RNDN,
-                    );
-                    // acc -= tmp
-                    mpfr::sub(acc_p, acc_p, tmp_p, RNDN);
-                }
-            }
-            // g_star[i][j] = acc
-            unsafe {
-                mpfr::set(scratch.g_star[i][j].as_raw_mut(), acc_p, RNDN);
-            }
-        }
-        // gnorm[j] = g_star[j][j]
-        unsafe {
-            mpfr::set(
-                scratch.gnorm_sq[j].as_raw_mut(),
-                scratch.g_star[j][j].as_raw(),
-                RNDN,
-            );
-        }
-        let gn = scratch.gnorm_sq[j].to_f64();
-        if !gn.is_finite() || gn.abs() < 1e-300 {
-            for i in (j + 1)..bound {
-                scratch.mu[i][j].assign(0.0_f64);
-            }
-            continue;
-        }
-        for i in (j + 1)..bound {
-            // mu[i][j] = g_star[i][j] / gnorm[j]
-            unsafe {
-                mpfr::div(
-                    scratch.mu[i][j].as_raw_mut(),
-                    scratch.g_star[i][j].as_raw(),
-                    scratch.gnorm_sq[j].as_raw(),
-                    RNDN,
-                );
-            }
-        }
-    }
-}
-
-/// Row-k-only GS update via direct mpfr-sys.
-///
-/// After a size-reduce that modified row k of the basis (and thus row/column k
-/// of the Gram), only g_star[k][*], gnorm[k], and μ[k][*] need recomputing —
-/// entries in rows < k are unchanged.
-///
-/// **Correctness invariant**: at outer iteration j=k, the recurrence
-/// `g_star[k][k] = G[k][k] - Σ_{l<k} μ[k][l] · g_star[k][l]` requires fresh
-/// μ[k][l]. The previous gs_int_partial computed μ[k][l] using the
-/// pre-size-reduce g_star[k][l] — those are now stale. So we compute the new
-/// μ[k][l] inline at each outer-j iteration, before the j=k iteration uses it.
-pub fn gs_update_row_k(scratch: &mut IntScratch, k: usize) {
-    use mpfr::rnd_t::RNDN;
-    let acc_p = scratch.gs_acc.as_raw_mut();
-    let tmp_p = scratch.gs_tmp.as_raw_mut();
-
-    for j in 0..=k {
-        let g_val = scratch.gram[k][j];
-        i256_to_mpfr_raw(g_val, &mut scratch.gs_acc);
-
-        for l in 0..j {
-            unsafe {
-                mpfr::mul(
-                    tmp_p,
-                    scratch.mu[j][l].as_raw(),
-                    scratch.g_star[k][l].as_raw(),
-                    RNDN,
-                );
-                mpfr::sub(acc_p, acc_p, tmp_p, RNDN);
-            }
-        }
-        unsafe {
-            mpfr::set(scratch.g_star[k][j].as_raw_mut(), acc_p, RNDN);
-        }
-
-        if j < k {
-            let gn = scratch.gnorm_sq[j].to_f64();
-            if !gn.is_finite() || gn.abs() < 1e-300 {
-                scratch.mu[k][j].assign(0.0_f64);
-            } else {
-                unsafe {
-                    mpfr::div(
-                        scratch.mu[k][j].as_raw_mut(),
-                        scratch.g_star[k][j].as_raw(),
-                        scratch.gnorm_sq[j].as_raw(),
-                        RNDN,
-                    );
-                }
-            }
-        } else {
-            // j == k: gnorm[k] = g_star[k][k]
-            unsafe {
-                mpfr::set(
-                    scratch.gnorm_sq[k].as_raw_mut(),
-                    scratch.g_star[k][k].as_raw(),
-                    RNDN,
-                );
-            }
-        }
-    }
-}
 
 // ─── Incremental Gram update for size-reduce + swap ──────────────────────────
 
@@ -1011,10 +822,6 @@ fn i256_log2_ceil(v: &i256) -> i32 {
     (256 - leading_zeros as i32) - 1
 }
 
-/// Full-table GS (convenience wrapper around `gs_int_partial`).
-pub fn gs_int_inplace(scratch: &mut IntScratch) {
-    gs_int_partial(scratch, 7);
-}
 
 // ─── LLL inner loop (i256 Gram + MPFR GS) ────────────────────────────────────
 
@@ -1569,195 +1376,6 @@ mod tests {
         );
     }
 
-    /// Reference Gram computation in MPFR: G_ref = B · Q_mpfr · Bᵀ.
-    /// Returns 8×8 RFloat matrix at given precision.
-    fn reference_gram_mpfr(
-        basis: &IMat8,
-        q_mpfr: &[[RFloat; 8]; 8],
-        prec: u32,
-    ) -> [[RFloat; 8]; 8] {
-        let mut bq: [[RFloat; 8]; 8] = std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)));
-        for i in 0..8 {
-            for b in 0..8 {
-                let mut acc = rfz(prec);
-                for a in 0..8 {
-                    let bi_a = rfv(prec, basis[i][a] as f64);
-                    let prod = bi_a * &q_mpfr[a][b];
-                    acc = acc + prod;
-                }
-                bq[i][b] = acc;
-            }
-        }
-        let mut g: [[RFloat; 8]; 8] = std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)));
-        for i in 0..8 {
-            for j in 0..8 {
-                let mut acc = rfz(prec);
-                for b in 0..8 {
-                    let bj_b = rfv(prec, basis[j][b] as f64);
-                    let prod = &bq[i][b] * bj_b;
-                    acc = acc + prod;
-                }
-                g[i][j] = acc;
-            }
-        }
-        g
-    }
-
-    /// Reference GS in MPFR (same recurrence as gs_int_inplace, but reading
-    /// from MPFR Gram rather than i256).
-    fn reference_gs_mpfr(
-        g: &[[RFloat; 8]; 8],
-        prec: u32,
-    ) -> ([[RFloat; 8]; 8], [RFloat; 8]) {
-        let mut mu: [[RFloat; 8]; 8] = std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)));
-        let mut g_star: [[RFloat; 8]; 8] = std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)));
-        let mut gnorm: [RFloat; 8] = std::array::from_fn(|_| rfz(prec));
-        let tiny = rfv(prec, 1e-300);
-        for j in 0..8 {
-            for i in j..8 {
-                let mut acc = g[i][j].clone();
-                for l in 0..j {
-                    let prod = RFloat::with_val(prec, &mu[j][l] * &g_star[i][l]);
-                    acc -= prod;
-                }
-                g_star[i][j].assign(&acc);
-            }
-            gnorm[j].assign(&g_star[j][j]);
-            if gnorm[j].clone().abs() < tiny {
-                continue;
-            }
-            for i in (j + 1)..8 {
-                mu[i][j].assign(&g_star[i][j] / &gnorm[j]);
-            }
-        }
-        (mu, gnorm)
-    }
-
-    /// Verify integer Gram (after scaling) matches MPFR Gram entry-wise.
-    fn check_gram_int_matches_mpfr(eps: Float, k: u32) {
-        let y = realistic_y(k);
-        let mut s = IntScratch::new(eps);
-        build_q_mpfr(&mut s, &y, k, eps);
-        build_q_int(&mut s);
-        // Use a non-trivial basis so off-diagonals are exercised
-        s.basis = [
-            [3, 1, 0, 0, 0, 0, 0, 0],
-            [1, 2, 0, 0, 0, 0, 0, 0],
-            [0, 1, 1, 0, 0, 0, 0, 0],
-            [0, 0, 0, 1, 0, 0, 0, 0],
-            [0, 0, 0, 0, 1, 0, 0, 0],
-            [0, 0, 0, 0, 0, 1, 0, 0],
-            [0, 0, 0, 0, 0, 0, 1, 0],
-            [0, 0, 0, 0, 0, 0, 0, 1],
-        ];
-        let ok = compute_gram_int(&mut s);
-        assert!(ok, "compute_gram_int reported overflow at eps={:e}, k={}", eps, k);
-
-        let g_ref = reference_gram_mpfr(&s.basis, &s.q_mpfr, s.prec_q);
-
-        // Entry-wise: g_int[i][j] should equal round(g_ref[i][j] · 2^scale_bits)
-        // Tolerance: 1e-25 relative (scaled match is exact modulo rounding noise)
-        let mut max_abs_g: f64 = 0.0;
-        let mut max_err: f64 = 0.0;
-        for i in 0..8 {
-            for j in 0..8 {
-                let g_true = g_ref[i][j].to_f64();
-                max_abs_g = max_abs_g.max(g_true.abs());
-                let g_int_f = i256_to_f64_scaled(&s.gram[i][j], s.scale_bits);
-                let err = (g_true - g_int_f).abs();
-                max_err = max_err.max(err);
-            }
-        }
-        let rel_err = max_err / max_abs_g.max(1e-300);
-        assert!(
-            rel_err < 1e-20,
-            "eps={:e}, k={}: gram rel_err={:e}, max_g={:e}, scale_bits={}",
-            eps, k, rel_err, max_abs_g, s.scale_bits
-        );
-    }
-
-    /// Verify GS μ from integer pipeline matches GS μ from MPFR reference.
-    fn check_gs_int_matches_mpfr(eps: Float, k: u32) {
-        let y = realistic_y(k);
-        let mut s = IntScratch::new(eps);
-        build_q_mpfr(&mut s, &y, k, eps);
-        build_q_int(&mut s);
-        s.basis = [
-            [3, 1, 0, 0, 0, 0, 0, 0],
-            [1, 2, 0, 0, 0, 0, 0, 0],
-            [0, 1, 1, 0, 0, 0, 0, 0],
-            [0, 0, 0, 1, 0, 0, 0, 0],
-            [0, 0, 0, 0, 1, 0, 0, 0],
-            [0, 0, 0, 0, 0, 1, 0, 0],
-            [0, 0, 0, 0, 0, 0, 1, 0],
-            [0, 0, 0, 0, 0, 0, 0, 1],
-        ];
-        let ok = compute_gram_int(&mut s);
-        assert!(ok, "compute_gram_int reported overflow at eps={:e}, k={}", eps, k);
-        gs_int_inplace(&mut s);
-
-        let g_ref = reference_gram_mpfr(&s.basis, &s.q_mpfr, s.prec_q);
-        let (mu_ref, gnorm_ref) = reference_gs_mpfr(&g_ref, s.prec_q);
-
-        // μ values are scale-invariant: integer pipeline's μ should match
-        // reference μ to MPFR precision (modulo TARGET_BITS rounding noise in Q_int)
-        let mut max_mu_err: f64 = 0.0;
-        for i in 0..8 {
-            for j in 0..i {
-                let m_int = s.mu[i][j].to_f64();
-                let m_ref = mu_ref[i][j].to_f64();
-                let err = (m_int - m_ref).abs();
-                max_mu_err = max_mu_err.max(err);
-            }
-        }
-        // gnorm ratios are scale-invariant:
-        // (gnorm_int[i] / gnorm_int[0]) should match (gnorm_ref[i] / gnorm_ref[0])
-        let mut max_gn_rel_err: f64 = 0.0;
-        let g0_int = s.gnorm_sq[0].to_f64();
-        let g0_ref = gnorm_ref[0].to_f64();
-        for i in 1..8 {
-            let r_int = s.gnorm_sq[i].to_f64() / g0_int;
-            let r_ref = gnorm_ref[i].to_f64() / g0_ref;
-            let rel = ((r_int - r_ref) / r_ref.abs().max(1e-300)).abs();
-            max_gn_rel_err = max_gn_rel_err.max(rel);
-        }
-        // ε-aware tolerance: GS cancels ~log₂(κ(Q)) bits, so post-GS effective
-        // precision is roughly TARGET_BITS − log₂(κ(Q)). κ(Q) ≈ 16/ε⁴, so
-        // log₂(κ(Q)) ≈ 4·log₂(1/ε) + 4.
-        let log_recip = (1.0 / eps).log2();
-        let effective_bits = (TARGET_BITS as f64 - 4.0 * log_recip - 4.0).max(20.0);
-        let tol = 2.0_f64.powf(-effective_bits + 10.0); // +10 bits slack for noise
-        assert!(
-            max_mu_err < tol && max_gn_rel_err < tol,
-            "eps={:e}, k={}: max_mu_err={:e}, max_gn_rel_err={:e}, tol={:e} (effective_bits≈{:.0})",
-            eps, k, max_mu_err, max_gn_rel_err, tol, effective_bits
-        );
-    }
-
-    #[test]
-    fn gram_int_matches_mpfr_at_eps_1e_5() {
-        check_gram_int_matches_mpfr(1e-5, 21);
-    }
-
-    #[test]
-    fn gram_int_matches_mpfr_at_eps_1e_10() {
-        check_gram_int_matches_mpfr(1e-10, 100);
-    }
-
-    #[test]
-    fn gs_int_matches_mpfr_at_eps_1e_5() {
-        check_gs_int_matches_mpfr(1e-5, 21);
-    }
-
-    #[test]
-    fn gs_int_matches_mpfr_at_eps_1e_8() {
-        check_gs_int_matches_mpfr(1e-8, 70);
-    }
-
-    #[test]
-    fn gs_int_matches_mpfr_at_eps_1e_10() {
-        check_gs_int_matches_mpfr(1e-10, 100);
-    }
 
     /// Verify cfa_full_f64 maintains the algorithmic invariant
     /// `r_bar[i][i] == s_bar[i][i]` for any input.
