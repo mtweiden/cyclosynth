@@ -950,6 +950,125 @@ impl Synthesizer {
     }
 }
 
+// ─── PyO3 ─────────────────────────────────────────────────────────────────────
+
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
+#[cfg(feature = "python")]
+use numpy::{Complex64, PyReadonlyArray2};
+
+/// Python-facing result of a synthesis run.
+#[cfg(feature = "python")]
+#[pyclass(name = "SynthResult", frozen)]
+pub struct PySynthResult {
+    /// Clifford+T gate string (leftmost = first gate applied), or `None`
+    /// if extraction failed.
+    #[pyo3(get)]
+    pub gates: Option<String>,
+    /// Denominator exponent of the synthesized unitary (≈ T-count + small
+    /// adjustment, see crate docs).
+    #[pyo3(get)]
+    pub lde: u32,
+    /// Diamond distance from the synthesized unitary to the target.
+    #[pyo3(get)]
+    pub distance: Float,
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl PySynthResult {
+    fn __repr__(&self) -> String {
+        let gates_repr = self
+            .gates
+            .as_deref()
+            .map(|g| format!("{g:?}"))
+            .unwrap_or_else(|| "None".to_string());
+        format!(
+            "SynthResult(gates={gates_repr}, lde={}, distance={:.3e})",
+            self.lde, self.distance
+        )
+    }
+}
+
+/// Python-facing synthesizer.
+///
+/// ```python
+/// import numpy as np, cyclosynth
+/// theta = 0.3
+/// target = np.array([[np.exp(-1j * theta / 2), 0],
+///                    [0, np.exp(1j * theta / 2)]], dtype=np.complex128)
+/// synth = cyclosynth.Synthesizer(epsilon=1e-5)
+/// result = synth.synthesize(target)
+/// print(result.gates, result.lde, result.distance)
+/// ```
+#[cfg(feature = "python")]
+#[pyclass(name = "Synthesizer", frozen)]
+pub struct PySynthesizer {
+    inner: Synthesizer,
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl PySynthesizer {
+    #[new]
+    #[pyo3(signature = (epsilon, *, max_lde=None, min_lde=None, direct_limit=None))]
+    fn new(
+        epsilon: Float,
+        max_lde: Option<u32>,
+        min_lde: Option<u32>,
+        direct_limit: Option<u32>,
+    ) -> Self {
+        let mut s = Synthesizer::new(epsilon);
+        if let Some(v) = max_lde { s = s.with_max_lde(v); }
+        if let Some(v) = min_lde { s = s.with_min_lde(v); }
+        if let Some(v) = direct_limit { s = s.with_direct_limit(v); }
+        Self { inner: s }
+    }
+
+    /// Synthesize `target` (a 2×2 `np.complex128` array) into a Clifford+T
+    /// gate string. Returns `None` if no circuit within `max_lde` achieves
+    /// distance < `epsilon`.
+    fn synthesize(&self, target: PyReadonlyArray2<Complex64>) -> PyResult<Option<PySynthResult>> {
+        let view = target.as_array();
+        if view.shape() != [2, 2] {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "target must be a 2×2 matrix, got shape {:?}",
+                view.shape()
+            )));
+        }
+        let mat: Mat2 = [
+            [Complex::new(view[[0, 0]].re, view[[0, 0]].im),
+             Complex::new(view[[0, 1]].re, view[[0, 1]].im)],
+            [Complex::new(view[[1, 0]].re, view[[1, 0]].im),
+             Complex::new(view[[1, 1]].re, view[[1, 1]].im)],
+        ];
+        Ok(self.inner.synthesize(mat).map(|r| PySynthResult {
+            gates: r.gates,
+            lde: r.lde,
+            distance: r.distance,
+        }))
+    }
+
+    #[getter]
+    fn epsilon(&self) -> Float { self.inner.epsilon }
+
+    #[getter]
+    fn max_lde(&self) -> u32 { self.inner.max_lde }
+
+    #[getter]
+    fn min_lde(&self) -> u32 { self.inner.min_lde }
+
+    #[getter]
+    fn direct_limit(&self) -> u32 { self.inner.direct_limit }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Synthesizer(epsilon={:.3e}, min_lde={}, max_lde={}, direct_limit={})",
+            self.inner.epsilon, self.inner.min_lde, self.inner.max_lde, self.inner.direct_limit,
+        )
+    }
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
