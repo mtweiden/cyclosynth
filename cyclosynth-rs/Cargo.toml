@@ -15,7 +15,6 @@ rayon = "1.10"
 twofloat = "0.8"
 rug = { version = "1", default-features = false, features = ["float", "integer"] }
 gmp-mpfr-sys = "1.7"
-hyperprec = "0.3"
 
 [dev-dependencies]
 rand = "0.9"

@@ -442,7 +442,7 @@ fn lll_aligned_search(
     // MPFR (rug) at adaptive precision in the LLL+Cholesky setup phase. The
     // SE step downcasts to f64. Scratch is reused across all prefixes within
     // one rayon worker via map_init in dc_search.
-    let sols = crate::synthesis::lenstra::phase1_lenstra(
+    let sols = crate::synthesis::lenstra::phase1(
         scratch, &y, k, eps, max_phase2_calls, budget_hit,
     );
     if max_solutions >= sols.len() {

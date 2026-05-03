@@ -50,7 +50,6 @@ name = "cyclosynth"
 version = "0.1.0"
 dependencies = [
  "gmp-mpfr-sys",
- "hyperprec",
  "i256",
  "num-complex",
  "pyo3",
@@ -109,15 +108,6 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
-
-[[package]]
-name = "hyperprec"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0a04d12c4c74b3976e9929b2b4eff6b75f6afb7d09328e358ee8b3539e4c05c7"
-dependencies = [
- "rayon",
-]
 
 [[package]]
 name = "i256"
