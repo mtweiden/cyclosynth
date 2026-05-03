@@ -170,17 +170,64 @@ synthesized circuit through the Bloch decomposer and assert
 
 ## Performance
 
-Approximate wall-clock on Apple M-series, 8 threads (`time_synthesis
---trials 2`):
+Wall-clock minimums from `time_synthesis --trials 3` on Apple M-series,
+8 threads. The `lde` column is the inner T-count budget at which a
+solution was found (≈ T-count + small adjustment for the search
+convention).
 
-| Target | ε | T-count | Time |
-|---|---|---|---|
-| `Rz(π/7)` | 1e-3 | 28 | < 5 ms |
-| `Rz(π/7)` | 1e-5 | 51 | ~250 ms |
-| `Rz(π/7)` | 1e-7 | 70 | ~2.5 s |
-| `Rz(0.30)` | 1e-8 | 82 | ~50 s |
+| Target                | ε      | lde | Time      |
+| --------------------- | ------ | --- | --------- |
+| `identity`            | 1e-2   | 18  | 1.3 ms    |
+| `H`                   | 1e-2   | 18  | 1.3 ms    |
+| `T`                   | 1e-2   | 18  | 1.6 ms    |
+| `Rz(0.30)`            | 1e-2   | 18  | 2.0 ms    |
+| `Rz(1.34)`            | 1e-2   | 18  | 1.9 ms    |
+| `Rz(π/7)`             | 1e-2   | 20  | 9.4 ms    |
+| `Ry(0.50)`            | 1e-2   | 18  | 1.1 ms    |
+| `U3(0.3,0.7,1.2)`     | 1e-2   | 18  | 0.8 ms    |
+| `U3(1.1,0.4,2.3)`     | 1e-2   | 18  | 1.0 ms    |
+| `Rz(0.30)`            | 1e-3   | 28  | 2.7 ms    |
+| `Rz(1.34)`            | 1e-3   | 28  | 2.4 ms    |
+| `Rz(π/7)`             | 1e-3   | 28  | 1.6 ms    |
+| `Ry(0.50)`            | 1e-3   | 28  | 1.7 ms    |
+| `U3(0.3,0.7,1.2)`     | 1e-3   | 28  | 1.7 ms    |
+| `Rz(0.30)`            | 1e-4   | 37  | 2.2 ms    |
+| `Ry(π/7)`             | 1e-4   | 37  | 3.3 ms    |
+| `U3(0.3,0.7,1.2)`     | 1e-4   | 37  | 1.9 ms    |
+| `U3(4.3,1.8,0.2)`     | 1e-4   | 37  | 2.1 ms    |
+| `U3(6.1,3.4,3.3)`     | 1e-4   | 37  | 2.1 ms    |
+| `Rz(0.30)`            | 1e-5   | 49  | 45 ms     |
+| `Ry(π/7)`             | 1e-5   | 51  | 219 ms    |
+| `U3(0.3,0.7,1.2)`     | 1e-5   | 47  | 1.6 ms    |
+| `U3(4.3,1.8,0.2)`     | 1e-5   | 47  | 1.6 ms    |
+| `U3(6.1,3.4,3.3)`     | 1e-5   | 47  | 30 ms     |
+| `Rz(0.30)`            | 1e-6   | 59  | 223 ms    |
+| `Ry(π/7)`             | 1e-6   | 55  | 4.7 ms    |
+| `U3(0.3,0.7,1.2)`     | 1e-6   | 57  | 61 ms     |
+| `U3(4.3,1.8,0.2)`     | 1e-6   | 55  | 7.8 ms    |
+| `U3(6.1,3.4,3.3)`     | 1e-6   | 59  | 279 ms    |
+| `Rz(0.30)`            | 1e-7   | 66  | 22 ms     |
+| `Ry(π/7)`             | 1e-7   | 70  | 1.22 s    |
+| `U3(0.3,0.7,1.2)`     | 1e-7   | 66  | 23 ms     |
+| `U3(4.3,1.8,0.2)`     | 1e-7   | 66  | 32 ms     |
+| `U3(6.1,3.4,3.3)`     | 1e-7   | 68  | 280 ms    |
+| `Rz(0.30)`            | 1e-8   | 82  | 22.1 s    |
 
-Some target angles (notably `π/n` for small `n`) consistently need higher
-T-count than generic angles at the same ε; this is a property of the
+Total (sum of minimums across all 36 cases): **24.6 s**.
+
+Per-target time can be highly non-monotonic in ε. The dominant cost is
+the number of MA prefixes processed before a valid `(u₁, u₂)` candidate
+turns up, which depends on where the target sits in the modular
+fundamental domain — some `(target, ε)` combinations land on a "lucky"
+prefix early in the search order. `Rz(0.30)_1e-7` (22 ms) finishing
+faster than `Rz(0.30)_1e-6` (223 ms) is normal: the lde=66 search
+happens to find a valid lattice point at a low-numbered prefix, while
+the lde=59 search needs to walk further.
+
+Some angles also need a higher T-count than others at the same ε.
+`π/n` for small `n` (and similar small-period rationals) tend to fall
+in sparse regions of the cyclotomic-integer approximation lattice, so
+their resolved T-count is larger and their search runs deeper than
+generic-irrational angles. This is an algorithmic property of the
 underlying Diophantine approximation problem, not an implementation
-quirk.
+detail.
