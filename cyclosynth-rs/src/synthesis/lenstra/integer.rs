@@ -1065,32 +1065,32 @@ fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
     true
 }
 
-// ─── Top-level phase1_lenstra_int ───────────────────────────────────────────
+// ─── Top-level phase1 entry point ────────────────────────────────────────────
 
 use std::sync::atomic::AtomicBool;
 use twofloat::TwoFloat as Tf;
 
-/// Outcome of one integer-LLL phase1 attempt. Same shape as
-/// `lenstra_heavy::AttemptOutcome` for dispatch parity. `should_escalate`
-/// is set when the i256 Gram overflowed during LLL (deep ε transient) —
-/// caller can choose to fall back to a smaller TARGET_BITS or alternative
-/// strategy.
-pub struct IntAttemptOutcome {
+/// Outcome of one phase1 invocation. `should_escalate` is set when the i256
+/// Gram overflowed during LLL (transient B-growth at very deep ε beyond what
+/// `TARGET_BITS = 180` absorbs). The dispatcher can use this signal to fall
+/// back to an alternative strategy if needed; the L²-LLL path was designed
+/// to keep this flag clear in our target ε ∈ [1e-10, 1e-3] regime.
+pub struct PhaseOneOutcome {
     pub solutions: Vec<[i64; 8]>,
     pub should_escalate: bool,
 }
 
-/// Run the full 8D Lenstra pipeline using the integer LLL. One attempt;
-/// no internal retry (matches the heavy `phase1_lenstra_attempt` interface
-/// at the dispatch level).
-pub fn phase1_lenstra_int(
+/// Run the full Lenstra 8D pipeline for one MA-prefix's `(y, k, eps)` setup
+/// using the L²-LLL algorithm. Returns at most one valid 8-vector solution;
+/// the caller can request more by raising `max_phase2_calls`.
+pub fn phase1(
     scratch: &mut IntScratch,
     y: &[Float; 8],
     k: u32,
     eps: Float,
     max_phase2_calls: u64,
     budget_hit: &AtomicBool,
-) -> IntAttemptOutcome {
+) -> PhaseOneOutcome {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // Use i128 so target_norm = 2^k stays correct for k ≥ 63 (where i64 would
@@ -1124,26 +1124,26 @@ pub fn phase1_lenstra_int(
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     if let LllResult::GramOverflow = lll_result {
-        return IntAttemptOutcome { solutions: Vec::new(), should_escalate: true };
+        return PhaseOneOutcome { solutions: Vec::new(), should_escalate: true };
     }
 
     // Step 3: assert det = ±1
     let basis = scratch.basis;
-    match crate::synthesis::lenstra_heavy::det8_exact(&basis) {
+    match super::se::det8_exact(&basis) {
         Some(1) | Some(-1) => {}
         Some(d) => {
             eprintln!(
                 "[lenstra_int] LLL non-unimodular (det={}) at eps={:e}, k={}; bailing.",
                 d, eps, k
             );
-            return IntAttemptOutcome { solutions: Vec::new(), should_escalate: false };
+            return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
         }
         None => {
             eprintln!(
                 "[lenstra_int] det8_exact overflow at eps={:e}, k={}; bailing.",
                 eps, k
             );
-            return IntAttemptOutcome { solutions: Vec::new(), should_escalate: false };
+            return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
         }
     }
 
@@ -1159,12 +1159,12 @@ pub fn phase1_lenstra_int(
         eprintln!(
             "[lenstra_int] Cholesky failed at eps={:e}, k={}; bailing.", eps, k
         );
-        return IntAttemptOutcome { solutions: Vec::new(), should_escalate: false };
+        return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
     }
 
     // Convert Cholesky factor to TwoFloat for SE
     let r_chol_tf: [[Tf; 8]; 8] = std::array::from_fn(|i| {
-        std::array::from_fn(|j| crate::synthesis::lenstra_heavy::rug_to_tf(&scratch.l[j][i]))
+        std::array::from_fn(|j| super::se::rfloat_to_tf(&scratch.l[j][i]))
     });
 
     // Step 5: build cap center c = y · cap_mid (in MPFR), then LU solve
@@ -1183,21 +1183,21 @@ pub fn phase1_lenstra_int(
     }
     if !lu_ok {
         eprintln!("[lenstra_int] LU solve failed at eps={:e}, k={}; bailing.", eps, k);
-        return IntAttemptOutcome { solutions: Vec::new(), should_escalate: false };
+        return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
     }
     let z_c_tf: [Tf; 8] = std::array::from_fn(|i| {
-        crate::synthesis::lenstra_heavy::rug_to_tf(&scratch.lu_x[i])
+        super::se::rfloat_to_tf(&scratch.lu_x[i])
     });
 
     // Step 6: SE in TwoFloat
-    let r_eucl = crate::synthesis::lenstra_heavy::compute_r_eucl(&basis);
+    let r_eucl = super::se::euclidean_cholesky(&basis);
     let target_norm_f = target_norm as f64;
     let count = AtomicU64::new(0);
     let abort = AtomicBool::new(false);
     let bound_tf = Tf::from(1.51_f64);
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
 
-    let result = crate::synthesis::lenstra_heavy::se_8d_tf(
+    let result = super::se::schnorr_euchner_8d(
         &r_chol_tf,
         &z_c_tf,
         bound_tf,
@@ -1211,7 +1211,7 @@ pub fn phase1_lenstra_int(
                 return None;
             }
             count.fetch_add(1, Ordering::Relaxed);
-            let x = crate::synthesis::lenstra_heavy::reconstruct_x(&basis, z);
+            let x = super::se::reconstruct_x(&basis, z);
             // Norm check: i64 fast path for k ≤ 62, i128 path otherwise.
             // Most SE candidates fail this check, so it's the hottest test;
             // keeping it in i64 when safe is worth the branch.
@@ -1226,7 +1226,7 @@ pub fn phase1_lenstra_int(
                     return None;
                 }
             }
-            if crate::synthesis::lenstra_heavy::bilinear_b(&x) != 0 {
+            if super::se::bilinear_b(&x) != 0 {
                 return None;
             }
             let dot: Float = x.iter().zip(y.iter()).map(|(a, b)| *a as Float * b).sum();
@@ -1245,8 +1245,8 @@ pub fn phase1_lenstra_int(
         .fetch_add(count.load(Ordering::Relaxed), Ordering::Relaxed);
 
     match result {
-        Some(x) => IntAttemptOutcome { solutions: vec![x], should_escalate: false },
-        None => IntAttemptOutcome { solutions: Vec::new(), should_escalate: false },
+        Some(x) => PhaseOneOutcome { solutions: vec![x], should_escalate: false },
+        None => PhaseOneOutcome { solutions: Vec::new(), should_escalate: false },
     }
 }
 
@@ -1255,6 +1255,7 @@ pub fn phase1_lenstra_int(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::se;
 
     // ─── DELETED ON CUTOVER (commit history) ─────────────────────────────────
     // Bit-exact shadow harness `assert_mpfr_bit_eq` / `shadow_gs_partial` /
@@ -1452,7 +1453,7 @@ mod tests {
             return result;
         }
         // Unimodular check
-        let det = crate::synthesis::lenstra_heavy::det8_exact(&s.basis)
+        let det = se::det8_exact(&s.basis)
             .expect("det8_exact overflow");
         assert!(
             det == 1 || det == -1,
@@ -1525,7 +1526,7 @@ mod tests {
         if let LllResult::GramOverflow = result {
             return result;
         }
-        let det = crate::synthesis::lenstra_heavy::det8_exact(&s.basis)
+        let det = se::det8_exact(&s.basis)
             .expect("det8_exact overflow");
         assert!(
             det == 1 || det == -1,
