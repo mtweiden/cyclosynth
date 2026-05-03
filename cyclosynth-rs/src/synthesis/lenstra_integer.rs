@@ -1130,81 +1130,20 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
     }
 }
 
-/// LEGACY: SWAP-based MPFR LLL. Retained during the L² cutover for shadow
-/// validation; will be removed in favor of `lll_l2_8` once the L² path is
-/// validated end-to-end.
-pub fn lll_int_8(scratch: &mut IntScratch) -> LllResult {
-    scratch.reset_basis();
-    let max_iter: usize = 10_000;
-    let mut iters: usize = 0;
-    let mut k = 1usize;
-
-    // One-time full Gram compute (basis = identity here, so G = Q_int).
-    if !compute_gram_int(scratch) {
-        if crate::synthesis::diag::trace_enabled() {
-            crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
-        }
-        return LllResult::GramOverflow;
-    }
-
-    while k < 8 && iters < max_iter {
-        iters += 1;
-
-        // Partial GS: only need rows 0..=k for size-reduce μ values and
-        // Lovász check. Skipping rows k+1..7 saves ~70% of GS work for
-        // typical k=4.
-        gs_int_partial(scratch, k);
-
-        // Size reduce row k against rows 0..k. Each non-zero r updates
-        // both the basis (i64) and the Gram (i256) incrementally.
-        for j in (0..k).rev() {
-            let r_round = scratch.mu[k][j].to_f64().round() as i64;
-            if r_round != 0 {
-                for c in 0..8 {
-                    scratch.basis[k][c] -= r_round * scratch.basis[j][c];
-                }
-                gram_update_size_reduce(scratch, k, j, r_round);
-            }
-        }
-
-        // Overflow check after the size-reduce sequence (transient B-growth
-        // at deep ε can blow up Gram entries).
-        if gram_overflow_check(scratch) {
-            if crate::synthesis::diag::trace_enabled() {
-                crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
-            }
-            return LllResult::GramOverflow;
-        }
-
-        // GS update for row k only — size-reduce only changed row k of Gram,
-        // so rows < k of the GS table are still valid. Cheaper than re-running
-        // the full partial GS.
-        gs_update_row_k(scratch, k);
-
-        // Lovász: gnorm[k] ≥ (δ − μ[k][k-1]²) · gnorm[k-1]
-        scratch.lov_t1.assign(&scratch.mu[k][k - 1] * &scratch.mu[k][k - 1]);
-        scratch.lov_t2.assign(&scratch.delta_lll - &scratch.lov_t1);
-        scratch.lov_t1.assign(&scratch.lov_t2 * &scratch.gnorm_sq[k - 1]);
-        if scratch.gnorm_sq[k] >= scratch.lov_t1 {
-            k += 1;
-        } else {
-            // Swap basis rows AND Gram rows/cols.
-            scratch.basis.swap(k, k - 1);
-            gram_update_swap(scratch, k, k - 1);
-            k = k.saturating_sub(1).max(1);
-        }
-    }
-
-    if crate::synthesis::diag::trace_enabled() {
-        crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
-    }
-    if iters >= max_iter {
-        LllResult::IterCap
-    } else {
-        LllResult::Converged
-    }
-}
-
+// ─── DELETED ON L² CUTOVER ────────────────────────────────────────────────
+// `lll_int_8` (SWAP-based MPFR LLL using gs_int_partial / gs_update_row_k)
+// removed. Replaced by `lll_l2_8` (INSERT-based f64 LLL per Nguyen-Stehlé
+// 2009). Reproducible from git history (commit 4d2eb62 and prior) if the
+// MPFR LLL is ever needed as a reference implementation.
+//
+// Concretely deleted:
+//   - lll_int_8 (74 lines)
+//   - gs_int_partial / gs_update_row_k / gs_int_inplace (the MPFR GS hot
+//     loop, ~150 lines)
+//   - The MPFR scratch fields mu / g_star / gnorm_sq / lov_t1 / lov_t2 /
+//     gs_acc / gs_tmp / delta_lll
+// All replaced by f64 equivalents: r_bar / mu_bar / s_bar / cfa_row_f64 /
+// lazy_size_reduce_row_kappa / lll_l2_8.
 // ─── Convert i256 Gram → MPFR (post-LLL, into g_post_lll) ─────────────────────
 
 /// Convert the post-LLL i256 Gram matrix into MPFR (g_post_lll) so the
@@ -1370,9 +1309,9 @@ pub fn phase1_lenstra_int(
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // Step 2: integer LLL
+    // Step 2: L²-LLL (pure f64 GS with exact i256 Gram, INSERT semantics).
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
-    let lll_result = lll_int_8(scratch);
+    let lll_result = lll_l2_8(scratch);
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_LLL_NS
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1962,7 +1901,7 @@ mod tests {
         let mut s = IntScratch::new(eps);
         build_q_mpfr(&mut s, &y, k, eps);
         build_q_int(&mut s);
-        let result = lll_int_8(&mut s);
+        let result = lll_l2_8(&mut s);
         // Allow IterCap as a soft outcome (LLL is "noisy" at deep ε); the
         // unimodular check is a hard invariant either way.
         if let LllResult::GramOverflow = result {
