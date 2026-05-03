@@ -14,5 +14,7 @@ fn cyclosynth(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<rings::zzeta::PyZZeta>()?;
     m.add_class::<matrix::u2::PyU2>()?;
     m.add_class::<synthesis::decomposer::PyBlochDecomposer>()?;
+    m.add_class::<synthesis::synthesizer::PySynthesizer>()?;
+    m.add_class::<synthesis::synthesizer::PySynthResult>()?;
     Ok(())
 }

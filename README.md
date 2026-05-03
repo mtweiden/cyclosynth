@@ -10,7 +10,75 @@ T-count for that ε. This implements Algorithm 3.14 of
 itself rests on the 8-dimensional integer enumeration of Algorithm 3.6 plus
 the divide-and-conquer split of Algorithm 3.11.
 
-## Quick example
+## Quick start (Python)
+
+Install via [maturin](https://www.maturin.rs/) — this builds the Rust
+extension and installs `cyclosynth` into the active environment:
+
+```sh
+pip install maturin
+maturin develop --release
+```
+
+Then synthesize a random single-qubit unitary:
+
+```python
+import numpy as np
+import cyclosynth
+
+# Build a single-qubit unitary as U3(α, β, γ) = Rz(α) · Ry(β) · Rz(γ).
+# Angles fixed for reproducibility (originally drawn from uniform(0, 2π)).
+def rz(t):
+    return np.array([[np.exp(-1j * t / 2), 0],
+                     [0,                    np.exp(1j * t / 2)]],
+                    dtype=np.complex128)
+
+def ry(t):
+    c, s = np.cos(t / 2), np.sin(t / 2)
+    return np.array([[c, -s],
+                     [s,  c]], dtype=np.complex128)
+
+alpha, beta, gamma = 4.863069, 2.757718, 5.394728
+target = rz(alpha) @ ry(beta) @ rz(gamma)
+
+# Approximate to within ε = 1e-5 in diamond distance.
+synth = cyclosynth.Synthesizer(epsilon=1e-5)
+result = synth.synthesize(target)
+
+print(f"gates    = {result.gates}")      # Clifford+T sequence over {H, S, T, X, Y, Z}
+print(f"lde      = {result.lde}")        # ≈ T-count + small offset
+print(f"distance = {result.distance:e}") # < epsilon
+```
+
+Round-tripping the gate string back to a unitary recovers the target.
+The composition convention is *leftmost gate is the leftmost matrix
+factor* — so for a gate string `"ABC"`, the resulting unitary is `A·B·C`:
+
+```python
+inv2 = 1 / np.sqrt(2)
+GATES = {
+    "H": np.array([[inv2, inv2], [inv2, -inv2]],              dtype=np.complex128),
+    "S": np.array([[1,    0],    [0,    1j]],                 dtype=np.complex128),
+    "T": np.array([[1,    0],    [0,    np.exp(1j*np.pi/4)]], dtype=np.complex128),
+    "X": np.array([[0,    1],    [1,    0]],                  dtype=np.complex128),
+    "Y": np.array([[0,    -1j],  [1j,   0]],                  dtype=np.complex128),
+    "Z": np.array([[1,    0],    [0,    -1]],                 dtype=np.complex128),
+}
+
+U = np.eye(2, dtype=np.complex128)
+for g in result.gates:
+    U = U @ GATES[g]
+
+tr = np.trace(U @ target.conj().T)
+recovered_distance = np.sqrt(max(0.0, 1.0 - abs(tr) ** 2 / 4.0))
+assert recovered_distance < 1e-5
+```
+
+The synthesizer accepts any 2×2 `np.complex128` ndarray (contiguous or
+strided). Optional keyword arguments override the defaults:
+`Synthesizer(epsilon, *, max_lde=None, min_lde=None, direct_limit=None)`.
+
+## Quick start (Rust)
 
 ```rust
 use cyclosynth::synthesis::Synthesizer;
