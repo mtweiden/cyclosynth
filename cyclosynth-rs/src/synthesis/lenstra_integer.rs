@@ -653,6 +653,73 @@ pub fn cfa_full_f64(scratch: &mut IntScratch) {
     }
 }
 
+/// Lazy floating-point size-reduction (Figure 5 of Nguyen-Stehlé 2009).
+///
+/// Reduces row κ against rows 0..κ-1 such that |μ̄_{κ,j}| ≤ η̄ for all j < κ,
+/// where η̄ = (η + 1/2) / 2. Operates iteratively: each pass computes CFA for
+/// row κ, predicts X_i = round(μ̄_{κ,i}), updates μ̄_{κ,j} predictively, then
+/// applies the basis transform b_κ -= Σ X_i b_i and updates the i256 Gram.
+/// Repeats until convergence.
+///
+/// Per Theorem 3 of the paper, the precision requirement for f64 (ℓ=52) is
+/// satisfied when rows 0..κ-1 are already L³-reduced — the L² main loop
+/// maintains this invariant.
+///
+/// Returns the number of passes used. Caller can detect non-convergence via
+/// MAX_LAZY_PASSES (we never expect this to fire in practice; a hard bound
+/// guards against pathological inputs).
+pub const MAX_LAZY_PASSES: usize = 32;
+
+pub fn lazy_size_reduce_row_kappa(scratch: &mut IntScratch, kappa: usize) -> usize {
+    let mut x = [0i64; 8];
+
+    for pass in 0..MAX_LAZY_PASSES {
+        // Step 2: compute CFA for row κ (reads i256 Gram via i256_to_f64).
+        cfa_row_f64(scratch, kappa);
+
+        // Step 3: convergence check.
+        let mut max_mu: f64 = 0.0;
+        for j in 0..kappa {
+            let m = scratch.mu_bar[kappa][j].abs();
+            if m > max_mu {
+                max_mu = m;
+            }
+        }
+        if max_mu <= L2_ETA_BAR {
+            return pass;
+        }
+
+        // Steps 4-5: compute X_i values descending from κ-1 to 0,
+        // predictively shrinking μ̄_{κ,j} as we go down.
+        for i in (0..kappa).rev() {
+            let xi = scratch.mu_bar[kappa][i].round() as i64;
+            x[i] = xi;
+            if xi != 0 {
+                let xi_f = xi as f64;
+                for j in 0..i {
+                    scratch.mu_bar[kappa][j] -= xi_f * scratch.mu_bar[i][j];
+                }
+            }
+        }
+
+        // Step 6: apply basis update and Gram update for each non-zero X_i.
+        // gram_update_size_reduce already encodes M·G·Mᵀ for one (k, j, r)
+        // triple; we call it sequentially for each non-zero x[i] so the
+        // chain of updates produces the correct final Gram.
+        for i in 0..kappa {
+            if x[i] != 0 {
+                for c in 0..8 {
+                    scratch.basis[kappa][c] -= x[i] * scratch.basis[i][c];
+                }
+                gram_update_size_reduce(scratch, kappa, i, x[i]);
+                x[i] = 0; // clear for next pass
+            }
+        }
+        // Step 7: goto step 2 (top of loop).
+    }
+    MAX_LAZY_PASSES
+}
+
 /// Partial GS through row k_max, computed via direct mpfr-sys calls.
 ///
 /// Standard Q-metric Gram-Schmidt recurrence (bounded by k_max):
@@ -852,6 +919,31 @@ fn gram_update_swap(scratch: &mut IntScratch, a: usize, b: usize) {
     }
 }
 
+/// L² INSERT operation (Figure 6 step 6 of Nguyen-Stehlé 2009).
+///
+/// Move basis row `kappa_orig` to position `kappa_insert` (≤ kappa_orig).
+/// Rows kappa_insert..kappa_orig-1 shift down by one. Implemented as a chain
+/// of adjacent swaps so the i256 Gram is kept consistent via the existing
+/// gram_update_swap. After basis + Gram are rotated, the GS state for row
+/// kappa_insert needs to be REFRESHED (because the row's contents changed):
+/// caller is responsible for invoking `cfa_row_f64(scratch, kappa_insert)`.
+///
+/// Cost: O(kappa_orig - kappa_insert) adjacent swaps, each O(d) for the
+/// gram column swap.
+fn basis_insert(scratch: &mut IntScratch, kappa_orig: usize, kappa_insert: usize) {
+    debug_assert!(kappa_insert <= kappa_orig);
+    let mut current = kappa_orig;
+    while current > kappa_insert {
+        scratch.basis.swap(current, current - 1);
+        gram_update_swap(scratch, current, current - 1);
+        current -= 1;
+    }
+    // Note: GS state (r_bar, mu_bar, s_bar) for rows kappa_insert..kappa_orig
+    // is now stale. The L² main loop must refresh row kappa_insert via
+    // cfa_row_f64 before the next iteration uses it. Rows above kappa_insert
+    // are recomputed naturally as κ advances and lazy_size_reduce calls CFA.
+}
+
 // ─── i256 Gram update: G = B · Q_int · Bᵀ ──────────────────────────────────
 
 /// Compute G = B · Q_int · Bᵀ entirely in i256, into `scratch.gram`. Uses
@@ -956,18 +1048,91 @@ fn gram_overflow_check(scratch: &IntScratch) -> bool {
     false
 }
 
-/// LLL with δ=0.75 in the Q metric, using i256 Gram and MPFR μ. Resets the
-/// basis to identity, then runs the standard size-reduce + Lovász loop.
-/// Returns the convergence status.
+/// L²-LLL (Nguyen-Stehlé 2009, Figure 6). Pure-f64 GS with exact i256 Gram.
 ///
-/// Maintains the Gram matrix incrementally across iterations:
-///   - At LLL start: full G = B · Q_int · Bᵀ via `compute_gram_int`.
-///   - On size-reduce `b_k -= r·b_j`: O(16) i256 row+column update.
-///   - On Lovász swap: O(8) row+column swap.
+/// Replaces the previous SWAP-based MPFR LLL with INSERT-based f64 LLL:
+///  - GS coefficients (r̄, μ̄, s̄) live in f64 throughout (no MPFR per iter)
+///  - i256 Gram is exact (read on demand for CFA, updated on basis changes)
+///  - Lazy size-reduction (Figure 5): iterate CFA + reduce until |μ̄| ≤ η̄
+///  - Lovász cascade: descend κ to find deepest insert position κ_insert,
+///    then rotate b_{κ_orig} to position κ_insert in one step (collapses
+///    multiple SWAPs into one INSERT)
 ///
-/// This eliminates the 2× full-Gram-recompute per iteration (the dominant
-/// pre-optimization cost), reducing per-iter work to: 2× GS (in MPFR) + a
-/// handful of incremental updates. Empirically halves LLL CPU at moderate ε.
+/// Per Theorem 3 of the paper, f64 precision suffices for our d=8 with
+/// (δ=0.75, η=0.55): required ℓ ≥ 5 + 2·log d − log ε + d·log ρ ≈ 33.6 bits.
+/// f64 (ℓ=52) has 18-bit margin under the L² invariant (rows 0..κ-1 kept
+/// L³-reduced as κ advances).
+pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
+    scratch.reset_basis();
+    let max_iter: usize = 10_000;
+    let mut iters: usize = 0;
+
+    // Step 1: compute exact integer Gram. Basis = identity → Gram = Q_int.
+    if !compute_gram_int(scratch) {
+        if crate::synthesis::diag::trace_enabled() {
+            crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
+        }
+        return LllResult::GramOverflow;
+    }
+
+    // Step 2: initialize r̄_{0,0} = ‖b_0‖² (CFA on row 0).
+    cfa_row_f64(scratch, 0);
+    let mut kappa = 1usize;
+
+    while kappa < 8 && iters < max_iter {
+        iters += 1;
+
+        // Step 3: lazy size-reduce row κ. Updates basis (i64) + Gram (i256)
+        // and refreshes r_bar/mu_bar/s_bar for row κ.
+        let _passes = lazy_size_reduce_row_kappa(scratch, kappa);
+
+        if gram_overflow_check(scratch) {
+            if crate::synthesis::diag::trace_enabled() {
+                crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
+            }
+            return LllResult::GramOverflow;
+        }
+
+        // Step 4: Lovász cascade. Find deepest position κ_insert where the
+        // size-reduced row κ_orig should be inserted. Use s̄_{κ-1}^{(κ_orig)}
+        // (partial CFA sum at depth κ-1 for the orig-frontier row) as the
+        // projected GS norm² at insertion depth κ.
+        let kappa_orig = kappa;
+        while kappa >= 1
+            && L2_DELTA_BAR * scratch.r_bar[kappa - 1][kappa - 1]
+                > scratch.s_bar[kappa_orig][kappa - 1]
+        {
+            if kappa <= 1 {
+                kappa = 0;
+                break;
+            }
+            kappa -= 1;
+        }
+
+        // Step 6: if insertion position < original, rotate basis + Gram so
+        // that old basis[κ_orig] lands at position κ. Refresh row κ's GS
+        // state via cfa_row_f64 (replaces the paper's step 5 explicit copy
+        // with an equivalent recompute from updated Gram).
+        if kappa < kappa_orig {
+            basis_insert(scratch, kappa_orig, kappa);
+            cfa_row_f64(scratch, kappa);
+        }
+        kappa += 1;
+    }
+
+    if crate::synthesis::diag::trace_enabled() {
+        crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
+    }
+    if iters >= max_iter {
+        LllResult::IterCap
+    } else {
+        LllResult::Converged
+    }
+}
+
+/// LEGACY: SWAP-based MPFR LLL. Retained during the L² cutover for shadow
+/// validation; will be removed in favor of `lll_l2_8` once the L² path is
+/// validated end-to-end.
 pub fn lll_int_8(scratch: &mut IntScratch) -> LllResult {
     scratch.reset_basis();
     let max_iter: usize = 10_000;
@@ -1714,6 +1879,79 @@ mod tests {
         for _ in 0..100 { v = v + v; }
         let neg_v = -v;
         assert_eq!(i256_to_f64(neg_v), -2f64.powi(100));
+    }
+
+    /// Run the L²-LLL for given (eps, k) and assert (a) det = ±1
+    /// (unimodular basis), (b) post-conditions of an L³-reduced basis
+    /// (size-reduced + Lovász). This is the invariant-based validation the
+    /// critic mandated for Task #60.
+    fn check_l2_lll(eps: Float, k: u32) -> LllResult {
+        let y = realistic_y(k);
+        let mut s = IntScratch::new(eps);
+        build_q_mpfr(&mut s, &y, k, eps);
+        build_q_int(&mut s);
+        let result = lll_l2_8(&mut s);
+        if let LllResult::GramOverflow = result {
+            return result;
+        }
+        // Unimodular check
+        let det = crate::synthesis::lenstra_heavy::det8_exact(&s.basis)
+            .expect("det8_exact overflow");
+        assert!(
+            det == 1 || det == -1,
+            "L²-LLL output non-unimodular: det={}, eps={:e}, k={}, result={:?}",
+            det, eps, k, result
+        );
+        // Size-reduction invariant: |μ̄_{i,j}| ≤ η for all i > j.
+        // Compute final GS state via CFA (algorithm doesn't promise final
+        // r_bar/mu_bar are valid; recompute fresh for the post-condition).
+        cfa_full_f64(&mut s);
+        for i in 1..8 {
+            for j in 0..i {
+                assert!(
+                    s.mu_bar[i][j].abs() <= L2_ETA + 1e-10,
+                    "size-reduction violated: |μ̄[{}][{}]|={} > η={}, eps={:e}, k={}",
+                    i, j, s.mu_bar[i][j].abs(), L2_ETA, eps, k
+                );
+            }
+        }
+        // Lovász: δ·r̄_{κ-1,κ-1} ≤ s̄_{κ-1}^{(κ)} for κ = 1..7.
+        // s̄_{κ-1}^{(κ)} = s_bar[κ][κ-1].
+        for kappa in 1..8 {
+            let lhs = L2_DELTA * s.r_bar[kappa - 1][kappa - 1];
+            let rhs = s.s_bar[kappa][kappa - 1];
+            assert!(
+                lhs <= rhs + 1e-10 * rhs.abs().max(1.0),
+                "Lovász violated at κ={}: δ·r̄_{}={} > s̄_{}^{}_={}, eps={:e}, k={}",
+                kappa, kappa - 1, lhs, kappa - 1, kappa, rhs, eps, k
+            );
+        }
+        result
+    }
+
+    #[test]
+    fn l2_lll_eps_1e_3() {
+        let r = check_l2_lll(1e-3, 14);
+        assert_eq!(r, LllResult::Converged, "L² did not converge at ε=1e-3");
+    }
+
+    #[test]
+    fn l2_lll_eps_1e_5() {
+        let r = check_l2_lll(1e-5, 21);
+        assert_eq!(r, LllResult::Converged, "L² did not converge at ε=1e-5");
+    }
+
+    #[test]
+    fn l2_lll_eps_1e_7() {
+        let r = check_l2_lll(1e-7, 49);
+        assert_eq!(r, LllResult::Converged, "L² did not converge at ε=1e-7");
+    }
+
+    #[test]
+    fn l2_lll_eps_1e_8() {
+        let r = check_l2_lll(1e-8, 70);
+        assert!(matches!(r, LllResult::Converged | LllResult::IterCap),
+            "unexpected at ε=1e-8: {:?}", r);
     }
 
     /// Run the integer LLL for given (eps, k) and assert det = ±1
