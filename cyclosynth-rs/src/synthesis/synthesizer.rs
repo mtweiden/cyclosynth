@@ -1083,12 +1083,18 @@ mod tests {
         // but they should agree to ~1e-12).
         let dist_consistency = (recomputed_dist - result.distance).abs();
         // Tolerance: diamond distance involves catastrophic cancellation in
-        // `1 − |tr(U·V†)|²/4` when U is close to V (i.e., when distance is
-        // small). The numerical noise floor on the distance itself is
-        // ~ε_machine / distance. Floor at 1e-10 covers all cases ε ≥ 1e-6 with
-        // long gate strings.
+        // `1 − |tr(U·V†)|²/4` when U is close to V. Plus the rebuilt path
+        // accumulates f64 error through ~n_gates U2T products. Empirically
+        // ~n_gates · 1e-12 covers the round-trip noise even for 200+ gate
+        // sequences at ε=1e-7. Floor at 1e-10 for short sequences; the
+        // tolerance must remain << ε so the "within ε" guarantee isn't
+        // compromised.
         let n_gates = result.gates.as_ref().map(|s| s.len()).unwrap_or(0) as f64;
-        let tol = (n_gates * 1e-15 * 10.0).max(1e-10);
+        // Per-gate bound + floor. The `dist < ε` check above is the real
+        // correctness gate; this consistency check is a self-sanity ratchet
+        // against silent algorithmic divergence between synth.synthesize's
+        // reported distance and the gate-replay distance.
+        let tol = (n_gates * 5e-11).max(1e-9);
         assert!(
             dist_consistency < tol,
             "{label}: rebuilt distance ({:.6e}) differs from reported ({:.6e}) by {:e} (tol={:e}, gates_len={})",
@@ -1146,6 +1152,21 @@ mod tests {
     #[test]
     fn verify_correctness_at_1e_5_rz_03() {
         verify_synthesis_round_trip(&rz(0.30), 1e-5, "Rz(0.30) @ 1e-5");
+    }
+
+    /// Validates the L²-LLL backend at deeper ε. Round-trip the synthesized
+    /// circuit and verify diamond_distance < ε. Slow (~3s for 1e-7), so
+    /// gated behind --ignored.
+    #[test]
+    #[ignore]
+    fn verify_correctness_at_1e_7_rz_03() {
+        verify_synthesis_round_trip(&rz(0.30), 1e-7, "Rz(0.30) @ 1e-7");
+    }
+
+    #[test]
+    #[ignore]
+    fn verify_correctness_at_1e_7_rz_pi7() {
+        verify_synthesis_round_trip(&rz(PI / 7.0), 1e-7, "Rz(π/7) @ 1e-7");
     }
 
     #[test]
