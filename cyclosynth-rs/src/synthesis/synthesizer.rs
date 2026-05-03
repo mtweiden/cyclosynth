@@ -1,29 +1,33 @@
-//! Exact Clifford+T synthesis (Algorithm 3.14, arXiv:2510.05816).
+//! Exact Clifford+T synthesis (Algorithm 3.14 of arXiv:2510.05816).
 //!
-//! Finds the minimum-T-count Clifford+T circuit U such that d_diamond(U, V) < ε.
+//! Given a target unitary `V` and tolerance `ε`, finds a minimum-T-count
+//! Clifford+T circuit `U` with `d_diamond(U, V) < ε`.
 //!
-//! # Architecture
+//! # Search modes
 //!
-//! Two search modes are used depending on T-count `t` vs `direct_limit` (default 6):
+//! The [`Synthesizer::synthesize`] entry point drives a search over T-count
+//! `t = 0, 1, 2, …`, trying two backends depending on `t`:
 //!
-//! **direct_search** (Algorithm 3.6, `t ≤ direct_limit`):
-//!   Brute-force enumeration via `search::aligned_search` over the norm shell
-//!   ‖x‖² = 2^t. Tries even / T / T† branches and all 24 Clifford left-prefixes.
-//!   Fast for small t (norm ≤ 2^6 = 64), exponentially slow beyond that.
+//! - [`direct_search`] (`t ≤ direct_limit`, default 6): brute-force
+//!   enumeration over the norm shell `‖x‖² = 2^t` via
+//!   [`crate::synthesis::search::aligned_search`]. Tries even, T, and T†
+//!   right-side branches, each combined with all 24 Clifford left
+//!   prefixes. Fast for small `t`; exponential beyond that.
 //!
-//! **dc_search** (Algorithm 3.11, `t > direct_limit`):
-//!   Divide-and-conquer with Matsumoto–Amano left prefixes L_{t'}.
-//!   Split: t' = max(t − direct_limit,  ⌈t − 5/2·log₂(1/ε)⌉)  (whichever is larger).
-//!   For each U_L ∈ L_{t'}, searches for U_R via `lll_aligned_search` (LLL+CVP,
-//!   bandb5.py port) at the inner lde k_inner = t_inner/2 + 1 (bandb5 k convention).
+//! - [`dc_search`] (`t > direct_limit`, Algorithm 3.11): divide-and-
+//!   conquer using Matsumoto–Amano left prefixes `L_{t'}`. Splits at
+//!   `t' = max(t − direct_limit, ⌈t − 5/2·log₂(1/ε)⌉)`. For each prefix
+//!   `U_L ∈ L_{t'}`, searches for the right factor via
+//!   [`lll_aligned_search`] at inner lde `k_inner` (see below).
 //!   Tries even (U_L·U_R) and odd (U_L·U_R·T) inner branches.
 //!
-//! # Key invariant
+//! # Inner-lde convention
 //!
-//! `lll_aligned_search` uses bandb5.py's k convention: norm shell = 2^k where
-//! k = T_count/2 + 1. This is NOT the T-count itself. Always convert:
-//!   k_inner = t_inner / 2 + 1  (even)
-//!   k_inner = (t_inner - 1) / 2 + 1  (odd)
+//! [`lll_aligned_search`] uses `k_inner = T_inner/2 + 1` (norm shell
+//! `2^k_inner`), not the T-count itself:
+//!
+//!   k_inner = t_inner / 2 + 1            (even t_inner)
+//!   k_inner = (t_inner - 1) / 2 + 1      (odd t_inner)
 
 use num_complex::Complex;
 use std::collections::HashMap;
@@ -424,41 +428,35 @@ fn trace_dump_pass(
     }
 }
 
-// ─── LLL-based aligned search (bandb5.py port) ────────────────────────────────
+// ─── LLL-based aligned search (used by dc_search inner step) ─────────────────
 
-/// Scale the alignment vector to the y-vector used in bandb5.py.
-///
-/// y = compute_align_vec(v) * sqrt(2^k) / 2.
-/// Property: ||y||² = 2^(k-1).
+/// Scale a 4-element alignment vector `v` to the 8-element y vector used by
+/// the lenstra pipeline. `y = compute_align_vec(v) · sqrt(2^k) / 2`,
+/// satisfying `‖y‖² = 2^(k-1)`. Used `powf` (not bit-shift) so `k ≥ 64`
+/// stays well-defined.
 fn uv_to_xy(v: [Float; 4], k: u32) -> [Float; 8] {
-    // sqrt(2^k) / 2 = 2^(k/2 - 1). For k ≥ 64, `1i64 << k` is UB; powf is
-    // safe for any k ≤ 1023.
     let scale = 2.0_f64.powf(k as f64 / 2.0 - 1.0);
     compute_align_vec(v).map(|x| x * scale)
 }
 
-
-/// Per-phase1_enumerate cap on phase2_pq invocations. Bails out of an unproductive prefix
-/// search after this many phase2_pq calls. CenteredRange iterates outer (a1..c2) tuples
-/// from the optimal CVP center outward, so the first calls are the most likely to succeed.
-/// The cap is shared across parallel inner_fn invocations within a single phase1_enumerate,
-/// so the budget is global to the prefix.
-///
-/// `synthesize` does adaptive retry: at each lde, dc_search runs first with PASS1_CAP
-/// (aggressive — fast bail of failing prefixes); if no solution is found across the entire
-/// L_t', it retries with PASS2_CAP (full budget) before rolling to lde+1. The two-pass
-/// scheme is a win when (a) at least one prefix's solution is shallow (pass 1 finds it
-/// quickly) or (b) every prefix's solution is deep (pass 1 is wasted but cheap, pass 2
-/// catches it). It's a loss when pass 1 finds a "deep alternative" prefix slowly.
+/// Per-prefix budget cap on Schnorr-Euchner leaf-callback invocations,
+/// shared across the parallel inner-loop for a single MA prefix. When hit,
+/// the search bails out of that prefix and signals the dispatcher via
+/// `budget_hit`. The dispatcher uses a two-pass strategy at each lde:
+///   - Pass 1 with `PASS1_CAP` (aggressive — bails unproductive prefixes
+///     quickly).
+///   - If no solution and at least one prefix tripped the cap, Pass 2 with
+///     `PASS2_CAP` (effectively unbounded) before advancing to lde+1.
 const PASS1_CAP: u64 = 2_000_000;
 const PASS2_CAP: u64 = u64::MAX;
 
-
-/// LLL-based aligned search: implements bandb5.py's `synthesize`.
+/// LLL-based aligned search for a right factor `U_R` of given lde `k`
+/// matching the alignment vector `v`. Finds integer 8-vectors satisfying
+/// the norm-shell, bilinear-form, and alignment constraints.
 ///
-/// Finds integer lattice vectors satisfying norm, unitarity, and alignment.
-/// `max_phase2_calls` caps the per-phase1 phase2_pq dispatch budget; if reached, the
-/// shared `budget_hit` flag is set so dc_search can decide whether to retry.
+/// `max_solutions` caps how many candidates are returned. `max_phase2_calls`
+/// caps the per-prefix SE budget; if reached, `budget_hit` is set so the
+/// caller can choose to retry with a larger budget.
 fn lll_aligned_search(
     scratch: &mut crate::synthesis::lenstra::LenstraScratch,
     v: [Float; 4],
