@@ -17,26 +17,24 @@
 //! returns the first candidate that passes.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use twofloat::TwoFloat as Tf;
 
-use rug::Float as RFloat;
+use rug::{Assign, Float as RFloat};
 
 use i256::i256;
 
 type IMat8 = [[i64; 8]; 8];
 
-// ─── i256 / RFloat → TwoFloat conversion ─────────────────────────────────────
+/// MPFR precision used by SE. 128 bits ≈ TwoFloat's prior 104-bit budget
+/// with margin. f64-only SE is known to break at ε ≤ 1e-5 due to
+/// "ghost-node" bound-check noise from squared-norm cancellation; this
+/// precision restores the safety margin TwoFloat had.
+pub const SE_PREC: u32 = 128;
 
-/// Convert an `RFloat` (rug, MPFR-backed) to `TwoFloat` via Shannon
-/// decomposition: `hi = round_to_f64(x); lo = round_to_f64(x − hi)`.
-/// Preserves up to ~104 bits (the TwoFloat mantissa). Used to feed the SE
-/// walk's Cholesky factor at high precision in the post-LLL pipeline.
-pub fn rfloat_to_tf(r: &RFloat) -> Tf {
-    let hi = r.to_f64();
-    let mut resid = r.clone();
-    resid -= hi;
-    let lo = resid.to_f64();
-    Tf::new_add(hi, lo)
+/// Convert an arbitrary-precision `RFloat` (built at scratch.prec_q for
+/// post-LLL Cholesky) to the SE working precision (128 bits). Single
+/// allocation, single MPFR conversion.
+pub fn rfloat_to_se(r: &RFloat) -> RFloat {
+    RFloat::with_val(SE_PREC, r)
 }
 
 // ─── Exact 8×8 determinant in i256 (Bareiss) ──────────────────────────────────
@@ -152,9 +150,9 @@ pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
 /// distance-from-center order, invoking `callback(&z)` at each leaf. Returns
 /// the first non-`None` callback result, or `None` if the search exhausts.
 ///
-/// All distance arithmetic uses [`TwoFloat`] (~104-bit mantissa) — the f64
-/// version was insufficient at extreme ε (Cholesky-diagonal ratios > 10¹⁰
-/// caused "ghost-node" SE blowup from squared-norm noise).
+/// All distance arithmetic uses MPFR `RFloat` at 128-bit precision — the
+/// f64-only version was insufficient at extreme ε (Cholesky-diagonal
+/// ratios > 10¹⁰ caused "ghost-node" SE blowup from squared-norm noise).
 ///
 /// `r_chol_eucl` is an optional Euclidean-Cholesky factor for an additional
 /// norm-shell prune; pass `None` to disable it. With it, branches whose
@@ -163,9 +161,9 @@ pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
 /// `abort` is checked at every recursion entry — when set, the enumeration
 /// returns `None` immediately.
 pub fn schnorr_euchner_8d<F>(
-    r_chol: &[[Tf; 8]; 8],
-    z_c: &[Tf; 8],
-    bound: Tf,
+    r_chol: &[[RFloat; 8]; 8],
+    z_c: &[RFloat; 8],
+    bound: &RFloat,
     r_chol_eucl: Option<&[[f64; 8]; 8]>,
     target_norm_eucl: f64,
     abort: &AtomicBool,
@@ -176,7 +174,7 @@ where
 {
     let mut z = [0i64; 8];
     let result = std::cell::RefCell::new(None);
-    let zero = Tf::from(0.0_f64);
+    let zero = RFloat::with_val(SE_PREC, 0.0_f64);
 
     recurse(
         7,
@@ -187,7 +185,7 @@ where
         target_norm_eucl,
         0.0,
         &mut z,
-        zero,
+        &zero,
         abort,
         &mut callback,
         &result,
@@ -198,14 +196,14 @@ where
 #[allow(clippy::too_many_arguments)]
 fn recurse<F>(
     depth: i32,
-    r_chol: &[[Tf; 8]; 8],
-    z_c: &[Tf; 8],
-    bound: Tf,
+    r_chol: &[[RFloat; 8]; 8],
+    z_c: &[RFloat; 8],
+    bound: &RFloat,
     r_chol_eucl: Option<&[[f64; 8]; 8]>,
     target_norm_eucl: f64,
     partial_eucl: f64,
     z: &mut [i64; 8],
-    partial: Tf,
+    partial: &RFloat,
     abort: &AtomicBool,
     callback: &mut F,
     result: &std::cell::RefCell<Option<[i64; 8]>>,
@@ -222,12 +220,25 @@ fn recurse<F>(
         return;
     }
     let d = depth as usize;
-    let r_dd = r_chol[d][d];
+    let r_dd = &r_chol[d][d];
+
+    // Per-call scratch pre-allocated once, reused inside the inner loop via
+    // assign() patterns. ~10 allocations per recurse call instead of per
+    // inner iteration.
+    let mut tail = RFloat::with_val(SE_PREC, 0.0_f64);
+    let mut tmp = RFloat::with_val(SE_PREC, 0.0_f64);
+    let mut diff = RFloat::with_val(SE_PREC, 0.0_f64);
+    let mut prod = RFloat::with_val(SE_PREC, 0.0_f64);
+    let mut zd_rf = RFloat::with_val(SE_PREC, 0.0_f64);
+    let mut level = RFloat::with_val(SE_PREC, 0.0_f64);
+    let mut level_sq = RFloat::with_val(SE_PREC, 0.0_f64);
+    let mut new_partial = RFloat::with_val(SE_PREC, 0.0_f64);
 
     // Structural guard against a degenerate diagonal (r_chol PD-ness should
     // exclude this, but tolerate it gracefully).
-    if f64::from(r_dd.abs()) < 1e-30 {
-        z[d] = f64::from(z_c[d]).round() as i64;
+    tmp.assign(r_dd.clone().abs());
+    if tmp.to_f64() < 1e-30 {
+        z[d] = z_c[d].to_f64().round() as i64;
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             partial_eucl, z, partial, abort, callback, result,
@@ -236,26 +247,25 @@ fn recurse<F>(
     }
 
     // tail = Σ_{j > d} R[d][j] · (z[j] − z_c[j])
-    let mut tail = Tf::from(0.0_f64);
     for j in (d + 1)..8 {
-        let zj = Tf::from(z[j] as f64);
-        let diff = zj - z_c[j];
-        tail = tail + r_chol[d][j] * diff;
+        diff.assign(z[j] as f64);
+        diff -= &z_c[j];
+        prod.assign(&r_chol[d][j] * &diff);
+        tail += &prod;
     }
 
-    let rem = bound - partial;
-    if f64::from(rem) < 0.0 {
+    // rem = bound - partial; check >= 0 then sqrt.
+    tmp.assign(bound - partial);
+    if tmp.to_f64() < 0.0 {
         return;
     }
-    let rem_sqrt = rem.sqrt();
+    let rem_sqrt_f = tmp.to_f64().sqrt();
 
-    // Iteration bounds: drop to f64 for picking integer endpoints. The TwoFloat
-    // precision in the bounds doesn't change which integers fall inside them
-    // — only matters at the unlikely 1-ULP edge.
-    let r_dd_f = f64::from(r_dd);
-    let z_c_d_f = f64::from(z_c[d]);
-    let center_off = -f64::from(tail) / r_dd_f;
-    let span = f64::from(rem_sqrt) / r_dd_f.abs();
+    // Iteration bounds in f64.
+    let r_dd_f = r_dd.to_f64();
+    let z_c_d_f = z_c[d].to_f64();
+    let center_off = -tail.to_f64() / r_dd_f;
+    let span = rem_sqrt_f / r_dd_f.abs();
     let z_low = (z_c_d_f + center_off - span).ceil() as i64;
     let z_high = (z_c_d_f + center_off + span).floor() as i64;
     let z_mid = (z_c_d_f + center_off).round() as i64;
@@ -289,13 +299,15 @@ fn recurse<F>(
             continue;
         }
 
-        // Squared-distance accumulation in TwoFloat — this is the bit f64
-        // was getting wrong at extreme ε.
-        let zd_tf = Tf::from(zd as f64);
-        let level = r_dd * (zd_tf - z_c[d]) + tail;
-        let level_sq = level * level;
-        let new_partial = partial + level_sq;
-        if f64::from(new_partial - bound) > 1e-9 {
+        // level = r_dd · (zd − z_c[d]) + tail; squared.
+        zd_rf.assign(zd as f64);
+        diff.assign(&zd_rf - &z_c[d]);
+        level.assign(r_dd * &diff);
+        level += &tail;
+        level_sq.assign(&level * &level);
+        new_partial.assign(partial + &level_sq);
+        tmp.assign(&new_partial - bound);
+        if tmp.to_f64() > 1e-9 {
             continue;
         }
 
@@ -314,7 +326,7 @@ fn recurse<F>(
         z[d] = zd;
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
-            new_partial_eucl, z, new_partial, abort, callback, result,
+            new_partial_eucl, z, &new_partial, abort, callback, result,
         );
     }
 }

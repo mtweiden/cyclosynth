@@ -1219,71 +1219,6 @@ pub fn cholesky_f64_8(scratch: &mut IntScratch) -> bool {
     true
 }
 
-// ─── TwoFloat LU for the cap-center solve ────────────────────────────────────
-//
-// The cap-center system is `Bᵀ·z_c = c` where B is exact integer (det=±1)
-// and c is the alignment target at TwoFloat precision. Standard Gaussian
-// elimination with partial pivoting in TwoFloat throughout. SE consumes
-// `z_c` as TwoFloat directly — no MPFR required.
-
-use twofloat::TwoFloat as Tf;
-
-/// Compute `cap_mid = (1 + √(1 − ε²)) / 2` in TwoFloat. For ε = 1e-8 this
-/// is ≈ 1 − 2.5·10⁻¹⁷, below f64 precision but well within TwoFloat's
-/// ~104-bit mantissa. Used to build the alignment-target RHS.
-pub fn cap_mid_tf(eps: Float) -> Tf {
-    let eps_tf = Tf::from(eps);
-    let term = Tf::from(1.0_f64) - eps_tf * eps_tf;
-    (Tf::from(1.0_f64) + term.sqrt()) / Tf::from(2.0_f64)
-}
-
-/// Solve `Bᵀ·z = c` for `z` in TwoFloat, where `basis` is the LLL-reduced
-/// integer basis (rows are basis vectors) and `c` is the target alignment
-/// in TwoFloat. Standard partial-pivoting LU. Returns `None` if the matrix
-/// is numerically singular (impossible for an LLL output with det=±1, but
-/// guarded for robustness).
-pub fn tf_lu_solve_8(basis: &IMat8, c: &[Tf; 8]) -> Option<[Tf; 8]> {
-    let mut a: [[Tf; 8]; 8] = std::array::from_fn(|i| {
-        std::array::from_fn(|j| Tf::from(basis[j][i] as f64))
-    });
-    let mut rhs: [Tf; 8] = *c;
-
-    for k in 0..8 {
-        let mut piv = k;
-        let mut piv_abs = f64::from(a[k][k].abs());
-        for i in (k + 1)..8 {
-            let v = f64::from(a[i][k].abs());
-            if v > piv_abs {
-                piv_abs = v;
-                piv = i;
-            }
-        }
-        if piv_abs < 1e-30 {
-            return None;
-        }
-        if piv != k {
-            a.swap(k, piv);
-            rhs.swap(k, piv);
-        }
-        for i in (k + 1)..8 {
-            let factor = a[i][k] / a[k][k];
-            for j in k..8 {
-                a[i][j] = a[i][j] - factor * a[k][j];
-            }
-            rhs[i] = rhs[i] - factor * rhs[k];
-        }
-    }
-    let mut x: [Tf; 8] = [Tf::from(0.0_f64); 8];
-    for i in (0..8).rev() {
-        let mut s = rhs[i];
-        for j in (i + 1)..8 {
-            s = s - a[i][j] * x[j];
-        }
-        x[i] = s / a[i][i];
-    }
-    Some(x)
-}
-
 // ─── Top-level phase1 entry point ────────────────────────────────────────────
 
 use std::sync::atomic::AtomicBool;
@@ -1381,9 +1316,9 @@ pub fn phase1(
         return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
     }
 
-    // Build R = Lᵀ in TwoFloat (zero-cost f64→Tf lift; lo = 0).
-    let r_chol_tf: [[Tf; 8]; 8] = std::array::from_fn(|i| {
-        std::array::from_fn(|j| Tf::from(scratch.l_f64[j][i]))
+    // Build R = Lᵀ at SE working precision (128-bit MPFR).
+    let r_chol_se: [[RFloat; 8]; 8] = std::array::from_fn(|i| {
+        std::array::from_fn(|j| RFloat::with_val(super::se::SE_PREC, scratch.l_f64[j][i]))
     });
 
     // Step 5: build cap center c = y · cap_mid (in MPFR), then LU solve
@@ -1408,22 +1343,22 @@ pub fn phase1(
         eprintln!("[lenstra_int] LU solve failed at eps={:e}, k={}; bailing.", eps, k);
         return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
     }
-    let z_c_tf: [Tf; 8] = std::array::from_fn(|i| {
-        super::se::rfloat_to_tf(&scratch.lu_x[i])
+    let z_c_se: [RFloat; 8] = std::array::from_fn(|i| {
+        super::se::rfloat_to_se(&scratch.lu_x[i])
     });
 
-    // Step 6: SE in TwoFloat
+    // Step 6: SE at 128-bit MPFR precision.
     let r_eucl = super::se::euclidean_cholesky(&basis);
     let target_norm_f = target_norm as f64;
     let count = AtomicU64::new(0);
     let abort = AtomicBool::new(false);
-    let bound_tf = Tf::from(1.51_f64);
+    let bound_se = RFloat::with_val(super::se::SE_PREC, 1.51_f64);
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
 
     let result = super::se::schnorr_euchner_8d(
-        &r_chol_tf,
-        &z_c_tf,
-        bound_tf,
+        &r_chol_se,
+        &z_c_se,
+        &bound_se,
         r_eucl.as_ref(),
         target_norm_f,
         &abort,
@@ -1933,124 +1868,4 @@ mod tests {
         cholesky_f64_matches_mpfr(1e-8, 70);
     }
 
-    /// FAILS as documented (gated `#[ignore]`): the TwoFloat LU diverges
-    /// from the MPFR reference by ~10⁻⁷ relative at ε=1e-5 (vs the expected
-    /// ~10⁻³⁰ from a TwoFloat κ=1 solve). The discrepancy is too large to be
-    /// pure rounding accumulation; root cause not yet pinned down. Production
-    /// path retains MPFR LU. This test exists as a discoverable record so
-    /// any future "let's try TwoFloat LU" reconsideration starts here.
-    #[allow(dead_code)]
-    fn lu_tf_matches_mpfr(eps: Float, k: u32) {
-        let y = realistic_y(k);
-        let mut s = IntScratch::new(eps);
-        build_q_mpfr(&mut s, &y, k, eps);
-        build_q_int(&mut s);
-        let _ = lll_l2_8(&mut s);
-        let basis = s.basis;
-
-        // MPFR reference path
-        for i in 0..8 {
-            for j in 0..8 {
-                s.lu_a[i][j].assign(rfv(s.prec_q, basis[j][i] as f64));
-            }
-            s.lu_rhs[i].assign(&s.c[i]);
-        }
-        assert!(lu_solve_int_inplace(&mut s), "MPFR LU failed at eps={:e}", eps);
-        let z_mpfr: [f64; 8] = std::array::from_fn(|i| s.lu_x[i].to_f64());
-
-        // TwoFloat path
-        let cap_mid = cap_mid_tf(eps);
-        let c_tf: [Tf; 8] = std::array::from_fn(|i| Tf::from(y[i]) * cap_mid);
-        let z_tf = tf_lu_solve_8(&basis, &c_tf).expect("TwoFloat LU failed");
-        let z_tf_f64: [f64; 8] = std::array::from_fn(|i| f64::from(z_tf[i]));
-
-        let mut max_rel: f64 = 0.0;
-        for i in 0..8 {
-            let diff = (z_mpfr[i] - z_tf_f64[i]).abs();
-            let mag = z_mpfr[i].abs().max(z_tf_f64[i].abs()).max(1e-300);
-            let rel = diff / mag;
-            if rel > max_rel { max_rel = rel; }
-            assert!(
-                rel < 1e-10,
-                "z_c[{}] mismatch at eps={:e}, k={}: rel={:e}, mpfr={}, tf={}",
-                i, eps, k, rel, z_mpfr[i], z_tf_f64[i]
-            );
-        }
-        eprintln!("lu_tf_matches_mpfr eps={:e} k={}: max_rel={:e}", eps, k, max_rel);
-    }
-
-    /// Sanity-check tf_lu_solve_8 on a trivial case. If this passes,
-    /// the bug is *somewhere* in input setup or precision interaction with
-    /// the realistic basis / c values, not in the LU algorithm itself.
-    #[test]
-    fn tf_lu_solve_identity_smoke() {
-        let basis: IMat8 = identity_basis();
-        let c: [Tf; 8] = std::array::from_fn(|i| Tf::from((i as f64) + 1.0));
-        let z = tf_lu_solve_8(&basis, &c).expect("identity LU failed");
-        for i in 0..8 {
-            let z_f = f64::from(z[i]);
-            assert!(
-                (z_f - ((i as f64) + 1.0)).abs() < 1e-10,
-                "identity LU: z[{}] = {} expected {}", i, z_f, (i as f64) + 1.0
-            );
-        }
-    }
-
-    /// Solve (B^T · z = c) for a random small integer B with det=±1 and a
-    /// small TwoFloat RHS. Cross-check via MPFR. If THIS fails, the bug is
-    /// in the LU implementation; if this passes but the realistic test
-    /// fails, the bug is in the precision interaction at large RHS.
-    #[test]
-    fn tf_lu_solve_small_int_basis() {
-        let basis: IMat8 = [
-            [3, 1, 0, 0, 0, 0, 0, 0],
-            [1, 2, 0, 0, 0, 0, 0, 0],
-            [0, 1, 1, 0, 0, 0, 0, 0],
-            [0, 0, 0, 1, 0, 0, 0, 0],
-            [0, 0, 0, 0, 1, 0, 0, 0],
-            [0, 0, 0, 0, 0, 1, 0, 0],
-            [0, 0, 0, 0, 0, 0, 1, 0],
-            [0, 0, 0, 0, 0, 0, 0, 1],
-        ];
-        let c_vals: [f64; 8] = [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5];
-        let c_tf: [Tf; 8] = std::array::from_fn(|i| Tf::from(c_vals[i]));
-        let z_tf = tf_lu_solve_8(&basis, &c_tf).expect("small int LU failed");
-        // Reference: solve in MPFR.
-        let mut s = IntScratch::new(1e-3);
-        for i in 0..8 {
-            for j in 0..8 {
-                s.lu_a[i][j].assign(rfv(s.prec_q, basis[j][i] as f64));
-            }
-            s.lu_rhs[i].assign(rfv(s.prec_q, c_vals[i]));
-        }
-        assert!(lu_solve_int_inplace(&mut s));
-        for i in 0..8 {
-            let mpfr_z = s.lu_x[i].to_f64();
-            let tf_z = f64::from(z_tf[i]);
-            let rel = (mpfr_z - tf_z).abs() / mpfr_z.abs().max(1e-30);
-            assert!(
-                rel < 1e-12,
-                "small int z[{}]: mpfr={} tf={} rel={:e}",
-                i, mpfr_z, tf_z, rel
-            );
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn lu_tf_matches_mpfr_at_eps_1e_5() {
-        lu_tf_matches_mpfr(1e-5, 21);
-    }
-
-    #[test]
-    #[ignore]
-    fn lu_tf_matches_mpfr_at_eps_1e_7() {
-        lu_tf_matches_mpfr(1e-7, 49);
-    }
-
-    #[test]
-    #[ignore]
-    fn lu_tf_matches_mpfr_at_eps_1e_8() {
-        lu_tf_matches_mpfr(1e-8, 70);
-    }
 }
