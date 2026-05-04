@@ -602,9 +602,13 @@ pub struct Synthesizer {
 impl Synthesizer {
     /// Create a synthesizer with the given precision and sensible defaults.
     ///
-    /// Sets `min_lde = floor(2.8 · log₂(1/ε))` — the information-theoretic
-    /// lower bound below which no generic rotation can be approximated to
-    /// within ε.
+    /// Sets `min_lde = floor(coef(ε) · log₂(1/ε))` where `coef` ramps from
+    /// `1.5` at ε ≥ 1e-4 up to `2.8` at ε ≤ 1e-6, linearly interpolated in
+    /// log10(1/ε) between the two breakpoints. At larger ε, identity-like
+    /// targets and small-T solutions live well below the deep-ε floor; the
+    /// 1.5× coefficient gives them a chance. At deep ε, the 2.8× floor
+    /// matches the empirical T-count for generic rotations and skips
+    /// known-empty lde levels.
     ///
     /// Sets `max_lde = max(50, ceil(3.1 · log₂(1/ε)) + 2)` — generous upper
     /// bound that scales with ε so that worst-case angles (e.g. Rz(π/7) at
@@ -613,9 +617,18 @@ impl Synthesizer {
     /// observed T-count spread across angles in the bench.
     pub fn new(epsilon: Float) -> Self {
         let (min_lde, max_lde) = if epsilon > 0.0 && epsilon < 1.0 {
-            let log_recip = (1.0 / epsilon).log2();
-            let min_lde = (2.8 * log_recip).floor() as u32;
-            let max_lde = ((3.1 * log_recip).ceil() as u32 + 2).max(50);
+            let log2_recip  = (1.0 / epsilon).log2();
+            let log10_recip = (1.0 / epsilon).log10();
+            let coef = if log10_recip <= 4.0 {
+                1.5
+            } else if log10_recip >= 6.0 {
+                2.8
+            } else {
+                // Linear in log10(1/ε): 1.5 at decade 4, 2.8 at decade 6.
+                1.5 + 0.65 * (log10_recip - 4.0)
+            };
+            let min_lde = (coef * log2_recip).floor() as u32;
+            let max_lde = ((3.1 * log2_recip).ceil() as u32 + 2).max(50);
             (min_lde, max_lde)
         } else {
             (0, 50)
