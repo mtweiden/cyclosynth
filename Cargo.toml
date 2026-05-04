@@ -11,7 +11,6 @@ crate-type = ["cdylib", "rlib"]
 num-complex = "0.4"
 i256 = "0.2.3"
 rayon = "1.10"
-twofloat = "0.8"
 rug = { version = "1", default-features = false, features = ["float", "integer"] }
 gmp-mpfr-sys = "1.7"
 pyo3 = { version = "0.22", optional = true, features = ["extension-module", "num-complex"] }
