@@ -453,6 +453,15 @@ fn trace_dump_pass(
             "[trace]            lll_iters total={} avg={:.0} max={} at_cap={} (cap=10000)",
             s.lll_iters_total, lll_avg, s.lll_iters_max, s.lll_at_cap
         );
+        let lazy_avg = if s.lazy_calls_total > 0 {
+            s.lazy_passes_total as f64 / s.lazy_calls_total as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[trace]            lazy_passes total={} calls={} avg={:.2} max={}",
+            s.lazy_passes_total, s.lazy_calls_total, lazy_avg, s.lazy_passes_max
+        );
     }
 }
 

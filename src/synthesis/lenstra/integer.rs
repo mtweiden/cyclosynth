@@ -710,6 +710,9 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
             }
         }
         if max_mu <= L2_ETA_BAR {
+            if crate::synthesis::diag::trace_enabled() {
+                crate::synthesis::diag::record_lazy_passes((pass + 1) as u64);
+            }
             return pass;
         }
 
@@ -740,6 +743,9 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
             }
         }
         // Step 7: goto step 2 (top of loop).
+    }
+    if crate::synthesis::diag::trace_enabled() {
+        crate::synthesis::diag::record_lazy_passes(MAX_LAZY_PASSES as u64);
     }
     MAX_LAZY_PASSES
 }
