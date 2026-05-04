@@ -135,6 +135,24 @@ pub fn compute_prec_q(eps: Float) -> u32 {
     bits.max(100)
 }
 
+/// MPFR precision used by the cap-center LU solve, scaled with ε.
+///
+/// The basis `B` has det=±1 but its entries grow with ε (up to ~2¹⁵ at
+/// ε=1e-5, ~2⁴¹ at ε=1e-8). Partial-pivoting LU on this basis can develop
+/// pivot ratios up to ~max(|B|)^(d-1) in pathological cases — usually
+/// much tighter, but enough to consume meaningful precision at deep ε.
+/// Empirically at ε=1e-8 a 96-bit LU loses enough precision in z_c that SE
+/// misses the canonical-lde solution; 6·log₂(1/ε) bits leaves margin.
+///
+/// Versus the previous prec_q (8·log₂(1/ε)) this is 75% of the precision,
+/// so each MPFR op is ~1.3× cheaper. Applied to ~13s of LU CPU at lde=80
+/// this is ~3-4s CPU savings, ~0.4s wall.
+pub fn compute_lu_prec(eps: Float) -> u32 {
+    let log_recip = (1.0 / eps).log2().max(1.0);
+    let bits = (6.0 * log_recip).ceil() as u32;
+    bits.max(96)
+}
+
 type IMat8 = [[i64; 8]; 8];
 type Mat256 = [[i256; 8]; 8];
 
@@ -204,14 +222,22 @@ pub struct IntScratch {
     /// six orders of magnitude below SE's 10⁻⁹ tolerance.
     pub l_f64: [[f64; 8]; 8],
 
-    // ── Legacy MPFR Cholesky/LU buffers (test-suite reference only) ──
+    // ── Legacy MPFR Cholesky buffers (test-suite reference only) ──
     /// Kept so the test suite can run `cholesky_int_8` as a reference oracle
     /// against `cholesky_f64_8` across ε regimes. Not used in production.
     pub g_post_lll: [[RFloat; 8]; 8],
     pub l: [[RFloat; 8]; 8],
+
+    // ── MPFR LU buffers at lu_prec (scales with ε, ~75% of prec_q) ──
+    /// Decoupled from `prec_q` so each MPFR op in the LU runs at lower
+    /// precision (~1.3× cheaper) without affecting build_q's higher-precision
+    /// requirement.
+    pub lu_prec: u32,
     pub lu_a: [[RFloat; 8]; 8],
     pub lu_rhs: [RFloat; 8],
     pub lu_x: [RFloat; 8],
+    pub lu_tmp: RFloat,
+    pub lu_acc: RFloat,
 }
 
 fn rfz(prec: u32) -> RFloat {
@@ -278,6 +304,7 @@ fn fill_sigma(sigma: &mut [[RFloat; 8]; 8], prec: u32) {
 impl IntScratch {
     pub fn new(eps: Float) -> Self {
         let prec_q = compute_prec_q(eps);
+        let lu_prec = compute_lu_prec(eps);
         let mut s = Self {
             prec_q,
             scale_bits: 0,
@@ -316,9 +343,12 @@ impl IntScratch {
             l_f64: [[0.0_f64; 8]; 8],
             g_post_lll: rmat_zero(prec_q),
             l: rmat_zero(prec_q),
-            lu_a: rmat_zero(prec_q),
-            lu_rhs: rvec_zero(prec_q),
-            lu_x: rvec_zero(prec_q),
+            lu_prec,
+            lu_a: rmat_zero(lu_prec),
+            lu_rhs: rvec_zero(lu_prec),
+            lu_x: rvec_zero(lu_prec),
+            lu_tmp: rfz(lu_prec),
+            lu_acc: rfz(lu_prec),
         };
         fill_sigma(&mut s.sigma, prec_q);
         fill_p_u_p_ub(&mut s);
@@ -1079,8 +1109,7 @@ fn cholesky_int_8(scratch: &mut IntScratch) -> bool {
 // ─── LU solve with partial pivoting (in-place rug, ported from heavy) ─────────
 
 fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
-    let prec = scratch.prec_q;
-    let tol = rfv(prec, 1e-30);
+    let tol = rfv(scratch.lu_prec, 1e-30);
 
     for k in 0..8 {
         let mut piv = k;
@@ -1100,8 +1129,8 @@ fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
             scratch.lu_rhs.swap(k, piv);
         }
         for i in (k + 1)..8 {
-            scratch.tmp.assign(&scratch.lu_a[i][k] / &scratch.lu_a[k][k]);
-            let factor = scratch.tmp.clone();
+            scratch.lu_tmp.assign(&scratch.lu_a[i][k] / &scratch.lu_a[k][k]);
+            let factor = scratch.lu_tmp.clone();
             // a[i][j] -= factor · a[k][j]  for j in k..8
             // Avoid simultaneous &mut borrows on rows i and k.
             let (row_i, row_k) = if i < k {
@@ -1112,23 +1141,23 @@ fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
                 (&mut tail[0], &mut head[k])
             };
             for j in k..8 {
-                scratch.tmp.assign(&factor * &row_k[j]);
+                scratch.lu_tmp.assign(&factor * &row_k[j]);
                 let cur = row_i[j].clone();
-                row_i[j].assign(&cur - &scratch.tmp);
+                row_i[j].assign(&cur - &scratch.lu_tmp);
             }
-            scratch.tmp.assign(&factor * &scratch.lu_rhs[k]);
+            scratch.lu_tmp.assign(&factor * &scratch.lu_rhs[k]);
             let rhs_i_cur = scratch.lu_rhs[i].clone();
-            scratch.lu_rhs[i].assign(&rhs_i_cur - &scratch.tmp);
+            scratch.lu_rhs[i].assign(&rhs_i_cur - &scratch.lu_tmp);
         }
     }
     for i in (0..8).rev() {
-        scratch.acc.assign(&scratch.lu_rhs[i]);
+        scratch.lu_acc.assign(&scratch.lu_rhs[i]);
         for j in (i + 1)..8 {
-            scratch.tmp.assign(&scratch.lu_a[i][j] * &scratch.lu_x[j]);
-            let cur = scratch.acc.clone();
-            scratch.acc.assign(&cur - &scratch.tmp);
+            scratch.lu_tmp.assign(&scratch.lu_a[i][j] * &scratch.lu_x[j]);
+            let cur = scratch.lu_acc.clone();
+            scratch.lu_acc.assign(&cur - &scratch.lu_tmp);
         }
-        let acc_clone = scratch.acc.clone();
+        let acc_clone = scratch.lu_acc.clone();
         scratch.lu_x[i].assign(&acc_clone / &scratch.lu_a[i][i]);
     }
     true
@@ -1214,8 +1243,6 @@ pub fn cap_mid_tf(eps: Float) -> Tf {
 /// is numerically singular (impossible for an LLL output with det=±1, but
 /// guarded for robustness).
 pub fn tf_lu_solve_8(basis: &IMat8, c: &[Tf; 8]) -> Option<[Tf; 8]> {
-    // Build Bᵀ as TwoFloat (i64 entries are exact in f64 up to 2^53; LLL
-    // outputs at deep ε can reach ~2^41, still exact).
     let mut a: [[Tf; 8]; 8] = std::array::from_fn(|i| {
         std::array::from_fn(|j| Tf::from(basis[j][i] as f64))
     });
@@ -1950,6 +1977,63 @@ mod tests {
             );
         }
         eprintln!("lu_tf_matches_mpfr eps={:e} k={}: max_rel={:e}", eps, k, max_rel);
+    }
+
+    /// Sanity-check tf_lu_solve_8 on a trivial case. If this passes,
+    /// the bug is *somewhere* in input setup or precision interaction with
+    /// the realistic basis / c values, not in the LU algorithm itself.
+    #[test]
+    fn tf_lu_solve_identity_smoke() {
+        let basis: IMat8 = identity_basis();
+        let c: [Tf; 8] = std::array::from_fn(|i| Tf::from((i as f64) + 1.0));
+        let z = tf_lu_solve_8(&basis, &c).expect("identity LU failed");
+        for i in 0..8 {
+            let z_f = f64::from(z[i]);
+            assert!(
+                (z_f - ((i as f64) + 1.0)).abs() < 1e-10,
+                "identity LU: z[{}] = {} expected {}", i, z_f, (i as f64) + 1.0
+            );
+        }
+    }
+
+    /// Solve (B^T · z = c) for a random small integer B with det=±1 and a
+    /// small TwoFloat RHS. Cross-check via MPFR. If THIS fails, the bug is
+    /// in the LU implementation; if this passes but the realistic test
+    /// fails, the bug is in the precision interaction at large RHS.
+    #[test]
+    fn tf_lu_solve_small_int_basis() {
+        let basis: IMat8 = [
+            [3, 1, 0, 0, 0, 0, 0, 0],
+            [1, 2, 0, 0, 0, 0, 0, 0],
+            [0, 1, 1, 0, 0, 0, 0, 0],
+            [0, 0, 0, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0, 0, 0],
+            [0, 0, 0, 0, 0, 1, 0, 0],
+            [0, 0, 0, 0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 0, 0, 0, 1],
+        ];
+        let c_vals: [f64; 8] = [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5];
+        let c_tf: [Tf; 8] = std::array::from_fn(|i| Tf::from(c_vals[i]));
+        let z_tf = tf_lu_solve_8(&basis, &c_tf).expect("small int LU failed");
+        // Reference: solve in MPFR.
+        let mut s = IntScratch::new(1e-3);
+        for i in 0..8 {
+            for j in 0..8 {
+                s.lu_a[i][j].assign(rfv(s.prec_q, basis[j][i] as f64));
+            }
+            s.lu_rhs[i].assign(rfv(s.prec_q, c_vals[i]));
+        }
+        assert!(lu_solve_int_inplace(&mut s));
+        for i in 0..8 {
+            let mpfr_z = s.lu_x[i].to_f64();
+            let tf_z = f64::from(z_tf[i]);
+            let rel = (mpfr_z - tf_z).abs() / mpfr_z.abs().max(1e-30);
+            assert!(
+                rel < 1e-12,
+                "small int z[{}]: mpfr={} tf={} rel={:e}",
+                i, mpfr_z, tf_z, rel
+            );
+        }
     }
 
     #[test]
