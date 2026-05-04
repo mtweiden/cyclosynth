@@ -64,6 +64,33 @@ pub static N_LLL_ITERS_MAX: AtomicU64 = AtomicU64::new(0);
 /// non-zero indicates LLL cycling at the active precision.
 pub static N_LLL_AT_CAP: AtomicU64 = AtomicU64::new(0);
 
+/// Cumulative passes across all `lazy_size_reduce` invocations. Diagnostic
+/// signal for whether the size-reduction inner loop converges in 1-2 passes
+/// (per Nguyen-Stehlé 2009 expectation) or runs hot.
+pub static N_LAZY_PASSES_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Number of `lazy_size_reduce` invocations.
+pub static N_LAZY_CALLS_TOTAL: AtomicU64 = AtomicU64::new(0);
+/// Max passes ever seen in a single invocation.
+pub static N_LAZY_PASSES_MAX: AtomicU64 = AtomicU64::new(0);
+
+/// Record one lazy_size_reduce invocation's pass count.
+pub fn record_lazy_passes(passes: u64) {
+    N_LAZY_PASSES_TOTAL.fetch_add(passes, Ordering::Relaxed);
+    N_LAZY_CALLS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    let mut current = N_LAZY_PASSES_MAX.load(Ordering::Relaxed);
+    while passes > current {
+        match N_LAZY_PASSES_MAX.compare_exchange_weak(
+            current,
+            passes,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
 /// Record an LLL call's iteration count + atomically update
 /// `N_LLL_ITERS_MAX` via a compare-exchange loop.
 pub fn record_lll_iters(iters: u64, cap: u64) {
@@ -99,6 +126,9 @@ pub fn reset_all() {
         &N_LLL_ITERS_TOTAL,
         &N_LLL_ITERS_MAX,
         &N_LLL_AT_CAP,
+        &N_LAZY_PASSES_TOTAL,
+        &N_LAZY_CALLS_TOTAL,
+        &N_LAZY_PASSES_MAX,
     ] {
         c.store(0, Ordering::Relaxed);
     }
@@ -118,6 +148,9 @@ pub struct Snapshot {
     pub lll_iters_total: u64,
     pub lll_iters_max: u64,
     pub lll_at_cap: u64,
+    pub lazy_passes_total: u64,
+    pub lazy_calls_total: u64,
+    pub lazy_passes_max: u64,
 }
 
 pub fn snapshot() -> Snapshot {
@@ -134,5 +167,8 @@ pub fn snapshot() -> Snapshot {
         lll_iters_total: N_LLL_ITERS_TOTAL.load(Ordering::Relaxed),
         lll_iters_max: N_LLL_ITERS_MAX.load(Ordering::Relaxed),
         lll_at_cap: N_LLL_AT_CAP.load(Ordering::Relaxed),
+        lazy_passes_total: N_LAZY_PASSES_TOTAL.load(Ordering::Relaxed),
+        lazy_calls_total: N_LAZY_CALLS_TOTAL.load(Ordering::Relaxed),
+        lazy_passes_max: N_LAZY_PASSES_MAX.load(Ordering::Relaxed),
     }
 }
