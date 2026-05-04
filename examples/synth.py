@@ -15,12 +15,13 @@ def ry(t):
                      [s,  c]], dtype=np.complex128)
 
 epsilon = 1e-7
+synth = cyclosynth.Synthesizer(epsilon=epsilon)
+
 for _ in range(100):
     alpha, beta, gamma = [2 * np.pi * random() for _ in range(3)]
     target = rz(alpha) @ ry(beta) @ rz(gamma)
 
     # Approximate to within ε = 1e-5 in diamond distance.
-    synth = cyclosynth.Synthesizer(epsilon=epsilon)
     result = synth.synthesize(target)
     t_count = result.gates.count("T") if result.gates else 0
 
