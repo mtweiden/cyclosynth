@@ -39,6 +39,7 @@
 #![allow(dead_code)]
 
 use crate::rings::Float;
+use gmp_mpfr_sys::mpfr as mpfr_sys;
 use i256::i256;
 use rug::{Assign, Float as RFloat};
 
@@ -320,6 +321,7 @@ impl IntScratch {
             lu_x: rvec_zero(prec_q),
         };
         fill_sigma(&mut s.sigma, prec_q);
+        fill_p_u_p_ub(&mut s);
         s
     }
 
@@ -328,27 +330,90 @@ impl IntScratch {
     }
 }
 
-// ─── In-place rug op macros (mirror heavy's pattern) ──────────────────────────
+// ─── In-place MPFR op macros via gmp-mpfr-sys ─────────────────────────────────
+//
+// Each macro calls the corresponding `mpfr::{add,sub,mul,div}` directly on
+// the underlying `mpfr_t` (via `as_raw_mut` / `as_raw`). The previous
+// `$dst.assign(&$a OP &$b)` pattern allocated a `rug::Incomplete` struct per
+// op even with assign-into-target; this version is zero-allocation. mpfr's
+// API explicitly permits aliasing rop with op1/op2, so dst == a or dst == b
+// is safe.
 
 macro_rules! r_mul {
     ($dst:expr, $a:expr, $b:expr) => {
-        $dst.assign(&$a * &$b)
+        unsafe {
+            mpfr_sys::mul(
+                $dst.as_raw_mut(),
+                $a.as_raw(),
+                $b.as_raw(),
+                mpfr_sys::rnd_t::RNDN,
+            );
+        }
     };
 }
 macro_rules! r_add {
     ($dst:expr, $a:expr, $b:expr) => {
-        $dst.assign(&$a + &$b)
+        unsafe {
+            mpfr_sys::add(
+                $dst.as_raw_mut(),
+                $a.as_raw(),
+                $b.as_raw(),
+                mpfr_sys::rnd_t::RNDN,
+            );
+        }
     };
 }
 macro_rules! r_sub {
     ($dst:expr, $a:expr, $b:expr) => {
-        $dst.assign(&$a - &$b)
+        unsafe {
+            mpfr_sys::sub(
+                $dst.as_raw_mut(),
+                $a.as_raw(),
+                $b.as_raw(),
+                mpfr_sys::rnd_t::RNDN,
+            );
+        }
     };
 }
 macro_rules! r_div {
     ($dst:expr, $a:expr, $b:expr) => {
-        $dst.assign(&$a / &$b)
+        unsafe {
+            mpfr_sys::div(
+                $dst.as_raw_mut(),
+                $a.as_raw(),
+                $b.as_raw(),
+                mpfr_sys::rnd_t::RNDN,
+            );
+        }
     };
+}
+
+/// Compute `p_u[i][j] = ½·Σ_{r=0..3} σ[r][i]·σ[r][j]` and
+/// `p_ub[i][j] = ½·Σ_{r=4..7} σ[r][i]·σ[r][j]`. Depends only on the
+/// (constant) Σ matrix from `fill_sigma`, so it runs once at scratch
+/// construction; the values persist across every build_q_mpfr call.
+/// Eliminates ~512 MPFR mul + 512 MPFR add ops per phase1 invocation.
+fn fill_p_u_p_ub(scratch: &mut IntScratch) {
+    for i in 0..8 {
+        for j in 0..8 {
+            scratch.acc.assign(0.0_f64);
+            scratch.tmp2.assign(0.0_f64);
+            for r_idx in 0..4 {
+                r_mul!(scratch.tmp, scratch.sigma[r_idx][i], scratch.sigma[r_idx][j]);
+                let acc_clone = scratch.acc.clone();
+                r_add!(scratch.acc, acc_clone, scratch.tmp);
+                r_mul!(
+                    scratch.tmp,
+                    scratch.sigma[r_idx + 4][i],
+                    scratch.sigma[r_idx + 4][j]
+                );
+                let tmp2_clone = scratch.tmp2.clone();
+                r_add!(scratch.tmp2, tmp2_clone, scratch.tmp);
+            }
+            r_mul!(scratch.p_u[i][j], scratch.acc, scratch.half);
+            r_mul!(scratch.p_ub[i][j], scratch.tmp2, scratch.half);
+        }
+    }
 }
 
 // ─── build_q_mpfr: identical to heavy's build_q, into scratch.q_mpfr ──────────
@@ -402,26 +467,8 @@ pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
         }
     }
 
-    for i in 0..8 {
-        for j in 0..8 {
-            scratch.acc.assign(0.0_f64);
-            scratch.tmp2.assign(0.0_f64);
-            for r_idx in 0..4 {
-                r_mul!(scratch.tmp, scratch.sigma[r_idx][i], scratch.sigma[r_idx][j]);
-                let acc_clone = scratch.acc.clone();
-                r_add!(scratch.acc, acc_clone, scratch.tmp);
-                r_mul!(
-                    scratch.tmp,
-                    scratch.sigma[r_idx + 4][i],
-                    scratch.sigma[r_idx + 4][j]
-                );
-                let tmp2_clone = scratch.tmp2.clone();
-                r_add!(scratch.tmp2, tmp2_clone, scratch.tmp);
-            }
-            r_mul!(scratch.p_u[i][j], scratch.acc, scratch.half);
-            r_mul!(scratch.p_ub[i][j], scratch.tmp2, scratch.half);
-        }
-    }
+    // p_u and p_ub depend only on the (constant) Σ matrix and are populated
+    // once by `fill_p_u_p_ub` in IntScratch::new — nothing to recompute here.
 
     for i in 0..8 {
         for j in 0..8 {
