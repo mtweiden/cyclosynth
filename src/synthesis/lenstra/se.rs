@@ -4,9 +4,9 @@
 //! Inputs (produced by the L²-LLL pipeline):
 //!   - The LLL-reduced basis B (`[[i64; 8]; 8]`).
 //!   - The Cholesky factor R of the Q-metric Gram matrix on the LLL basis,
-//!     in [`twofloat::TwoFloat`] precision (~104 bits).
-//!   - The target's projection onto the lattice basis (cap center) in
-//!     TwoFloat coordinates.
+//!     in MPFR `RFloat` at [`SE_PREC`] = 128 bits.
+//!   - The target's projection onto the lattice basis (cap center) at the
+//!     same MPFR precision.
 //!   - The Euclidean Cholesky of B·Bᵀ used for an additional norm-shell
 //!     prune (optional).
 //!
@@ -24,10 +24,10 @@ use i256::i256;
 
 type IMat8 = [[i64; 8]; 8];
 
-/// MPFR precision used by SE. 128 bits ≈ TwoFloat's prior 104-bit budget
-/// with margin. f64-only SE is known to break at ε ≤ 1e-5 due to
-/// "ghost-node" bound-check noise from squared-norm cancellation; this
-/// precision restores the safety margin TwoFloat had.
+/// MPFR precision used by SE. 128 bits gives enough margin for SE's
+/// 10⁻⁹ bound-check tolerance at all supported ε; f64-only SE is known
+/// to break at ε ≤ 1e-5 from squared-norm cancellation noise (the
+/// "ghost-node" failure mode).
 pub const SE_PREC: u32 = 128;
 
 /// Convert an arbitrary-precision `RFloat` (built at scratch.prec_q for

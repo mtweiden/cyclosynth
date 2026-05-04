@@ -644,29 +644,19 @@ impl Synthesizer {
     ///
     /// Returns `None` if no circuit within `max_lde` achieves distance < `epsilon`.
     ///
-    /// # Performance regimes
+    /// # Performance
     ///
-    /// The Lenstra 8D enumeration that drives the high-`t` search has two
-    /// precision tiers, dispatched on `epsilon`:
+    /// All ε regimes go through the unified Lenstra 8D pipeline (L²-LLL
+    /// over an exact i256 Gram + f64 Gram-Schmidt + MPFR-128 Schnorr-Euchner
+    /// + MPFR-scaled-precision LU for the cap-center solve). MPFR precision
+    /// scales with ε via `compute_prec_q` (build_q at `8·log₂(1/ε)` bits)
+    /// and `compute_lu_prec` (LU at `6·log₂(1/ε)`).
     ///
-    /// - **`epsilon ≥ 1e-4` (Light path, `twofloat`)**: stack-allocated dual-
-    ///   double arithmetic; LLL+Cholesky setup is ~5 µs per MA prefix. The
-    ///   common case; expect synth times of milliseconds to tens of ms.
-    /// - **`epsilon < 1e-4` (Heavy path, `rug`/MPFR)**: heap-allocated arbitrary-
-    ///   precision arithmetic at ~`8·log₂(1/ε)` bits. Setup is ~1 ms per MA
-    ///   prefix.  Necessary for numerical stability since
-    ///   `κ(Q) ≈ 4/ε⁴ > 10¹⁶` exceeds twofloat's effective precision after
-    ///   Gram-Schmidt cancellation.
-    ///
-    /// # Known issues at very tight ε
-    ///
-    /// At `ε ≤ 1e-5`, the Schnorr-Euchner step (in `f64` for both paths)
-    /// can hit precision loss in some cases — the `R_chol` downcast
-    /// loses bits when the diagonal-entry ratio approaches f64's 15
-    /// digits, causing the SE to visit "ghost" nodes that pass the
-    /// f64-rounded ellipsoid check but fail exact integer post-filters.
-    /// Some 1e-5 cases (e.g. Rz(π/7)) take tens of seconds as a result.
-    /// Fixing requires a `twofloat`-precision SE inside the Heavy path.
+    /// Typical synth times:
+    /// - ε ≥ 1e-3: 1–15 ms
+    /// - ε = 1e-5: 70–400 ms
+    /// - ε = 1e-7: 0.15–2 s
+    /// - ε = 1e-8: ~20 s
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResult> {
         let raw_uv = unitary_to_uv(&target);
         let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
@@ -928,12 +918,11 @@ impl Synthesizer {
         // mat_to_uv check.
         let target_parity = det_zeta_parity(target);
 
-        // Per-worker scratch: rayon's `map_init` allocates a `LenstraScratch`
-        // (Light = no-op for twofloat; Heavy = pre-allocated MPFR buffers at
-        // the right precision) once per worker thread, then reuses it across
-        // all prefixes that worker handles. The Heavy variant prevents per-op
-        // allocation in the LLL inner loop. Dispatch to Light/Heavy is
-        // automatic based on `eps` (cutoff at 1e-4).
+        // Per-worker scratch: rayon's `map_init` allocates one
+        // `LenstraScratch` (pre-allocated MPFR/i256 buffers at the right
+        // precision for `eps`) per worker thread and reuses it across every
+        // prefix that worker handles, avoiding per-op allocation in the
+        // hot path.
         let result = prefixes
             .par_iter()
             .with_min_len(chunk)
