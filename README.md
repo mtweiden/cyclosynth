@@ -145,15 +145,14 @@ src/
     ├── synthesizer.rs      Top-level Synthesizer, T-count loop, dc_search,
     │                       parallel dispatch
     └── lenstra/
-        ├── mod.rs          Dispatch: ε ≥ 1e-4 picks `light`, else `integer`
-        ├── light.rs        TwoFloat (~104-bit) LLL for moderate ε
-        ├── integer.rs      L²-LLL with i256 Gram + f64 GS for tight ε
+        ├── mod.rs          LenstraScratch dispatch + phase1 entry point
+        ├── integer.rs      L²-LLL with i256 Gram + f64 GS for all ε
         └── se.rs           Schnorr-Euchner walk + post-LLL helpers
                             (det check, Euclidean Cholesky, lattice-point
                             reconstruction, bilinear-form check)
 ```
 
-## The two lattice-enumeration paths
+## The lattice-enumeration pipeline
 
 `Synthesizer` builds an 8-dimensional integer lattice from the target's
 alignment vector `y` and a norm shell `2^k` (the "lde" — log denominator
@@ -161,27 +160,19 @@ exponent). The lattice carries an anisotropic inner product `Q` that encodes
 the `cap × ball` body whose interior contains valid `(u₁, u₂) ∈ Z[ω]²`
 candidates.
 
-The reduction-and-enumeration backend is picked per call, in
-[`lenstra::LenstraScratch::new`](src/synthesis/lenstra/mod.rs):
+[`lenstra::integer`](src/synthesis/lenstra/integer.rs) runs L²-LLL
+(Nguyen–Stehlé 2009): exact integer Gram in `i256`, Gram-Schmidt
+coefficients in `f64`, INSERT semantics + lazy size-reduction. Stable
+down to `ε = 1e-10`. Theorem 2 of the paper proves `f64` is sufficient for
+any `d ≤ 11` at `(δ=0.75, η=0.55)`, comfortably covering our `d=8`.
 
-| Backend | Range | What it uses |
-|---|---|---|
-| **`light`** | `ε ≥ 1e-4` | TwoFloat (`f64+f64`, ~104-bit mantissa). Stack-allocated, `Copy`-friendly arithmetic. Fast at moderate ε where `κ(Q)` fits in TwoFloat's margin. |
-| **`integer`** | `ε < 1e-4` | L²-LLL (Nguyen–Stehlé 2009): exact integer Gram in `i256`, Gram-Schmidt coefficients in `f64`, INSERT semantics + lazy size-reduction. Stable down to `ε = 1e-10`. |
-
-Both paths share the same Schnorr-Euchner enumeration and post-SE candidate
-validation in [`lenstra::se`](src/synthesis/lenstra/se.rs).
-
-### Why two paths?
-
-`κ(Q) ≈ 16/ε⁴` grows fast. TwoFloat's ~104-bit mantissa is enough through
-`ε ≈ 1e-4`. Below that, Gram-Schmidt cancellation eats the precision, the
-basis is no longer L³-reduced after LLL, and the algorithm produces wrong
-results. The `integer` path replaces the floating Gram with an exact
-integer one; the GS coefficients then only need enough precision to make
-correct Lovász decisions — Theorem 2 of Nguyen–Stehlé proves `f64` is
-sufficient for any `d ≤ 11` at `(δ=0.75, η=0.55)`, comfortably covering
-our `d=8`.
+The post-LLL phase runs:
+- f64 Cholesky on the natural-scale Gram (LLL invariant bounds κ ≤ 16
+  for d=8, so f64 is provably sufficient at the SE bound check).
+- MPFR LU at scaled precision (`compute_lu_prec(eps) ≈ 6·log₂(1/ε)`)
+  for the cap-center solve.
+- Schnorr-Euchner enumeration in MPFR-128 in
+  [`lenstra::se`](src/synthesis/lenstra/se.rs).
 
 ## Threading model
 

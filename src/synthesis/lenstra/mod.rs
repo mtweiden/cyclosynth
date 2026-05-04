@@ -7,19 +7,12 @@
 //!   B(x) = 0     (bilinear unitarity constraint, eq (3.10) of the paper)
 //!   |y · x|² ≥ thresh_xy(k, ε)   (alignment to target within ε)
 //!
-//! ## Single implementation path
+//! ## Pipeline
 //!
-//! All ε regimes use the [`integer`] path: the L²-LLL algorithm
-//! (Nguyen-Stehlé 2009) with exact-integer Gram in `i256` and pure-f64
-//! Gram-Schmidt coefficients, paired with the [`se`] module's
-//! Schnorr-Euchner enumeration walking candidate `z` values at MPFR
-//! 128-bit precision. Validates each candidate against the shell +
-//! bilinear + alignment constraints.
-//!
-//! Earlier versions had a separate `twofloat`-based "light" path for
-//! ε ≥ 1e-4. It was dropped to remove the dependency. The integer path
-//! is somewhat heavier per phase1 call at moderate ε but still well
-//! within the O(100ms) budget for ε ≥ 1e-5.
+//! [`integer`] runs the L²-LLL algorithm (Nguyen-Stehlé 2009) with an
+//! exact-integer Gram in `i256` and pure-f64 Gram-Schmidt coefficients.
+//! [`se`] walks the Schnorr-Euchner candidate `z` values in MPFR-128 and
+//! validates each against the shell + bilinear + alignment constraints.
 
 pub mod integer;
 pub mod se;

@@ -33,8 +33,7 @@
 //!     `x = B·z`, validate `‖x‖² == 2^k`, `B(x) == 0` (bilinear unitarity
 //!     constraint), and `|y·x|² ≥ thresh_xy` (alignment cap).
 //!
-//! Validated for `ε ∈ [1e-10, 1e-3]`. The `[`super::light`]` path
-//! covers `ε ≥ 1e-4` more cheaply via TwoFloat.
+//! Validated for `ε ∈ [1e-10, 1e-3]`.
 
 #![allow(dead_code)]
 
@@ -1177,9 +1176,9 @@ fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
 //   2. f64 Cholesky on a κ ≤ 16 matrix yields a factor with 53-bit relative
 //      precision (one bit of conditioning loss per κ doubling, four bits
 //      total).
-//   3. SE downcasts the factor to TwoFloat at the bound check; the SE walk
-//      compounds errors over d=8 levels and reaches ~10⁻¹⁵ absolute at unit
-//      scale — six orders of magnitude below SE's existing 10⁻⁹ tolerance.
+//   3. SE consumes the factor at MPFR-128 precision; even after f64 input,
+//      the bound-check error stays ~10⁻¹⁵ at unit scale — six orders below
+//      SE's 10⁻⁹ tolerance.
 
 /// Run f64 Cholesky on the natural-scale post-LLL Gram. Returns `false` if
 /// the Gram is not numerically positive-definite (extremely rare for an
@@ -1322,11 +1321,9 @@ pub fn phase1(
     });
 
     // Step 5: build cap center c = y · cap_mid (in MPFR), then LU solve
-    // B_LLLᵀ · z_c = c. MPFR LU retained: TwoFloat LU showed ~10⁻⁷ relative
-    // error at ε=1e-5 (vs MPFR reference) — z_c values reach magnitudes
-    // (2^41 and beyond) where TwoFloat's 104-bit relative precision becomes
-    // a large absolute offset that destabilises the SE walk's cap-center.
-    // The `lu_tf_matches_mpfr_*` test guards against re-introducing this.
+    // B_LLLᵀ · z_c = c. MPFR at `lu_prec` (≈ 6·log₂(1/ε) bits) — enough
+    // precision for SE's 10⁻⁹ tolerance even at ε=1e-8 where post-LLL
+    // basis entries reach ~2^41 and pivot ratios run to ~10²⁰.
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
     for i in 0..8 {
         for j in 0..8 {
