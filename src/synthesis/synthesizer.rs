@@ -234,6 +234,34 @@ fn mat_to_uv(u: &Mat2) -> Option<[Float; 4]> {
     None
 }
 
+/// Return 0 if det(m) is approximately ±1 or ±i (even ζ-power, ζ = e^{iπ/4}),
+/// 1 if det(m) is at the half-integer positions ζ^{odd}, or None if det is
+/// not on the 8th-root-of-unity circle.
+///
+/// Used as an upstream algebraic filter for `dc_search`: the `mat_to_uv`
+/// rejection condition is exactly `det(U_L† · target) ∉ {ζ^{even}}`, which
+/// reduces to `parity(det(U_L)) ≠ parity(det(target))`. Skipping prefixes
+/// whose parity mismatches the target is provably equivalent to skipping
+/// prefixes that mat_to_uv would have rejected — no heuristic, no
+/// completeness loss.
+fn det_zeta_parity(m: &Mat2) -> Option<u8> {
+    let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
+    let mag_sq = det.norm_sqr();
+    if (mag_sq - 1.0).abs() > 1e-3 {
+        return None;
+    }
+    let max_axis = det.re.abs().max(det.im.abs());
+    // Even ζ-powers ({1, i, -1, -i}): max(|re|, |im|) = 1.
+    // Odd  ζ-powers ({ζ, ζ³, ζ⁵, ζ⁷}): max(|re|, |im|) = √2/2 ≈ 0.707.
+    if max_axis > 0.9 {
+        Some(0)
+    } else if max_axis > 0.6 && max_axis < 0.85 {
+        Some(1)
+    } else {
+        None
+    }
+}
+
 /// Compute U_L† · target as a float matrix.
 /// U_L is stored as U2T (exact), target as Mat2 (float).
 fn u2t_dag_times_mat2(u_l: &U2T, target: &Mat2) -> Mat2 {
@@ -881,6 +909,16 @@ impl Synthesizer {
         let chunk = (prefixes.len() / n_threads).max(1);
         let budget_hit = std::sync::atomic::AtomicBool::new(false);
 
+        // Algebraic parity pre-filter: `mat_to_uv(U_L† · target)` succeeds
+        // iff `parity(det(U_L)) == parity(det(target))`. Skipping prefixes
+        // with mismatched parity short-circuits before `u2t_dag_times_mat2`
+        // and saves the per-prefix float matmul + 8-phase trial. Provably
+        // equivalent to mat_to_uv's rejection condition; no completeness loss.
+        // `None` = target det not on the 8th-root-of-unity circle (e.g. an
+        // arbitrary unitary), in which case we fall through to the original
+        // mat_to_uv check.
+        let target_parity = det_zeta_parity(target);
+
         // Per-worker scratch: rayon's `map_init` allocates a `LenstraScratch`
         // (Light = no-op for twofloat; Heavy = pre-allocated MPFR buffers at
         // the right precision) once per worker thread, then reuses it across
@@ -893,6 +931,13 @@ impl Synthesizer {
             .map_init(
                 || crate::synthesis::lenstra::LenstraScratch::new(eps),
                 |scratch, u_l| -> Option<SynthResult> {
+                    if let Some(tp) = target_parity {
+                        if det_zeta_parity(&u_l.to_float()) != Some(tp) {
+                            crate::synthesis::diag::N_MAT_TO_UV_REJECTED
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return None;
+                        }
+                    }
                     let m_inner = u2t_dag_times_mat2(u_l, target);
                     let v_inner = match mat_to_uv(&m_inner) {
                         Some(v) => v,
