@@ -9,12 +9,18 @@
 //!
 //! ## Pipeline
 //!
-//! [`integer`] runs the L²-LLL algorithm (Nguyen-Stehlé 2009) with an
-//! exact-integer Gram in `i256` and pure-f64 Gram-Schmidt coefficients.
-//! [`se`] walks the Schnorr-Euchner candidate `z` values in MPFR-128 and
-//! validates each against the shell + bilinear + alignment constraints.
+//! [`integer`] is the `phase1` driver that orchestrates:
+//! [`q_metric`] (anisotropic Q-metric construction), [`lll`] (L²-LLL of
+//! Nguyen-Stehlé 2009 with exact i256 Gram + f64 GS coefficients),
+//! [`cholesky_lu`] (post-LLL Cholesky + cap-center LU solve), and [`se`]
+//! (Schnorr-Euchner walk over the candidate ellipsoid). [`scratch`] holds
+//! the pre-allocated MPFR/i256 buffers reused across calls.
 
+pub mod cholesky_lu;
 pub mod integer;
+pub mod lll;
+pub mod q_metric;
+pub mod scratch;
 pub mod se;
 
 use crate::rings::Float;
@@ -23,12 +29,12 @@ use std::sync::atomic::AtomicBool;
 /// Per-worker scratch buffers, allocated once via rayon's `map_init` and
 /// reused across all MA prefixes that worker handles.
 pub struct LenstraScratch {
-    inner: integer::IntScratch,
+    inner: scratch::IntScratch,
 }
 
 impl LenstraScratch {
     pub fn new(eps: Float) -> Self {
-        Self { inner: integer::IntScratch::new(eps) }
+        Self { inner: scratch::IntScratch::new(eps) }
     }
 }
 
