@@ -9,6 +9,12 @@
 //! integer lattice coordinates to the uv parameterization
 //! (Re(u1), Im(u1), Re(u2), Im(u2)) of the SU(2) matrix.
 
+// Search functions thread many tuning knobs (norm bound, alignment vector,
+// max solutions, budget caps, abort flag) through their signatures. The
+// alternative would be a "search options" struct, which obscures the call
+// site without simplifying the underlying interface.
+#![allow(clippy::too_many_arguments)]
+
 use num_complex::Complex64;
 use std::f64::consts::FRAC_1_SQRT_2;
 use crate::matrix::U2T;

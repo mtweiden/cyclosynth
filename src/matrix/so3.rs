@@ -39,6 +39,10 @@
 //!   2Re(z) as R2 with exp=1: R2(2(b-d), 2a)
 //!   2Im(z) as R2 with exp=1: R2(2(b+d), 2c)
 
+// 3×3 matrix code reads more clearly with explicit (i, j) indexing than with
+// iterator combinators threading multiple arrays in lockstep.
+#![allow(clippy::needless_range_loop)]
+
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
 use std::f64::consts::SQRT_2;

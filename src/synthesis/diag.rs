@@ -44,9 +44,9 @@ pub static N_SE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 pub static N_DIST_REJECTED: AtomicU64 = AtomicU64::new(0);
 
 // ─── Per-phase nanosecond accumulators ───────────────────────────────────────
-
-/// CPU-summed nanoseconds across all phase1 calls in the current dc_search.
-/// Total ≈ wall-time × n_threads in steady state (high parallel efficiency).
+//
+// CPU-summed nanoseconds across all phase1 calls in the current dc_search.
+// Total ≈ wall-time × n_threads in steady state (high parallel efficiency).
 
 pub static T_BUILD_NS: AtomicU64 = AtomicU64::new(0);
 pub static T_LLL_NS: AtomicU64 = AtomicU64::new(0);
