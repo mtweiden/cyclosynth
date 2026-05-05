@@ -41,12 +41,14 @@ impl ZZeta {
     pub const NEG_I: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_NEG_ONE, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
 
     #[inline]
+    #[allow(clippy::too_many_arguments)] // 8 ring coefficients are intrinsic to Z[ζ].
     pub const fn new(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int) -> Self {
         Self { a, b, c, d, e, f, g, h }
     }
 
     /// Construct from small integer coefficients, converting each via `Int::from_i32`.
     #[inline]
+    #[allow(clippy::too_many_arguments)] // 8 ring coefficients are intrinsic to Z[ζ].
     pub const fn from_i32(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> Self {
         Self::new(
             Int::from_i32(a), Int::from_i32(b), Int::from_i32(c), Int::from_i32(d),

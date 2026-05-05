@@ -43,19 +43,14 @@ pub static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
     ("ZHSH", U2T::new(ZOmega::from_i32( 0, 0, 1, 0), ZOmega::from_i32(-1, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0,-1, 0), 1)),
 ];
 
-/// T gate as U2T: Rz(π/4) = diag(e^{−iπ/8}, e^{iπ/8}).
-/// In ZOmega: e^{iπ/8} is NOT in Z[ω] — but T as U(2) IS in the ring when
-/// we store it as a U2 matrix via the integer lattice.
-///
-/// The T gate in SU(2) form is Rz(π/4) · e^{iπ/8} = diag(1, e^{iπ/4}) = diag(1, ω).
-/// Parameterization: u1 = 1, u2 = 0, and the extra ω phase on u2 vanishes.
-/// But the full T = diag(e^{−iπ/8}, e^{iπ/8}) needs the base-8 DyadicComplex.
-///
-/// For our search: the "T branch" applies T as a right-factor on the alignment
-/// vector rather than building a T gate U2T. We don't need T as a U2T object.
-///
-/// The T-gate GATE STRING "T" is defined as Rz(π/4). In the synthesis output,
-/// 'T' in the gate string means: apply Rz(π/4).
+// Note on the T gate: T = Rz(π/4) = diag(e^{−iπ/8}, e^{iπ/8}). The phase
+// e^{iπ/8} is *not* in Z[ω], so T as an exact unitary needs the larger Z[ζ]
+// ring (or a base-8 DyadicComplex). For Clifford+T synthesis we never need T
+// as a U2T object: the "T branch" applies T as a right-factor on the
+// alignment vector rather than constructing an exact U2T value. In the
+// output, the literal 'T' in a gate string denotes Rz(π/4) up to the global
+// phase, which is the convention the synthesizer's tests and decomposer
+// agree on.
 
 /// Left-multiply a U2T by the Clifford C†, returning C†·target.
 /// Used in the C-phase of synthesis to search over all 24 Clifford left-prefixes.
