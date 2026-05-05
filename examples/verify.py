@@ -63,19 +63,35 @@ def rebuild_mp(gate_str, gates):
 
 
 def diamond_f64(A, B):
-    """√max(0, 1 − |tr(A·B†)|²/4) — same formula as diamond_distance_float."""
+    """Diamond distance via Frobenius reformulation (matches Rust side)."""
     tr = np.trace(A @ B.conj().T)
-    return np.sqrt(max(0.0, 1.0 - abs(tr) ** 2 / 4.0))
+    tr_abs = abs(tr)
+    phi = tr / tr_abs if tr_abs > 1e-300 else 1.0
+    fro_sq = float(np.sum(np.abs(A - phi * B) ** 2))
+    return float(np.sqrt(max(0.0, fro_sq * (8.0 - fro_sq) / 16.0)))
 
 
 def diamond_mp(A, B):
-    """High-precision diamond distance. A, B are mpmath 2×2 matrices."""
-    # tr(A·B†) = sum_{i,k} A[i,k] · conj(B[i,k])
+    """Diamond distance at mpmath precision via the Frobenius reformulation:
+    D² = ‖A − φB‖²_F · (8 − ‖A − φB‖²_F) / 16  with  φ = tr(AB†)/|tr|.
+
+    The trace formula `1 − |tr|²/4` clamps to 0 for f64-quantized targets
+    (which have non-unitary Frobenius norm by ~10⁻¹⁶), hiding genuine
+    ~10⁻⁹ distances. The Frobenius identity is non-negative by construction
+    and matches the trace formula exactly when both inputs are unitary.
+    """
     tr = mp.mpc(0)
     for i in range(2):
         for k in range(2):
             tr += A[i, k] * mp.conj(B[i, k])
-    val = mp.mpf(1) - mp.fabs(tr) ** 2 / 4
+    tr_abs = mp.fabs(tr)
+    phi = tr / tr_abs if tr_abs > mp.mpf('1e-300') else mp.mpc(1, 0)
+    fro_sq = mp.mpf(0)
+    for i in range(2):
+        for k in range(2):
+            d = A[i, k] - phi * B[i, k]
+            fro_sq += mp.fabs(d) ** 2
+    val = fro_sq * (8 - fro_sq) / 16
     if val < 0:
         val = mp.mpf(0)
     return mp.sqrt(val)
@@ -102,7 +118,7 @@ def ry(t):
 
 def main():
     seed(0)
-    epsilon = 1e-7
+    epsilon = 1e-8
     n_trials = 100
     synth = cyclosynth.Synthesizer(epsilon=epsilon)
 
