@@ -46,12 +46,14 @@ pub const GRAM_OVERFLOW_THRESHOLD_BITS: u32 = 240;
 
 /// MPFR Gram-Schmidt precision. Theorem 2 of Nguyen-Stehlé 2009 covers d ≤ 11
 /// at L²-LLL parameters (δ=0.75, η=0.55) in f64; for d=16 the proof doesn't
-/// apply, so we use MPFR. 128 bits gives ~75 mantissa bits of headroom over
-/// the f64 ℓ=52 used at d=8, well above the algorithmic requirement
-/// `ℓ ≥ 5 + 2·log d − log ε + d·log ρ` (which extrapolates to ~50 bits at
-/// d=16, ε=1e-7, ρ ≈ 1.05). Configurable per-construction in case a deeper
-/// ε regime needs more.
-pub const GS_PREC: u32 = 128;
+/// apply, so we use MPFR. The algorithmic requirement is
+/// `ℓ ≥ 10 + 2·log d − log ε + d·log ρ` (fplll's `l2_min_prec`), which is
+/// ~32 bits at d=16, ε=1e-4 and ~42 bits at ε=1e-7. **80 bits** leaves
+/// ~40-bit headroom over the deep-ε requirement and was empirically the
+/// sweet spot in a sweep at ε=1e-4 (8% faster than 128, with no
+/// correctness regressions and *better* lde landing). Configurable
+/// per-construction via [`IntScratch16::with_gs_prec`].
+pub const GS_PREC: u32 = 80;
 
 /// Compute the bit-shift `B` such that `round(2^B · Q[i][j])` lands in i256
 /// with max entry ≈ 2^TARGET_BITS.
@@ -165,12 +167,27 @@ pub struct IntScratch16 {
     pub lu_x: [RFloat; 16],
     pub lu_tmp: RFloat,
     pub lu_acc: RFloat,
+
+    /// Z1 D&C optimisation: when true, `phase1_with_stop` skips the
+    /// `reset_basis()` call and lets LLL warm-start from the previous
+    /// call's reduced basis. Caller is responsible for setting this
+    /// after the first call (so LLL gets a clean identity start once).
+    /// Default: false (cold start, single-search behaviour).
+    pub warm_lll: bool,
 }
 
 impl IntScratch16 {
     pub fn new(eps: Float) -> Self {
+        Self::with_gs_prec(eps, GS_PREC)
+    }
+
+    /// Construct a scratch with an overridden Gram-Schmidt precision.
+    /// The default `GS_PREC=128` has ~78 bits of margin over the
+    /// Nguyen-Stehlé requirement at ε=1e-7. Lower values trade
+    /// correctness margin for faster MPFR ops in the LLL hot path.
+    /// Used by Z1 D&C experiments and benchmarks.
+    pub fn with_gs_prec(eps: Float, gs_prec: u32) -> Self {
         let prec_q = compute_prec_q(eps);
-        let gs_prec = GS_PREC;
         let lu_prec = compute_lu_prec(eps);
         Self {
             prec_q,
@@ -195,6 +212,7 @@ impl IntScratch16 {
             lu_x: std::array::from_fn(|_| rfz(lu_prec)),
             lu_tmp: rfz(lu_prec),
             lu_acc: rfz(lu_prec),
+            warm_lll: false,
         }
     }
 
