@@ -92,7 +92,13 @@ def main():
         "clifford_sqrt_t": "Clifford+√T",
     }
     pretty = [label_map.get(m, m) for m in methods]
-    colors = plt.cm.tab10(np.arange(len(methods)))
+    # Clifford+T → tab:blue (tab10[0]); Clifford+√T → tab:purple (tab10[4],
+    # the next categorical color after tab:orange).
+    color_map = {
+        "clifford_t": plt.cm.tab10(0),
+        "clifford_sqrt_t": plt.cm.tab10(4),
+    }
+    colors = [color_map.get(m, plt.cm.tab10(i)) for i, m in enumerate(methods)]
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
