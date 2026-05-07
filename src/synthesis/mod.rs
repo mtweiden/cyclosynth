@@ -1,9 +1,14 @@
+pub mod clifford_sqrt_t;
+pub mod clifford_t;
 pub mod cliffords;
 pub mod decomposer;
 pub mod diag;
 pub mod distance;
 pub mod lenstra;
+pub mod lenstra_zeta;
 pub mod search;
+pub mod search_zeta;
+pub mod sigma;
 pub mod synthesizer;
 
 pub use cliffords::{CLIFFORD_TABLE_T, apply_clifford_dagger, match_clifford};

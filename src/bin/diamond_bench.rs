@@ -4,7 +4,7 @@
 //! across a range of ε, then times ~10⁶ calls per variant.
 
 use cyclosynth::synthesis::distance::{diamond_distance_float, diamond_distance_float_mpfr};
-use cyclosynth::synthesis::synthesizer::Synthesizer;
+use cyclosynth::synthesis::Synthesizer;
 use num_complex::Complex;
 use std::f64::consts::PI;
 use std::time::Instant;
@@ -98,7 +98,7 @@ fn main() {
         .collect();
 
     for &eps in &epsilons {
-        let synth = Synthesizer::new(eps);
+        let synth = Synthesizer::new(eps, false);
         for &(a, b, c) in &trial_angles {
             let target = u3(a, b, c);
             let result = match synth.synthesize(target) {
