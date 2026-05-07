@@ -11,35 +11,11 @@ use crate::rings::Float;
 use i256::i256;
 use rug::{Assign, Float as RFloat};
 
-// ─── Adaptive precision constants ────────────────────────────────────────────
+// ─── Adaptive precision constants — re-exported from lenstra_common ─────────
 
-/// Target effective precision for `Q_int` entries: max(|Q_int|) ≈ 2^TARGET_BITS.
-/// Chosen to balance two competing constraints:
-///   - Higher → more relative precision in Q_int → tighter LLL convergence
-///     near the Lovász decision boundary. After GS cancels ~log₂(κ(Q)) bits,
-///     post-GS gnorm needs (TARGET_BITS − log₂(κ(Q))) ≳ 30 to be useful.
-///     For ε=1e-8: log₂(κ(Q)) ≈ 107, need TARGET_BITS ≳ 140.
-///     For ε=1e-10: log₂(κ(Q)) ≈ 137, need TARGET_BITS ≳ 170.
-///   - Lower → more i256 headroom for transient Gram entries G = B·Q_int·Bᵀ.
-///     G ≤ 64·max(B)²·max(Q_int). For typical post-LLL max(B)=2^15: G ≤
-///     2^(36+TARGET_BITS). For transient max(B)=2^60: G ≤ 2^(126+TARGET_BITS).
-///
-/// 180 bits keeps us safely through ε=1e-8 (margin ~70 bits post-GS) and gives
-/// 256−180 = 76 bits of i256 headroom for B² inflation. Pairs with overflow
-/// detection on the Gram update.
-pub const TARGET_BITS: u32 = 180;
-
-/// Magnitude threshold above which we declare a Gram-entry overflow risk:
-/// 2^240, leaving 16-bit margin to i256::MAX. Triggered during transient
-/// B-growth at deep ε (rare in practice — LLL output basis is small).
-pub const GRAM_OVERFLOW_THRESHOLD_BITS: u32 = 240;
-
-/// Compute the bit-shift `B` such that `round(2^B · Q[i][j])` lands in i256
-/// with max entry ≈ 2^TARGET_BITS. `max_q_log2` is `⌈log₂(max(|Q_entry|))⌉`
-/// from the MPFR Q computation.
-pub fn compute_scale_bits(max_q_log2: i32) -> i32 {
-    TARGET_BITS as i32 - max_q_log2
-}
+pub use crate::synthesis::lenstra_common::{
+    compute_scale_bits, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
+};
 
 /// MPFR precision in bits used to construct the anisotropic Q metric.
 /// `8·log₂(1/ε)` covers κ(Q) ≈ 16/ε⁴ with safety margin; floor at 100 bits
