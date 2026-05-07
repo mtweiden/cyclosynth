@@ -1,16 +1,21 @@
+"""Plot Clifford+T vs Clifford+√T cost comparison from
+`comparison_sqrtt_data.csv`. Mirrors `plot_comparison.py`'s grouped-violin
+style; y-axis is the T-count-equivalent cost (T_count + 2.5·Q_count).
+"""
+
 import csv
 from collections import defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 
 
-CSV_PATH = "comparison_data.csv"
-OUT_PATH = "comparison_violin.png"
+CSV_PATH = "comparison_sqrtt_data.csv"
+OUT_PATH = "comparison_sqrtt_violin.png"
 
 
 def load(path):
     data = defaultdict(lambda: defaultdict(
-        lambda: {"t": [], "s": [], "fail": 0, "total": 0}))
+        lambda: {"cost": [], "t": [], "q": [], "s": [], "fail": 0, "total": 0}))
     with open(path, newline="") as f:
         for row in csv.DictReader(f):
             eps = float(row["epsilon"])
@@ -19,10 +24,10 @@ def load(path):
             d = data[eps][method]
             d["total"] += 1
             if success:
-                tcount = int(row["t_count"])
-                d["t"].append(tcount)
-                time = float(row["duration_ms"]) / 1000
-                d["s"].append(time)
+                d["cost"].append(float(row["cost"]))
+                d["t"].append(int(row["t_count"]))
+                d["q"].append(int(row["q_count"]))
+                d["s"].append(float(row["duration_ms"]) / 1000)
             else:
                 d["fail"] += 1
     return data
@@ -67,8 +72,6 @@ def annotate_failures(ax, data, epsilons, methods, colors,
             total = data[eps][method]["total"]
             if fails == 0:
                 continue
-            if method == "trasyn" and not data[eps]["trasyn"]["t"]:
-                continue
             pos = j + (i - (n - 1) / 2) * width
             ax.annotate(
                 f"{fails}/{total}\nfail",
@@ -80,15 +83,22 @@ def annotate_failures(ax, data, epsilons, methods, colors,
 
 def main():
     data = load(CSV_PATH)
-    epsilons = sorted(data.keys(), reverse=True)  # 1e-3 first → 1e-8 last
+    epsilons = sorted(data.keys(), reverse=True)  # 1e-3 first → 1e-6 last
     methods = sorted({m for eps in data for m in data[eps]})
+
+    # Pretty labels.
+    label_map = {
+        "clifford_t": "Clifford+T",
+        "clifford_sqrt_t": "Clifford+√T",
+    }
+    pretty = [label_map.get(m, m) for m in methods]
     colors = plt.cm.tab10(np.arange(len(methods)))
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    grouped_violin(axes[0], data, epsilons, methods, "t", colors)
-    axes[0].set_ylabel("T-count")
-    axes[0].set_title("T-count distribution")
+    grouped_violin(axes[0], data, epsilons, methods, "cost", colors)
+    axes[0].set_ylabel("T-count-equivalent cost (T + 2.5·Q)")
+    axes[0].set_title("Cost distribution")
     bound_xs = range(len(epsilons))
     bound_ys = [3 * np.log2(1 / eps) for eps in epsilons]
     axes[0].plot(bound_xs, bound_ys, linestyle=":", color="black",
@@ -113,7 +123,7 @@ def main():
     bound_handle = plt.Line2D([0], [0], linestyle=":", color="black",
                               linewidth=1.0)
     axes[0].legend(handles + [bound_handle],
-                   methods + [r"$3\log_2(1/\varepsilon)$"], loc="best")
+                   pretty + [r"$3\log_2(1/\varepsilon)$"], loc="best")
 
     plt.tight_layout()
     plt.savefig(OUT_PATH, dpi=150)
