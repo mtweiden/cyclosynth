@@ -32,17 +32,13 @@ use rug::Float as RFloat;
 
 // ─── Adaptive precision constants ────────────────────────────────────────────
 
-/// Target effective precision for `Q_int` entries: max(|Q_int|) ≈ 2^TARGET_BITS.
-/// Same value as the 8D pipeline; the 16D dimensional growth in the Gram
-/// budget is absorbed via `GRAM_OVERFLOW_THRESHOLD_BITS` headroom rather
-/// than a smaller TARGET_BITS, which would hurt LLL precision near deep ε.
-pub const TARGET_BITS: u32 = 180;
-
-/// Magnitude threshold for Gram-entry overflow detection: 2^240, leaving
-/// 16-bit margin to i256::MAX. At d=16 the safe operating range is
-/// `max(|B|)² · max(|Q_int|) · 16 ≤ 2^240`, which holds for typical
-/// post-LLL bases at ε ≥ 1e-5.
-pub const GRAM_OVERFLOW_THRESHOLD_BITS: u32 = 240;
+// TARGET_BITS, GRAM_OVERFLOW_THRESHOLD_BITS, and compute_scale_bits live
+// in lenstra_common — same values for both backends. (At d=16 the
+// dimensional growth in the Gram budget is absorbed via the threshold
+// headroom rather than a smaller TARGET_BITS.)
+pub use crate::synthesis::lenstra_common::{
+    compute_scale_bits, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
+};
 
 /// MPFR Gram-Schmidt precision. Theorem 2 of Nguyen-Stehlé 2009 covers d ≤ 11
 /// at L²-LLL parameters (δ=0.75, η=0.55) in f64; for d=16 the proof doesn't
@@ -54,12 +50,6 @@ pub const GRAM_OVERFLOW_THRESHOLD_BITS: u32 = 240;
 /// correctness regressions and *better* lde landing). Configurable
 /// per-construction via [`IntScratch16::with_gs_prec`].
 pub const GS_PREC: u32 = 80;
-
-/// Compute the bit-shift `B` such that `round(2^B · Q[i][j])` lands in i256
-/// with max entry ≈ 2^TARGET_BITS.
-pub fn compute_scale_bits(max_q_log2: i32) -> i32 {
-    TARGET_BITS as i32 - max_q_log2
-}
 
 /// MPFR precision in bits used to construct the anisotropic Q metric.
 pub fn compute_prec_q(eps: Float) -> u32 {

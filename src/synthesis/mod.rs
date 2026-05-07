@@ -5,6 +5,7 @@ pub mod decomposer;
 pub mod diag;
 pub mod distance;
 pub mod lenstra;
+pub mod lenstra_common;
 pub mod lenstra_zeta;
 pub mod search;
 pub mod search_zeta;

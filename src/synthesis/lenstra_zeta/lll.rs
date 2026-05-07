@@ -33,27 +33,17 @@ use super::scratch::{IntScratch16, GRAM_OVERFLOW_THRESHOLD_BITS};
 
 // ─── L²-LLL parameters ───────────────────────────────────────────────────────
 
-/// L² parameter η: relaxed size-reduction factor.
-pub const L2_ETA: f64 = 0.55;
-/// L² parameter δ: Lovász factor.
-pub const L2_DELTA: f64 = 0.75;
-pub const L2_DELTA_BAR: f64 = (L2_DELTA + 1.0) / 2.0;
-pub const L2_ETA_BAR: f64 = (L2_ETA + 0.5) / 2.0;
+// ─── L²-LLL parameters & result type — moved to lenstra_common ──────────────
 
-/// Hard cap on lazy-size-reduce iterations per κ.
-pub const MAX_LAZY_PASSES: usize = 32;
+pub use crate::synthesis::lenstra_common::{
+    L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
+};
 
-/// Hard cap on outer LLL iterations.
+/// Hard cap on outer L²-LLL iterations. **lenstra_zeta-specific**: the 8D
+/// path doesn't have an iter cap because empirically the 8D loop always
+/// converges fast; the 16D loop in our regime averages ~230 iterations
+/// and the cap is a safety net.
 pub const MAX_LLL_ITERS: usize = 50_000;
-
-// ─── Result type ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LllResult {
-    Converged,
-    GramOverflow,
-    IterCap,
-}
 
 // ─── i256 → MPFR conversion ──────────────────────────────────────────────────
 
