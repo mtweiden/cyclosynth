@@ -73,6 +73,21 @@ pub static N_LAZY_CALLS_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Max passes ever seen in a single invocation.
 pub static N_LAZY_PASSES_MAX: AtomicU64 = AtomicU64::new(0);
 
+// ─── 16D Z[ζ_16] / Clifford+√T-specific counters ─────────────────────────────
+
+/// Number of `phase1` invocations across this synthesize call (one per k).
+pub static N_PHASE1_CALLS: AtomicU64 = AtomicU64::new(0);
+/// SE leaves rejected by the norm-shell check (`‖x‖² == 2^k`).
+pub static N_NORM_REJECTED: AtomicU64 = AtomicU64::new(0);
+/// SE leaves rejected by the bilinear forms check (`B_1=B_2=B_3=0`).
+pub static N_BILINEAR_REJECTED: AtomicU64 = AtomicU64::new(0);
+/// SE leaves rejected by the alignment check (`(y·x)² ≥ threshold_xy`).
+pub static N_ALIGN_REJECTED: AtomicU64 = AtomicU64::new(0);
+/// SE leaves passing all filters (returned by `phase1`).
+pub static N_SOLS_RETURNED: AtomicU64 = AtomicU64::new(0);
+/// Time spent inside SE leaf-check closures (sum across all phase1 calls).
+pub static T_LEAF_CHECK_NS: AtomicU64 = AtomicU64::new(0);
+
 /// Record one lazy_size_reduce invocation's pass count.
 pub fn record_lazy_passes(passes: u64) {
     N_LAZY_PASSES_TOTAL.fetch_add(passes, Ordering::Relaxed);
@@ -129,6 +144,12 @@ pub fn reset_all() {
         &N_LAZY_PASSES_TOTAL,
         &N_LAZY_CALLS_TOTAL,
         &N_LAZY_PASSES_MAX,
+        &N_PHASE1_CALLS,
+        &N_NORM_REJECTED,
+        &N_BILINEAR_REJECTED,
+        &N_ALIGN_REJECTED,
+        &N_SOLS_RETURNED,
+        &T_LEAF_CHECK_NS,
     ] {
         c.store(0, Ordering::Relaxed);
     }
@@ -151,6 +172,13 @@ pub struct Snapshot {
     pub lazy_passes_total: u64,
     pub lazy_calls_total: u64,
     pub lazy_passes_max: u64,
+    // 16D Z[ζ_16] fields.
+    pub phase1_calls: u64,
+    pub norm_rejected: u64,
+    pub bilinear_rejected: u64,
+    pub align_rejected: u64,
+    pub sols_returned: u64,
+    pub t_leaf_check_ms: f64,
 }
 
 pub fn snapshot() -> Snapshot {
@@ -170,5 +198,59 @@ pub fn snapshot() -> Snapshot {
         lazy_passes_total: N_LAZY_PASSES_TOTAL.load(Ordering::Relaxed),
         lazy_calls_total: N_LAZY_CALLS_TOTAL.load(Ordering::Relaxed),
         lazy_passes_max: N_LAZY_PASSES_MAX.load(Ordering::Relaxed),
+        phase1_calls: N_PHASE1_CALLS.load(Ordering::Relaxed),
+        norm_rejected: N_NORM_REJECTED.load(Ordering::Relaxed),
+        bilinear_rejected: N_BILINEAR_REJECTED.load(Ordering::Relaxed),
+        align_rejected: N_ALIGN_REJECTED.load(Ordering::Relaxed),
+        sols_returned: N_SOLS_RETURNED.load(Ordering::Relaxed),
+        t_leaf_check_ms: T_LEAF_CHECK_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
     }
+}
+
+/// Pretty-print 16D synthesis profile to stderr. Call after a full
+/// `synthesize` run with `CYCLOSYNTH_TRACE=1`.
+pub fn dump_zeta(s: &Snapshot, label: &str) {
+    let total_se = s.norm_rejected + s.bilinear_rejected + s.align_rejected + s.sols_returned;
+    let pct = |x: u64| -> f64 {
+        if total_se > 0 { 100.0 * x as f64 / total_se as f64 } else { 0.0 }
+    };
+    let stage_total =
+        s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
+    let pct_t = |x: f64| -> f64 {
+        if stage_total > 0.0 { 100.0 * x / stage_total } else { 0.0 }
+    };
+    eprintln!("─── [zeta diag {label}] ───────────────────────────────");
+    eprintln!(
+        "  phase1 calls:    {}    LLL iters: total={} max={} at_cap={}",
+        s.phase1_calls, s.lll_iters_total, s.lll_iters_max, s.lll_at_cap,
+    );
+    eprintln!(
+        "  SE leaves:       {} ({:.1}M)    leaf-check time: {:.1} ms",
+        s.se_callbacks,
+        s.se_callbacks as f64 / 1.0e6,
+        s.t_leaf_check_ms,
+    );
+    eprintln!(
+        "    norm_reject:   {:>13}  ({:>5.1}%)",
+        s.norm_rejected, pct(s.norm_rejected),
+    );
+    eprintln!(
+        "    bilin_reject:  {:>13}  ({:>5.1}%)",
+        s.bilinear_rejected, pct(s.bilinear_rejected),
+    );
+    eprintln!(
+        "    align_reject:  {:>13}  ({:>5.1}%)",
+        s.align_rejected, pct(s.align_rejected),
+    );
+    eprintln!(
+        "    sols:          {:>13}  ({:>5.1}%)",
+        s.sols_returned, pct(s.sols_returned),
+    );
+    eprintln!("  per-stage time (ms):");
+    eprintln!("    build_q:   {:>10.1}  ({:>5.1}%)", s.t_build_ms, pct_t(s.t_build_ms));
+    eprintln!("    lll:       {:>10.1}  ({:>5.1}%)", s.t_lll_ms, pct_t(s.t_lll_ms));
+    eprintln!("    cholesky:  {:>10.1}  ({:>5.1}%)", s.t_cholesky_ms, pct_t(s.t_cholesky_ms));
+    eprintln!("    lu_solve:  {:>10.1}  ({:>5.1}%)", s.t_lu_ms, pct_t(s.t_lu_ms));
+    eprintln!("    se_walk:   {:>10.1}  ({:>5.1}%)  (incl. leaf checks)", s.t_se_ms, pct_t(s.t_se_ms));
+    eprintln!("─────────────────────────────────────────────────────");
 }
