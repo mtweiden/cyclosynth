@@ -117,8 +117,15 @@ where
     // Step 1: build Q in MPFR + i256 snapshot. Reset basis to identity (LLL
     // expects the identity start; `run_lll_16` calls `reset_basis()` again
     // internally but doing it here keeps the contract explicit).
+    //
+    // When `scratch.warm_lll` is set (Z1 D&C path), skip the reset and let
+    // LLL warm-start from the previous call's reduced basis. The basis is
+    // still a valid Z^16 basis (any unimodular transformation), so LLL
+    // re-reduces it for the new Gram in (typically) far fewer iterations.
     let t_build = if trace { Some(std::time::Instant::now()) } else { None };
-    scratch.reset_basis();
+    if !scratch.warm_lll {
+        scratch.reset_basis();
+    }
     build_q_mpfr_zeta(scratch, v, k, eps);
     build_q_int_zeta(scratch);
 

@@ -378,8 +378,13 @@ pub fn lll_l2_16(scratch: &mut IntScratch16) -> LllResult {
 }
 
 /// Convenience: prepare Gram from current basis and Q_int, then run LLL.
+/// Honours `scratch.warm_lll` — when true, the caller-supplied basis is
+/// reused as the LLL starting point (Z1 D&C amortisation); otherwise we
+/// reset to identity (default single-search behaviour).
 pub fn run_lll_16(scratch: &mut IntScratch16) -> LllResult {
-    scratch.reset_basis();
+    if !scratch.warm_lll {
+        scratch.reset_basis();
+    }
     if !compute_gram_full(scratch) {
         return LllResult::GramOverflow;
     }

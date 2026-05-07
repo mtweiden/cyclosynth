@@ -28,12 +28,15 @@
 use crate::matrix::u2::U2Q;
 use crate::rings::ZZeta;
 use crate::rings::types::Int;
+use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_float, Mat2};
 use crate::synthesis::lenstra_zeta::{phase1_with_stop, IntScratch16};
 use crate::synthesis::search_zeta::{phase1_brute, uv_to_xy_zeta};
 use num_complex::Complex64;
+use std::collections::HashMap;
 use std::f64::consts::PI;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::sync::atomic::AtomicBool;
 
 // ─── Solution → U2Q reconstruction (Z[ζ_16] analog of solution_to_u2t) ───────
@@ -96,6 +99,171 @@ pub fn det_phase_of(target: &Mat2) -> u32 {
     (((d_int % 16) + 16) % 16) as u32
 }
 
+// ─── FGKM canonical-form prefix generation (Z1, syllable-count enumeration) ──
+//
+// Mirrors `clifford_t::build_l`. Where Clifford+T enumerates Matsumoto–Amano
+// words `T^{a₀} · ∏ (HS^bᵢ T) · C` of T-count t', this enumerates
+// Forest–Gosset–Kliuchnikov–McKinnon words `∏ R_{pᵢ}(aᵢπ/8) · C` of
+// **syllable count** m. A "syllable" is one `R_p(a·π/8)` with
+// `p ∈ {x,y,z}, a ∈ {1,2,3}`; consecutive syllables must have distinct
+// axes (Lemma 3.1). Q-count = Σaᵢ ∈ [m, 3m] varies inside one m-bin —
+// see `project_zeta_z1_split_coordinate.md` for why m is the right
+// enumeration coordinate (each syllable peels √2-exp by ≥1, matching the
+// inner-LLL+SE lde split, while Q-count does not).
+//
+// Raw count at m: 9 · 6^{m-1} · 24 (m ≥ 1). Post-dedup-up-to-global-phase
+// the Clifford suffix mostly collapses; FGKM Theorem 4.1 says the body is
+// otherwise canonical, so we expect roughly the body count `9 · 6^{m-1}`.
+
+/// Global cache for `build_l_q` results, keyed by syllable count `m`.
+static BUILD_L_Q_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<U2Q>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Canonical float key for a `U2Q` matrix, invariant under global U(1)
+/// phase. Mirrors `clifford_t::canonical_key`: rotates the flattened
+/// matrix so the largest-magnitude entry is real-positive, then rounds to
+/// 6 decimals. Used for O(n)-average dedup in `build_l_q_inner`.
+fn canonical_key_q(u: &U2Q) -> [i64; 8] {
+    let m = u.to_float();
+    let flat = [m[0][0], m[0][1], m[1][0], m[1][1]];
+
+    let (idx, _) = flat
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.norm_sqr().partial_cmp(&b.norm_sqr()).unwrap())
+        .unwrap();
+    let piv = flat[idx];
+
+    let rot: Vec<f64> = if piv.norm() < 1e-12 {
+        flat.iter().flat_map(|c| [c.re, c.im]).collect()
+    } else {
+        let phase = piv / piv.norm();
+        flat.iter()
+            .flat_map(|c| {
+                let r = c / phase;
+                [r.re, r.im]
+            })
+            .collect()
+    };
+
+    rot.iter()
+        .map(|x| (x * 1_000_000.0).round() as i64)
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap()
+}
+
+/// Build `L_m^Q`: the FGKM canonical-form prefix set with Clifford suffix,
+/// at syllable count `m`. Cached by `m` (Arc-cloned on hit).
+#[allow(dead_code)]
+pub(crate) fn build_l_q(m: u32) -> Arc<Vec<U2Q>> {
+    {
+        let cache = BUILD_L_Q_CACHE.lock().unwrap();
+        if let Some(v) = cache.get(&m) {
+            return Arc::clone(v);
+        }
+    }
+    let result = Arc::new(build_l_q_inner(m));
+    BUILD_L_Q_CACHE
+        .lock()
+        .unwrap()
+        .insert(m, Arc::clone(&result));
+    result
+}
+
+fn build_l_q_inner(m: u32) -> Vec<U2Q> {
+    if m == 0 {
+        return vec![U2Q::eye()];
+    }
+
+    // 9 base syllables: `R_p(a·π/8)` for p ∈ {x,y,z}, a ∈ {1,2,3}.
+    // Convention matches `decomposer::canonical_candidates`:
+    //   axis 0: R_x(π/8) = H · Q · H
+    //   axis 1: R_y(π/8) = S · H · Q · H · S†
+    //   axis 2: R_z(π/8) = Q
+    let rx_base: U2Q = U2Q::h() * U2Q::q() * U2Q::h();
+    let ry_base: U2Q = U2Q::s() * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s().dagger();
+    let rz_base: U2Q = U2Q::q();
+    let bases: [U2Q; 3] = [rx_base, ry_base, rz_base];
+
+    // syllables[axis][a-1] = bases[axis]^a.
+    let mut syllables: [[U2Q; 3]; 3] = [[U2Q::eye(); 3]; 3];
+    for (axis, base) in bases.iter().enumerate() {
+        let mut acc = U2Q::eye();
+        for a in 0..3 {
+            acc = acc * *base;
+            syllables[axis][a] = acc;
+        }
+    }
+
+    // Cliffords as U2Q, rebuilt from CLIFFORD_TABLE_T entry names. The
+    // `(_, U2T)` field is the Z[ω] form; we discard it and re-evaluate in
+    // U2Q so the embedding ZOmega → ZZeta is implicit and exact.
+    let cliffords_q: Vec<U2Q> = CLIFFORD_TABLE_T
+        .iter()
+        .map(|(name, _)| {
+            name.chars().fold(U2Q::eye(), |acc, ch| {
+                acc * match ch {
+                    'H' => U2Q::h(),
+                    'S' => U2Q::s(),
+                    'X' => U2Q::x(),
+                    'Y' => U2Q::y(),
+                    'Z' => U2Q::z(),
+                    _ => U2Q::eye(),
+                }
+            })
+        })
+        .collect();
+
+    // Enumerate all length-m FGKM bodies (axis-adjacency-distinct).
+    let mut bodies: Vec<U2Q> = Vec::new();
+    enumerate_bodies(m, 3, U2Q::eye(), &syllables, &mut bodies);
+
+    // Append every Clifford suffix to every body.
+    let mut candidates: Vec<U2Q> = Vec::with_capacity(bodies.len() * cliffords_q.len());
+    for body in &bodies {
+        for c in &cliffords_q {
+            candidates.push(*body * *c);
+        }
+    }
+
+    // Dedup up to global U(1) phase.
+    let mut seen: std::collections::HashSet<[i64; 8]> = std::collections::HashSet::new();
+    let mut unique: Vec<U2Q> = Vec::with_capacity(candidates.len());
+    for u in candidates {
+        let key = canonical_key_q(&u);
+        if seen.insert(key) {
+            unique.push(u);
+        }
+    }
+    unique
+}
+
+/// Recursively enumerate length-m FGKM bodies under the
+/// adjacent-axis-distinct constraint. `prev_axis = 3` is the sentinel
+/// "no previous axis" — used at the first slot so all 3 axes are open.
+fn enumerate_bodies(
+    remaining: u32,
+    prev_axis: usize,
+    acc: U2Q,
+    syllables: &[[U2Q; 3]; 3],
+    out: &mut Vec<U2Q>,
+) {
+    if remaining == 0 {
+        out.push(acc);
+        return;
+    }
+    for axis in 0..3 {
+        if axis == prev_axis {
+            continue;
+        }
+        for a in 0..3 {
+            let next = acc * syllables[axis][a];
+            enumerate_bodies(remaining - 1, axis, next, syllables, out);
+        }
+    }
+}
+
 
 /// Result of a synthesis call: the gate string, its lde, and the diamond
 /// distance achieved.
@@ -128,6 +296,15 @@ pub struct SynthesizerQ {
     pub max_lde: u32,
     /// Minimum lde to start searching from.
     pub min_lde: u32,
+    /// **Z1 D&C prototype**: when `Some(m)`, run the FGKM-prefix
+    /// divide-and-conquer search with split parameter m at every k where
+    /// k > m (so k_inner ≥ 1). Defaults to None (single-search path).
+    /// Builder: [`Self::with_dc_split`].
+    pub dc_split: Option<u32>,
+    /// Z1 D&C det-phase filter — list of allowed `d_R` offsets (i.e., the
+    /// values that `(d_target − d_L) mod 16` may take for a prefix to be
+    /// processed). Empty = no filter. Builder: [`Self::with_dc_dr_filter`].
+    pub dc_dr_filter: Vec<u32>,
 }
 
 /// k cutoff: brute-force handles `k ≤ BRUTE_LIMIT`, the 16D LLL+SE
@@ -173,6 +350,29 @@ fn lattice_lde_estimate(epsilon: f64) -> u32 {
 const PASS1_CAP: u64 = 100_000_000;
 const PASS2_CAP: u64 = 4_000_000_000;
 
+/// Compute `U_L† · target` as a continuous Mat2.
+/// `U_L` is exact (`U2Q`), `target` is float (`Mat2`). Mirrors the 8D
+/// helper `clifford_t::u2t_dag_times_mat2` for use by the Z1 D&C path.
+#[allow(dead_code)]
+fn u2q_dag_times_mat2(u_l: &U2Q, target: &Mat2) -> Mat2 {
+    let u_f = u_l.to_float();
+    // (U_L†)[i][j] = conj(U_L[j][i])
+    let ud00 = Complex64::new(u_f[0][0].re, -u_f[0][0].im);
+    let ud01 = Complex64::new(u_f[1][0].re, -u_f[1][0].im);
+    let ud10 = Complex64::new(u_f[0][1].re, -u_f[0][1].im);
+    let ud11 = Complex64::new(u_f[1][1].re, -u_f[1][1].im);
+    [
+        [
+            ud00 * target[0][0] + ud01 * target[1][0],
+            ud00 * target[0][1] + ud01 * target[1][1],
+        ],
+        [
+            ud10 * target[0][0] + ud11 * target[1][0],
+            ud10 * target[0][1] + ud11 * target[1][1],
+        ],
+    ]
+}
+
 /// Column-1 of `target` as a 4-element real vector
 /// `(Re V_{00}, Im V_{00}, Re V_{10}, Im V_{10})`. Used as the SU(2)-style
 /// alignment direction `v` for the lattice search.
@@ -196,8 +396,38 @@ impl SynthesizerQ {
     /// `max_lde = 30`: high enough to reach ε ≲ 1e-5 via the LLL backend.
     /// Override via [`with_max_lde`] for a tighter (faster) ceiling, e.g.
     /// `with_max_lde(4)` to stay in the brute regime.
+    /// Construct a synthesizer with sensible defaults. **Z1 D&C is
+    /// auto-enabled at ε ≤ 1e-6**: empirically, single search becomes
+    /// pathological at this depth (per-target time can run into minutes,
+    /// 1/3 fail at max_lde=30), while filtered D&C stays in the seconds.
+    /// At ε > 1e-6 we keep single search since it's always faster on
+    /// the lattice levels it needs to reach.
+    ///
+    /// Override either via [`Self::with_dc_split`] / [`Self::with_dc_dr_filter`].
     pub fn new(epsilon: f64) -> Self {
-        Self { epsilon, min_lde: 0, max_lde: 30 }
+        // At deep ε, auto-enable D&C with the empirically-best filter
+        // (m=1, |d_R|≤1). See `project_zeta_z1_empirics.md` for the data
+        // — wins 22-1534× over single at ε=1e-7. Threshold of 1e-6 is
+        // a touch aggressive (single still has variance there), but the
+        // upside on slow targets (hours → seconds) dominates the
+        // downside on easy targets.
+        let (dc_split, dc_dr_filter) = if epsilon <= 1e-6 {
+            (Some(1u32), vec![0u32, 1, 15])
+        } else {
+            (None, Vec::new())
+        };
+        // Default max_lde scales with ε. At ε=1e-7 we observed
+        // single-search lde=19; D&C may need lde=20-21 with the
+        // |d_R|≤1 filter (each prefix's k_inner = k_total − k_prefix).
+        // 35 is safe for ε down to ~1e-9.
+        let max_lde = if epsilon <= 1e-7 { 35 } else { 30 };
+        Self {
+            epsilon,
+            min_lde: 0,
+            max_lde,
+            dc_split,
+            dc_dr_filter,
+        }
     }
 
     pub fn with_max_lde(mut self, max_lde: u32) -> Self {
@@ -207,6 +437,31 @@ impl SynthesizerQ {
 
     pub fn with_min_lde(mut self, min_lde: u32) -> Self {
         self.min_lde = min_lde;
+        self
+    }
+
+    /// Z1 prototype: enable FGKM-prefix divide-and-conquer at split parameter
+    /// `m`. Splits each lattice search at lde k_total into a length-m FGKM
+    /// prefix `U_L` (enumerated from `L_m^Q`) plus an inner LLL+SE search at
+    /// k_inner = k_total − k_prefix, then composes. Off by default.
+    pub fn with_dc_split(mut self, m: u32) -> Self {
+        self.dc_split = Some(m);
+        self
+    }
+
+    /// Z1 det-phase filter: only run inner search for prefixes whose `d_R =
+    /// (d_target − d_L) mod 16` is in the allowed-offsets set. The 16-valued
+    /// analog of Clifford+T's `det_zeta_parity` check. Default
+    /// (`Vec::new()` → no filter, every prefix runs). Strict
+    /// SU(2)-only filter: pass `vec![0]`. Relaxed: e.g. `vec![0, 1, 15]`
+    /// or `vec![0, 1, 2, 14, 15]`.
+    ///
+    /// **Completeness caveat:** filtering by `d_R` loses prefixes whose
+    /// inner factor would have had a non-zero det phase. The right
+    /// factorization for a given target may not be in any single d_R
+    /// bucket; iterating m or widening the offset set covers more cases.
+    pub fn with_dc_dr_filter(mut self, allowed_offsets: Vec<u32>) -> Self {
+        self.dc_dr_filter = allowed_offsets;
         self
     }
 
@@ -296,6 +551,28 @@ impl SynthesizerQ {
             }
         }
 
+        // Z1 D&C prototype: when `dc_split = Some(m)`, run the FGKM-prefix
+        // dispatcher at each k instead of the single-search path.
+        if let Some(m_split) = self.dc_split {
+            for k in lattice_start..=self.max_lde {
+                if k <= m_split {
+                    // k_inner would be ≤ 0 for the smallest-k_prefix prefixes,
+                    // so D&C can't help here — still need to handle this k via
+                    // the single-search path to stay complete. Fall through to
+                    // the existing pass1 logic for these k values.
+                    let (sols, _) = try_lattice_k(k, PASS1_CAP, &mut scratch);
+                    if let Some(r) = check_sols(&sols, k) {
+                        return Some(r);
+                    }
+                    continue;
+                }
+                if let Some(r) = self.dc_search_q(&target, k, m_split) {
+                    return Some(r);
+                }
+            }
+            return None;
+        }
+
         // Lattice regime, Pass 1: aggressive budget cap. k's that hit the
         // budget without finding a sol get queued for Pass 2.
         let mut pass2_queue: Vec<u32> = Vec::new();
@@ -334,6 +611,104 @@ impl SynthesizerQ {
         }
         None
     }
+
+    /// Z1 D&C inner-step at total lde `k_total` and split parameter
+    /// `m_split`. Iterates every prefix `U_L ∈ L_{m_split}^Q`, computes
+    /// the inner factor's alignment direction `v_inner = unitary_to_uv(
+    /// U_L† · target)`, runs LLL+SE at `k_inner = k_total − k_prefix(U_L)`,
+    /// reconstructs `U_full = U_L · U_R`, and returns the first candidate
+    /// whose diamond distance to target is below ε.
+    ///
+    /// Per-prefix `d_R = (d_target − d_L) mod 16` parametrises the inner
+    /// reconstruction so the assembled `U_full` matches target's det
+    /// phase. This is the Z[ζ_16] analog of Clifford+T's `dc_search`.
+    ///
+    /// Serial for the prototype; parallelism (rayon par_iter over
+    /// prefixes) is a follow-up if the per-prefix cost matches the
+    /// projected ~50μs.
+    fn dc_search_q(&self, target: &Mat2, k_total: u32, m_split: u32) -> Option<SynthResultQ> {
+        let prefixes = build_l_q(m_split);
+        let d_target = det_phase_of(target);
+
+        // One scratch buffer reused across all prefixes (LLL setup is the
+        // dominant per-prefix cost). The first call cold-starts LLL from
+        // identity; subsequent calls warm-start from the previous prefix's
+        // reduced basis.
+        let mut scratch = IntScratch16::new(self.epsilon);
+        let epsilon = self.epsilon;
+        let mut first_call = true;
+
+        for u_l in prefixes.iter() {
+            let k_prefix = u_l.k;
+            // Skip prefixes whose lde already exceeds k_total — k_inner ≤ 0
+            // is unreachable for the lattice search (and brute-shell at
+            // k_inner ≤ 3 isn't wired into this dispatcher yet).
+            if k_prefix >= k_total {
+                continue;
+            }
+            let k_inner = k_total - k_prefix;
+
+            // m_inner = U_L† · target as a continuous Mat2.
+            let m_inner = u2q_dag_times_mat2(u_l, target);
+            let v_inner = unitary_to_uv_zeta(&m_inner);
+
+            // d_L from prefix's float det (prefix is exact, so this is well-
+            // defined modulo our 16-phase rounding inside det_phase_of).
+            let d_l = det_phase_of(&u_l.to_float());
+            let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+
+            // Det-phase filter: skip prefixes whose required d_R isn't in
+            // the allowed-offsets set. Empty ⇒ no filtering. The 16-valued
+            // analog of Clifford+T's `det_zeta_parity` filter; see
+            // `with_dc_dr_filter` for completeness caveats.
+            if !self.dc_dr_filter.is_empty() && !self.dc_dr_filter.contains(&d_r) {
+                continue;
+            }
+
+            // Inner LLL+SE at k_inner. Early-exit predicate composes
+            // `U_L · U_R` and checks distance — only fires on integer-leaf
+            // passing solutions, so its O(per-leaf) cost is amortised.
+            let y = uv_to_xy_zeta(v_inner, k_inner);
+            let budget_hit = AtomicBool::new(false);
+            // Per-prefix budget. Wrong prefixes pay this cost in full
+            // before bailing out, so the dispatcher's total time is
+            // dominated by it × |L_m|. Empirical: 10k leaves × 7.8k
+            // prefixes (m=3) takes ~110ms in 16D. Bumping later if it
+            // misses solutions.
+            const PER_PREFIX_CAP: u64 = 10_000_000;
+            let u_l_local = *u_l;
+            let target_local = *target;
+            let should_stop = |x: &[i64; 16]| -> bool {
+                let u_r = solution_to_u2q_d(x, k_inner, d_r);
+                let u_full = u_l_local * u_r;
+                diamond_distance_float(&u_full.to_float(), &target_local) < epsilon
+            };
+            // (Warm-start tried; basis shaped for prev Q hurts the new
+            // Q's LLL by ~2× — left at cold-start.)
+            let _ = first_call;
+            let sols = phase1_with_stop(
+                &mut scratch, &y, k_inner, epsilon,
+                PER_PREFIX_CAP, &budget_hit, should_stop,
+            );
+
+            // Score each returned solution and return the first that
+            // satisfies the ε bound.
+            for sol in &sols {
+                let u_r = solution_to_u2q_d(sol, k_inner, d_r);
+                let u_full = *u_l * u_r;
+                let dist = diamond_distance_float(&u_full.to_float(), target);
+                if dist < self.epsilon {
+                    let gates = BlochDecomposer.decompose(&u_full);
+                    return Some(SynthResultQ {
+                        gates: Some(gates),
+                        lde: k_total,
+                        distance: dist,
+                    });
+                }
+            }
+        }
+        None
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -346,6 +721,1067 @@ mod tests {
 
     fn complex_target(matrix: [[Complex64; 2]; 2]) -> Mat2 {
         matrix
+    }
+
+    /// Print raw vs deduped size of `L_m^Q` for m ∈ [0, 5]. Behind
+    /// `--nocapture` in normal runs; the assertions are minimal — this is
+    /// a measurement, not a correctness contract.
+    #[test]
+    fn build_l_q_size_growth() {
+        for m in 0..=5 {
+            let raw = if m == 0 {
+                1
+            } else {
+                9 * 6u64.pow(m - 1) * 24
+            };
+            let l = build_l_q(m);
+            let dedup = l.len();
+            let factor = raw as f64 / dedup as f64;
+            eprintln!(
+                "m={m}  raw={raw:>8}  dedup={dedup:>8}  factor={factor:.2}x"
+            );
+            // Sanity: dedup never grows the set.
+            assert!((dedup as u64) <= raw,
+                "dedup ({dedup}) > raw ({raw}) at m={m}");
+            // m=0 is just identity.
+            if m == 0 {
+                assert_eq!(dedup, 1);
+            }
+        }
+    }
+
+    /// Z1 filter — does the float-domain FGKM faithfully predict the
+    /// integer-domain canonical-form syllables? Build many exact
+    /// Clifford+√T targets, compare predictions step-by-step.
+    #[test]
+    fn z1_float_fgkm_agreement() {
+        use crate::synthesis::decomposer::{canonical_form_axes_q, canonical_form_axes_q_float};
+        use crate::matrix::so3::SO3;
+        use crate::rings::ZZeta;
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+
+        let bases: [U2Q; 3] = [
+            U2Q::h() * U2Q::q() * U2Q::h(),
+            U2Q::s() * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s().dagger(),
+            U2Q::q(),
+        ];
+        let mut syllables: [[U2Q; 3]; 3] = [[U2Q::eye(); 3]; 3];
+        for (axis, base) in bases.iter().enumerate() {
+            let mut acc = U2Q::eye();
+            for a in 0..3 {
+                acc = acc * *base;
+                syllables[axis][a] = acc;
+            }
+        }
+        let cliffords_q: Vec<U2Q> = CLIFFORD_TABLE_T
+            .iter()
+            .map(|(name, _)| {
+                name.chars().fold(U2Q::eye(), |acc, ch| {
+                    acc * match ch {
+                        'H' => U2Q::h(),
+                        'S' => U2Q::s(),
+                        'X' => U2Q::x(),
+                        'Y' => U2Q::y(),
+                        'Z' => U2Q::z(),
+                        _ => U2Q::eye(),
+                    }
+                })
+            })
+            .collect();
+
+        let mut rng = StdRng::seed_from_u64(0xC1FF1);
+        let n_trials = 2000;
+
+        for &target_len in &[3usize, 5, 8, 12] {
+            let mut step_match = vec![0u64; target_len];
+            let mut step_total = vec![0u64; target_len];
+            let mut full_match: u64 = 0;
+            let mut full_first_match: u64 = 0;
+
+            for _ in 0..n_trials {
+                let mut prev_axis: usize = 3;
+                let mut body = U2Q::eye();
+                for _ in 0..target_len {
+                    let mut axis = rng.random_range(0..3);
+                    if axis == prev_axis { axis = (axis + 1) % 3; }
+                    if axis == prev_axis { axis = (axis + 1) % 3; }
+                    let a = rng.random_range(0..3);
+                    body = body * syllables[axis][a];
+                    prev_axis = axis;
+                }
+                let c_idx = rng.random_range(0..cliffords_q.len());
+                let target = body * cliffords_q[c_idx];
+
+                let canon_int = canonical_form_axes_q(&target);
+                // Build float SO3 from the integer SO3 of target.
+                let so3_int = SO3::<crate::matrix::so3::R4>::from_u2(&target);
+                let mut so3_f = so3_int.to_float();
+                let canon_float = canonical_form_axes_q_float(&mut so3_f, target_len + 4);
+
+                let n = canon_int.len().min(canon_float.len()).min(target_len);
+                let mut all_match = canon_int.len() == canon_float.len();
+                for i in 0..n {
+                    step_total[i] += 1;
+                    if canon_int[i] == canon_float[i] {
+                        step_match[i] += 1;
+                    } else {
+                        all_match = false;
+                    }
+                }
+                if !canon_int.is_empty() && !canon_float.is_empty()
+                   && canon_int[0] == canon_float[0] {
+                    full_first_match += 1;
+                }
+                if all_match { full_match += 1; }
+            }
+
+            eprintln!(
+                "\n=== target_len={target_len}, n_trials={n_trials} ==="
+            );
+            eprintln!(
+                "  full sequence agreement     : {}/{} = {:.1}%",
+                full_match, n_trials,
+                100.0 * (full_match as f64) / (n_trials as f64)
+            );
+            eprintln!(
+                "  first-syllable agreement     : {}/{} = {:.1}%",
+                full_first_match, n_trials,
+                100.0 * (full_first_match as f64) / (n_trials as f64)
+            );
+            eprintln!("  per-step agreement:");
+            for i in 0..target_len {
+                if step_total[i] == 0 { continue; }
+                eprintln!(
+                    "    step {i:>2}: {:>5}/{:>5} = {:.1}%",
+                    step_match[i], step_total[i],
+                    100.0 * (step_match[i] as f64) / (step_total[i] as f64)
+                );
+            }
+        }
+    }
+
+    /// Z1 filter investigation: build random Clifford+√T targets by composing
+    /// known FGKM bodies, then look at where the canonical-form *first*
+    /// syllable lands. If the distribution is uniform across all 9 (axis, a)
+    /// cells, no filter via this angle. If biased, follow up with cheap-
+    /// predictor experiments.
+    #[test]
+    fn z1_first_syllable_distribution() {
+        use crate::synthesis::decomposer::canonical_form_axes_q;
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+
+        // Build the 9 base syllables (same as build_l_q_inner).
+        let bases: [U2Q; 3] = [
+            U2Q::h() * U2Q::q() * U2Q::h(),
+            U2Q::s() * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s().dagger(),
+            U2Q::q(),
+        ];
+        let mut syllables: [[U2Q; 3]; 3] = [[U2Q::eye(); 3]; 3];
+        for (axis, base) in bases.iter().enumerate() {
+            let mut acc = U2Q::eye();
+            for a in 0..3 {
+                acc = acc * *base;
+                syllables[axis][a] = acc;
+            }
+        }
+        // Cliffords as U2Q.
+        let cliffords_q: Vec<U2Q> = CLIFFORD_TABLE_T
+            .iter()
+            .map(|(name, _)| {
+                name.chars().fold(U2Q::eye(), |acc, ch| {
+                    acc * match ch {
+                        'H' => U2Q::h(),
+                        'S' => U2Q::s(),
+                        'X' => U2Q::x(),
+                        'Y' => U2Q::y(),
+                        'Z' => U2Q::z(),
+                        _ => U2Q::eye(),
+                    }
+                })
+            })
+            .collect();
+
+        let mut rng = StdRng::seed_from_u64(0xC1FF0);
+        let n_trials = 5000;
+
+        for &target_len in &[3usize, 5, 8, 12] {
+            // Bin: hist[axis][a-1] for first syllable.
+            let mut first_hist = [[0u64; 3]; 3];
+            // Compare to bin of *body construction's* first syllable.
+            let mut construct_hist = [[0u64; 3]; 3];
+            // Track length-mismatches (canonical-form length vs constructed length).
+            let mut len_short = 0u64;
+            let mut len_match = 0u64;
+            let mut len_long = 0u64;
+            // Sample variability in returned length.
+            let mut sum_len = 0u64;
+
+            for _ in 0..n_trials {
+                // Build a random length-target_len FGKM body with adjacency.
+                let mut prev_axis: usize = 3;
+                let mut body = U2Q::eye();
+                let mut constructed: Vec<(u8, u8)> = Vec::new();
+                for _ in 0..target_len {
+                    // pick axis ≠ prev_axis
+                    let mut axis = rng.random_range(0..3);
+                    if axis == prev_axis {
+                        axis = (axis + 1) % 3;
+                    }
+                    if axis == prev_axis {
+                        axis = (axis + 1) % 3;
+                    }
+                    let a = rng.random_range(0..3); // 0..=2 → a∈{1,2,3}
+                    body = body * syllables[axis][a];
+                    constructed.push((axis as u8, (a + 1) as u8));
+                    prev_axis = axis;
+                }
+                let c_idx = rng.random_range(0..cliffords_q.len());
+                let target = body * cliffords_q[c_idx];
+
+                // Canonical-form decomposition.
+                let canon = canonical_form_axes_q(&target);
+                if !canon.is_empty() {
+                    let (p, a) = canon[0];
+                    first_hist[p as usize][(a - 1) as usize] += 1;
+                }
+                let (cp, ca) = constructed[0];
+                construct_hist[cp as usize][(ca - 1) as usize] += 1;
+
+                sum_len += canon.len() as u64;
+                if canon.len() < target_len { len_short += 1; }
+                else if canon.len() == target_len { len_match += 1; }
+                else { len_long += 1; }
+            }
+
+            eprintln!(
+                "\n=== target_len={target_len}, n_trials={n_trials} ==="
+            );
+            eprintln!(
+                "Canonical-form length:  exact={len_match}  shorter={len_short}  longer={len_long}  avg={:.2}",
+                (sum_len as f64) / (n_trials as f64)
+            );
+            eprintln!("Constructed-first vs canonical-form-first  (counts, % of trials)");
+            eprintln!("        constructed                canonical");
+            eprintln!("        a=1   a=2   a=3            a=1   a=2   a=3");
+            let labels = ["x", "y", "z"];
+            for axis in 0..3 {
+                eprint!("  {}    ", labels[axis]);
+                for a in 0..3 {
+                    eprint!("{:>5} ", construct_hist[axis][a]);
+                }
+                eprint!("           ");
+                for a in 0..3 {
+                    eprint!("{:>5} ", first_hist[axis][a]);
+                }
+                eprintln!();
+            }
+            // Quick numeric summary of canonical-form-first balance.
+            let total: u64 = first_hist.iter().flatten().sum();
+            let z_share: u64 = first_hist[2].iter().sum();
+            let nonz_share = total - z_share;
+            eprintln!(
+                "  first-syllable z-axis share: {} / {} = {:.1}%   (uniform = 33.3%)",
+                z_share, total, 100.0 * (z_share as f64) / (total as f64)
+            );
+            eprintln!(
+                "  first-syllable non-z share : {} / {} = {:.1}%   (uniform = 66.7%)",
+                nonz_share, total, 100.0 * (nonz_share as f64) / (total as f64)
+            );
+        }
+    }
+
+    /// Back-of-envelope: under cost model C(k) = c·α^k, the D&C cost
+    /// ratio (vs single search at k_total) is
+    ///   S(m, α) = Σ_k count(m, k) / α^k
+    /// and is independent of k_total (the c·α^{k_total} term cancels).
+    /// D&C wins at m when S(m, α) < 1.
+    #[test]
+    fn build_l_q_dc_cost_ratio() {
+        // Coarse k → count map per m, then evaluate S(m, α) for several α.
+        for m in 1..=5 {
+            let l = build_l_q(m);
+            let mut counts: Vec<u64> = vec![0; 64];
+            for u in l.iter() {
+                let k = u.k as usize;
+                if k < counts.len() {
+                    counts[k] += 1;
+                }
+            }
+            eprint!("m={m:>2}  total={:>7}", l.len());
+            for &alpha in &[2.0_f64, 2.5, 3.0, 3.5, 4.0] {
+                let s: f64 = counts
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &c)| (c as f64) / alpha.powi(k as i32))
+                    .sum();
+                eprint!("   S(α={alpha:.1})={s:>10.2}");
+            }
+            eprintln!();
+        }
+        // Also show what threshold-filtering buys: keep only
+        // prefixes with k_prefix ≥ τ, recompute S(m, α=2.0).
+        eprintln!("\nThreshold filter τ on k_prefix, S(m, α=2):");
+        eprintln!("{:>3}  {:>8}  τ=0    τ=4    τ=8    τ=12   τ=16   τ=20",
+                  "m", "|L_m^Q|");
+        for m in 1..=5 {
+            let l = build_l_q(m);
+            let mut counts: Vec<u64> = vec![0; 64];
+            for u in l.iter() {
+                let k = u.k as usize;
+                if k < counts.len() {
+                    counts[k] += 1;
+                }
+            }
+            eprint!("{m:>3}  {:>8}", l.len());
+            for &tau in &[0usize, 4, 8, 12, 16, 20] {
+                let s: f64 = counts
+                    .iter()
+                    .enumerate()
+                    .skip(tau)
+                    .map(|(k, &c)| (c as f64) / (2.0_f64).powi(k as i32))
+                    .sum();
+                let n_kept: u64 = counts.iter().skip(tau).sum();
+                eprint!("  {s:>5.2} ({n_kept:>5})");
+            }
+            eprintln!();
+        }
+    }
+
+    /// Histogram of `k_prefix` across `L_m^Q` for m ∈ [1, 5]. We expect
+    /// k_prefix ≤ m by FGKM Theorem 4.1(b) (each syllable peels max_exp
+    /// by ≥ 1, so the word's denominator exponent grows by at most m).
+    /// The shape of the distribution determines how we bin prefixes by
+    /// k for the inner LLL+SE search.
+    #[test]
+    fn build_l_q_k_distribution() {
+        for m in 1..=5 {
+            let l = build_l_q(m);
+            // Bins 0..=m+a few extra for safety in case the bound is
+            // looser than expected.
+            let max_bin: usize = (m as usize) + 4;
+            let mut hist: Vec<u64> = vec![0; max_bin + 1];
+            let mut k_min: u32 = u32::MAX;
+            let mut k_max: u32 = 0;
+            for u in l.iter() {
+                let k = u.k as usize;
+                k_min = k_min.min(u.k);
+                k_max = k_max.max(u.k);
+                if k <= max_bin {
+                    hist[k] += 1;
+                } else {
+                    // Out-of-bound: extend the histogram (cheap, we'll
+                    // see in the print).
+                    while hist.len() <= k {
+                        hist.push(0);
+                    }
+                    hist[k] += 1;
+                }
+            }
+            let total: u64 = hist.iter().sum();
+            eprintln!(
+                "m={m}  total={total}  k range [{k_min}, {k_max}]"
+            );
+            for (k, count) in hist.iter().enumerate() {
+                if *count == 0 { continue; }
+                let pct = 100.0 * (*count as f64) / (total as f64);
+                eprintln!("    k={k:>2}: {count:>7}  ({pct:>5.1}%)");
+            }
+        }
+    }
+
+    /// Z1 viability at ε=1e-7: single search becomes unreliable here (per
+    /// perf-state memo, 1/3 fail at max_lde=30). Test whether filtered D&C
+    /// reliably finds solutions and how long it takes.
+    #[test]
+    #[ignore]  // long: per-target time can run into minutes
+    fn z1_dc_eps_1e_7() {
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+
+        fn rz(t: f64) -> Mat2 {
+            [
+                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
+            ]
+        }
+        fn ry(t: f64) -> Mat2 {
+            let c = (t/2.0).cos();
+            let s = (t/2.0).sin();
+            [
+                [Complex64::new(c, 0.0), Complex64::new(-s, 0.0)],
+                [Complex64::new(s, 0.0), Complex64::new(c, 0.0)],
+            ]
+        }
+        fn matmul(a: Mat2, b: Mat2) -> Mat2 {
+            [
+                [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
+                [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
+            ]
+        }
+
+        let mut rng = StdRng::seed_from_u64(0x1E7);
+        let n = 3;
+        let eps = 1e-7_f64;
+
+        eprintln!("\n=== ε={eps:.0e}, {n} targets, max_lde=35 ===");
+        for i in 0..n {
+            let alpha = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let beta = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let gamma = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let target = matmul(matmul(rz(alpha), ry(beta)), rz(gamma));
+
+            // Single search.
+            let synth_s = SynthesizerQ::new(eps).with_max_lde(35);
+            let t0 = std::time::Instant::now();
+            let r_s = synth_s.synthesize(target);
+            let ts = t0.elapsed().as_secs_f64();
+            let s_label = match &r_s {
+                Some(r) => format!("lde={} dist={:.2e}", r.lde, r.distance),
+                None => "FAILED".to_string(),
+            };
+            eprintln!("  trial {i}  single   {s_label:<32} t={ts:>7.1}s");
+
+            // m=1 relaxed.
+            let synth_m1 = SynthesizerQ::new(eps).with_max_lde(35)
+                .with_dc_split(1).with_dc_dr_filter(vec![0, 1, 15]);
+            let t0 = std::time::Instant::now();
+            let r_m1 = synth_m1.synthesize(target);
+            let tm1 = t0.elapsed().as_secs_f64();
+            let m1_label = match &r_m1 {
+                Some(r) => format!("lde={} dist={:.2e}", r.lde, r.distance),
+                None => "FAILED".to_string(),
+            };
+            eprintln!("  trial {i}  m1_relax {m1_label:<32} t={tm1:>7.1}s  ({:.2}× vs single)",
+                if tm1 > 0.0 { ts/tm1 } else { 0.0 });
+
+            // m=2 strict.
+            let synth_m2 = SynthesizerQ::new(eps).with_max_lde(35)
+                .with_dc_split(2).with_dc_dr_filter(vec![0]);
+            let t0 = std::time::Instant::now();
+            let r_m2 = synth_m2.synthesize(target);
+            let tm2 = t0.elapsed().as_secs_f64();
+            let m2_label = match &r_m2 {
+                Some(r) => format!("lde={} dist={:.2e}", r.lde, r.distance),
+                None => "FAILED".to_string(),
+            };
+            eprintln!("  trial {i}  m2_strict{m2_label:<32} t={tm2:>7.1}s  ({:.2}× vs single)",
+                if tm2 > 0.0 { ts/tm2 } else { 0.0 });
+            eprintln!();
+        }
+    }
+
+    /// LLL precision sweep: time single search at different GS_PREC values
+    /// to see if lowering precision speeds up LLL without losing
+    /// correctness.
+    #[test]
+    fn z1_gs_prec_sweep() {
+        // Need to import IntScratch16 builder and run a single phase1 a few
+        // times manually, since SynthesizerQ doesn't expose gs_prec.
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let eps = 1e-4_f64;
+        let v = unitary_to_uv_zeta(&target);
+
+        for &gs_prec in &[64u32, 80, 96, 128] {
+            let mut scratch = IntScratch16::with_gs_prec(eps, gs_prec);
+            // Run phase1 at lde=10, 11, 12 (where ε=1e-4 typically lands).
+            let mut total_ns = 0u128;
+            let mut found = false;
+            let mut found_dist = f64::INFINITY;
+            for k in 9..=14u32 {
+                let y = uv_to_xy_zeta(v, k);
+                let budget_hit = AtomicBool::new(false);
+                let target_local = target;
+                let d = det_phase_of(&target);
+                let should_stop = |x: &[i64; 16]| -> bool {
+                    let cand = solution_to_u2q_d(x, k, d);
+                    diamond_distance_float(&cand.to_float(), &target_local) < eps
+                };
+                let t0 = std::time::Instant::now();
+                let sols = phase1_with_stop(
+                    &mut scratch, &y, k, eps, 100_000_000, &budget_hit, should_stop
+                );
+                total_ns += t0.elapsed().as_nanos();
+                for sol in &sols {
+                    let cand = solution_to_u2q_d(sol, k, d);
+                    let dist = diamond_distance_float(&cand.to_float(), &target_local);
+                    if dist < eps && !found {
+                        found = true;
+                        found_dist = dist;
+                        eprintln!(
+                            "  gs_prec={gs_prec:>3}  found at lde={k}  dist={dist:.3e}  k={k} cum_t={:.0}ms",
+                            (total_ns as f64) / 1e6
+                        );
+                        break;
+                    }
+                }
+                if found { break; }
+            }
+            if !found {
+                eprintln!("  gs_prec={gs_prec:>3}  NOT FOUND  cum_t={:.0}ms", (total_ns as f64) / 1e6);
+            } else {
+                let _ = found_dist;
+            }
+        }
+    }
+
+    /// Multi-target benchmark: average D&C-with-filter vs single across
+    /// random U3 targets at fixed ε.
+    #[test]
+    #[ignore]
+    fn z1_dc_dr_filter_random_targets() {
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+
+        fn rz(t: f64) -> Mat2 {
+            [
+                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
+            ]
+        }
+        fn ry(t: f64) -> Mat2 {
+            let c = (t/2.0).cos();
+            let s = (t/2.0).sin();
+            [
+                [Complex64::new(c, 0.0), Complex64::new(-s, 0.0)],
+                [Complex64::new(s, 0.0), Complex64::new(c, 0.0)],
+            ]
+        }
+        fn matmul(a: Mat2, b: Mat2) -> Mat2 {
+            [
+                [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
+                [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
+            ]
+        }
+
+        let mut rng = StdRng::seed_from_u64(0xBEEF);
+        let n = 4;
+        let eps: f64 = std::env::var("Z1_EPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1e-4);
+
+        eprintln!("\n=== ε={eps:.0e}, {n} random U3 targets ===");
+        let mut total_single = 0.0_f64;
+        let mut total_m1_relaxed = 0.0_f64;
+        let mut total_m2_strict = 0.0_f64;
+        let mut wins_m1 = 0;
+        let mut wins_m2 = 0;
+
+        for i in 0..n {
+            let alpha = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let beta = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let gamma = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let target = matmul(matmul(rz(alpha), ry(beta)), rz(gamma));
+
+            let synth_s = SynthesizerQ::new(eps).with_max_lde(20);
+            let t0 = std::time::Instant::now();
+            let r_s = synth_s.synthesize(target);
+            let ts = t0.elapsed().as_secs_f64() * 1000.0;
+            assert!(r_s.is_some());
+
+            let synth_m1 = SynthesizerQ::new(eps).with_max_lde(20)
+                .with_dc_split(1).with_dc_dr_filter(vec![0, 1, 15]);
+            let t0 = std::time::Instant::now();
+            let r_m1 = synth_m1.synthesize(target);
+            let tm1 = t0.elapsed().as_secs_f64() * 1000.0;
+
+            let synth_m2 = SynthesizerQ::new(eps).with_max_lde(20)
+                .with_dc_split(2).with_dc_dr_filter(vec![0]);
+            let t0 = std::time::Instant::now();
+            let r_m2 = synth_m2.synthesize(target);
+            let tm2 = t0.elapsed().as_secs_f64() * 1000.0;
+
+            total_single += ts;
+            total_m1_relaxed += tm1;
+            total_m2_strict += tm2;
+            if tm1 < ts { wins_m1 += 1; }
+            if tm2 < ts { wins_m2 += 1; }
+            eprintln!(
+                "  trial {i}  single={ts:>6.0}ms  m1_relaxed={tm1:>6.0}ms ({:.2}×)  m2_strict={tm2:>6.0}ms ({:.2}×)",
+                ts/tm1, ts/tm2
+            );
+            // Sanity: dc found a valid result.
+            if let Some(r) = r_m1 {
+                assert!(r.distance < eps, "m1 trial {i} dist={:.3e}", r.distance);
+            }
+            if let Some(r) = r_m2 {
+                assert!(r.distance < eps, "m2 trial {i} dist={:.3e}", r.distance);
+            }
+        }
+        eprintln!("\n  TOTAL  single={total_single:.0}ms  m1_relaxed={total_m1_relaxed:.0}ms ({:.2}×)  m2_strict={total_m2_strict:.0}ms ({:.2}×)",
+            total_single/total_m1_relaxed, total_single/total_m2_strict);
+        eprintln!("  wins:  m1_relaxed {wins_m1}/{n}   m2_strict {wins_m2}/{n}");
+    }
+
+    /// Sweep filter performance across ε to find the crossover where
+    /// D&C with strict d_R filter beats single search.
+    #[test]
+    fn z1_dc_dr_filter_eps_sweep() {
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        for &eps in &[1e-3, 1e-4, 1e-5_f64] {
+            eprintln!("\n=== ε={eps:.0e} ===");
+            let max_lde = ((-eps.log2() * 2.0) as u32).max(15);
+
+            let synth_single = SynthesizerQ::new(eps).with_max_lde(max_lde);
+            let t0 = std::time::Instant::now();
+            let r_single = synth_single.synthesize(target);
+            let t_single = t0.elapsed();
+            let single_ms = t_single.as_secs_f64() * 1000.0;
+            eprintln!("  single                  lde={:?}  t={single_ms:.0}ms",
+                r_single.as_ref().map(|r| r.lde));
+
+            let configs: &[(u32, &[u32], &str)] = &[
+                (1, &[0, 1, 15], "m=1 |d_R|≤1"),
+                (2, &[0], "m=2 strict"),
+                (2, &[0, 1, 15], "m=2 |d_R|≤1"),
+            ];
+            for (m, filter, label) in configs {
+                let synth = SynthesizerQ::new(eps)
+                    .with_max_lde(max_lde)
+                    .with_dc_split(*m)
+                    .with_dc_dr_filter(filter.to_vec());
+                let t0 = std::time::Instant::now();
+                let r = synth.synthesize(target);
+                let dt = t0.elapsed();
+                let ms = dt.as_secs_f64() * 1000.0;
+                let speedup = single_ms / ms;
+                eprintln!("  {label:<22}  lde={:?}  t={ms:>7.0}ms  ({speedup:>5.2}× vs single)",
+                    r.as_ref().map(|r| r.lde));
+            }
+        }
+    }
+
+    /// Z1 det-phase filter at deep ε. Single search is slow there so D&C
+    /// has more room to win.
+    #[test]
+    #[ignore]
+    fn z1_dc_dr_filter_deep_eps() {
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let eps = 1e-6_f64;
+
+        let synth_single = SynthesizerQ::new(eps).with_max_lde(35);
+        let t0 = std::time::Instant::now();
+        let r_single = synth_single.synthesize(target);
+        let t_single = t0.elapsed();
+        eprintln!(
+            "single  lde={:?}  t={:.0}ms",
+            r_single.as_ref().map(|r| r.lde),
+            t_single.as_secs_f64() * 1000.0
+        );
+
+        let configs: &[(u32, &[u32], &str)] = &[
+            (1, &[0, 1, 15], "m=1 |d_R|≤1"),
+            (1, &[0, 1, 2, 14, 15], "m=1 |d_R|≤2"),
+            (2, &[0], "m=2 strict d_R=0"),
+            (2, &[0, 1, 15], "m=2 |d_R|≤1"),
+            (3, &[0], "m=3 strict d_R=0"),
+        ];
+        for (m, filter, label) in configs {
+            let synth = SynthesizerQ::new(eps)
+                .with_max_lde(35)
+                .with_dc_split(*m)
+                .with_dc_dr_filter(filter.to_vec());
+            let t0 = std::time::Instant::now();
+            let r = synth.synthesize(target);
+            let dt = t0.elapsed();
+            eprintln!(
+                "  {label:<22} lde={:?}  t={:.0}ms",
+                r.as_ref().map(|r| r.lde),
+                dt.as_secs_f64() * 1000.0
+            );
+        }
+    }
+
+    /// Z1 det-phase filter test: with various allowed-d_R sets, see how
+    /// many prefixes pass the filter and how the dispatcher does.
+    #[test]
+    fn z1_dc_dr_filter() {
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let eps = 1e-3_f64;
+
+        // d_R distribution on L_m^Q for this target.
+        let d_target = det_phase_of(&target);
+        for m in [1u32, 2, 3] {
+            let prefixes = build_l_q(m);
+            let mut hist = [0u64; 16];
+            for u_l in prefixes.iter() {
+                let d_l = det_phase_of(&u_l.to_float());
+                let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                hist[d_r as usize] += 1;
+            }
+            let mut s = format!("m={m} d_R hist (target d={d_target}):");
+            for (d, c) in hist.iter().enumerate() {
+                if *c > 0 {
+                    s.push_str(&format!("  d_R={d}:{c}"));
+                }
+            }
+            eprintln!("{s}");
+        }
+        eprintln!();
+
+        // Try several filter configurations.
+        let configs: &[(u32, &[u32], &str)] = &[
+            (1, &[], "no filter"),
+            (1, &[0], "strict d_R=0"),
+            (1, &[0, 1, 15], "relaxed |d_R|≤1"),
+            (1, &[0, 1, 2, 14, 15], "relaxed |d_R|≤2"),
+            (2, &[], "no filter"),
+            (2, &[0], "strict d_R=0"),
+            (2, &[0, 1, 15], "relaxed |d_R|≤1"),
+            (2, &[0, 1, 2, 14, 15], "relaxed |d_R|≤2"),
+            (3, &[], "no filter"),
+            (3, &[0], "strict d_R=0"),
+            (3, &[0, 1, 15], "relaxed |d_R|≤1"),
+            (3, &[0, 1, 2, 14, 15], "relaxed |d_R|≤2"),
+        ];
+        for (m, filter, label) in configs {
+            let synth = SynthesizerQ::new(eps)
+                .with_max_lde(15)
+                .with_dc_split(*m)
+                .with_dc_dr_filter(filter.to_vec());
+            let t0 = std::time::Instant::now();
+            let r = synth.synthesize(target);
+            let dt = t0.elapsed();
+            let l_size = build_l_q(*m).len();
+            let n_pass = if filter.is_empty() {
+                l_size as u64
+            } else {
+                let prefixes = build_l_q(*m);
+                prefixes.iter().filter(|u| {
+                    let d_l = det_phase_of(&u.to_float());
+                    let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                    filter.contains(&d_r)
+                }).count() as u64
+            };
+            eprintln!(
+                "  m={m} {label:<22} pass={n_pass:>5}/{l_size:<6}  lde={:?}  t={:>7.0}ms",
+                r.as_ref().map(|r| r.lde),
+                dt.as_secs_f64() * 1000.0
+            );
+        }
+    }
+
+    /// Z1 pre-filter probe: for each prefix, compute the rounded integer
+    /// encoding of v_inner and evaluate the bilinear forms (the
+    /// totally-real-subring decomposition of unitarity). Classify prefixes
+    /// by max|B_i| and look at how the distribution separates.
+    ///
+    /// If "the right" prefix at this k_total has small |B_i| while most
+    /// wrong prefixes have large |B_i|, we have a cheap algebraic filter.
+    #[test]
+    fn z1_prefilter_bilinear_distribution() {
+        use crate::synthesis::lenstra_zeta::se::bilinear_forms;
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let m = 3u32;
+        let k_total = 10u32;
+
+        let prefixes = build_l_q(m);
+
+        // Also need to know the "right" prefix's bilinear so we can see
+        // separation. Use a known lattice solution from a single-search
+        // run for comparison — but for this test we just look at the
+        // distribution and the minimum.
+
+        // Bin prefixes by max|B_i| of rounded scaled y.
+        // Buckets: |B|=0..=3, 4..=15, 16..=63, 64..=255, ..., else.
+        let bin_of = |max_b: i128| -> usize {
+            if max_b == 0 { 0 }
+            else if max_b <= 3 { 1 }
+            else if max_b <= 15 { 2 }
+            else if max_b <= 63 { 3 }
+            else if max_b <= 255 { 4 }
+            else if max_b <= 1023 { 5 }
+            else if max_b <= 4095 { 6 }
+            else { 7 }
+        };
+        let bin_label = ["=0", "1-3", "4-15", "16-63", "64-255",
+                         "256-1023", "1024-4095", ">4095"];
+        let mut bins = vec![0u64; bin_label.len()];
+        let mut min_b: i128 = i128::MAX;
+        let mut min_b_kprefix: u32 = 0;
+
+        for u_l in prefixes.iter() {
+            if u_l.k >= k_total { continue; }
+            let k_inner = k_total - u_l.k;
+            let m_inner = u2q_dag_times_mat2(u_l, &target);
+            let v_inner = unitary_to_uv_zeta(&m_inner);
+            let y = uv_to_xy_zeta(v_inner, k_inner);
+            let y_int: [i64; 16] = std::array::from_fn(|i| y[i].round() as i64);
+            let (b1, b2, b3) = bilinear_forms(&y_int);
+            let max_b = b1.abs().max(b2.abs()).max(b3.abs());
+            bins[bin_of(max_b)] += 1;
+            if max_b < min_b {
+                min_b = max_b;
+                min_b_kprefix = u_l.k;
+            }
+        }
+
+        eprintln!("\n=== bilinear_forms(round(y)) over L_{m}^Q  k_total={k_total} ===");
+        for (i, &c) in bins.iter().enumerate() {
+            eprintln!("  max|B_i| {:>10}: {:>6}  ({:>5.1}%)",
+                bin_label[i], c, 100.0 * (c as f64) / (prefixes.len() as f64));
+        }
+        eprintln!("  min max|B_i| = {min_b}  (at a prefix with k_prefix={min_b_kprefix})");
+    }
+
+    /// Z1 phase-by-phase breakdown using the diag counters. Run with
+    /// `CYCLOSYNTH_TRACE=1` to populate T_BUILD_NS, T_LLL_NS, etc.
+    /// across all prefixes at a fixed (m, k_total).
+    #[test]
+    fn z1_dc_phase_breakdown() {
+        use crate::synthesis::diag;
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let eps = 1e-3_f64;
+        let m = 3u32;
+        let k_total = 10u32;
+
+        if !diag::trace_enabled() {
+            eprintln!("(set CYCLOSYNTH_TRACE=1 to see phase breakdown)");
+        }
+        diag::reset_all();
+
+        let prefixes = build_l_q(m);
+        let d_target = det_phase_of(&target);
+        let mut scratch = IntScratch16::new(eps);
+        let mut first_call = true;
+
+        let t_total = std::time::Instant::now();
+        let mut n_processed = 0u64;
+        for u_l in prefixes.iter() {
+            if u_l.k >= k_total { continue; }
+            let k_inner = k_total - u_l.k;
+            let m_inner = u2q_dag_times_mat2(u_l, &target);
+            let v_inner = unitary_to_uv_zeta(&m_inner);
+            let d_l = det_phase_of(&u_l.to_float());
+            let _d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+            let y = uv_to_xy_zeta(v_inner, k_inner);
+            let budget_hit = AtomicBool::new(false);
+            let _ = first_call;
+            let _sols = phase1_with_stop(
+                &mut scratch, &y, k_inner, eps,
+                10_000, &budget_hit, |_| false,
+            );
+            n_processed += 1;
+        }
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+
+        let s = diag::snapshot();
+        eprintln!("\n=== dc m={m}  k_total={k_total}  prefixes processed {n_processed}  wall {total_ms:.0}ms ===");
+        eprintln!("  build  {:>8.1} ms", s.t_build_ms);
+        eprintln!("  lll    {:>8.1} ms  (iters total {}, avg {:.1}, max {})",
+            s.t_lll_ms, s.lll_iters_total,
+            (s.lll_iters_total as f64) / (n_processed.max(1) as f64),
+            s.lll_iters_max);
+        eprintln!("  chol   {:>8.1} ms", s.t_cholesky_ms);
+        eprintln!("  lu     {:>8.1} ms", s.t_lu_ms);
+        eprintln!("  se     {:>8.1} ms", s.t_se_ms);
+        let phase_sum = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
+        eprintln!("  sum    {:>8.1} ms  ({:>5.1}% of wall)", phase_sum, 100.0 * phase_sum / total_ms);
+        if n_processed > 0 {
+            eprintln!("  per-prefix breakdown (μs each):");
+            eprintln!("    build  {:>8.1}", s.t_build_ms * 1000.0 / n_processed as f64);
+            eprintln!("    lll    {:>8.1}", s.t_lll_ms * 1000.0 / n_processed as f64);
+            eprintln!("    chol   {:>8.1}", s.t_cholesky_ms * 1000.0 / n_processed as f64);
+            eprintln!("    lu     {:>8.1}", s.t_lu_ms * 1000.0 / n_processed as f64);
+            eprintln!("    se     {:>8.1}", s.t_se_ms * 1000.0 / n_processed as f64);
+        }
+    }
+
+    /// Z1 instrumentation: time each prefix separately and bin by k_inner
+    /// to see *where* the per-prefix cost is going. Repeats the inner search
+    /// inline rather than calling dc_search_q so we can attach per-prefix
+    /// timing without reaching across modules.
+    #[test]
+    fn z1_dc_per_prefix_breakdown() {
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let eps = 1e-3_f64;
+        let m = 3u32;
+        let k_total = 10u32;
+
+        let prefixes = build_l_q(m);
+        let d_target = det_phase_of(&target);
+        let mut scratch = IntScratch16::new(eps);
+
+        // Bin per-prefix time by k_inner.
+        let mut bin_count: Vec<u64> = vec![0; (k_total + 1) as usize];
+        let mut bin_time_ns: Vec<u64> = vec![0; (k_total + 1) as usize];
+        let mut bin_sols: Vec<u64> = vec![0; (k_total + 1) as usize];
+        let mut total_skipped = 0u64;
+
+        let t_total = std::time::Instant::now();
+        for u_l in prefixes.iter() {
+            let k_prefix = u_l.k;
+            if k_prefix >= k_total {
+                total_skipped += 1;
+                continue;
+            }
+            let k_inner = k_total - k_prefix;
+            let m_inner = u2q_dag_times_mat2(u_l, &target);
+            let v_inner = unitary_to_uv_zeta(&m_inner);
+            let d_l = det_phase_of(&u_l.to_float());
+            let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+
+            let y = uv_to_xy_zeta(v_inner, k_inner);
+            let budget_hit = AtomicBool::new(false);
+
+            let t_prefix = std::time::Instant::now();
+            let _sols = phase1_with_stop(
+                &mut scratch, &y, k_inner, eps,
+                10_000, &budget_hit, |_| false,
+            );
+            let dt = t_prefix.elapsed().as_nanos() as u64;
+            // Just counting non-trivial returns; not validating distance here.
+            bin_count[k_inner as usize] += 1;
+            bin_time_ns[k_inner as usize] += dt;
+            bin_sols[k_inner as usize] += _sols.len() as u64;
+            let _ = (m_inner, d_r);
+        }
+        let total_time = t_total.elapsed();
+
+        eprintln!("\n=== dc m={m}  k_total={k_total}  total {:.0} ms  skipped {total_skipped}/{} ===",
+            total_time.as_secs_f64() * 1000.0,
+            prefixes.len()
+        );
+        eprintln!("  k_inner   count    total_ms    per_prefix_us    sols");
+        for k in 0..=k_total {
+            let n = bin_count[k as usize];
+            if n == 0 { continue; }
+            let total_ms = (bin_time_ns[k as usize] as f64) / 1e6;
+            let per_us = (bin_time_ns[k as usize] as f64) / (n as f64) / 1e3;
+            eprintln!("    {k:>3}  {:>7}  {total_ms:>10.1}  {per_us:>14.0}  {:>6}",
+                n, bin_sols[k as usize]);
+        }
+    }
+
+    /// Z1 prototype smoke test: synthesize Rz(0.3) at ε=1e-3 with D&C
+    /// at m=3, verify it lands at a similar lde to single-search and
+    /// time both for an A/B comparison.
+    #[test]
+    #[ignore]  // long: ~1 minute with 10M leaf budget
+    fn z1_dc_smoke_rz_eps_1e_5() {
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let eps = 1e-5_f64;
+
+        let synth_single = SynthesizerQ::new(eps).with_max_lde(28);
+        let t0 = std::time::Instant::now();
+        let r_single = synth_single.synthesize(target);
+        let t_single = t0.elapsed();
+        eprintln!(
+            "single: lde={:?} dist={:?} t={:.0}ms",
+            r_single.as_ref().map(|r| r.lde),
+            r_single.as_ref().map(|r| r.distance),
+            t_single.as_secs_f64() * 1000.0
+        );
+
+        for m in [1u32, 2, 3] {
+            let synth_dc = SynthesizerQ::new(eps).with_max_lde(28).with_dc_split(m);
+            let t1 = std::time::Instant::now();
+            let r_dc = synth_dc.synthesize(target);
+            let t_dc = t1.elapsed();
+            let l_size = build_l_q(m).len();
+            eprintln!(
+                "  d&c m={m}: |L|={l_size}  lde={:?}  dist={:?}  t={:.0}ms",
+                r_dc.as_ref().map(|r| r.lde),
+                r_dc.as_ref().map(|r| r.distance),
+                t_dc.as_secs_f64() * 1000.0
+            );
+        }
+    }
+
+    #[test]
+    fn z1_dc_smoke_rz_eps_1e_3() {
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let eps = 1e-3_f64;
+
+        // Single-search baseline.
+        let synth_single = SynthesizerQ::new(eps).with_max_lde(15);
+        let t0 = std::time::Instant::now();
+        let r_single = synth_single.synthesize(target);
+        let t_single = t0.elapsed();
+        eprintln!(
+            "single: lde={:?} dist={:?} t={:.1}ms",
+            r_single.as_ref().map(|r| r.lde),
+            r_single.as_ref().map(|r| r.distance),
+            t_single.as_secs_f64() * 1000.0
+        );
+        assert!(r_single.is_some());
+
+        // D&C across several m values to characterize per-prefix cost.
+        for m in [1u32, 2, 3] {
+            let synth_dc = SynthesizerQ::new(eps).with_max_lde(15).with_dc_split(m);
+            let t1 = std::time::Instant::now();
+            let r_dc = synth_dc.synthesize(target);
+            let t_dc = t1.elapsed();
+            let l_size = build_l_q(m).len();
+            let per_prefix_us = t_dc.as_secs_f64() * 1e6 / (l_size as f64);
+            eprintln!(
+                "  d&c m={m}: |L|={l_size:>6}  lde={:?}  t={:.1}ms  per-prefix={per_prefix_us:.0}μs",
+                r_dc.as_ref().map(|r| r.lde),
+                t_dc.as_secs_f64() * 1000.0
+            );
+            assert!(r_dc.is_some(), "D&C m={m} should also find a solution");
+        }
+    }
+
+    #[test]
+    fn auto_dc_at_deep_eps() {
+        // Default at ε ≤ 1e-6: D&C is on with m=1, |d_R|≤1.
+        let s = SynthesizerQ::new(1e-6);
+        assert_eq!(s.dc_split, Some(1));
+        assert_eq!(s.dc_dr_filter, vec![0u32, 1, 15]);
+
+        let s7 = SynthesizerQ::new(1e-7);
+        assert_eq!(s7.dc_split, Some(1));
+        assert_eq!(s7.max_lde, 35, "max_lde should auto-bump at ε ≤ 1e-7");
+
+        // Default at moderate ε: single search.
+        let s3 = SynthesizerQ::new(1e-3);
+        assert_eq!(s3.dc_split, None);
+        assert_eq!(s3.dc_dr_filter, Vec::<u32>::new());
+        assert_eq!(s3.max_lde, 30);
+
+        // Manual override still works.
+        let s_override = SynthesizerQ::new(1e-7).with_dc_split(2).with_dc_dr_filter(vec![0]);
+        assert_eq!(s_override.dc_split, Some(2));
+        assert_eq!(s_override.dc_dr_filter, vec![0u32]);
     }
 
     #[test]
