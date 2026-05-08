@@ -1740,7 +1740,9 @@ mod tests {
         let prefixes = build_l_q(m);
         let d_target = det_phase_of(&target);
         let mut scratch = IntScratch16::new(eps);
-        let mut first_call = true;
+        scratch.use_f64_gs = true;
+        let first_call = true;
+        let _ = first_call;
 
         let t_total = std::time::Instant::now();
         let mut n_processed = 0u64;
