@@ -28,7 +28,8 @@ pub use crate::synthesis::lenstra_common::{
 #[inline]
 pub fn i256_to_f64(v: i256) -> f64 {
     // Hot path. Use sign-bit check + direct limb access; precompute
-    // constants. See `lenstra_zeta::lll_f64::i256_to_f64` for details.
+    // constants. See `lenstra_zeta::lll_f64::i256_to_f64` for details
+    // (including why the two's-complement direct path is wrong).
     const SCALE_64: f64 = 18446744073709551616.0;
     const SCALE_128: f64 = SCALE_64 * SCALE_64;
     const SCALE_192: f64 = SCALE_128 * SCALE_64;
