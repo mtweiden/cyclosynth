@@ -1217,14 +1217,16 @@ mod tests {
             [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
         ];
         let eps = 1e-8_f64;
-        for (label, use_f64) in &[("f64", true), ("MPFR", false)] {
+        // MPFR first (the path that should actually work at this depth),
+        // then f64 with the ladder (slower / may not finish).
+        for (label, use_f64) in &[("MPFR", false), ("f64+ladder", true)] {
             // Cap max_lde at 35 to bound runtime.
             let synth = SynthesizerQ::new(eps).with_max_lde(35).with_f64_gs(*use_f64);
             let t0 = std::time::Instant::now();
             let r = synth.synthesize(target);
             let dt = t0.elapsed();
             eprintln!(
-                "  {label}:  lde={:?}  dist={:?}  t={:.0}ms",
+                "  {label:<10}: lde={:?}  dist={:?}  t={:.0}ms",
                 r.as_ref().map(|r| r.lde),
                 r.as_ref().map(|r| r.distance),
                 dt.as_secs_f64() * 1000.0
