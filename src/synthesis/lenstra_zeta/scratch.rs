@@ -172,6 +172,12 @@ pub struct IntScratch16 {
     /// whether it converges in our regime. Default: false (MPFR path).
     pub use_f64_gs: bool,
 
+    /// BKZ block size (0 = disable, 3..=8 = run BKZ-β tours after LLL).
+    /// `bkz_tours` strengthens the LLL output by replacing Lovász with
+    /// β-block SVP. Quality gain is largest at deep ε (smaller post-LLL
+    /// SE region). β=2 is LLL-equivalent so don't use it.
+    pub bkz_block_size: u32,
+
     // ── f64 GS state (experimental, fplll-style) ──
     //
     // Parallel buffers to `r_bar`/`mu_bar`/`s_bar` but in plain f64.
@@ -226,6 +232,7 @@ impl IntScratch16 {
             mu_bar_f64: [[0.0; 16]; 16],
             s_bar_f64: [[0.0; 16]; 16],
             use_f64_gs: false,
+            bkz_block_size: 0,
         }
     }
 

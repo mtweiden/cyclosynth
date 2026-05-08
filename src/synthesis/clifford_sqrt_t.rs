@@ -307,6 +307,8 @@ pub struct SynthesizerQ {
     pub dc_dr_filter: Vec<u32>,
     /// Use experimental f64 GS state in LLL. Builder: [`Self::with_f64_gs`].
     pub use_f64_gs: bool,
+    /// Optional BKZ-β post-pass (0 = disable). Builder: [`Self::with_bkz`].
+    pub bkz_block_size: u32,
 }
 
 /// k cutoff: brute-force handles `k ≤ BRUTE_LIMIT`, the 16D LLL+SE
@@ -504,6 +506,7 @@ impl SynthesizerQ {
             dc_split,
             dc_dr_filter,
             use_f64_gs,
+            bkz_block_size: 0,
         }
     }
 
@@ -552,6 +555,16 @@ impl SynthesizerQ {
         self
     }
 
+    /// Run a BKZ-β post-pass after LLL inside `phase1_with_stop`. β=0
+    /// disables (the default). β=2 is LLL-equivalent — use β≥3 to see
+    /// any improvement. Empirically helpful at deep ε where the
+    /// post-LLL SE region is large.
+    pub fn with_bkz(mut self, block_size: u32) -> Self {
+        debug_assert!(block_size == 0 || (3..=8).contains(&block_size));
+        self.bkz_block_size = block_size;
+        self
+    }
+
     /// Find a minimum-lde Clifford+√T circuit approximating `target`.
     ///
     /// Returns `None` if no circuit within `max_lde` achieves diamond
@@ -593,6 +606,7 @@ impl SynthesizerQ {
         // can cut the walk by orders of magnitude.
         let epsilon = self.epsilon;
         let use_f64_gs = self.use_f64_gs;
+        let bkz_block_size = self.bkz_block_size;
         let try_lattice_k = |k: u32,
                              budget: u64,
                              scratch: &mut Option<Box<IntScratch16>>|
@@ -601,6 +615,7 @@ impl SynthesizerQ {
                 .get_or_insert_with(|| {
                     let mut sb = Box::new(IntScratch16::new(epsilon));
                     sb.use_f64_gs = use_f64_gs;
+                    sb.bkz_block_size = bkz_block_size;
                     sb
                 });
             let y = uv_to_xy_zeta(v, k);
@@ -813,6 +828,7 @@ impl SynthesizerQ {
         let d_target = det_phase_of(target);
         let epsilon = self.epsilon;
         let use_f64_gs = self.use_f64_gs;
+        let bkz_block_size = self.bkz_block_size;
 
         // Shared across all prefix workers: any prefix that hits its
         // SE-leaf budget without finding sets this. The 2-pass dispatcher
@@ -865,6 +881,7 @@ impl SynthesizerQ {
                 || {
                     let mut s = IntScratch16::new(epsilon);
                     s.use_f64_gs = use_f64_gs;
+                    s.bkz_block_size = bkz_block_size;
                     s
                 },
                 |scratch, u_l| -> Option<SynthResultQ> {

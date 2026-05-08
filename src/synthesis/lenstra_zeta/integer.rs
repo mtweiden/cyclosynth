@@ -258,6 +258,32 @@ where
         return Vec::new();
     }
 
+    // Optional BKZ-β post-pass: strengthens the LLL output by replacing
+    // Lovász with β-block SVP. Off by default (`bkz_block_size = 0`);
+    // enable via `SynthesizerQ::with_bkz(β)`. Empirically helpful at
+    // deep ε where the post-LLL SE region is large.
+    if scratch.bkz_block_size >= 3 {
+        let block_size = scratch.bkz_block_size as usize;
+        // BKZ reads the f64 GS state. Populate it from the current
+        // basis (works regardless of which LLL path was taken).
+        for i in 0..16 {
+            super::lll_f64::cfa_row_f64(scratch, i);
+        }
+        let _changed = super::bkz::bkz_tours(scratch, block_size, super::bkz::BKZ_MAX_LOOPS);
+        // Post-BKZ unimodularity check; bail if the insertion path
+        // somehow produced a degenerate basis.
+        match super::se::det16_exact(&scratch.basis) {
+            Some(1) | Some(-1) | None => {}
+            Some(d) => {
+                eprintln!(
+                    "[lenstra_zeta] BKZ-{block_size} non-unimodular (det={d}) \
+                     at eps={eps:e}, k={k}; bailing."
+                );
+                return Vec::new();
+            }
+        }
+    }
+
     // Step 3: f64 Cholesky on the post-LLL Gram. Lower-triangular L in
     // `scratch.l_f64`.
     let t_chol = if trace { Some(std::time::Instant::now()) } else { None };
