@@ -423,19 +423,26 @@ impl SynthesizerQ {
         // |d_R|≤1 filter (each prefix's k_inner = k_total − k_prefix).
         // 35 is safe for ε down to ~1e-9.
         let max_lde = if epsilon <= 1e-7 { 35 } else { 30 };
+        // **Adaptive precision default**: f64 GS works through ε=1e-7
+        // (52-bit mantissa vs ~46-bit requirement). At ε ≤ 1e-8 the
+        // requirement crosses ~50 bits, leaving f64 with a 2-bit margin —
+        // empirically the LLL spends much of its time in escalation,
+        // doubling LLL cost vs going to MPFR-80 directly. Skip the f64
+        // attempt entirely there.
+        //
+        // Inside `phase1_with_stop` the precision ladder still escalates
+        // f64 → MPFR-80 if any individual LLL call fails the unimodularity
+        // check, so users who manually call `with_f64_gs(true)` at deep ε
+        // get correctness via the ladder (just slower than the
+        // MPFR-only path at ε ≤ 1e-8).
+        let use_f64_gs = epsilon > 1e-8;
         Self {
             epsilon,
             min_lde: 0,
             max_lde,
             dc_split,
             dc_dr_filter,
-            // f64 GS state is correct + faster than MPFR across our entire
-            // tested ε range (1e-3..1e-7), with bit-identical solutions to
-            // the MPFR path. Up to 11× faster at moderate ε where the
-            // synth is dominated by many cheap low-k LLL calls. Default
-            // on; turn off via `with_f64_gs(false)` for paranoia or
-            // adversarial inputs.
-            use_f64_gs: true,
+            use_f64_gs,
         }
     }
 
@@ -1978,9 +1985,13 @@ mod tests {
         assert_eq!(s3.dc_dr_filter, Vec::<u32>::new());
         assert_eq!(s3.max_lde, 30);
 
-        // f64 GS is on at every ε.
+        // f64 GS is on at moderate ε but auto-disabled at ε ≤ 1e-8
+        // (where f64's 2-bit precision margin causes ladder thrashing).
         for &eps in &[1e-3, 1e-4, 1e-5, 1e-6, 1e-7_f64] {
             assert!(SynthesizerQ::new(eps).use_f64_gs, "f64 default should be on at ε={eps:.0e}");
+        }
+        for &eps in &[1e-8, 1e-9_f64] {
+            assert!(!SynthesizerQ::new(eps).use_f64_gs, "f64 default should be OFF at ε={eps:.0e}");
         }
 
         // Manual override still works.
