@@ -27,24 +27,19 @@ pub use crate::synthesis::lenstra_common::{
 /// no overflow risk for our magnitudes.
 #[inline]
 pub fn i256_to_f64(v: i256) -> f64 {
-    let zero = i256::from_i64(0);
-    if v == zero {
-        return 0.0;
-    }
-    let neg = v < zero;
+    // Hot path. Use sign-bit check + direct limb access; precompute
+    // constants. See `lenstra_zeta::lll_f64::i256_to_f64` for details.
+    const SCALE_64: f64 = 18446744073709551616.0;
+    const SCALE_128: f64 = SCALE_64 * SCALE_64;
+    const SCALE_192: f64 = SCALE_128 * SCALE_64;
+    let neg = v.is_negative();
     let abs = if neg { -v } else { v };
-    let bytes = abs.to_le_bytes();
-    let l0 = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
-    let l1 = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
-    let l2 = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
-    let l3 = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
-    // Combine in increasing-precision order so the accumulation rounds the
-    // low bits, not the high bits.
-    let result = (l0 as f64)
-        + (l1 as f64) * 2f64.powi(64)
-        + (l2 as f64) * 2f64.powi(128)
-        + (l3 as f64) * 2f64.powi(192);
-    if neg { -result } else { result }
+    let limbs = abs.to_ne_limbs();
+    let r = (limbs[0] as f64)
+        + (limbs[1] as f64) * SCALE_64
+        + (limbs[2] as f64) * SCALE_128
+        + (limbs[3] as f64) * SCALE_192;
+    if neg { -r } else { r }
 }
 
 // ─── Cholesky Factorization Algorithm (Figure 4) ─────────────────────────────
