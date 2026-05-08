@@ -375,6 +375,31 @@ const PASS2_CAP: u64 = 4_000_000_000;
 /// while still being 2× faster than 10M on NO-levels.
 const DC_PASS1_CAP: u64 = 5_000_000;
 
+/// At deep ε the post-LLL SE region grows exponentially in k_inner. The
+/// flat 5M leaf budget that works at ε≥1e-7 hits budget at every lde
+/// 22..27 at ε=1e-8 without finding a single candidate (per probe in
+/// `bin/probe_eps_1e8_v2.rs`). Scale pass1's per-prefix budget with ε so
+/// the SE walk has room to reach the cap interior.
+fn dc_pass1_cap_for(epsilon: f64) -> u64 {
+    if epsilon <= 1e-8 {
+        100_000_000
+    } else if epsilon <= 1e-7 {
+        25_000_000
+    } else {
+        DC_PASS1_CAP
+    }
+}
+
+fn dc_pass2_cap_for(epsilon: f64) -> u64 {
+    if epsilon <= 1e-8 {
+        500_000_000
+    } else if epsilon <= 1e-7 {
+        50_000_000
+    } else {
+        DC_PASS2_CAP
+    }
+}
+
 /// Pass 2: only runs on lde levels where pass 1's prefixes hit budget
 /// without finding (= search may have missed a solution past pass-1
 /// budget). 10M is generous enough to cover the hard-target cases where
@@ -499,6 +524,31 @@ impl SynthesizerQ {
         // get correctness via the ladder (just slower than the
         // MPFR-only path at ε ≤ 1e-8).
         let use_f64_gs = epsilon > 1e-8;
+
+        // **Min/max lde scaling at deep ε**: Z[ζ_16] needs ~0.30× the lde
+        // of Z[ω] to reach the same ε (per `project_baseline_2026_05_07.md`
+        // empirics). Without scaling, `min_lde=0` wastes time scanning
+        // low-lde levels guaranteed to fail, and `max_lde=35` is at the
+        // boundary for ε=1e-8 where the predicted lde is ~24-30.
+        // Empirics: ε=1e-7 lands at lde=19-20. At ε=1e-8 (10× tighter,
+        // ~+2 ldes per density argument), expect lde≈22-24 typical, with
+        // hard targets needing 28-32. So at ε=1e-8 use min_lde=18, max_lde=45.
+        let log2_recip = if epsilon > 0.0 && epsilon < 1.0 {
+            (1.0 / epsilon).log2()
+        } else { 0.0 };
+        let min_lde = if epsilon <= 1e-8 {
+            // ~0.7×log2(1/ε) — leaves a small buffer below the typical landing
+            (0.7 * log2_recip).floor() as u32
+        } else {
+            0
+        };
+        let max_lde_override = if epsilon <= 1e-8 {
+            // 1.7×log2(1/ε) covers ~+15 ldes above the typical landing.
+            (1.7 * log2_recip).ceil() as u32
+        } else {
+            max_lde
+        };
+
         // **Auto-BKZ default**: enable BKZ-4 only at ε ≤ 1e-7. Empirically
         // (8-target Rz·Ry·Rz bench, seed 0xC0FFEEBAADD0E):
         //   ε=1e-5: 0.37× (BKZ overhead crushes already-cheap SE walks)
@@ -511,8 +561,8 @@ impl SynthesizerQ {
         let bkz_block_size = if epsilon <= 1e-7 { 4 } else { 0 };
         Self {
             epsilon,
-            min_lde: 0,
-            max_lde,
+            min_lde,
+            max_lde: max_lde_override,
             dc_split,
             dc_dr_filter,
             use_f64_gs,
@@ -705,7 +755,7 @@ impl SynthesizerQ {
                 if trace {
                     eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1 dispatching ...");
                 }
-                let (result, budget_hit) = self.dc_search_q(&target, k, m_split, DC_PASS1_CAP);
+                let (result, budget_hit) = self.dc_search_q(&target, k, m_split, dc_pass1_cap_for(self.epsilon));
                 if let Some(r) = result {
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
@@ -731,7 +781,7 @@ impl SynthesizerQ {
                 if trace {
                     eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
                 }
-                let (result, _) = self.dc_search_q(&target, k, m_split, DC_PASS2_CAP);
+                let (result, _) = self.dc_search_q(&target, k, m_split, dc_pass2_cap_for(self.epsilon));
                 if let Some(r) = result {
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",

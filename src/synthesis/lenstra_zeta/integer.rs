@@ -313,13 +313,42 @@ where
         return Vec::new();
     }
 
-    // Round lu_x → i64 for SE's z_c convention. Loses fractional info; the
-    // SE bound (with the cap-radial slack) more than absorbs the resulting
-    // off-center penalty.
+    // Round lu_x → i64 for SE's z_c convention. **Crucial at deep ε**:
+    // `lu_x[i]` (MPFR) can have magnitude > 2^53 (the f64 exact-integer
+    // ceiling) at ε=1e-8, lde≥18 — observed up to 5×10¹⁶. Going through
+    // `to_f64()` first quantizes to the nearest f64 representable
+    // integer (ULP up to 2 at this magnitude), then `round()` is a
+    // no-op. This introduces up to 2-lattice-unit error per coord; with
+    // LLL's Hermite factor in 16D (~100), the SE walk's center is
+    // shifted by up to ||B·e||²_Q ~ 10⁴ Q-units, vastly exceeding
+    // `bound_sq=8`. The walk explores the wrong region and the cap
+    // appears empty even when valid solutions exist.
+    //
+    // Fix: round the MPFR value to integer in MPFR (full precision),
+    // then extract via i64 truncation. The fractional rounding error
+    // is bounded by 0.5 lattice-units regardless of magnitude.
     let z_c: [i64; 16] = std::array::from_fn(|i| {
-        let f = scratch.lu_x[i].to_f64();
-        f.round() as i64
+        let mut rounded = scratch.lu_x[i].clone();
+        rounded.round_mut();
+        match rounded.to_integer() {
+            Some(int) => int.to_i64_wrapping(),
+            None => 0, // NaN/infinity — treat as zero; SE walk will return empty.
+        }
     });
+
+    if trace {
+        // Compare MPFR-direct round vs the legacy f64 path to expose the
+        // discrepancy in the trace (zero at moderate ε; up to ULP at deep ε).
+        let max_diff = (0..16).fold(0i64, |acc, i| {
+            let f64_path = scratch.lu_x[i].to_f64().round() as i64;
+            (f64_path - z_c[i]).abs().max(acc)
+        });
+        let max_z = (0..16).fold(0i64, |acc, i| z_c[i].abs().max(acc));
+        eprintln!(
+            "[zeta diag] phase1 k={k} eps={eps:.0e} z_c max_|z|={} mpfr_vs_f64_diff={}",
+            max_z, max_diff,
+        );
+    }
 
     // Transpose lower-triangular L to upper-triangular for SE.
     let l_upper: [[f64; 16]; 16] =
