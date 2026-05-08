@@ -164,6 +164,25 @@ pub struct IntScratch16 {
     /// after the first call (so LLL gets a clean identity start once).
     /// Default: false (cold start, single-search behaviour).
     pub warm_lll: bool,
+
+    /// Experimental f64 GS state: when true, `phase1_with_stop` calls
+    /// `lll_f64::run_lll_16_f64` instead of the MPFR-based `run_lll_16`.
+    /// Theorem 2 of Nguyen-Stehlé 2009 doesn't cover d=16 in f64, but
+    /// fplll's `wrapper.cpp` tries `double` first at every dim — we test
+    /// whether it converges in our regime. Default: false (MPFR path).
+    pub use_f64_gs: bool,
+
+    // ── f64 GS state (experimental, fplll-style) ──
+    //
+    // Parallel buffers to `r_bar`/`mu_bar`/`s_bar` but in plain f64.
+    // Used by the experimental [`super::lll_f64`] path: bypasses MPFR for
+    // the GS state during LLL. Theorem 2 of Nguyen-Stehlé 2009 doesn't
+    // cover d=16 in f64, but fplll's wrapper tries `double` first at every
+    // dim. If LLL converges and produces a valid unimodular basis, this
+    // gives a ~5× per-LLL-iter speedup vs the MPFR path.
+    pub r_bar_f64: [[f64; 16]; 16],
+    pub mu_bar_f64: [[f64; 16]; 16],
+    pub s_bar_f64: [[f64; 16]; 16],
 }
 
 impl IntScratch16 {
@@ -203,6 +222,10 @@ impl IntScratch16 {
             lu_tmp: rfz(lu_prec),
             lu_acc: rfz(lu_prec),
             warm_lll: false,
+            r_bar_f64: [[0.0; 16]; 16],
+            mu_bar_f64: [[0.0; 16]; 16],
+            s_bar_f64: [[0.0; 16]; 16],
+            use_f64_gs: false,
         }
     }
 

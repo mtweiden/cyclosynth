@@ -52,6 +52,7 @@
 pub mod cholesky_lu;
 pub mod integer;
 pub mod lll;
+pub mod lll_f64;
 pub mod q_metric;
 pub mod scratch;
 pub mod se;
