@@ -352,6 +352,27 @@ fn lattice_lde_estimate(epsilon: f64) -> u32 {
 const PASS1_CAP: u64 = 100_000_000;
 const PASS2_CAP: u64 = 4_000_000_000;
 
+/// Per-prefix budget for the Z1 D&C dispatcher's pass 1: small enough
+/// that NO-lde levels (lde where no solution exists) bail in O(seconds)
+/// instead of tens of seconds. **Trade-off**: too small and the
+/// pass-1 SE walk may miss the right prefix's solution at the minimum
+/// lde (then pass-2 retries only catch lde levels that hit budget; if
+/// the SE region was < pass1 budget, we won't queue for pass2 and find
+/// at higher lde via a different prefix).
+///
+/// Tested values (target_00 at ε=1e-7, sort + 10M baseline finds at
+/// lde=20):
+///   1M: target_00 → lde=23 (3-lde regression — pass1 region <1M, no
+///       budget hit, lde=20 not requeued)
+///   5M: target_00 → lde=20 (preserves baseline) ← chosen
+///   10M: same as no-2-pass — no NO-level speedup
+const DC_PASS1_CAP: u64 = 5_000_000;
+/// Pass 2: only runs on lde levels where pass 1's prefixes hit budget
+/// without finding (= search may have missed a solution past pass-1
+/// budget). 10M is generous enough to cover the hard-target cases where
+/// the right prefix needs many millions of leaves to converge.
+const DC_PASS2_CAP: u64 = 10_000_000;
+
 /// Compute `U_L† · target` as a continuous Mat2.
 /// `U_L` is exact (`U2Q`), `target` is float (`Mat2`). Mirrors the 8D
 /// helper `clifford_t::u2t_dag_times_mat2` for use by the Z1 D&C path.
@@ -584,7 +605,17 @@ impl SynthesizerQ {
 
         // Z1 D&C prototype: when `dc_split = Some(m)`, run the FGKM-prefix
         // dispatcher at each k instead of the single-search path.
+        //
+        // **2-pass dispatcher**: each lde first runs at `DC_PASS1_CAP=1M`
+        // leaves per prefix. If found, return. If not found and at least
+        // one prefix hit its budget, queue this lde for pass 2 (= the
+        // search may have missed a solution beyond the budget). After
+        // pass 1 sweeps all lde, retry the queued ones with
+        // `DC_PASS2_CAP=10M`. This preserves minimum-lde correctness
+        // (a budget-hit lde is never skipped) while letting easy targets
+        // bail fast on NO-lde levels.
         if let Some(m_split) = self.dc_split {
+            let mut pass2_queue: Vec<u32> = Vec::new();
             for k in lattice_start..=self.max_lde {
                 let t_k = std::time::Instant::now();
                 if k <= m_split {
@@ -607,17 +638,44 @@ impl SynthesizerQ {
                     continue;
                 }
                 if trace {
-                    eprintln!("[zeta] dc lde={k:>2} m={m_split} dispatching ...");
+                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1 dispatching ...");
                 }
-                if let Some(r) = self.dc_search_q(&target, k, m_split) {
+                let (result, budget_hit) = self.dc_search_q(&target, k, m_split, DC_PASS1_CAP);
+                if let Some(r) = result {
                     if trace {
-                        eprintln!("[zeta] dc lde={k:>2} m={m_split}  FOUND  dist={:.3e}  t={:.0}ms",
+                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
                             r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
                     }
                     return Some(r);
                 }
                 if trace {
-                    eprintln!("[zeta] dc lde={k:>2} m={m_split}  none   t={:.0}ms",
+                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
+                        if budget_hit { " (budget hit)" } else { "" },
+                        t_k.elapsed().as_secs_f64() * 1000.0);
+                }
+                if budget_hit {
+                    pass2_queue.push(k);
+                }
+            }
+
+            // Pass 2 retries: only the lde levels where pass 1's prefixes
+            // hit budget without finding. Other lde levels were
+            // exhausted at pass 1 (no solution exists at that lde).
+            for k in pass2_queue {
+                let t_k = std::time::Instant::now();
+                if trace {
+                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
+                }
+                let (result, _) = self.dc_search_q(&target, k, m_split, DC_PASS2_CAP);
+                if let Some(r) = result {
+                    if trace {
+                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
+                            r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    return Some(r);
+                }
+                if trace {
+                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
                         t_k.elapsed().as_secs_f64() * 1000.0);
                 }
             }
@@ -689,6 +747,12 @@ impl SynthesizerQ {
     /// reconstruction so the assembled `U_full` matches target's det
     /// phase. This is the Z[ζ_16] analog of Clifford+T's `dc_search`.
     ///
+    /// **Returns** `(Option<SynthResultQ>, bool)`: the result if found,
+    /// and a flag indicating whether *any* prefix hit its per-prefix
+    /// budget without finding. The 2-pass dispatcher in `synthesize` uses
+    /// this flag to decide if a deeper-budget retry at this lde is
+    /// warranted.
+    ///
     /// **Parallelism**: prefixes are dispatched via rayon `par_iter` with
     /// per-thread `IntScratch16` allocated lazily through `map_init`. The
     /// `find_map_any` combinator aborts all workers as soon as any one
@@ -696,7 +760,13 @@ impl SynthesizerQ {
     /// parallel inside (the SE walker forks at `z[15]`), so we
     /// over-subscribe rayon — empirically wins because rayon's
     /// work-stealing gracefully handles nested parallel work.
-    fn dc_search_q(&self, target: &Mat2, k_total: u32, m_split: u32) -> Option<SynthResultQ> {
+    fn dc_search_q(
+        &self,
+        target: &Mat2,
+        k_total: u32,
+        m_split: u32,
+        per_prefix_cap: u64,
+    ) -> (Option<SynthResultQ>, bool) {
         use rayon::prelude::*;
 
         let prefixes = build_l_q(m_split);
@@ -704,22 +774,10 @@ impl SynthesizerQ {
         let epsilon = self.epsilon;
         let use_f64_gs = self.use_f64_gs;
 
-        // Per-prefix budget. Wrong prefixes pay this cost in full before
-        // bailing out. The right prefix usually fires `should_stop` far
-        // earlier via the early-exit predicate, so this cap mostly bounds
-        // the time spent on doomed prefixes when no solution exists at
-        // this lde.
-        //
-        // Tried 1M (2026-05-07): much faster on NO-lde levels but caused
-        // hard targets to find at higher lde than baseline (target_00
-        // ε=1e-7 went from lde=20 → lde=23). The right prefix's SE walk
-        // sometimes needs > 1M leaves to converge. 10M preserves
-        // minimum-lde correctness for the test set.
-        //
-        // For a future 2-pass scheme (pass1 at 1M for fast search across
-        // all lde, pass2 at 10M only on lde levels that hit budget), see
-        // the single-search PASS1_CAP/PASS2_CAP pattern in `synthesize`.
-        const PER_PREFIX_CAP: u64 = 10_000_000;
+        // Shared across all prefix workers: any prefix that hits its
+        // SE-leaf budget without finding sets this. The 2-pass dispatcher
+        // uses it to decide if a pass2 retry is warranted.
+        let any_budget_hit = Arc::new(AtomicBool::new(false));
 
         // Pre-filter the prefixes once: drop those whose lde already
         // exceeds k_total (k_inner would be ≤ 0), and drop those whose
@@ -741,7 +799,7 @@ impl SynthesizerQ {
             .collect();
 
         if usable.is_empty() {
-            return None;
+            return (None, false);
         }
 
         // **Prefix prioritisation by k_prefix (descending)**: prefixes
@@ -760,7 +818,7 @@ impl SynthesizerQ {
         let n_threads = rayon::current_num_threads().max(1);
         let chunk = (usable.len() / n_threads).max(1);
 
-        usable
+        let result = usable
             .par_iter()
             .with_min_len(chunk)
             .map_init(
@@ -793,8 +851,16 @@ impl SynthesizerQ {
 
                     let sols = phase1_with_stop(
                         scratch, &y, k_inner, epsilon,
-                        PER_PREFIX_CAP, &budget_hit, should_stop,
+                        per_prefix_cap, &budget_hit, should_stop,
                     );
+
+                    // Propagate this prefix's budget-hit signal to the
+                    // dispatcher level. We OR in our local flag; the
+                    // dispatcher reads `any_budget_hit` after the
+                    // par_iter completes (or aborts via find_map_any).
+                    if budget_hit.load(std::sync::atomic::Ordering::Relaxed) {
+                        any_budget_hit.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
 
                     // Score each returned solution and return the first
                     // that satisfies the ε bound.
@@ -814,7 +880,10 @@ impl SynthesizerQ {
                     None
                 },
             )
-            .find_map_any(|x| x)
+            .find_map_any(|x| x);
+
+        let budget_hit = any_budget_hit.load(std::sync::atomic::Ordering::Relaxed);
+        (result, budget_hit)
     }
 }
 
