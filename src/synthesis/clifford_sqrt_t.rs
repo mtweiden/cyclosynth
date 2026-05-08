@@ -499,6 +499,16 @@ impl SynthesizerQ {
         // get correctness via the ladder (just slower than the
         // MPFR-only path at ε ≤ 1e-8).
         let use_f64_gs = epsilon > 1e-8;
+        // **Auto-BKZ default**: enable BKZ-4 only at ε ≤ 1e-7. Empirically
+        // (8-target Rz·Ry·Rz bench, seed 0xC0FFEEBAADD0E):
+        //   ε=1e-5: 0.37× (BKZ overhead crushes already-cheap SE walks)
+        //   ε=1e-6: 1.04× (break-even, high variance)
+        //   ε=1e-7: 1.44× (consistent win; one lde improvement)
+        // At ε≤1e-7 the post-LLL SE region is large enough that BKZ-4's
+        // tighter Hermite factor pays for the per-LLL-call tour cost.
+        // Above that threshold, SE is already cheap and BKZ adds pure
+        // overhead. Override via `with_bkz(β)`.
+        let bkz_block_size = if epsilon <= 1e-7 { 4 } else { 0 };
         Self {
             epsilon,
             min_lde: 0,
@@ -506,7 +516,7 @@ impl SynthesizerQ {
             dc_split,
             dc_dr_filter,
             use_f64_gs,
-            bkz_block_size: 0,
+            bkz_block_size,
         }
     }
 
@@ -2283,6 +2293,16 @@ mod tests {
         assert_eq!(s_override.dc_dr_filter, vec![0u32, 1, 15]);
         let s_no_f64 = SynthesizerQ::new(1e-3).with_f64_gs(false);
         assert!(!s_no_f64.use_f64_gs);
+
+        // BKZ-4 default: on at ε ≤ 1e-7, off above.
+        for &eps in &[1e-3, 1e-4, 1e-5, 1e-6_f64] {
+            assert_eq!(SynthesizerQ::new(eps).bkz_block_size, 0,
+                "BKZ default should be 0 at ε={eps:.0e}");
+        }
+        for &eps in &[1e-7, 1e-8, 1e-9_f64] {
+            assert_eq!(SynthesizerQ::new(eps).bkz_block_size, 4,
+                "BKZ default should be 4 at ε={eps:.0e}");
+        }
     }
 
     #[test]
