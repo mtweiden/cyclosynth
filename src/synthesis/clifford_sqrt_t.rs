@@ -654,93 +654,112 @@ impl SynthesizerQ {
     /// reconstruction so the assembled `U_full` matches target's det
     /// phase. This is the Z[ζ_16] analog of Clifford+T's `dc_search`.
     ///
-    /// Serial for the prototype; parallelism (rayon par_iter over
-    /// prefixes) is a follow-up if the per-prefix cost matches the
-    /// projected ~50μs.
+    /// **Parallelism**: prefixes are dispatched via rayon `par_iter` with
+    /// per-thread `IntScratch16` allocated lazily through `map_init`. The
+    /// `find_map_any` combinator aborts all workers as soon as any one
+    /// returns `Some(_)`. Each per-prefix LLL+SE call is itself
+    /// parallel inside (the SE walker forks at `z[15]`), so we
+    /// over-subscribe rayon — empirically wins because rayon's
+    /// work-stealing gracefully handles nested parallel work.
     fn dc_search_q(&self, target: &Mat2, k_total: u32, m_split: u32) -> Option<SynthResultQ> {
+        use rayon::prelude::*;
+
         let prefixes = build_l_q(m_split);
         let d_target = det_phase_of(target);
-
-        // One scratch buffer reused across all prefixes (LLL setup is the
-        // dominant per-prefix cost). The first call cold-starts LLL from
-        // identity; subsequent calls warm-start from the previous prefix's
-        // reduced basis.
-        let _ = self.use_f64_gs; // wired below
-        let mut scratch = IntScratch16::new(self.epsilon);
-        scratch.use_f64_gs = self.use_f64_gs;
         let epsilon = self.epsilon;
-        let mut first_call = true;
+        let use_f64_gs = self.use_f64_gs;
 
-        for u_l in prefixes.iter() {
-            let k_prefix = u_l.k;
-            // Skip prefixes whose lde already exceeds k_total — k_inner ≤ 0
-            // is unreachable for the lattice search (and brute-shell at
-            // k_inner ≤ 3 isn't wired into this dispatcher yet).
-            if k_prefix >= k_total {
-                continue;
-            }
-            let k_inner = k_total - k_prefix;
+        // Per-prefix budget. Wrong prefixes pay this cost in full before
+        // bailing out. With ~36 prefixes (m=1, |d_R|≤1) and 8 cores,
+        // wall time ~= (10M leaves × 100ns per leaf) / 4.5 ≈ 220 ms in
+        // the bail case. The right prefix typically fires `should_stop`
+        // far earlier.
+        const PER_PREFIX_CAP: u64 = 10_000_000;
 
-            // m_inner = U_L† · target as a continuous Mat2.
-            let m_inner = u2q_dag_times_mat2(u_l, target);
-            let v_inner = unitary_to_uv_zeta(&m_inner);
-
-            // d_L from prefix's float det (prefix is exact, so this is well-
-            // defined modulo our 16-phase rounding inside det_phase_of).
-            let d_l = det_phase_of(&u_l.to_float());
-            let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
-
-            // Det-phase filter: skip prefixes whose required d_R isn't in
-            // the allowed-offsets set. Empty ⇒ no filtering. The 16-valued
-            // analog of Clifford+T's `det_zeta_parity` filter; see
-            // `with_dc_dr_filter` for completeness caveats.
-            if !self.dc_dr_filter.is_empty() && !self.dc_dr_filter.contains(&d_r) {
-                continue;
-            }
-
-            // Inner LLL+SE at k_inner. Early-exit predicate composes
-            // `U_L · U_R` and checks distance — only fires on integer-leaf
-            // passing solutions, so its O(per-leaf) cost is amortised.
-            let y = uv_to_xy_zeta(v_inner, k_inner);
-            let budget_hit = AtomicBool::new(false);
-            // Per-prefix budget. Wrong prefixes pay this cost in full
-            // before bailing out, so the dispatcher's total time is
-            // dominated by it × |L_m|. Empirical: 10k leaves × 7.8k
-            // prefixes (m=3) takes ~110ms in 16D. Bumping later if it
-            // misses solutions.
-            const PER_PREFIX_CAP: u64 = 10_000_000;
-            let u_l_local = *u_l;
-            let target_local = *target;
-            let should_stop = |x: &[i64; 16]| -> bool {
-                let u_r = solution_to_u2q_d(x, k_inner, d_r);
-                let u_full = u_l_local * u_r;
-                diamond_distance_float(&u_full.to_float(), &target_local) < epsilon
-            };
-            // (Warm-start tried; basis shaped for prev Q hurts the new
-            // Q's LLL by ~2× — left at cold-start.)
-            let _ = first_call;
-            let sols = phase1_with_stop(
-                &mut scratch, &y, k_inner, epsilon,
-                PER_PREFIX_CAP, &budget_hit, should_stop,
-            );
-
-            // Score each returned solution and return the first that
-            // satisfies the ε bound.
-            for sol in &sols {
-                let u_r = solution_to_u2q_d(sol, k_inner, d_r);
-                let u_full = *u_l * u_r;
-                let dist = diamond_distance_float(&u_full.to_float(), target);
-                if dist < self.epsilon {
-                    let gates = BlochDecomposer.decompose(&u_full);
-                    return Some(SynthResultQ {
-                        gates: Some(gates),
-                        lde: k_total,
-                        distance: dist,
-                    });
+        // Pre-filter the prefixes once: drop those whose lde already
+        // exceeds k_total (k_inner would be ≤ 0), and drop those whose
+        // required d_R isn't in the allowed-offsets set. We collect into
+        // a Vec of references so the per-thread closure does cheap reads
+        // only.
+        let dc_dr_filter = &self.dc_dr_filter;
+        let usable: Vec<&U2Q> = prefixes
+            .iter()
+            .filter(|u_l| u_l.k < k_total)
+            .filter(|u_l| {
+                if dc_dr_filter.is_empty() {
+                    return true;
                 }
-            }
+                let d_l = det_phase_of(&u_l.to_float());
+                let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                dc_dr_filter.contains(&d_r)
+            })
+            .collect();
+
+        if usable.is_empty() {
+            return None;
         }
-        None
+
+        // Distribute prefixes across rayon workers. `with_min_len(chunk)`
+        // ensures each worker gets at least `chunk` prefixes so the
+        // per-prefix scratch allocation amortises over the chunk.
+        let n_threads = rayon::current_num_threads().max(1);
+        let chunk = (usable.len() / n_threads).max(1);
+
+        usable
+            .par_iter()
+            .with_min_len(chunk)
+            .map_init(
+                || {
+                    let mut s = IntScratch16::new(epsilon);
+                    s.use_f64_gs = use_f64_gs;
+                    s
+                },
+                |scratch, u_l| -> Option<SynthResultQ> {
+                    let k_prefix = u_l.k;
+                    let k_inner = k_total - k_prefix;
+
+                    // m_inner = U_L† · target as a continuous Mat2.
+                    let m_inner = u2q_dag_times_mat2(u_l, target);
+                    let v_inner = unitary_to_uv_zeta(&m_inner);
+
+                    // d_L from prefix's float det.
+                    let d_l = det_phase_of(&u_l.to_float());
+                    let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+
+                    let y = uv_to_xy_zeta(v_inner, k_inner);
+                    let budget_hit = AtomicBool::new(false);
+                    let u_l_local = **u_l;
+                    let target_local = *target;
+                    let should_stop = |x: &[i64; 16]| -> bool {
+                        let u_r = solution_to_u2q_d(x, k_inner, d_r);
+                        let u_full = u_l_local * u_r;
+                        diamond_distance_float(&u_full.to_float(), &target_local) < epsilon
+                    };
+
+                    let sols = phase1_with_stop(
+                        scratch, &y, k_inner, epsilon,
+                        PER_PREFIX_CAP, &budget_hit, should_stop,
+                    );
+
+                    // Score each returned solution and return the first
+                    // that satisfies the ε bound.
+                    for sol in &sols {
+                        let u_r = solution_to_u2q_d(sol, k_inner, d_r);
+                        let u_full = u_l_local * u_r;
+                        let dist = diamond_distance_float(&u_full.to_float(), target);
+                        if dist < epsilon {
+                            let gates = BlochDecomposer.decompose(&u_full);
+                            return Some(SynthResultQ {
+                                gates: Some(gates),
+                                lde: k_total,
+                                distance: dist,
+                            });
+                        }
+                    }
+                    None
+                },
+            )
+            .find_map_any(|x| x)
     }
 }
 
