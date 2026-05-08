@@ -77,6 +77,11 @@ pub static N_LAZY_PASSES_MAX: AtomicU64 = AtomicU64::new(0);
 
 /// Number of `phase1` invocations across this synthesize call (one per k).
 pub static N_PHASE1_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Number of times the f64 GS path detected a failure (LLL not converged
+/// or non-unimodular post-LLL basis) and the precision ladder escalated
+/// to MPFR. Should be 0 in our regime (ε ≥ 1e-7); becomes non-zero at
+/// deep ε when f64's 52-bit mantissa runs out of headroom.
+pub static N_LLL_F64_ESCALATIONS: AtomicU64 = AtomicU64::new(0);
 /// SE leaves rejected by the norm-shell check (`‖x‖² == 2^k`).
 pub static N_NORM_REJECTED: AtomicU64 = AtomicU64::new(0);
 /// SE leaves rejected by the bilinear forms check (`B_1=B_2=B_3=0`).
@@ -145,6 +150,7 @@ pub fn reset_all() {
         &N_LAZY_CALLS_TOTAL,
         &N_LAZY_PASSES_MAX,
         &N_PHASE1_CALLS,
+        &N_LLL_F64_ESCALATIONS,
         &N_NORM_REJECTED,
         &N_BILINEAR_REJECTED,
         &N_ALIGN_REJECTED,

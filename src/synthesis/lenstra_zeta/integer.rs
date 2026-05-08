@@ -148,32 +148,114 @@ where
         diag::T_BUILD_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // Step 2: L²-LLL on the i256 Gram. Dispatch on the precision choice:
-    // experimental f64 path (no MPFR overhead, ~5× faster per LLL op if
-    // it converges) vs the proved MPFR path.
+    // ─── Step 2: L²-LLL with adaptive precision ladder ───────────────
+    //
+    // fplll's `wrapper.cpp` runs a precision ladder: try low-precision
+    // first, escalate on detected failure. Their full ladder is
+    //   `double` (53 bit) → `dpe_t` (double + long expo) → `dd_real`
+    //   (~106 bit) → `mpfr_t` (arbitrary).
+    // We use the same idea with a 2-step ladder over our two backends:
+    //
+    //   1. **f64 GS** (`lll_f64::run_lll_16_f64`): 52 mantissa bits,
+    //      ~2.5× faster per call than MPFR-80. fplll's `l2_min_prec`
+    //      formula `≥ 10 + 2·log d − log ε + d·log ρ` says we need ~50
+    //      bits at d=16, ε=1e-8, leaving f64 with a 2-bit margin.
+    //      Empirically converges through ε=1e-7; ε=1e-8 is borderline.
+    //
+    //   2. **MPFR-80** (`run_lll_16` at `GS_PREC=80`, the default): 80
+    //      mantissa bits, ~30-bit margin at ε=1e-8 — comfortably safe.
+    //      ~2.5× slower per call but reliable.
+    //
+    // **Failure detection** (signals the f64 path is past its precision
+    // budget):
+    //   (a) `LllResult::IterCap` — LLL didn't converge in MAX_LLL_ITERS.
+    //       Strong signal of GS-state cycling from precision loss.
+    //   (b) `det16_exact == Some(d)` with `d ∉ {±1}` — basis became
+    //       non-unimodular under f64 LLL's transformations. Means the
+    //       size-reduction's f64 mu-rounding accumulated a wrong basis
+    //       update somewhere.
+    //
+    // **Not escalated**:
+    //   - `LllResult::GramOverflow`: the i256 Gram buffer overflowed,
+    //     not a precision issue. MPFR can't help — we'd need wider
+    //     integers. Return empty.
+    //   - `det16_exact == None`: i128 Bareiss elimination overflowed at
+    //     d=16 (rare at deep ε per the chunk 2 caveat). Treat as
+    //     inconclusive-success and proceed; no clean fallback.
+    //
+    // The escalation cost is one full LLL setup + run. When f64 succeeds
+    // (ε ≥ 1e-7 typically), the ladder's overhead is just a det check
+    // (≤ 1 μs) — negligible. When f64 fails, we pay 2× LLL.
+    //
+    // Diag counter `N_LLL_F64_ESCALATIONS` tracks how often this fires.
+    // Should be 0 at moderate ε; non-zero only at ε ≤ 1e-8.
+
     let t_lll = if trace { Some(std::time::Instant::now()) } else { None };
-    let lll_result = if scratch.use_f64_gs {
-        super::lll_f64::run_lll_16_f64(scratch)
-    } else {
-        run_lll_16(scratch)
+    let initial_use_f64 = scratch.use_f64_gs;
+
+    // Helper: closes over scratch via &mut, returns (LllResult, det).
+    fn run_and_check(s: &mut IntScratch16) -> (LllResult, Option<i64>) {
+        let r = if s.use_f64_gs {
+            super::lll_f64::run_lll_16_f64(s)
+        } else {
+            run_lll_16(s)
+        };
+        let det = super::se::det16_exact(&s.basis);
+        (r, det)
+    }
+
+    let lll_succeeded = |r: LllResult, det: Option<i64>| -> bool {
+        if !matches!(r, LllResult::Converged) {
+            return false;
+        }
+        // None = i128 overflow in Bareiss; treat as inconclusive-success.
+        match det { Some(d) => d == 1 || d == -1, None => true }
     };
+
+    let (mut lll_result, mut det_check) = run_and_check(scratch);
+
+    // Escalate to MPFR if f64 was used and produced a failure result
+    // (excluding GramOverflow, which won't be helped by higher precision).
+    if initial_use_f64
+        && !matches!(lll_result, LllResult::GramOverflow)
+        && !lll_succeeded(lll_result, det_check)
+    {
+        if trace {
+            diag::N_LLL_F64_ESCALATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        // The f64 LLL may have left the basis in a partially-reduced or
+        // non-unimodular state. Force a fresh start: cancel warm_lll
+        // (so run_lll_16 calls reset_basis internally) and switch the
+        // precision flag.
+        scratch.warm_lll = false;
+        scratch.use_f64_gs = false;
+        let (r2, d2) = run_and_check(scratch);
+        lll_result = r2;
+        det_check = d2;
+        // Restore the caller's precision preference for the next call.
+        scratch.use_f64_gs = initial_use_f64;
+    }
+
     if let Some(t) = t_lll {
         diag::T_LLL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
+
     if let LllResult::GramOverflow = lll_result {
         return Vec::new();
     }
-    // Note: at d=16 the Bareiss-i128 `det16_exact` may overflow at deep ε
-    // (per chunk 2 caveat). Treat None as "cannot verify" rather than a hard
-    // failure; non-±1 results indicate a real bug.
-    if let Some(d) = super::se::det16_exact(&scratch.basis) {
+    if let Some(d) = det_check {
         if d != 1 && d != -1 {
             eprintln!(
-                "[lenstra_zeta] LLL non-unimodular (det={}) at eps={:e}, k={}; bailing.",
+                "[lenstra_zeta] LLL non-unimodular even after MPFR escalation \
+                (det={}) at eps={:e}, k={}; bailing.",
                 d, eps, k
             );
             return Vec::new();
         }
+    }
+    if !matches!(lll_result, LllResult::Converged | LllResult::IterCap) {
+        // Should be unreachable (only GramOverflow is left, handled above).
+        return Vec::new();
     }
 
     // Step 3: f64 Cholesky on the post-LLL Gram. Lower-triangular L in
