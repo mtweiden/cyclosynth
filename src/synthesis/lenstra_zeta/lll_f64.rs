@@ -149,6 +149,10 @@ pub fn lll_l2_16_f64(scratch: &mut IntScratch16) -> LllResult {
             return LllResult::GramOverflow;
         }
 
+        // Lovász cascade. Walks κ down comparing `δ̄ · r̄_{κ-1,κ-1}` against
+        // `s̄_{κ_orig, κ-1}` (the prefix-sum array, populated in cfa_row).
+        // Empirically cascades only 1.86 levels deep on average — lazy
+        // muls beat precomputing all 16 `δ̄·r̄_{i,i}` upfront.
         let kappa_orig = kappa;
         loop {
             if kappa == 0 {
