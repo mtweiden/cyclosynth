@@ -705,10 +705,20 @@ impl SynthesizerQ {
         let use_f64_gs = self.use_f64_gs;
 
         // Per-prefix budget. Wrong prefixes pay this cost in full before
-        // bailing out. With ~36 prefixes (m=1, |d_R|≤1) and 8 cores,
-        // wall time ~= (10M leaves × 100ns per leaf) / 4.5 ≈ 220 ms in
-        // the bail case. The right prefix typically fires `should_stop`
-        // far earlier.
+        // bailing out. The right prefix usually fires `should_stop` far
+        // earlier via the early-exit predicate, so this cap mostly bounds
+        // the time spent on doomed prefixes when no solution exists at
+        // this lde.
+        //
+        // Tried 1M (2026-05-07): much faster on NO-lde levels but caused
+        // hard targets to find at higher lde than baseline (target_00
+        // ε=1e-7 went from lde=20 → lde=23). The right prefix's SE walk
+        // sometimes needs > 1M leaves to converge. 10M preserves
+        // minimum-lde correctness for the test set.
+        //
+        // For a future 2-pass scheme (pass1 at 1M for fast search across
+        // all lde, pass2 at 10M only on lde levels that hit budget), see
+        // the single-search PASS1_CAP/PASS2_CAP pattern in `synthesize`.
         const PER_PREFIX_CAP: u64 = 10_000_000;
 
         // Pre-filter the prefixes once: drop those whose lde already
@@ -717,7 +727,7 @@ impl SynthesizerQ {
         // a Vec of references so the per-thread closure does cheap reads
         // only.
         let dc_dr_filter = &self.dc_dr_filter;
-        let usable: Vec<&U2Q> = prefixes
+        let mut usable: Vec<&U2Q> = prefixes
             .iter()
             .filter(|u_l| u_l.k < k_total)
             .filter(|u_l| {
@@ -733,6 +743,16 @@ impl SynthesizerQ {
         if usable.is_empty() {
             return None;
         }
+
+        // **Prefix prioritisation by k_prefix (descending)**: prefixes
+        // with high k_prefix have small `k_inner = k_total − k_prefix` →
+        // tiny SE region per prefix → fast bail or fast hit. Sorting
+        // before dispatch matters when |usable| > num_cores (the m=2
+        // case has ~108 usable, more than 8 cores), so the work-stealing
+        // queue picks the cheap high-k ones first. At m=1 with 36
+        // usable on 8 cores there's also some benefit since rayon's
+        // chunking respects the iter order.
+        usable.sort_by(|a, b| b.k.cmp(&a.k));
 
         // Distribute prefixes across rayon workers. `with_min_len(chunk)`
         // ensures each worker gets at least `chunk` prefixes so the
