@@ -625,6 +625,83 @@ impl SynthesizerQ {
         self
     }
 
+    /// MPFR-precision entry point for synthesis: caller provides
+    /// `v_mpfr = (Re V₁₁, Im V₁₁, Re V₂₁, Im V₂₁)` at MPFR precision.
+    ///
+    /// **Why**: at ε ≤ 1e-8 the cap-radial direction `Δ_y/R = ε²/4` falls
+    /// below f64 ULP at unit scale (~2.2e-16). The default
+    /// [`synthesize`] receives a f64 `Mat2` target and so the lattice
+    /// cap is localized with > 1 cap-width of slop in the radial axis;
+    /// the SE walk explores the wrong region and the synthesizer never
+    /// finds. This entry point lifts `v` to MPFR before computing the
+    /// cap, bypassing the f64 floor.
+    ///
+    /// `target` (f64) is still used for the `diamond_distance_u2q_float`
+    /// final check — that fn evaluates the candidate's ZZeta entries
+    /// directly in MPFR, so f64-target precision is sufficient there
+    /// (see `feedback_diamond_distance_frobenius.md`).
+    ///
+    /// Single-search path only (no D&C). For ε < 1e-7 callers.
+    pub fn synthesize_v_mpfr(&self, v_mpfr: &[rug::Float; 4], target: Mat2) -> Option<SynthResultQ> {
+        use crate::synthesis::diag;
+        use crate::synthesis::lenstra_zeta::phase1_with_stop_mpfr;
+        use crate::synthesis::search_zeta::uv_to_xy_zeta_mpfr;
+        use crate::synthesis::lenstra_zeta::scratch::compute_prec_q;
+        let trace = diag::trace_enabled();
+        if trace {
+            diag::reset_all();
+        }
+
+        let epsilon = self.epsilon;
+        let d = det_phase_of(&target);
+        let lattice_start = lattice_lde_estimate(epsilon)
+            .saturating_sub(2)
+            .max(BRUTE_LIMIT + 1)
+            .max(self.min_lde);
+
+        let prec = compute_prec_q(epsilon);
+        let mut scratch = IntScratch16::new(epsilon);
+        scratch.use_f64_gs = self.use_f64_gs;
+        scratch.bkz_block_size = self.bkz_block_size;
+
+        for k in lattice_start..=self.max_lde {
+            let t_k = std::time::Instant::now();
+            let y_mpfr = uv_to_xy_zeta_mpfr(v_mpfr, k, prec);
+            let budget_hit = AtomicBool::new(false);
+            let target_local = target;
+            let should_stop = |x: &[i64; 16]| -> bool {
+                let cand = solution_to_u2q_d(x, k, d);
+                diamond_distance_u2q_float(&cand, &target_local) < epsilon
+            };
+            let sols = phase1_with_stop_mpfr(
+                &mut scratch, &y_mpfr, v_mpfr, k, epsilon,
+                PASS1_CAP, &budget_hit, should_stop,
+            );
+            for sol in &sols {
+                let cand: U2Q = solution_to_u2q_d(sol, k, d);
+                let dist = diamond_distance_u2q_float(&cand, &target);
+                if dist < epsilon {
+                    if trace {
+                        eprintln!("[zeta-mpfr] lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
+                            dist, t_k.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    let gates = BlochDecomposer.decompose(&cand);
+                    return Some(SynthResultQ {
+                        gates: Some(gates),
+                        lde: k,
+                        distance: dist,
+                    });
+                }
+            }
+            if trace {
+                eprintln!("[zeta-mpfr] lde={k:>2}  none{}  t={:.0}ms",
+                    if budget_hit.load(std::sync::atomic::Ordering::Relaxed) { " (budget hit)" } else { "" },
+                    t_k.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        None
+    }
+
     /// Find a minimum-lde Clifford+√T circuit approximating `target`.
     ///
     /// Returns `None` if no circuit within `max_lde` achieves diamond
