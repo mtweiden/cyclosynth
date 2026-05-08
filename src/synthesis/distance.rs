@@ -253,7 +253,7 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
 /// [`diamond_distance_u2t_float`].
 ///
 /// Cost: ~3 μs/call (vs ~2 μs for U2T — twice the coefficients).
-pub(crate) fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
+pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
     use std::f64::consts::PI;
     let prec: u32 = 128;
     let two = RFloat::with_val(prec, 2.0);
