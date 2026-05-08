@@ -1198,6 +1198,33 @@ mod tests {
         }
     }
 
+    /// Quick diagnostic at ε=1e-8: f64 vs MPFR, single target, short
+    /// timeout. Reports first lde where solution is found (if any), and
+    /// whether the path completes.
+    #[test]
+    #[ignore]
+    fn z1_eps_1e_8_diag() {
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let eps = 1e-8_f64;
+        for (label, use_f64) in &[("f64", true), ("MPFR", false)] {
+            // Cap max_lde at 35 to bound runtime.
+            let synth = SynthesizerQ::new(eps).with_max_lde(35).with_f64_gs(*use_f64);
+            let t0 = std::time::Instant::now();
+            let r = synth.synthesize(target);
+            let dt = t0.elapsed();
+            eprintln!(
+                "  {label}:  lde={:?}  dist={:?}  t={:.0}ms",
+                r.as_ref().map(|r| r.lde),
+                r.as_ref().map(|r| r.distance),
+                dt.as_secs_f64() * 1000.0
+            );
+        }
+    }
+
     /// f64 GS at deep ε via the SynthesizerQ builder. Apples-to-apples
     /// comparison: same code path, only `use_f64_gs` differs.
     #[test]
