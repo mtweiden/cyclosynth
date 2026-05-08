@@ -1354,6 +1354,77 @@ mod tests {
         }
     }
 
+    /// Compare D&C split-parameter configurations at deep ε.
+    /// m=1 |d_R|≤1 (default, 36 prefixes) vs m=2 d_R=0 (144 prefixes
+    /// but each at higher k_prefix → smaller k_inner → faster SE).
+    ///
+    /// Decides whether to switch the auto-D&C default at very deep ε.
+    #[test]
+    #[ignore]
+    fn z1_m1_vs_m2_deep_eps() {
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+
+        fn rz(t: f64) -> Mat2 {
+            [
+                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
+            ]
+        }
+        fn ry(t: f64) -> Mat2 {
+            let c = (t/2.0).cos();
+            let s = (t/2.0).sin();
+            [
+                [Complex64::new(c, 0.0), Complex64::new(-s, 0.0)],
+                [Complex64::new(s, 0.0), Complex64::new(c, 0.0)],
+            ]
+        }
+        fn matmul(a: Mat2, b: Mat2) -> Mat2 {
+            [
+                [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
+                [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
+            ]
+        }
+
+        let mut rng = StdRng::seed_from_u64(0xC0FFEE);
+        let n = 3;
+        let eps: f64 = std::env::var("M_EPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1e-7);
+        eprintln!("\n=== ε={eps:.0e}, {n} random U3 targets ===");
+
+        for i in 0..n {
+            let alpha = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let beta = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let gamma = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let target = matmul(matmul(rz(alpha), ry(beta)), rz(gamma));
+
+            // m=1 |d_R|≤1 (current default).
+            let synth_m1 = SynthesizerQ::new(eps).with_max_lde(30);
+            let t0 = std::time::Instant::now();
+            let r_m1 = synth_m1.synthesize(target);
+            let t_m1 = t0.elapsed();
+
+            // m=2 strict d_R=0.
+            let synth_m2 = SynthesizerQ::new(eps).with_max_lde(30)
+                .with_dc_split(2).with_dc_dr_filter(vec![0]);
+            let t0 = std::time::Instant::now();
+            let r_m2 = synth_m2.synthesize(target);
+            let t_m2 = t0.elapsed();
+
+            let ms = |t: std::time::Duration| t.as_secs_f64() * 1000.0;
+            eprintln!(
+                "  trial {i}  m=1: lde={:?} t={:.0}ms  | m=2: lde={:?} t={:.0}ms  ratio={:.2}×",
+                r_m1.as_ref().map(|r| r.lde),
+                ms(t_m1),
+                r_m2.as_ref().map(|r| r.lde),
+                ms(t_m2),
+                ms(t_m1) / ms(t_m2),
+            );
+        }
+    }
+
     /// Quick diagnostic at ε=1e-8: f64 vs MPFR, single target, short
     /// timeout. Reports first lde where solution is found (if any), and
     /// whether the path completes.
