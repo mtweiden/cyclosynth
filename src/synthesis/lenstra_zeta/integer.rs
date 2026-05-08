@@ -148,9 +148,15 @@ where
         diag::T_BUILD_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // Step 2: L²-LLL on the i256 Gram.
+    // Step 2: L²-LLL on the i256 Gram. Dispatch on the precision choice:
+    // experimental f64 path (no MPFR overhead, ~5× faster per LLL op if
+    // it converges) vs the proved MPFR path.
     let t_lll = if trace { Some(std::time::Instant::now()) } else { None };
-    let lll_result = run_lll_16(scratch);
+    let lll_result = if scratch.use_f64_gs {
+        super::lll_f64::run_lll_16_f64(scratch)
+    } else {
+        run_lll_16(scratch)
+    };
     if let Some(t) = t_lll {
         diag::T_LLL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }

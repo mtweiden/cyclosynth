@@ -57,7 +57,7 @@ pub fn i256_to_rfloat_inplace(v: i256, dst: &mut RFloat) {
 }
 
 /// Bit count of |v| (≈ ⌈log₂(|v|)⌉, returns -1 for v=0).
-fn i256_log2_ceil(v: &i256) -> i32 {
+pub(super) fn i256_log2_ceil(v: &i256) -> i32 {
     let zero = i256::from_i64(0);
     if *v == zero {
         return -1;
@@ -77,7 +77,7 @@ fn i256_log2_ceil(v: &i256) -> i32 {
 }
 
 /// Check whether any Gram entry exceeds the overflow threshold.
-fn gram_overflow_check(scratch: &IntScratch16) -> bool {
+pub(super) fn gram_overflow_check(scratch: &IntScratch16) -> bool {
     let thresh = GRAM_OVERFLOW_THRESHOLD_BITS as i32;
     for i in 0..16 {
         for j in 0..16 {
@@ -178,7 +178,7 @@ pub(super) fn gram_update_swap(scratch: &mut IntScratch16, a: usize, b: usize) {
 }
 
 /// L² INSERT operation: move basis row `kappa_orig` to `kappa_insert`.
-fn basis_insert(scratch: &mut IntScratch16, kappa_orig: usize, kappa_insert: usize) {
+pub(super) fn basis_insert(scratch: &mut IntScratch16, kappa_orig: usize, kappa_insert: usize) {
     debug_assert!(kappa_insert <= kappa_orig);
     let mut current = kappa_orig;
     while current > kappa_insert {
