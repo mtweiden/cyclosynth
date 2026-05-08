@@ -49,6 +49,7 @@
 //!
 //!   `U = [[u_1, −u_2*], [u_2, u_1*]] / √(2^k)`
 
+pub mod bkz;
 pub mod cholesky_lu;
 pub mod integer;
 pub mod lll;
