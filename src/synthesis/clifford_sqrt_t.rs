@@ -586,6 +586,7 @@ impl SynthesizerQ {
         // dispatcher at each k instead of the single-search path.
         if let Some(m_split) = self.dc_split {
             for k in lattice_start..=self.max_lde {
+                let t_k = std::time::Instant::now();
                 if k <= m_split {
                     // k_inner would be ≤ 0 for the smallest-k_prefix prefixes,
                     // so D&C can't help here — still need to handle this k via
@@ -593,12 +594,31 @@ impl SynthesizerQ {
                     // the existing pass1 logic for these k values.
                     let (sols, _) = try_lattice_k(k, PASS1_CAP, &mut scratch);
                     if let Some(r) = check_sols(&sols, k) {
+                        if trace {
+                            eprintln!("[zeta] dc lde={k:>2} (single fallback)  FOUND  dist={:.3e}  t={:.0}ms",
+                                r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                        }
                         return Some(r);
+                    }
+                    if trace {
+                        eprintln!("[zeta] dc lde={k:>2} (single fallback)  none   t={:.0}ms",
+                            t_k.elapsed().as_secs_f64() * 1000.0);
                     }
                     continue;
                 }
+                if trace {
+                    eprintln!("[zeta] dc lde={k:>2} m={m_split} dispatching ...");
+                }
                 if let Some(r) = self.dc_search_q(&target, k, m_split) {
+                    if trace {
+                        eprintln!("[zeta] dc lde={k:>2} m={m_split}  FOUND  dist={:.3e}  t={:.0}ms",
+                            r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                    }
                     return Some(r);
+                }
+                if trace {
+                    eprintln!("[zeta] dc lde={k:>2} m={m_split}  none   t={:.0}ms",
+                        t_k.elapsed().as_secs_f64() * 1000.0);
                 }
             }
             return None;
@@ -608,13 +628,21 @@ impl SynthesizerQ {
         // budget without finding a sol get queued for Pass 2.
         let mut pass2_queue: Vec<u32> = Vec::new();
         for k in lattice_start..=self.max_lde {
+            let t_k = std::time::Instant::now();
             let (sols, budget_was_hit) = try_lattice_k(k, PASS1_CAP, &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
+                    eprintln!("[zeta] pass1 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
+                        r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
                     diag::dump_zeta(&diag::snapshot(),
                         &format!("synthesize ε={:.0e} k={k} (pass1)", self.epsilon));
                 }
                 return Some(r);
+            }
+            if trace {
+                eprintln!("[zeta] pass1 lde={k:>2}  none{}  t={:.0}ms",
+                    if budget_was_hit { " (budget hit)" } else { "" },
+                    t_k.elapsed().as_secs_f64() * 1000.0);
             }
             if budget_was_hit {
                 pass2_queue.push(k);
@@ -626,13 +654,20 @@ impl SynthesizerQ {
         // PASS2_CAP, while skipping k's where Pass 1 was already
         // exhaustive.
         for k in pass2_queue {
+            let t_k = std::time::Instant::now();
             let (sols, _) = try_lattice_k(k, PASS2_CAP, &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
+                    eprintln!("[zeta] pass2 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
+                        r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
                     diag::dump_zeta(&diag::snapshot(),
                         &format!("synthesize ε={:.0e} k={k} (pass2)", self.epsilon));
                 }
                 return Some(r);
+            }
+            if trace {
+                eprintln!("[zeta] pass2 lde={k:>2}  none   t={:.0}ms",
+                    t_k.elapsed().as_secs_f64() * 1000.0);
             }
         }
 
