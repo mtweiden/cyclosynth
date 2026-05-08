@@ -391,11 +391,18 @@ fn recurse_16<F>(
     // The level value at offset Δ from z_c[d] is l_dd · Δ + tail; minimized at
     // Δ = -tail / l_dd. Bound: |l_dd · Δ + tail| ≤ rem_sqrt → Δ ∈
     // [(-tail − rem_sqrt)/l_dd, (-tail + rem_sqrt)/l_dd].
+    //
+    // **Precision**: at deep ε (1e-8) `z_c[d]` can exceed 2^53 (the f64
+    // exact-integer ceiling). Casting `z_c[d] as f64` and adding a small
+    // continuous offset would lose 1-2 ULP, mis-bracketing the integer
+    // search range. Compute the ranged offsets in f64 then add to `z_c[d]`
+    // as i64 — exact whenever |center_off ± span| < 2^53 (always for our
+    // bound_sq).
     let center_off = -tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
-    let z_low = ((z_c[d] as f64) + center_off - span).ceil() as i64;
-    let z_high = ((z_c[d] as f64) + center_off + span).floor() as i64;
-    let z_mid = ((z_c[d] as f64) + center_off).round() as i64;
+    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
+    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
+    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
     // Walk offsets in distance-from-center order: 0, +1, -1, +2, -2, …
@@ -535,9 +542,10 @@ fn recurse_16_norm_pruned<F>(
     let rem_sqrt = rem.sqrt();
     let center_off = -tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
-    let z_low = ((z_c[d] as f64) + center_off - span).ceil() as i64;
-    let z_high = ((z_c[d] as f64) + center_off + span).floor() as i64;
-    let z_mid = ((z_c[d] as f64) + center_off).round() as i64;
+    // See recurse_16 above for the deep-ε precision rationale.
+    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
+    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
+    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
     // Pre-compute the norm-pruning tail (Σ_{j > d} R_eucl[d][j] · z[j])
