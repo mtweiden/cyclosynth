@@ -406,6 +406,148 @@ fn dc_pass2_cap_for(epsilon: f64) -> u64 {
 /// the right prefix needs many millions of leaves to converge.
 const DC_PASS2_CAP: u64 = 10_000_000;
 
+/// MPFR-precision 2×2 complex matrix: `[[(re,im); 2]; 2]`.
+///
+/// Used by `synthesize_mpfr` and the MPFR D&C path to keep cap
+/// localization at full precision down to ε ≤ 1e-8 (where f64 ULP
+/// exceeds the cap-radial direction Δ_y/R = ε²/4).
+pub type Mat2Mpfr = [[(rug::Float, rug::Float); 2]; 2];
+
+/// Lift a f64 `Mat2` to `Mat2Mpfr` at the given precision. No precision
+/// gain by itself; useful when callers have f64 targets but want to feed
+/// the MPFR pipeline (e.g. for testing or for D&C structure access).
+pub fn mat2_to_mat2_mpfr(target: &Mat2, prec: u32) -> Mat2Mpfr {
+    use rug::Float as RFloat;
+    [
+        [
+            (RFloat::with_val(prec, target[0][0].re), RFloat::with_val(prec, target[0][0].im)),
+            (RFloat::with_val(prec, target[0][1].re), RFloat::with_val(prec, target[0][1].im)),
+        ],
+        [
+            (RFloat::with_val(prec, target[1][0].re), RFloat::with_val(prec, target[1][0].im)),
+            (RFloat::with_val(prec, target[1][1].re), RFloat::with_val(prec, target[1][1].im)),
+        ],
+    ]
+}
+
+/// Convert a `U2Q` to `Mat2Mpfr`. Reads ZZeta integer coefficients and
+/// evaluates against `(cos(kπ/8), sin(kπ/8))` for k=0..7 in MPFR, then
+/// divides by `√2^k` in MPFR (binary shift + optional ×1/√2).
+pub fn u2q_to_mat2_mpfr(u: &U2Q, prec: u32) -> Mat2Mpfr {
+    use rug::Float as RFloat;
+    use std::f64::consts::PI;
+    use crate::rings::types::int_to_f64;
+
+    let two = RFloat::with_val(prec, 2.0);
+    let inv_sqrt2 = RFloat::with_val(prec, 1.0) / two.clone().sqrt();
+    let half_k = u.k / 2;
+    let mut inv_scale = RFloat::with_val(prec, 1.0);
+    inv_scale >>= half_k;
+    if u.k % 2 == 1 {
+        inv_scale *= &inv_sqrt2;
+    }
+
+    let basis: [(RFloat, RFloat); 8] = std::array::from_fn(|k| {
+        let theta = (k as f64) * PI / 8.0;
+        (RFloat::with_val(prec, theta.cos()), RFloat::with_val(prec, theta.sin()))
+    });
+
+    let zzeta_to_re_im = |z: &crate::rings::ZZeta| -> (RFloat, RFloat) {
+        let coeffs = [
+            int_to_f64(z.a), int_to_f64(z.b), int_to_f64(z.c), int_to_f64(z.d),
+            int_to_f64(z.e), int_to_f64(z.f), int_to_f64(z.g), int_to_f64(z.h),
+        ];
+        let mut re = RFloat::with_val(prec, 0.0);
+        let mut im = RFloat::with_val(prec, 0.0);
+        for k in 0..8 {
+            let c = RFloat::with_val(prec, coeffs[k]);
+            re += RFloat::with_val(prec, &c * &basis[k].0);
+            im += RFloat::with_val(prec, &c * &basis[k].1);
+        }
+        (re * &inv_scale, im * &inv_scale)
+    };
+
+    [
+        [zzeta_to_re_im(&u.u11), zzeta_to_re_im(&u.u12)],
+        [zzeta_to_re_im(&u.u21), zzeta_to_re_im(&u.u22)],
+    ]
+}
+
+/// MPFR analog of `u2q_dag_times_mat2`. Computes `U_L† · target` at MPFR
+/// precision, lifting `U_L`'s exact ZZeta entries to MPFR via
+/// `u2q_to_mat2_mpfr`. The `target` precision sets the result precision.
+pub fn u2q_dag_times_mat2_mpfr(u_l: &U2Q, target: &Mat2Mpfr, prec: u32) -> Mat2Mpfr {
+    use rug::Float as RFloat;
+    let u = u2q_to_mat2_mpfr(u_l, prec);
+    // (U†)[i][j] = conj(U[j][i])
+    let ud00 = (u[0][0].0.clone(), RFloat::with_val(prec, -&u[0][0].1));
+    let ud01 = (u[1][0].0.clone(), RFloat::with_val(prec, -&u[1][0].1));
+    let ud10 = (u[0][1].0.clone(), RFloat::with_val(prec, -&u[0][1].1));
+    let ud11 = (u[1][1].0.clone(), RFloat::with_val(prec, -&u[1][1].1));
+    let mul = |a: &(RFloat, RFloat), b: &(RFloat, RFloat)| -> (RFloat, RFloat) {
+        let re = RFloat::with_val(prec, &a.0 * &b.0)
+            - RFloat::with_val(prec, &a.1 * &b.1);
+        let im = RFloat::with_val(prec, &a.0 * &b.1)
+            + RFloat::with_val(prec, &a.1 * &b.0);
+        (RFloat::with_val(prec, re), RFloat::with_val(prec, im))
+    };
+    let add = |a: (RFloat, RFloat), b: (RFloat, RFloat)| -> (RFloat, RFloat) {
+        (RFloat::with_val(prec, &a.0 + &b.0), RFloat::with_val(prec, &a.1 + &b.1))
+    };
+    [
+        [
+            add(mul(&ud00, &target[0][0]), mul(&ud01, &target[1][0])),
+            add(mul(&ud00, &target[0][1]), mul(&ud01, &target[1][1])),
+        ],
+        [
+            add(mul(&ud10, &target[0][0]), mul(&ud11, &target[1][0])),
+            add(mul(&ud10, &target[0][1]), mul(&ud11, &target[1][1])),
+        ],
+    ]
+}
+
+/// Column-1 of an MPFR target as `(Re V₀₀, Im V₀₀, Re V₁₀, Im V₁₀)`.
+/// MPFR analog of `unitary_to_uv_zeta`.
+pub fn unitary_to_uv_zeta_mpfr(target: &Mat2Mpfr) -> [rug::Float; 4] {
+    [
+        target[0][0].0.clone(),
+        target[0][0].1.clone(),
+        target[1][0].0.clone(),
+        target[1][0].1.clone(),
+    ]
+}
+
+/// MPFR analog of `det_phase_of`. Computes `det = a·d − b·c` (complex)
+/// in MPFR, then `arg(det) / (π/8) → Z/16`. Returns the phase index in
+/// 0..16. f64 is sufficient for the angle quantization step (`atan2`
+/// resolves 1/16 well enough), but the determinant's complex value is
+/// computed in MPFR for stability when the target is near a det-phase
+/// boundary.
+pub fn det_phase_of_mat2_mpfr(target: &Mat2Mpfr) -> u32 {
+    use rug::Float as RFloat;
+    use std::f64::consts::PI;
+    let prec = target[0][0].0.prec();
+    let a = &target[0][0];
+    let b = &target[0][1];
+    let c = &target[1][0];
+    let d = &target[1][1];
+    // a·d
+    let ad_re = RFloat::with_val(prec, &a.0 * &d.0)
+        - RFloat::with_val(prec, &a.1 * &d.1);
+    let ad_im = RFloat::with_val(prec, &a.0 * &d.1)
+        + RFloat::with_val(prec, &a.1 * &d.0);
+    // b·c
+    let bc_re = RFloat::with_val(prec, &b.0 * &c.0)
+        - RFloat::with_val(prec, &b.1 * &c.1);
+    let bc_im = RFloat::with_val(prec, &b.0 * &c.1)
+        + RFloat::with_val(prec, &b.1 * &c.0);
+    let det_re = RFloat::with_val(prec, &ad_re - &bc_re);
+    let det_im = RFloat::with_val(prec, &ad_im - &bc_im);
+    let arg = det_im.to_f64().atan2(det_re.to_f64());
+    let normalized = (arg / (PI / 8.0)).round() as i32;
+    normalized.rem_euclid(16) as u32
+}
+
 /// Compute `U_L† · target` as a continuous Mat2.
 /// `U_L` is exact (`U2Q`), `target` is float (`Mat2`). Mirrors the 8D
 /// helper `clifford_t::u2t_dag_times_mat2` for use by the Z1 D&C path.
@@ -700,6 +842,232 @@ impl SynthesizerQ {
             }
         }
         None
+    }
+
+    /// Full MPFR-precision synthesis. Mirrors `synthesize` but with
+    /// `Mat2Mpfr` target, `Mat2Mpfr` per-prefix `m_inner`, MPFR `v` and
+    /// MPFR `y` throughout. Required at ε ≤ 1e-8 where f64 ULP exceeds
+    /// the cap-radial direction Δ_y/R.
+    ///
+    /// Brute regime + single-search lattice + 2-pass D&C dispatcher.
+    pub fn synthesize_mpfr(&self, target_mpfr: &Mat2Mpfr) -> Option<SynthResultQ> {
+        use crate::synthesis::diag;
+        use crate::synthesis::lenstra_zeta::phase1_with_stop_mpfr;
+        use crate::synthesis::search_zeta::uv_to_xy_zeta_mpfr;
+        use crate::synthesis::distance::diamond_distance_u2q_mpfr_target;
+
+        let trace = diag::trace_enabled();
+        if trace { diag::reset_all(); }
+
+        let prec = target_mpfr[0][0].0.prec();
+        let epsilon = self.epsilon;
+        let d_target = det_phase_of_mat2_mpfr(target_mpfr);
+        let v_outer = unitary_to_uv_zeta_mpfr(target_mpfr);
+
+        let lattice_start = lattice_lde_estimate(epsilon)
+            .saturating_sub(2)
+            .max(BRUTE_LIMIT + 1)
+            .max(self.min_lde);
+
+        // Brute regime
+        for k in self.min_lde..=BRUTE_LIMIT.min(self.max_lde) {
+            let sols = phase1_brute(k);
+            for sol in &sols {
+                let cand: U2Q = solution_to_u2q_d(sol, k, d_target);
+                let dist = diamond_distance_u2q_mpfr_target(&cand, target_mpfr);
+                if dist < epsilon {
+                    let gates = BlochDecomposer.decompose(&cand);
+                    return Some(SynthResultQ { gates: Some(gates), lde: k, distance: dist });
+                }
+            }
+        }
+
+        // D&C path
+        if let Some(m_split) = self.dc_split {
+            let mut pass2_queue: Vec<u32> = Vec::new();
+            for k in lattice_start..=self.max_lde {
+                let t_k = std::time::Instant::now();
+                if k <= m_split { continue; }
+                if trace {
+                    eprintln!("[zeta-mpfr] dc lde={k:>2} m={m_split} pass1 dispatching ...");
+                }
+                let (result, budget_hit) = self.dc_search_q_mpfr(
+                    target_mpfr, k, m_split, dc_pass1_cap_for(epsilon),
+                );
+                if let Some(r) = result {
+                    if trace {
+                        eprintln!("[zeta-mpfr] dc lde={k:>2} pass1 FOUND dist={:.3e} t={:.0}ms",
+                            r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    return Some(r);
+                }
+                if trace {
+                    eprintln!("[zeta-mpfr] dc lde={k:>2} pass1 none{} t={:.0}ms",
+                        if budget_hit { " (budget hit)" } else { "" },
+                        t_k.elapsed().as_secs_f64() * 1000.0);
+                }
+                if budget_hit { pass2_queue.push(k); }
+            }
+            for k in pass2_queue {
+                let t_k = std::time::Instant::now();
+                if trace {
+                    eprintln!("[zeta-mpfr] dc lde={k:>2} m={m_split} pass2 dispatching ...");
+                }
+                let (result, _) = self.dc_search_q_mpfr(
+                    target_mpfr, k, m_split, dc_pass2_cap_for(epsilon),
+                );
+                if let Some(r) = result {
+                    if trace {
+                        eprintln!("[zeta-mpfr] dc lde={k:>2} pass2 FOUND dist={:.3e} t={:.0}ms",
+                            r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    return Some(r);
+                }
+                if trace {
+                    eprintln!("[zeta-mpfr] dc lde={k:>2} pass2 none t={:.0}ms",
+                        t_k.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+            return None;
+        }
+
+        // Single-search path
+        let mut scratch = IntScratch16::new(epsilon);
+        scratch.use_f64_gs = self.use_f64_gs;
+        scratch.bkz_block_size = self.bkz_block_size;
+        for k in lattice_start..=self.max_lde {
+            let t_k = std::time::Instant::now();
+            let y_mpfr = uv_to_xy_zeta_mpfr(&v_outer, k, prec);
+            let budget_hit = AtomicBool::new(false);
+            let target_local = target_mpfr.clone();
+            let should_stop = |x: &[i64; 16]| -> bool {
+                let cand = solution_to_u2q_d(x, k, d_target);
+                diamond_distance_u2q_mpfr_target(&cand, &target_local) < epsilon
+            };
+            let sols = phase1_with_stop_mpfr(
+                &mut scratch, &y_mpfr, &v_outer, k, epsilon,
+                PASS1_CAP, &budget_hit, should_stop,
+            );
+            for sol in &sols {
+                let cand: U2Q = solution_to_u2q_d(sol, k, d_target);
+                let dist = diamond_distance_u2q_mpfr_target(&cand, target_mpfr);
+                if dist < epsilon {
+                    if trace {
+                        eprintln!("[zeta-mpfr] single lde={k:>2} FOUND dist={:.3e} t={:.0}ms",
+                            dist, t_k.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    let gates = BlochDecomposer.decompose(&cand);
+                    return Some(SynthResultQ { gates: Some(gates), lde: k, distance: dist });
+                }
+            }
+            if trace {
+                eprintln!("[zeta-mpfr] single lde={k:>2} none{} t={:.0}ms",
+                    if budget_hit.load(std::sync::atomic::Ordering::Relaxed) { " (budget hit)" } else { "" },
+                    t_k.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        None
+    }
+
+    /// MPFR-precision Z1 D&C dispatcher. Mirror of `dc_search_q` but
+    /// computes `m_inner = U_L† · target` in MPFR, derives MPFR
+    /// `v_inner` and `y_inner`, and calls `phase1_with_stop_mpfr`.
+    fn dc_search_q_mpfr(
+        &self,
+        target: &Mat2Mpfr,
+        k_total: u32,
+        m_split: u32,
+        per_prefix_cap: u64,
+    ) -> (Option<SynthResultQ>, bool) {
+        use rayon::prelude::*;
+        use crate::synthesis::lenstra_zeta::phase1_with_stop_mpfr;
+        use crate::synthesis::search_zeta::uv_to_xy_zeta_mpfr;
+        use crate::synthesis::distance::diamond_distance_u2q_mpfr_target;
+
+        let prefixes = build_l_q(m_split);
+        let d_target = det_phase_of_mat2_mpfr(target);
+        let epsilon = self.epsilon;
+        let use_f64_gs = self.use_f64_gs;
+        let bkz_block_size = self.bkz_block_size;
+        let prec = target[0][0].0.prec();
+
+        let any_budget_hit = Arc::new(AtomicBool::new(false));
+
+        let dc_dr_filter = &self.dc_dr_filter;
+        let mut usable: Vec<&U2Q> = prefixes
+            .iter()
+            .filter(|u_l| u_l.k < k_total)
+            .filter(|u_l| {
+                if dc_dr_filter.is_empty() { return true; }
+                let d_l = det_phase_of(&u_l.to_float());
+                let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                dc_dr_filter.contains(&d_r)
+            })
+            .collect();
+
+        if usable.is_empty() { return (None, false); }
+        usable.sort_by(|a, b| b.k.cmp(&a.k));
+
+        let n_threads = rayon::current_num_threads().max(1);
+        let chunk = (usable.len() / n_threads).max(1);
+
+        let result = usable
+            .par_iter()
+            .with_min_len(chunk)
+            .map_init(
+                || {
+                    let mut s = IntScratch16::new(epsilon);
+                    s.use_f64_gs = use_f64_gs;
+                    s.bkz_block_size = bkz_block_size;
+                    s
+                },
+                |scratch, u_l| -> Option<SynthResultQ> {
+                    let k_prefix = u_l.k;
+                    let k_inner = k_total - k_prefix;
+                    let m_inner = u2q_dag_times_mat2_mpfr(u_l, target, prec);
+                    let v_inner = unitary_to_uv_zeta_mpfr(&m_inner);
+                    let d_l = det_phase_of(&u_l.to_float());
+                    let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+
+                    let y_inner = uv_to_xy_zeta_mpfr(&v_inner, k_inner, prec);
+                    let budget_hit = AtomicBool::new(false);
+                    let u_l_local = **u_l;
+                    let target_local = target.clone();
+                    let should_stop = |x: &[i64; 16]| -> bool {
+                        let u_r = solution_to_u2q_d(x, k_inner, d_r);
+                        let u_full = u_l_local * u_r;
+                        diamond_distance_u2q_mpfr_target(&u_full, &target_local) < epsilon
+                    };
+
+                    let sols = phase1_with_stop_mpfr(
+                        scratch, &y_inner, &v_inner, k_inner, epsilon,
+                        per_prefix_cap, &budget_hit, should_stop,
+                    );
+
+                    if budget_hit.load(std::sync::atomic::Ordering::Relaxed) {
+                        any_budget_hit.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+
+                    for sol in &sols {
+                        let u_r = solution_to_u2q_d(sol, k_inner, d_r);
+                        let u_full = u_l_local * u_r;
+                        let dist = diamond_distance_u2q_mpfr_target(&u_full, target);
+                        if dist < epsilon {
+                            let gates = BlochDecomposer.decompose(&u_full);
+                            return Some(SynthResultQ {
+                                gates: Some(gates),
+                                lde: k_total,
+                                distance: dist,
+                            });
+                        }
+                    }
+                    None
+                },
+            )
+            .find_map_any(|x| x);
+
+        let budget_hit = any_budget_hit.load(std::sync::atomic::Ordering::Relaxed);
+        (result, budget_hit)
     }
 
     /// Find a minimum-lde Clifford+√T circuit approximating `target`.
