@@ -26,9 +26,9 @@
 use num_complex::Complex;
 use rug::{Assign, Float as RFloat};
 
-use crate::matrix::U2T;
+use crate::matrix::{U2T, U2Q};
 use crate::rings::types::{int_to_f64, Float};
-use crate::rings::ZOmega;
+use crate::rings::{ZOmega, ZZeta};
 
 /// A 2×2 matrix of complex f64 values — the synthesizer's representation of
 /// arbitrary unitary inputs (target matrices) and float-converted Clifford+T
@@ -229,6 +229,132 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
 
     // D² = fro_sq · (8 − fro_sq) / 16. Always ≥ 0 for fro_sq ≤ 8 (the
     // Frobenius distance of two near-unitary 2×2 matrices is ≤ 2√2).
+    let eight = RFloat::with_val(prec, 8.0);
+    let sixteen = RFloat::with_val(prec, 16.0);
+    let factor = RFloat::with_val(prec, &eight - &fro_sq);
+    let d_sq = RFloat::with_val(prec, &fro_sq * &factor) / sixteen;
+    if d_sq.is_sign_negative() {
+        return 0.0;
+    }
+    d_sq.sqrt().to_f64()
+}
+
+/// Diamond distance between a U2Q and a 2×2 complex target, evaluating
+/// the U2Q's `Z[ζ]` entries directly in MPFR. Mirror of
+/// [`diamond_distance_u2t_float`] for the Clifford+√T backend.
+///
+/// At ε ≈ 1e-8 the f64 path through `U2Q::to_float()` introduces
+/// quantization noise (~10⁻¹⁵ in `fro_sq`) larger than the true distance
+/// signal (~10⁻¹⁶ at D ≈ 10⁻⁸). The synthesizer's `dist < ε` check then
+/// rejects valid candidates; the lde scan exhausts and returns `None`.
+/// This MPFR-direct variant evaluates the 8 ZZeta integer coefficients
+/// of each entry against the basis `{ζ^k : k=0..7, ζ = e^{iπ/8}}` at
+/// 128-bit precision, then runs the same Frobenius reformulation as
+/// [`diamond_distance_u2t_float`].
+///
+/// Cost: ~3 μs/call (vs ~2 μs for U2T — twice the coefficients).
+pub(crate) fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
+    use std::f64::consts::PI;
+    let prec: u32 = 128;
+    let two = RFloat::with_val(prec, 2.0);
+    let inv_sqrt2 = RFloat::with_val(prec, 1.0) / two.clone().sqrt();
+
+    // inv_scale = 1/√2^k. Same construction as U2T: half-k binary shift,
+    // odd-k extra factor of 1/√2.
+    let half_k = u.k / 2;
+    let mut inv_scale = RFloat::with_val(prec, 1.0);
+    inv_scale >>= half_k;
+    if u.k % 2 == 1 {
+        inv_scale *= &inv_sqrt2;
+    }
+
+    // Precompute (cos(kπ/8), sin(kπ/8)) for k = 0..7 in MPFR. f64 sin/cos
+    // are accurate to ~1 ulp at these arguments; lifting to MPFR at 128
+    // bits is fine since the absolute error in the basis vector is what
+    // bounds the distance error.
+    let basis: [(RFloat, RFloat); 8] = std::array::from_fn(|k| {
+        let theta = (k as f64) * PI / 8.0;
+        (
+            RFloat::with_val(prec, theta.cos()),
+            RFloat::with_val(prec, theta.sin()),
+        )
+    });
+
+    // Convert one ZZeta to a (re, im) pair at *unit* scale (already
+    // divided by √2^k). For random U(2) targets the entries are O(1).
+    let zzeta_to_mpfr_unit = |z: &ZZeta| -> (RFloat, RFloat) {
+        let coeffs: [Float; 8] = [
+            int_to_f64(z.a), int_to_f64(z.b), int_to_f64(z.c), int_to_f64(z.d),
+            int_to_f64(z.e), int_to_f64(z.f), int_to_f64(z.g), int_to_f64(z.h),
+        ];
+        let mut re = RFloat::with_val(prec, 0.0);
+        let mut im = RFloat::with_val(prec, 0.0);
+        let mut tmp = RFloat::with_val(prec, 0.0);
+        for k in 0..8 {
+            let c = RFloat::with_val(prec, coeffs[k]);
+            tmp.assign(&c * &basis[k].0);
+            re += &tmp;
+            tmp.assign(&c * &basis[k].1);
+            im += &tmp;
+        }
+        (re * &inv_scale, im * &inv_scale)
+    };
+
+    let u_entries = [
+        zzeta_to_mpfr_unit(&u.u11),
+        zzeta_to_mpfr_unit(&u.u12),
+        zzeta_to_mpfr_unit(&u.u21),
+        zzeta_to_mpfr_unit(&u.u22),
+    ];
+    let t_entries: [(RFloat, RFloat); 4] = [
+        (RFloat::with_val(prec, target[0][0].re), RFloat::with_val(prec, target[0][0].im)),
+        (RFloat::with_val(prec, target[0][1].re), RFloat::with_val(prec, target[0][1].im)),
+        (RFloat::with_val(prec, target[1][0].re), RFloat::with_val(prec, target[1][0].im)),
+        (RFloat::with_val(prec, target[1][1].re), RFloat::with_val(prec, target[1][1].im)),
+    ];
+
+    // tr = Σ u · conj(t), optimal phase φ = tr/|tr|.
+    let mut tr_re = RFloat::with_val(prec, 0.0);
+    let mut tr_im = RFloat::with_val(prec, 0.0);
+    let mut tmp = RFloat::with_val(prec, 0.0);
+    let mut tmp2 = RFloat::with_val(prec, 0.0);
+    for ((u_re, u_im), (t_re, t_im)) in u_entries.iter().zip(t_entries.iter()) {
+        tmp.assign(u_re * t_re); tr_re += &tmp;
+        tmp.assign(u_im * t_im); tr_re += &tmp;
+        tmp.assign(u_im * t_re); tr_im += &tmp;
+        tmp.assign(u_re * t_im); tr_im -= &tmp;
+    }
+    tmp.assign(&tr_re * &tr_re);
+    tmp2.assign(&tr_im * &tr_im);
+    let tr_abs_sq = RFloat::with_val(prec, &tmp + &tmp2);
+    let tr_abs = tr_abs_sq.sqrt();
+    let (phi_re, phi_im) = if tr_abs > 1e-30 {
+        (
+            RFloat::with_val(prec, &tr_re / &tr_abs),
+            RFloat::with_val(prec, &tr_im / &tr_abs),
+        )
+    } else {
+        (RFloat::with_val(prec, 1.0), RFloat::with_val(prec, 0.0))
+    };
+
+    // fro_sq = Σ |u − φ·t|²
+    let mut fro_sq = RFloat::with_val(prec, 0.0);
+    for ((u_re, u_im), (t_re, t_im)) in u_entries.iter().zip(t_entries.iter()) {
+        tmp.assign(&phi_re * t_re);
+        tmp2.assign(&phi_im * t_im);
+        let phi_t_re = RFloat::with_val(prec, &tmp - &tmp2);
+        tmp.assign(&phi_re * t_im);
+        tmp2.assign(&phi_im * t_re);
+        let phi_t_im = RFloat::with_val(prec, &tmp + &tmp2);
+        let diff_re = RFloat::with_val(prec, u_re - &phi_t_re);
+        let diff_im = RFloat::with_val(prec, u_im - &phi_t_im);
+        tmp.assign(&diff_re * &diff_re);
+        tmp2.assign(&diff_im * &diff_im);
+        fro_sq += &tmp;
+        fro_sq += &tmp2;
+    }
+
+    // D² = fro_sq · (8 − fro_sq) / 16.
     let eight = RFloat::with_val(prec, 8.0);
     let sixteen = RFloat::with_val(prec, 16.0);
     let factor = RFloat::with_val(prec, &eight - &fro_sq);
