@@ -440,7 +440,41 @@ impl SynthesizerQ {
         // a touch aggressive (single still has variance there), but the
         // upside on slow targets (hours → seconds) dominates the
         // downside on easy targets.
-        let (dc_split, dc_dr_filter) = if epsilon <= 1e-6 {
+        // Auto-D&C config:
+        //   ε > 1e-6:   single search (D&C overhead not worth it)
+        //   ε ∈ [1e-7, 1e-6]: m=1, |d_R|≤1 (relaxed). 36 prefixes; the
+        //                    relaxed filter avoids structural gaps at
+        //                    low lde where m=2 strict misses.
+        //   ε ≤ 1e-7:   m=2, d_R=0 (strict). 144 prefixes but each at
+        //               higher k_prefix → smaller k_inner → faster SE
+        //               per prefix. Empirically wins lde quality
+        //               (consistent minimum-lde finds) AND speed at
+        //               this depth (27% faster vs m=1 on 8-target
+        //               bench at ε=1e-7). Lde quality wins because the
+        //               m=2 prefix set has more k_inner coverage at
+        //               deep lde. Avoid at moderate ε (1e-6) because
+        //               the strict filter creates structural gaps in
+        //               the prefix set there (lde regression seen).
+        // Auto-D&C config:
+        //   ε > 1e-6:   single search (D&C overhead not worth it)
+        //   ε ∈ (1e-7, 1e-6]: m=1, |d_R|≤1 (relaxed). 36 prefixes; the
+        //                    relaxed filter avoids structural gaps at
+        //                    low lde where m=2 strict misses.
+        //   ε ≤ 1e-7:   m=2, d_R=0 (strict). 144 prefixes but each at
+        //               higher k_prefix → smaller k_inner → faster SE
+        //               per prefix. Empirically (8-target bench at
+        //               ε=1e-7, time_zeta_synthesis seed):
+        //                 m=1: 2856 ms/target avg, worst lde=24
+        //                 m=2: 2036 ms/target avg, worst lde=20
+        //               m=2 wins 40% on speed AND has consistent
+        //               lde=19-20 finds (m=1 has occasional lde=24
+        //               regressions on hard targets). Avoid at moderate
+        //               ε (1e-6) because the strict filter creates
+        //               structural gaps at low lde (lde regressions
+        //               seen 15 → 17).
+        let (dc_split, dc_dr_filter) = if epsilon <= 1e-7 {
+            (Some(2u32), vec![0u32])
+        } else if epsilon <= 1e-6 {
             (Some(1u32), vec![0u32, 1, 15])
         } else {
             (None, Vec::new())
@@ -1387,7 +1421,10 @@ mod tests {
         }
 
         let mut rng = StdRng::seed_from_u64(0xC0FFEE);
-        let n = 3;
+        let n: usize = std::env::var("M_N")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
         let eps: f64 = std::env::var("M_EPS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -2192,14 +2229,21 @@ mod tests {
 
     #[test]
     fn auto_defaults_at_various_eps() {
-        // Default at ε ≤ 1e-6: D&C is on with m=1, |d_R|≤1.
+        // Default at ε=1e-6: D&C with m=1, |d_R|≤1 (relaxed filter).
         let s = SynthesizerQ::new(1e-6);
         assert_eq!(s.dc_split, Some(1));
         assert_eq!(s.dc_dr_filter, vec![0u32, 1, 15]);
 
+        // Default at ε ≤ 1e-7: D&C with m=2, d_R=0 (strict filter) —
+        // empirically faster + better lde quality at this depth.
         let s7 = SynthesizerQ::new(1e-7);
-        assert_eq!(s7.dc_split, Some(1));
+        assert_eq!(s7.dc_split, Some(2));
+        assert_eq!(s7.dc_dr_filter, vec![0u32]);
         assert_eq!(s7.max_lde, 35, "max_lde should auto-bump at ε ≤ 1e-7");
+
+        let s8 = SynthesizerQ::new(1e-8);
+        assert_eq!(s8.dc_split, Some(2));
+        assert_eq!(s8.dc_dr_filter, vec![0u32]);
 
         // Default at moderate ε: single search.
         let s3 = SynthesizerQ::new(1e-3);
@@ -2217,9 +2261,9 @@ mod tests {
         }
 
         // Manual override still works.
-        let s_override = SynthesizerQ::new(1e-7).with_dc_split(2).with_dc_dr_filter(vec![0]);
-        assert_eq!(s_override.dc_split, Some(2));
-        assert_eq!(s_override.dc_dr_filter, vec![0u32]);
+        let s_override = SynthesizerQ::new(1e-7).with_dc_split(1).with_dc_dr_filter(vec![0, 1, 15]);
+        assert_eq!(s_override.dc_split, Some(1));
+        assert_eq!(s_override.dc_dr_filter, vec![0u32, 1, 15]);
         let s_no_f64 = SynthesizerQ::new(1e-3).with_f64_gs(false);
         assert!(!s_no_f64.use_f64_gs);
     }
