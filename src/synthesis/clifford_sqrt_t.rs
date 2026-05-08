@@ -30,7 +30,7 @@ use crate::rings::ZZeta;
 use crate::rings::types::Int;
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
-use crate::synthesis::distance::{diamond_distance_float, Mat2};
+use crate::synthesis::distance::{diamond_distance_float, diamond_distance_u2q_float, Mat2};
 use crate::synthesis::lenstra_zeta::{phase1_with_stop, IntScratch16};
 use crate::synthesis::search_zeta::{phase1_brute, uv_to_xy_zeta};
 use num_complex::Complex64;
@@ -632,7 +632,7 @@ impl SynthesizerQ {
             let budget_hit = AtomicBool::new(false);
             let should_stop = |x: &[i64; 16]| -> bool {
                 let cand = solution_to_u2q_d(x, k, d);
-                diamond_distance_float(&cand.to_float(), &target) < epsilon
+                diamond_distance_u2q_float(&cand, &target) < epsilon
             };
             let sols = phase1_with_stop(
                 s.as_mut(), &y, k, epsilon, budget, &budget_hit, should_stop,
@@ -643,7 +643,7 @@ impl SynthesizerQ {
         let check_sols = |sols: &[[i64; 16]], k: u32| -> Option<SynthResultQ> {
             for sol in sols {
                 let cand: U2Q = solution_to_u2q_d(sol, k, d);
-                let dist = diamond_distance_float(&cand.to_float(), &target);
+                let dist = diamond_distance_u2q_float(&cand, &target);
                 if dist < self.epsilon {
                     let gates = BlochDecomposer.decompose(&cand);
                     return Some(SynthResultQ {
@@ -913,7 +913,7 @@ impl SynthesizerQ {
                     let should_stop = |x: &[i64; 16]| -> bool {
                         let u_r = solution_to_u2q_d(x, k_inner, d_r);
                         let u_full = u_l_local * u_r;
-                        diamond_distance_float(&u_full.to_float(), &target_local) < epsilon
+                        diamond_distance_u2q_float(&u_full, &target_local) < epsilon
                     };
 
                     let sols = phase1_with_stop(
@@ -934,7 +934,7 @@ impl SynthesizerQ {
                     for sol in &sols {
                         let u_r = solution_to_u2q_d(sol, k_inner, d_r);
                         let u_full = u_l_local * u_r;
-                        let dist = diamond_distance_float(&u_full.to_float(), target);
+                        let dist = diamond_distance_u2q_float(&u_full, target);
                         if dist < epsilon {
                             let gates = BlochDecomposer.decompose(&u_full);
                             return Some(SynthResultQ {
