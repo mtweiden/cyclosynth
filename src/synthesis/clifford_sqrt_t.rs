@@ -352,21 +352,27 @@ fn lattice_lde_estimate(epsilon: f64) -> u32 {
 const PASS1_CAP: u64 = 100_000_000;
 const PASS2_CAP: u64 = 4_000_000_000;
 
-/// Per-prefix budget for the Z1 D&C dispatcher's pass 1: small enough
-/// that NO-lde levels (lde where no solution exists) bail in O(seconds)
-/// instead of tens of seconds. **Trade-off**: too small and the
-/// pass-1 SE walk may miss the right prefix's solution at the minimum
-/// lde (then pass-2 retries only catch lde levels that hit budget; if
-/// the SE region was < pass1 budget, we won't queue for pass2 and find
-/// at higher lde via a different prefix).
+/// Per-prefix budget for the Z1 D&C dispatcher's pass 1.
 ///
-/// Tested values (target_00 at ε=1e-7, sort + 10M baseline finds at
-/// lde=20):
-///   1M: target_00 → lde=23 (3-lde regression — pass1 region <1M, no
-///       budget hit, lde=20 not requeued)
-///   5M: target_00 → lde=20 (preserves baseline) ← chosen
-///   10M: same as no-2-pass — no NO-level speedup
+/// **Tried and abandoned**: a tiered budget by lde proximity to
+/// `lattice_lde_estimate(eps)` — small cap at "below-expected" lde
+/// levels (where the SE region is presumed empty), full cap at the
+/// expected zone. Two values tested:
+///
+///   100K low_cap: target_02 ε=1e-7 regressed lde=19 → lde=20.
+///                 SE budget is shared across 16 z[15]-subtree workers
+///                 → 6K/worker, too few; some genuine answers missed.
+///   500K low_cap: target_00 ε=1e-7 regressed lde=20 → lde=21.
+///                 The pass-1 region for target_00's right prefix at
+///                 lde=20 was empty within 5M budget, so the parallel
+///                 race outcome shifted: at small budget the
+///                 first-find-wins resolution returned a higher-lde
+///                 answer.
+///
+/// The flat 5M cap preserves all baseline lde across our test set
+/// while still being 2× faster than 10M on NO-levels.
 const DC_PASS1_CAP: u64 = 5_000_000;
+
 /// Pass 2: only runs on lde levels where pass 1's prefixes hit budget
 /// without finding (= search may have missed a solution past pass-1
 /// budget). 10M is generous enough to cover the hard-target cases where
