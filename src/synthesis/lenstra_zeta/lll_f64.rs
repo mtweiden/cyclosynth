@@ -41,26 +41,29 @@ use i256::i256;
 use super::scratch::IntScratch16;
 use crate::synthesis::lenstra_common::{LllResult, L2_DELTA_BAR, L2_ETA_BAR, MAX_LAZY_PASSES};
 
-/// Convert i256 to f64. Mirrors `lenstra::lll::i256_to_f64` but lives here
-/// so we don't add cross-module deps. Combine limbs in increasing-precision
-/// order so low bits round, not high.
+/// Convert i256 to f64. Combines limbs in increasing-precision order so
+/// low bits round, not high.
+///
+/// **Hot path notes**:
+/// - Use `i256::is_negative` (a single sign-bit check) instead of
+///   constructing `i256::from_i64(0)` and comparing.
+/// - Skip the early-zero return; the f64 path is monomorphic and zero
+///   inputs land at 0.0 naturally with no extra cost.
+/// - Pull limbs via `to_ne_limbs` (direct array access) instead of
+///   `to_le_bytes` + 4×`u64::from_le_bytes`.
+/// - Hoist `2^64`/`2^128`/`2^192` to `const`s so the compiler folds them.
 #[inline]
 pub fn i256_to_f64(v: i256) -> f64 {
-    let zero = i256::from_i64(0);
-    if v == zero {
-        return 0.0;
-    }
-    let neg = v < zero;
+    const SCALE_64: f64 = 18446744073709551616.0;     // 2^64
+    const SCALE_128: f64 = SCALE_64 * SCALE_64;       // 2^128
+    const SCALE_192: f64 = SCALE_128 * SCALE_64;      // 2^192
+    let neg = v.is_negative();
     let abs = if neg { -v } else { v };
-    let bytes = abs.to_le_bytes();
-    let l0 = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
-    let l1 = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
-    let l2 = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
-    let l3 = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
-    let r = (l0 as f64)
-        + (l1 as f64) * 2f64.powi(64)
-        + (l2 as f64) * 2f64.powi(128)
-        + (l3 as f64) * 2f64.powi(192);
+    let limbs = abs.to_ne_limbs();
+    let r = (limbs[0] as f64)
+        + (limbs[1] as f64) * SCALE_64
+        + (limbs[2] as f64) * SCALE_128
+        + (limbs[3] as f64) * SCALE_192;
     if neg { -r } else { r }
 }
 
