@@ -100,37 +100,57 @@ pub fn phase1_with_stop<F>(
 where
     F: Fn(&[i64; 16]) -> bool + Sync,
 {
+    // Lift f64 y and recover f64 v from y; promote both to MPFR for the
+    // shared inner worker. This wrapper is for legacy callers that work
+    // at f64 precision (everything ≥ ε=1e-7). Direct MPFR-precision callers
+    // should use `phase1_with_stop_mpfr` to bypass the f64 floor (which
+    // bites at ε≤1e-8 where Δ_y/R = ε²/4 ≈ 2.5e-17 falls below f64 ULP).
+    let prec = scratch.prec_q;
+    let scale = 2.0_f64.powf(k as f64 / 2.0) / 4.0;
+    let v_mpfr: [RFloat; 4] = [
+        rfv(prec, y[0] / scale),
+        rfv(prec, y[4] / scale),
+        rfv(prec, y[8] / scale),
+        rfv(prec, y[12] / scale),
+    ];
+    let y_mpfr: [RFloat; 16] = std::array::from_fn(|i| rfv(prec, y[i]));
+    return phase1_with_stop_mpfr(
+        scratch, &y_mpfr, &v_mpfr, k, eps, max_phase2_calls, budget_hit, should_stop,
+    );
+}
+
+/// MPFR-precision entry point. Caller provides `y` and `v` already in MPFR;
+/// `Q` and the cap center `c[i]` are then computed without any f64
+/// round-trip. This is the only precision path that works at ε ≤ 1e-8 —
+/// see `build_q_mpfr_zeta_from_mpfr_v` for the rationale.
+pub fn phase1_with_stop_mpfr<F>(
+    scratch: &mut IntScratch16,
+    y: &[RFloat; 16],
+    v: &[RFloat; 4],
+    k: u32,
+    eps: Float,
+    max_phase2_calls: u64,
+    budget_hit: &AtomicBool,
+    should_stop: F,
+) -> Vec<[i64; 16]>
+where
+    F: Fn(&[i64; 16]) -> bool + Sync,
+{
     let trace = diag::trace_enabled();
     if trace {
         diag::N_PHASE1_CALLS.fetch_add(1, Ordering::Relaxed);
     }
-    // Recover the SU(2) direction `v = (Re V_{11}, Im V_{11}, Re V_{21},
-    // Im V_{21})` from the lattice-coord y. By construction
-    // `y[j]   = (cos(jπ/8)·v[0] + sin(jπ/8)·v[1]) · scale`,
-    // `y[8+j] = (cos(jπ/8)·v[2] + sin(jπ/8)·v[3]) · scale`,
-    // with `scale = 2^(k/2) / 4`. At j=0 (cos=1, sin=0): v[0]=y[0]/scale,
-    // v[2]=y[8]/scale. At j=4 (cos=0, sin=1): v[1]=y[4]/scale,
-    // v[3]=y[12]/scale.
-    let scale = 2.0_f64.powf(k as f64 / 2.0) / 4.0;
-    let v: [f64; 4] = [y[0] / scale, y[4] / scale, y[8] / scale, y[12] / scale];
 
-    // Step 1: build Q in MPFR + i256 snapshot. Reset basis to identity (LLL
-    // expects the identity start; `run_lll_16` calls `reset_basis()` again
-    // internally but doing it here keeps the contract explicit).
-    //
-    // When `scratch.warm_lll` is set (Z1 D&C path), skip the reset and let
-    // LLL warm-start from the previous call's reduced basis. The basis is
-    // still a valid Z^16 basis (any unimodular transformation), so LLL
-    // re-reduces it for the new Gram in (typically) far fewer iterations.
+    // Step 1: build Q in MPFR + i256 snapshot. Reset basis unless caller
+    // requested warm_lll (Z1 D&C path).
     let t_build = if trace { Some(std::time::Instant::now()) } else { None };
     if !scratch.warm_lll {
         scratch.reset_basis();
     }
-    build_q_mpfr_zeta(scratch, v, k, eps);
+    super::q_metric::build_q_mpfr_zeta_from_mpfr_v(scratch, v, k, eps);
     build_q_int_zeta(scratch);
 
     // Compute cap-center c[i] = y[i] · cap_mid in MPFR at prec_q.
-    // cap_mid = (1 + √(1 − ε²)) / 2.
     let prec = scratch.prec_q;
     let one = rfv(prec, 1.0);
     let two = rfv(prec, 2.0);
@@ -141,8 +161,7 @@ where
     let cap_mid_num = RFloat::with_val(prec, &one + &sqrt_1m);
     let cap_mid = RFloat::with_val(prec, &cap_mid_num / &two);
     for i in 0..16 {
-        let yi = rfv(prec, y[i]);
-        scratch.c[i].assign(RFloat::with_val(prec, &yi * &cap_mid));
+        scratch.c[i].assign(RFloat::with_val(prec, &y[i] * &cap_mid));
     }
     if let Some(t) = t_build {
         diag::T_BUILD_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -405,7 +424,7 @@ where
     let threshold_xy = RFloat::with_val(ALIGN_PREC, &two_to_2k * &one_minus_eps_sq_align)
         / 32u32;
     let y_mpfr: [RFloat; 16] =
-        std::array::from_fn(|i| RFloat::with_val(ALIGN_PREC, y[i]));
+        std::array::from_fn(|i| RFloat::with_val(ALIGN_PREC, &y[i]));
 
     // Norm-shell target. Use i128 so k ≤ 126 stays exact (the moderate-ε
     // regime targets k ≲ 30 but the deep-ε regime can reach k > 60).

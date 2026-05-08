@@ -50,6 +50,44 @@ pub fn uv_to_xy_zeta(v: [f64; 4], k: u32) -> [f64; 16] {
     std::array::from_fn(|i| raw[i] * scale)
 }
 
+/// MPFR-precision variant of [`uv_to_xy_zeta`]. Caller provides an
+/// MPFR `v` (of any precision) and gets back y at the same precision.
+/// The `prec` argument matches the precision of the returned RFloats.
+pub fn uv_to_xy_zeta_mpfr(v: &[rug::Float; 4], k: u32, prec: u32) -> [rug::Float; 16] {
+    use rug::ops::AssignRound;
+    use rug::Float as RFloat;
+    let scale = {
+        // scale = 2^(k/2) / 4 in MPFR
+        let mut s = RFloat::with_val(prec, 1.0);
+        // 2^(k/2) = 2^(k>>1) · √2 if k odd
+        let half = (k / 2) as i32;
+        s <<= half;
+        if k % 2 == 1 {
+            let sqrt2 = RFloat::with_val(prec, 2.0).sqrt();
+            s *= &sqrt2;
+        }
+        let four = RFloat::with_val(prec, 4.0);
+        RFloat::with_val(prec, &s / &four)
+    };
+    let mut y: [RFloat; 16] = std::array::from_fn(|_| RFloat::with_val(prec, 0.0));
+    for j in 0..8 {
+        let theta = (j as f64) * PI / 8.0;
+        let c = RFloat::with_val(prec, theta.cos());
+        let s = RFloat::with_val(prec, theta.sin());
+        // raw[j] = c·v[0] + s·v[1]
+        let cv0 = RFloat::with_val(prec, &c * &v[0]);
+        let sv1 = RFloat::with_val(prec, &s * &v[1]);
+        let raw_j = RFloat::with_val(prec, &cv0 + &sv1);
+        let _ = y[j].assign_round(&raw_j * &scale, rug::float::Round::Nearest);
+        // raw[8+j] = c·v[2] + s·v[3]
+        let cv2 = RFloat::with_val(prec, &c * &v[2]);
+        let sv3 = RFloat::with_val(prec, &s * &v[3]);
+        let raw_8j = RFloat::with_val(prec, &cv2 + &sv3);
+        let _ = y[8 + j].assign_round(&raw_8j * &scale, rug::float::Round::Nearest);
+    }
+    y
+}
+
 // ─── Brute-force phase1 ──────────────────────────────────────────────────────
 
 /// Recursive enumerator: walks integer 16-vectors with `‖x‖² = remaining`
