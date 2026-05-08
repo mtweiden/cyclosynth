@@ -52,6 +52,12 @@ use crate::synthesis::lenstra_common::{LllResult, L2_DELTA_BAR, L2_ETA_BAR, MAX_
 /// - Pull limbs via `to_ne_limbs` (direct array access) instead of
 ///   `to_le_bytes` + 4×`u64::from_le_bytes`.
 /// - Hoist `2^64`/`2^128`/`2^192` to `const`s so the compiler folds them.
+///
+/// Tried (and abandoned): two's-complement direct conversion (signed
+/// high limb, unsigned low limbs). Catastrophic cancellation for small
+/// negative values whose high limb is `0xFF...FF` — subtracts two
+/// near-equal large f64 numbers, loses all precision below ~2^140. Must
+/// take abs() in i256 first to keep mantissa precision.
 #[inline]
 pub fn i256_to_f64(v: i256) -> f64 {
     const SCALE_64: f64 = 18446744073709551616.0;     // 2^64
