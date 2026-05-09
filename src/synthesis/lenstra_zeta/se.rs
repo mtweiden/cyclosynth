@@ -465,6 +465,22 @@ where
 {
     let mut z = [0i64; 16];
     let mut x = [0i64; 16];
+    // **Incremental orthogonalized projection** w = R_eucl · z. Maintained
+    // throughout the SE walk by delta updates when z[d] changes:
+    //
+    //   w[i] += delta · R[i][d]   for i ≤ d  (R is upper-triangular)
+    //
+    // Replaces the per-call `tail_eucl = Σ R[d][j]·(z[j] as f64)` which
+    // suffered catastrophic cancellation at deep ε (z[j] > 2^53). The
+    // incremental delta is bounded by the SE bracket span (~few lattice
+    // units), so `delta · R[i][d]` stays in f64-precise range. Drift over
+    // many iterations is bounded by ULP per update × tree depth, well
+    // below the 1e-9 prune slack.
+    //
+    // Crucial invariant: w[d] depends only on z[d..15] (upper-tri R).
+    // So recursion to lower depths cannot corrupt w[d]; no save/restore
+    // needed across recursion.
+    let mut w = [0f64; 16];
     let mut leaves: usize = 0;
     let mut aborted = false;
     // Convert target_norm_sq (f64) to i64 for exact pruning. f64 represents
@@ -472,7 +488,7 @@ where
     let target_norm_sq_i64 = target_norm_sq as i64;
     recurse_16_norm_pruned(
         15, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
-        0.0, 0.0, &mut z, &mut x, basis, &mut callback, budget,
+        0.0, 0.0, &mut z, &mut x, &mut w, basis, &mut callback, budget,
         &mut leaves, &mut aborted,
     );
     leaves
@@ -488,9 +504,10 @@ fn recurse_16_norm_pruned<F>(
     target_norm_sq: f64,
     target_norm_sq_i64: i64,
     partial_q: f64,
-    _partial_eucl: f64,
+    partial_eucl: f64,
     z: &mut [i64; 16],
     x: &mut [i64; 16],
+    w: &mut [f64; 16],
     basis: &[[i64; 16]; 16],
     callback: &mut F,
     budget: &AtomicU64,
@@ -521,14 +538,19 @@ fn recurse_16_norm_pruned<F>(
         let delta = new_zd - z[d];
         if delta != 0 {
             update_x_for_z_change(x, basis, d, delta);
+            // Update w incrementally: w[i] += delta · R[i][d] for i ≤ d.
+            let delta_f = delta as f64;
+            for i in 0..=d {
+                w[i] += delta_f * r_eucl[i][d];
+            }
         }
         z[d] = new_zd;
-        let level_eucl = compute_eucl_level(r_eucl, z, d);
-        let new_partial_eucl = _partial_eucl + level_eucl * level_eucl;
+        let level_eucl = w[d];
+        let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
         if new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_16_norm_pruned(
                 depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
-                partial_q, new_partial_eucl, z, x, basis, callback, budget,
+                partial_q, new_partial_eucl, z, x, w, basis, callback, budget,
                 leaves, aborted,
             );
         }
@@ -553,14 +575,6 @@ fn recurse_16_norm_pruned<F>(
     let z_mid = z_c[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
-    // Pre-compute the norm-pruning tail (Σ_{j > d} R_eucl[d][j] · z[j])
-    // once per call — depends only on z[d+1..16] which is fixed at this
-    // recursion level.
-    let mut tail_eucl = 0.0_f64;
-    for j in (d + 1)..16 {
-        tail_eucl += r_eucl[d][j] * (z[j] as f64);
-    }
-
     for raw in 0..=(2 * max_off + 1) {
         if *aborted {
             return;
@@ -581,26 +595,30 @@ fn recurse_16_norm_pruned<F>(
         if new_partial_q > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
         }
-        // Norm-shell pruning: f64 partial of orthogonalized projections.
-        // At deep ε (z[j] > 2^53) the `r_eucl[d][j] · z[j]` term has
-        // catastrophic cancellation; at the lde we'd need (~28+) for
-        // ε=1e-8 the prune is unreliable, but we have a separate lde-
-        // threshold blocker there anyway. At moderate ε the prune is
-        // accurate and saves substantial work.
-        let level_eucl = r_eucl[d][d] * (zd as f64) + tail_eucl;
-        let new_partial_eucl = _partial_eucl + level_eucl * level_eucl;
-        if depth > 0 && new_partial_eucl > target_norm_sq * (1.0 + 1e-9) {
-            continue;
-        }
-        // Incrementally update x = B·z. delta == 0 elides the update.
+        // Update z[d], x = B·z, and w = R·z incrementally. delta is small
+        // (within the SE bracket span), so the f64 update of w is precise.
         let delta = zd - z[d];
         if delta != 0 {
             update_x_for_z_change(x, basis, d, delta);
+            let delta_f = delta as f64;
+            for i in 0..=d {
+                w[i] += delta_f * r_eucl[i][d];
+            }
         }
         z[d] = zd;
+
+        // Norm-shell pruning: orthogonalized partial Σ_{j ≥ d} w[j]² is
+        // monotone-increasing as depth decreases (each w[j]² added). Use
+        // w[d] (incrementally maintained, no cancellation) instead of
+        // recomputing from scratch each call.
+        let level_eucl = w[d];
+        let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
+        if depth > 0 && new_partial_eucl > target_norm_sq * (1.0 + 1e-9) {
+            continue;
+        }
         recurse_16_norm_pruned(
             depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
-            new_partial_q, new_partial_eucl, z, x, basis, callback, budget,
+            new_partial_q, new_partial_eucl, z, x, w, basis, callback, budget,
             leaves, aborted,
         );
     }
@@ -876,13 +894,6 @@ where
             if partial_q > bound_sq + 1e-9 * bound_sq.abs() {
                 return Vec::new().into_iter();
             }
-            // Norm-shell at depth 15.
-            let r_15 = r_eucl[15][15];
-            let level_eucl = r_15 * (z_15 as f64);
-            let partial_eucl = level_eucl * level_eucl;
-            if partial_eucl > target_norm_sq * (1.0 + 1e-9) {
-                return Vec::new().into_iter();
-            }
             // Per-thread state.
             let mut z = [0i64; 16];
             z[15] = z_15;
@@ -893,10 +904,23 @@ where
                     x[c] = z_15 * row[c];
                 }
             }
+            // Incremental w = R_eucl · z. Initialize from z[15] only:
+            //   w[i] = z_15 · R[i][15]   for i ≤ 15
+            // (z[0..15] are zero on entry).
+            let mut w = [0f64; 16];
+            let z_15_f = z_15 as f64;
+            for i in 0..=15 {
+                w[i] = z_15_f * r_eucl[i][15];
+            }
+            let level_eucl = w[15];
+            let partial_eucl = level_eucl * level_eucl;
+            if partial_eucl > target_norm_sq * (1.0 + 1e-9) {
+                return Vec::new().into_iter();
+            }
             let mut local: Vec<[i64; 16]> = Vec::new();
             recurse_collect_norm_pruned(
                 14, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
-                partial_q, partial_eucl, &mut z, &mut x, basis,
+                partial_q, partial_eucl, &mut z, &mut x, &mut w, basis,
                 &leaf_filter, budget, &aborted, &mut local,
             );
             local.into_iter()
@@ -917,9 +941,10 @@ fn recurse_collect_norm_pruned<F>(
     target_norm_sq: f64,
     target_norm_sq_i64: i64,
     partial_q: f64,
-    _partial_eucl: f64,
+    partial_eucl: f64,
     z: &mut [i64; 16],
     x: &mut [i64; 16],
+    w: &mut [f64; 16],
     basis: &[[i64; 16]; 16],
     leaf_filter: &F,
     budget: &AtomicU64,
@@ -953,14 +978,18 @@ fn recurse_collect_norm_pruned<F>(
         let delta = new_zd - z[d];
         if delta != 0 {
             update_x_for_z_change(x, basis, d, delta);
+            let delta_f = delta as f64;
+            for i in 0..=d {
+                w[i] += delta_f * r_eucl[i][d];
+            }
         }
         z[d] = new_zd;
-        let level_eucl = compute_eucl_level(r_eucl, z, d);
-        let new_partial_eucl = _partial_eucl + level_eucl * level_eucl;
+        let level_eucl = w[d];
+        let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
         if new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_collect_norm_pruned(
                 depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
-                partial_q, new_partial_eucl, z, x, basis, leaf_filter,
+                partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
                 budget, aborted, results,
             );
         }
@@ -1004,25 +1033,26 @@ fn recurse_collect_norm_pruned<F>(
         if new_partial_q > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
         }
-        // f64 norm-prune (broken at deep ε via cancellation, accurate
-        // at moderate ε where it provides a substantial speedup).
-        let mut tail_eucl_loc = 0.0_f64;
-        for j in (d + 1)..16 {
-            tail_eucl_loc += r_eucl[d][j] * (z[j] as f64);
-        }
-        let level_eucl = r_eucl[d][d] * (zd as f64) + tail_eucl_loc;
-        let new_partial_eucl = _partial_eucl + level_eucl * level_eucl;
-        if depth > 0 && new_partial_eucl > target_norm_sq * (1.0 + 1e-9) {
-            continue;
-        }
+        // Update z[d], x = B·z, and w = R·z incrementally.
         let delta = zd - z[d];
         if delta != 0 {
             update_x_for_z_change(x, basis, d, delta);
+            let delta_f = delta as f64;
+            for i in 0..=d {
+                w[i] += delta_f * r_eucl[i][d];
+            }
         }
         z[d] = zd;
+
+        // Norm-shell pruning using incremental w (no f64 cancellation).
+        let level_eucl = w[d];
+        let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
+        if depth > 0 && new_partial_eucl > target_norm_sq * (1.0 + 1e-9) {
+            continue;
+        }
         recurse_collect_norm_pruned(
             depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
-            new_partial_q, new_partial_eucl, z, x, basis, leaf_filter,
+            new_partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
             budget, aborted, results,
         );
     }
