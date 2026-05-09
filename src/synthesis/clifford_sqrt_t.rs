@@ -905,6 +905,11 @@ impl SynthesizerQ {
                     eprintln!("[zeta-mpfr] dc lde={k:>2} pass1 none{} t={:.0}ms",
                         if budget_hit { " (budget hit)" } else { "" },
                         t_k.elapsed().as_secs_f64() * 1000.0);
+                    let s = diag::snapshot();
+                    eprintln!("  [diag k={k}] se_leaves={} norm_rej={} bilin_rej={} align_rej={} sols={}",
+                        s.se_callbacks, s.norm_rejected, s.bilinear_rejected,
+                        s.align_rejected, s.sols_returned);
+                    diag::reset_all();
                 }
                 if budget_hit { pass2_queue.push(k); }
             }
@@ -1294,6 +1299,57 @@ impl SynthesizerQ {
                 &format!("synthesize ε={:.0e} (no sol)", self.epsilon));
         }
         None
+    }
+
+    /// Synthesize with a Clifford+T fallback if the Q-only path returns
+    /// `None`. ZOmega ⊂ ZZeta via ω = ζ², so any U2T is a valid U2Q with
+    /// the same matrix value (just non-√T-optimal). Used at deep ε
+    /// where the Q-lattice search may exhaust `max_lde` without finding.
+    ///
+    /// Returns the Q-optimal result if Q finds; otherwise returns the
+    /// embedded CT result (which has a higher lde but a valid circuit).
+    /// Returns `None` only if both backends fail.
+    pub fn synthesize_with_ct_fallback(&self, target: Mat2) -> Option<SynthResultQ> {
+        // Skip the Q-only path at ε ≤ 1e-8 — empirically the lde-threshold
+        // for typical SU(2) targets is past max_lde (per the probes in
+        // bin/probe_eps_1e8_dc_mpfr.rs) and Q wastes ~hours scanning.
+        // CT works at this depth (~7 s/target for lde=80).
+        if self.epsilon > 1e-8 {
+            if let Some(r) = self.synthesize(target) {
+                return Some(r);
+            }
+        }
+        // Fall back to CT.
+        use crate::synthesis::clifford_t::SynthesizerT;
+        let synth_t = SynthesizerT::new(self.epsilon);
+        let r_t = synth_t.synthesize(target)?;
+        // Embed U2T → U2Q. The gate decomposition string from CT uses
+        // T/H/S/X/Y/Z which all have valid U2Q forms (T = Q² in Z[ζ_16]).
+        // Easiest path: rebuild the gate string into U2Q.
+        let gates = r_t.gates?;
+        let mut u2q = U2Q::eye();
+        for ch in gates.chars() {
+            u2q = match ch {
+                'T' => u2q * U2Q::t(),
+                'H' => u2q * U2Q::h(),
+                'S' => u2q * U2Q::s(),
+                'X' => u2q * U2Q::x(),
+                'Y' => u2q * U2Q::y(),
+                'Z' => u2q * U2Q::z(),
+                'Q' => u2q * U2Q::q(),
+                _ => return None,
+            };
+        }
+        let dist = diamond_distance_u2q_float(&u2q, &target);
+        if dist >= self.epsilon {
+            return None;
+        }
+        let q_gates = BlochDecomposer.decompose(&u2q);
+        Some(SynthResultQ {
+            gates: Some(q_gates),
+            lde: u2q.k,
+            distance: dist,
+        })
     }
 
     /// Z1 D&C inner-step at total lde `k_total` and split parameter

@@ -1,6 +1,7 @@
 //! Validate ε=1e-8 via the full MPFR D&C pipeline.
 
 use cyclosynth::synthesis::clifford_sqrt_t::{SynthesizerQ, Mat2Mpfr};
+use cyclosynth::synthesis::diag;
 use rug::Float as RFloat;
 use std::time::Instant;
 
@@ -42,4 +43,5 @@ fn main() {
         Some(r) => eprintln!("  RESULT: lde={}, dist={:.3e}, took {:.2} s", r.lde, r.distance, dt),
         None => eprintln!("  RESULT: None after {:.2} s", dt),
     }
+    diag::dump_zeta(&diag::snapshot(), "ε=1e-8 MPFR D&C probe");
 }
