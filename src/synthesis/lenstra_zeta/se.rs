@@ -24,6 +24,19 @@
 #![allow(clippy::needless_range_loop)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+
+/// Diagnostic-only: skip the partial Euclidean norm prune in the SE walk
+/// when `CYCLOSYNTH_BYPASS_NORM_PRUNE=1`. The leaf integer-exact
+/// `‖x‖² == 2^k` check still arbitrates correctness; this just disables
+/// the partial-sum prune that fires false positives at deep ε due to
+/// f64 imprecision in the partial accumulator.
+fn bypass_norm_prune() -> bool {
+    static FLAG: OnceLock<bool> = OnceLock::new();
+    *FLAG.get_or_init(|| {
+        std::env::var("CYCLOSYNTH_BYPASS_NORM_PRUNE").ok().as_deref() == Some("1")
+    })
+}
 
 // ─── Bilinear leaf checks ────────────────────────────────────────────────────
 
@@ -547,7 +560,7 @@ fn recurse_16_norm_pruned<F>(
         z[d] = new_zd;
         let level_eucl = w[d];
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
-        if new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
+        if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_16_norm_pruned(
                 depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
                 partial_q, new_partial_eucl, z, x, w, basis, callback, budget,
@@ -613,7 +626,7 @@ fn recurse_16_norm_pruned<F>(
         // recomputing from scratch each call.
         let level_eucl = w[d];
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
-        if depth > 0 && new_partial_eucl > target_norm_sq * (1.0 + 1e-9) {
+        if !bypass_norm_prune() && depth > 0 && new_partial_eucl > target_norm_sq * (1.0 + 1e-9) {
             continue;
         }
         recurse_16_norm_pruned(
@@ -914,7 +927,7 @@ where
             }
             let level_eucl = w[15];
             let partial_eucl = level_eucl * level_eucl;
-            if partial_eucl > target_norm_sq * (1.0 + 1e-9) {
+            if !bypass_norm_prune() && partial_eucl > target_norm_sq * (1.0 + 1e-9) {
                 return Vec::new().into_iter();
             }
             let mut local: Vec<[i64; 16]> = Vec::new();
@@ -986,7 +999,7 @@ fn recurse_collect_norm_pruned<F>(
         z[d] = new_zd;
         let level_eucl = w[d];
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
-        if new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
+        if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_collect_norm_pruned(
                 depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
                 partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
@@ -1047,7 +1060,7 @@ fn recurse_collect_norm_pruned<F>(
         // Norm-shell pruning using incremental w (no f64 cancellation).
         let level_eucl = w[d];
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
-        if depth > 0 && new_partial_eucl > target_norm_sq * (1.0 + 1e-9) {
+        if !bypass_norm_prune() && depth > 0 && new_partial_eucl > target_norm_sq * (1.0 + 1e-9) {
             continue;
         }
         recurse_collect_norm_pruned(
