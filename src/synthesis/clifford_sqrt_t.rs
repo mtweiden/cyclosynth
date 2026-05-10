@@ -156,7 +156,7 @@ fn canonical_key_q(u: &U2Q) -> [i64; 8] {
 /// Build `L_m^Q`: the FGKM canonical-form prefix set with Clifford suffix,
 /// at syllable count `m`. Cached by `m` (Arc-cloned on hit).
 #[allow(dead_code)]
-pub(crate) fn build_l_q(m: u32) -> Arc<Vec<U2Q>> {
+pub fn build_l_q(m: u32) -> Arc<Vec<U2Q>> {
     {
         let cache = BUILD_L_Q_CACHE.lock().unwrap();
         if let Some(v) = cache.get(&m) {
@@ -1384,6 +1384,7 @@ impl SynthesizerQ {
         per_prefix_cap: u64,
     ) -> (Option<SynthResultQ>, bool) {
         use rayon::prelude::*;
+        use crate::synthesis::diag;
 
         let prefixes = build_l_q(m_split);
         let d_target = det_phase_of(target);
@@ -1461,10 +1462,17 @@ impl SynthesizerQ {
                     let budget_hit = AtomicBool::new(false);
                     let u_l_local = **u_l;
                     let target_local = *target;
+                    let capture = diag::capture_enabled();
                     let should_stop = |x: &[i64; 16]| -> bool {
                         let u_r = solution_to_u2q_d(x, k_inner, d_r);
                         let u_full = u_l_local * u_r;
-                        diamond_distance_u2q_float(&u_full, &target_local) < epsilon
+                        let hit = diamond_distance_u2q_float(&u_full, &target_local) < epsilon;
+                        if hit && capture {
+                            diag::try_capture(diag::CapturedFind {
+                                x_inner: *x, k_inner, k_total, d_r, d_l,
+                            });
+                        }
+                        hit
                     };
 
                     let sols = phase1_with_stop(

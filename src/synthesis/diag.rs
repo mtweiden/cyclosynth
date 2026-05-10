@@ -9,9 +9,36 @@
 //! went.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 static TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+
+/// Diagnostic-only: capture the raw integer x at the moment a should_stop
+/// check returns true inside the SE walk. Set when `CYCLOSYNTH_CAPTURE=1`
+/// and `dc_search_q_mpfr`'s should_stop fires. Read by diagnostic probes
+/// to do cap-membership / region-mismatch tests.
+#[derive(Clone, Debug)]
+pub struct CapturedFind {
+    pub x_inner: [i64; 16],
+    pub k_inner: u32,
+    pub k_total: u32,
+    pub d_r: u32,
+    pub d_l: u32,
+}
+
+pub static CAPTURED_FIND: Mutex<Option<CapturedFind>> = Mutex::new(None);
+
+pub fn capture_enabled() -> bool {
+    std::env::var("CYCLOSYNTH_CAPTURE").ok().as_deref() == Some("1")
+}
+
+pub fn try_capture(c: CapturedFind) {
+    if let Ok(mut guard) = CAPTURED_FIND.lock() {
+        if guard.is_none() {
+            *guard = Some(c);
+        }
+    }
+}
 
 pub fn trace_enabled() -> bool {
     *TRACE_ENABLED.get_or_init(|| {
