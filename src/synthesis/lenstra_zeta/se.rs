@@ -1427,6 +1427,19 @@ fn recurse_collect_norm_pruned<F>(
     if aborted.load(Ordering::Relaxed) {
         return;
     }
+    // Per-node budget (phase 1): decrement on every recurse-enter so the
+    // budget bounds total tree-traversal work, not just leaf checks. This
+    // is the prerequisite for depth-1 / depth-0 analytical filters whose
+    // gain is "skip subtrees" — under a per-leaf budget those filters
+    // regressed because cheaper leaves let the walker enter more depth-0
+    // nodes within the same budget (full recursion-from-depth-15 each
+    // time). Bounding nodes makes the budget proportional to traversal
+    // cost. PASS{1,2}_CAP are calibrated empirically (see
+    // clifford_sqrt_t.rs); the new units are nodes, not leaves.
+    if budget.fetch_sub(1, Ordering::Relaxed) <= 1 {
+        aborted.store(true, Ordering::Relaxed);
+        return;
+    }
     let trace = crate::synthesis::diag::trace_enabled();
     if trace && depth >= 0 && (depth as usize) < 16 {
         crate::synthesis::diag::N_RECURSE_ENTER_AT_DEPTH[depth as usize]
@@ -1448,10 +1461,6 @@ fn recurse_collect_norm_pruned<F>(
             None
         };
     if depth < 0 {
-        let prev = budget.fetch_sub(1, Ordering::Relaxed);
-        if prev <= 1 {
-            aborted.store(true, Ordering::Relaxed);
-        }
         // Shell-ratio histogram: record where x lands relative to the
         // target shell, regardless of leaf_filter outcome. Reveals whether
         // the SE walk is delivering near-shell or far-interior leaves.
