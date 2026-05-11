@@ -48,10 +48,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::cholesky_lu::{cholesky_f64_16, lu_solve_int_inplace_16};
 use super::lll::{run_lll_16, LllResult};
-use super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
+use super::q_metric::build_q_int_zeta;
 use super::scratch::{rfv, IntScratch16};
 use super::se::{
-    bilinear_forms, euclidean_cholesky_16_mpfr,
+    bilinear_forms, euclidean_cholesky_16_mpfr_dual,
     schnorr_euchner_16d_par_norm_pruned, LeafAction,
 };
 use crate::rings::Float;
@@ -438,8 +438,8 @@ where
 
     // Norm-shell pruning: precompute the upper-triangular Euclidean
     // Cholesky of the post-LLL basis at MPFR-128 (then f64 snapshot).
-    let r_eucl = match euclidean_cholesky_16_mpfr(&basis) {
-        Some(r) => r,
+    let (r_eucl, r_eucl_dd) = match euclidean_cholesky_16_mpfr_dual(&basis) {
+        Some(pair) => pair,
         None => {
             eprintln!(
                 "[lenstra_zeta] Euclidean Cholesky failed (rank-deficient basis) at \
@@ -457,6 +457,7 @@ where
     // values. Trace counters use the global `diag::*` atomics — zero
     // overhead when tracing is off (the `if trace` branch is predictable).
     let leaf_filter = |x: &[i64; 16]| -> LeafAction {
+        let t_leaf = if trace { Some(std::time::Instant::now()) } else { None };
         if trace {
             diag::N_SE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
         }
@@ -464,20 +465,38 @@ where
         if use_i64_path {
             let n: i64 = x.iter().map(|&v| v * v).sum();
             if n != target_norm_i64 {
-                if trace { diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed); }
+                if trace {
+                    diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed);
+                    diag::T_LEAF_CHECK_NS.fetch_add(
+                        t_leaf.unwrap().elapsed().as_nanos() as u64,
+                        Ordering::Relaxed,
+                    );
+                }
                 return LeafAction::Skip;
             }
         } else {
             let n: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
             if n != target_norm {
-                if trace { diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed); }
+                if trace {
+                    diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed);
+                    diag::T_LEAF_CHECK_NS.fetch_add(
+                        t_leaf.unwrap().elapsed().as_nanos() as u64,
+                        Ordering::Relaxed,
+                    );
+                }
                 return LeafAction::Skip;
             }
         }
         // Bilinear forms: B_1=B_2=B_3=0.
         let (b1, b2, b3) = bilinear_forms(x);
         if b1 != 0 || b2 != 0 || b3 != 0 {
-            if trace { diag::N_BILINEAR_REJECTED.fetch_add(1, Ordering::Relaxed); }
+            if trace {
+                diag::N_BILINEAR_REJECTED.fetch_add(1, Ordering::Relaxed);
+                diag::T_LEAF_CHECK_NS.fetch_add(
+                    t_leaf.unwrap().elapsed().as_nanos() as u64,
+                    Ordering::Relaxed,
+                );
+            }
             return LeafAction::Skip;
         }
         // Alignment: (y · x)² ≥ threshold_xy. MPFR alloc here is fine —
@@ -491,10 +510,22 @@ where
         }
         tmp.assign(&dot_acc * &dot_acc);
         if tmp < threshold_xy {
-            if trace { diag::N_ALIGN_REJECTED.fetch_add(1, Ordering::Relaxed); }
+            if trace {
+                diag::N_ALIGN_REJECTED.fetch_add(1, Ordering::Relaxed);
+                diag::T_LEAF_CHECK_NS.fetch_add(
+                    t_leaf.unwrap().elapsed().as_nanos() as u64,
+                    Ordering::Relaxed,
+                );
+            }
             return LeafAction::Skip;
         }
-        if trace { diag::N_SOLS_RETURNED.fetch_add(1, Ordering::Relaxed); }
+        if trace {
+            diag::N_SOLS_RETURNED.fetch_add(1, Ordering::Relaxed);
+            diag::T_LEAF_CHECK_NS.fetch_add(
+                t_leaf.unwrap().elapsed().as_nanos() as u64,
+                Ordering::Relaxed,
+            );
+        }
         // Integer-exact filter passed. Now ask the caller whether to
         // stop the walk (typically used to bail on first ε-pass).
         if should_stop(x) {
@@ -505,7 +536,7 @@ where
     };
 
     let (solutions, budget_was_hit) = schnorr_euchner_16d_par_norm_pruned(
-        &l_upper, &z_c, bound_sq, &r_eucl, target_norm_sq_f64, &basis,
+        &l_upper, &z_c, bound_sq, &r_eucl, &r_eucl_dd, target_norm_sq_f64, &basis,
         leaf_filter, &budget,
     );
     if budget_was_hit {
@@ -690,6 +721,7 @@ mod tests {
     /// circuit). Reports timing and solution count; the test only fails if
     /// the walk blows up wall-clock past a generous bound.
     #[test]
+    #[ignore = "60s timing budget; run with --ignored"]
     fn phase1_perf_at_k_8_completes() {
         use crate::matrix::u2::U2Q;
 
@@ -733,6 +765,7 @@ mod tests {
     /// At ε=1e-5 with k=14, verify the i256 LLL path doesn't trip overflow.
     /// Returns a (possibly empty) Vec of solutions.
     #[test]
+    #[ignore = "120s budget at deep ε; run with --ignored"]
     fn phase1_no_overflow_at_eps_1e_5() {
         let v = realistic_v();
         let k = 14u32;

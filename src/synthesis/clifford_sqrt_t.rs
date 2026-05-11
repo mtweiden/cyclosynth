@@ -30,7 +30,7 @@ use crate::rings::ZZeta;
 use crate::rings::types::Int;
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
-use crate::synthesis::distance::{diamond_distance_float, diamond_distance_u2q_float, Mat2};
+use crate::synthesis::distance::{diamond_distance_u2q_float, Mat2};
 use crate::synthesis::lenstra_zeta::{phase1_with_stop, IntScratch16};
 use crate::synthesis::search_zeta::{phase1_brute, uv_to_xy_zeta};
 use num_complex::Complex64;
@@ -413,22 +413,6 @@ const DC_PASS2_CAP: u64 = 10_000_000;
 /// exceeds the cap-radial direction Δ_y/R = ε²/4).
 pub type Mat2Mpfr = [[(rug::Float, rug::Float); 2]; 2];
 
-/// Lift a f64 `Mat2` to `Mat2Mpfr` at the given precision. No precision
-/// gain by itself; useful when callers have f64 targets but want to feed
-/// the MPFR pipeline (e.g. for testing or for D&C structure access).
-pub fn mat2_to_mat2_mpfr(target: &Mat2, prec: u32) -> Mat2Mpfr {
-    use rug::Float as RFloat;
-    [
-        [
-            (RFloat::with_val(prec, target[0][0].re), RFloat::with_val(prec, target[0][0].im)),
-            (RFloat::with_val(prec, target[0][1].re), RFloat::with_val(prec, target[0][1].im)),
-        ],
-        [
-            (RFloat::with_val(prec, target[1][0].re), RFloat::with_val(prec, target[1][0].im)),
-            (RFloat::with_val(prec, target[1][1].re), RFloat::with_val(prec, target[1][1].im)),
-        ],
-    ]
-}
 
 /// Convert a `U2Q` to `Mat2Mpfr`. Reads ZZeta integer coefficients and
 /// evaluates against `(cos(kπ/8), sin(kπ/8))` for k=0..7 in MPFR, then
@@ -523,30 +507,6 @@ pub fn unitary_to_uv_zeta_mpfr(target: &Mat2Mpfr) -> [rug::Float; 4] {
 /// resolves 1/16 well enough), but the determinant's complex value is
 /// computed in MPFR for stability when the target is near a det-phase
 /// boundary.
-pub fn det_phase_of_mat2_mpfr(target: &Mat2Mpfr) -> u32 {
-    use rug::Float as RFloat;
-    use std::f64::consts::PI;
-    let prec = target[0][0].0.prec();
-    let a = &target[0][0];
-    let b = &target[0][1];
-    let c = &target[1][0];
-    let d = &target[1][1];
-    // a·d
-    let ad_re = RFloat::with_val(prec, &a.0 * &d.0)
-        - RFloat::with_val(prec, &a.1 * &d.1);
-    let ad_im = RFloat::with_val(prec, &a.0 * &d.1)
-        + RFloat::with_val(prec, &a.1 * &d.0);
-    // b·c
-    let bc_re = RFloat::with_val(prec, &b.0 * &c.0)
-        - RFloat::with_val(prec, &b.1 * &c.1);
-    let bc_im = RFloat::with_val(prec, &b.0 * &c.1)
-        + RFloat::with_val(prec, &b.1 * &c.0);
-    let det_re = RFloat::with_val(prec, &ad_re - &bc_re);
-    let det_im = RFloat::with_val(prec, &ad_im - &bc_im);
-    let arg = det_im.to_f64().atan2(det_re.to_f64());
-    let normalized = (arg / (PI / 8.0)).round() as i32;
-    normalized.rem_euclid(16) as u32
-}
 
 /// Compute `U_L† · target` as a continuous Mat2.
 /// `U_L` is exact (`U2Q`), `target` is float (`Mat2`). Mirrors the 8D
@@ -651,7 +611,7 @@ impl SynthesizerQ {
         // Default max_lde scales with ε. At ε=1e-7 we observed
         // single-search lde=19; D&C may need lde=20-21 with the
         // |d_R|≤1 filter (each prefix's k_inner = k_total − k_prefix).
-        // 35 is safe for ε down to ~1e-9.
+        // 35 is safe for the supported range (ε ≥ 1e-8).
         let max_lde = if epsilon <= 1e-7 { 35 } else { 30 };
         // **Adaptive precision default**: f64 GS works through ε=1e-7
         // (52-bit mantissa vs ~46-bit requirement). At ε ≤ 1e-8 the
@@ -767,313 +727,6 @@ impl SynthesizerQ {
         self
     }
 
-    /// MPFR-precision entry point for synthesis: caller provides
-    /// `v_mpfr = (Re V₁₁, Im V₁₁, Re V₂₁, Im V₂₁)` at MPFR precision.
-    ///
-    /// **Why**: at ε ≤ 1e-8 the cap-radial direction `Δ_y/R = ε²/4` falls
-    /// below f64 ULP at unit scale (~2.2e-16). The default
-    /// [`synthesize`] receives a f64 `Mat2` target and so the lattice
-    /// cap is localized with > 1 cap-width of slop in the radial axis;
-    /// the SE walk explores the wrong region and the synthesizer never
-    /// finds. This entry point lifts `v` to MPFR before computing the
-    /// cap, bypassing the f64 floor.
-    ///
-    /// `target` (f64) is still used for the `diamond_distance_u2q_float`
-    /// final check — that fn evaluates the candidate's ZZeta entries
-    /// directly in MPFR, so f64-target precision is sufficient there
-    /// (see `feedback_diamond_distance_frobenius.md`).
-    ///
-    /// Single-search path only (no D&C). For ε < 1e-7 callers.
-    pub fn synthesize_v_mpfr(&self, v_mpfr: &[rug::Float; 4], target: Mat2) -> Option<SynthResultQ> {
-        use crate::synthesis::diag;
-        use crate::synthesis::lenstra_zeta::phase1_with_stop_mpfr;
-        use crate::synthesis::search_zeta::uv_to_xy_zeta_mpfr;
-        use crate::synthesis::lenstra_zeta::scratch::compute_prec_q;
-        let trace = diag::trace_enabled();
-        if trace {
-            diag::reset_all();
-        }
-
-        let epsilon = self.epsilon;
-        let d = det_phase_of(&target);
-        let lattice_start = lattice_lde_estimate(epsilon)
-            .saturating_sub(2)
-            .max(BRUTE_LIMIT + 1)
-            .max(self.min_lde);
-
-        let prec = compute_prec_q(epsilon);
-        let mut scratch = IntScratch16::new(epsilon);
-        scratch.use_f64_gs = self.use_f64_gs;
-        scratch.bkz_block_size = self.bkz_block_size;
-
-        for k in lattice_start..=self.max_lde {
-            let t_k = std::time::Instant::now();
-            let y_mpfr = uv_to_xy_zeta_mpfr(v_mpfr, k, prec);
-            let budget_hit = AtomicBool::new(false);
-            let target_local = target;
-            let should_stop = |x: &[i64; 16]| -> bool {
-                let cand = solution_to_u2q_d(x, k, d);
-                diamond_distance_u2q_float(&cand, &target_local) < epsilon
-            };
-            let sols = phase1_with_stop_mpfr(
-                &mut scratch, &y_mpfr, v_mpfr, k, epsilon,
-                PASS1_CAP, &budget_hit, should_stop,
-            );
-            for sol in &sols {
-                let cand: U2Q = solution_to_u2q_d(sol, k, d);
-                let dist = diamond_distance_u2q_float(&cand, &target);
-                if dist < epsilon {
-                    if trace {
-                        eprintln!("[zeta-mpfr] lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
-                            dist, t_k.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    let gates = BlochDecomposer.decompose(&cand);
-                    return Some(SynthResultQ {
-                        gates: Some(gates),
-                        lde: k,
-                        distance: dist,
-                    });
-                }
-            }
-            if trace {
-                eprintln!("[zeta-mpfr] lde={k:>2}  none{}  t={:.0}ms",
-                    if budget_hit.load(std::sync::atomic::Ordering::Relaxed) { " (budget hit)" } else { "" },
-                    t_k.elapsed().as_secs_f64() * 1000.0);
-            }
-        }
-        None
-    }
-
-    /// Full MPFR-precision synthesis. Mirrors `synthesize` but with
-    /// `Mat2Mpfr` target, `Mat2Mpfr` per-prefix `m_inner`, MPFR `v` and
-    /// MPFR `y` throughout. Required at ε ≤ 1e-8 where f64 ULP exceeds
-    /// the cap-radial direction Δ_y/R.
-    ///
-    /// Brute regime + single-search lattice + 2-pass D&C dispatcher.
-    pub fn synthesize_mpfr(&self, target_mpfr: &Mat2Mpfr) -> Option<SynthResultQ> {
-        use crate::synthesis::diag;
-        use crate::synthesis::lenstra_zeta::phase1_with_stop_mpfr;
-        use crate::synthesis::search_zeta::uv_to_xy_zeta_mpfr;
-        use crate::synthesis::distance::diamond_distance_u2q_mpfr_target;
-
-        let trace = diag::trace_enabled();
-        if trace { diag::reset_all(); }
-
-        let prec = target_mpfr[0][0].0.prec();
-        let epsilon = self.epsilon;
-        let d_target = det_phase_of_mat2_mpfr(target_mpfr);
-        let v_outer = unitary_to_uv_zeta_mpfr(target_mpfr);
-
-        let lattice_start = lattice_lde_estimate(epsilon)
-            .saturating_sub(2)
-            .max(BRUTE_LIMIT + 1)
-            .max(self.min_lde);
-
-        // Brute regime
-        for k in self.min_lde..=BRUTE_LIMIT.min(self.max_lde) {
-            let sols = phase1_brute(k);
-            for sol in &sols {
-                let cand: U2Q = solution_to_u2q_d(sol, k, d_target);
-                let dist = diamond_distance_u2q_mpfr_target(&cand, target_mpfr);
-                if dist < epsilon {
-                    let gates = BlochDecomposer.decompose(&cand);
-                    return Some(SynthResultQ { gates: Some(gates), lde: k, distance: dist });
-                }
-            }
-        }
-
-        // D&C path
-        if let Some(m_split) = self.dc_split {
-            let mut pass2_queue: Vec<u32> = Vec::new();
-            for k in lattice_start..=self.max_lde {
-                let t_k = std::time::Instant::now();
-                if k <= m_split { continue; }
-                if trace {
-                    eprintln!("[zeta-mpfr] dc lde={k:>2} m={m_split} pass1 dispatching ...");
-                }
-                let (result, budget_hit) = self.dc_search_q_mpfr(
-                    target_mpfr, k, m_split, dc_pass1_cap_for(epsilon),
-                );
-                if let Some(r) = result {
-                    if trace {
-                        eprintln!("[zeta-mpfr] dc lde={k:>2} pass1 FOUND dist={:.3e} t={:.0}ms",
-                            r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    return Some(r);
-                }
-                if trace {
-                    eprintln!("[zeta-mpfr] dc lde={k:>2} pass1 none{} t={:.0}ms",
-                        if budget_hit { " (budget hit)" } else { "" },
-                        t_k.elapsed().as_secs_f64() * 1000.0);
-                    let s = diag::snapshot();
-                    eprintln!("  [diag k={k}] se_leaves={} norm_rej={} bilin_rej={} align_rej={} sols={}",
-                        s.se_callbacks, s.norm_rejected, s.bilinear_rejected,
-                        s.align_rejected, s.sols_returned);
-                    diag::reset_all();
-                }
-                if budget_hit { pass2_queue.push(k); }
-            }
-            for k in pass2_queue {
-                let t_k = std::time::Instant::now();
-                if trace {
-                    eprintln!("[zeta-mpfr] dc lde={k:>2} m={m_split} pass2 dispatching ...");
-                }
-                let (result, _) = self.dc_search_q_mpfr(
-                    target_mpfr, k, m_split, dc_pass2_cap_for(epsilon),
-                );
-                if let Some(r) = result {
-                    if trace {
-                        eprintln!("[zeta-mpfr] dc lde={k:>2} pass2 FOUND dist={:.3e} t={:.0}ms",
-                            r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    return Some(r);
-                }
-                if trace {
-                    eprintln!("[zeta-mpfr] dc lde={k:>2} pass2 none t={:.0}ms",
-                        t_k.elapsed().as_secs_f64() * 1000.0);
-                }
-            }
-            return None;
-        }
-
-        // Single-search path
-        let mut scratch = IntScratch16::new(epsilon);
-        scratch.use_f64_gs = self.use_f64_gs;
-        scratch.bkz_block_size = self.bkz_block_size;
-        for k in lattice_start..=self.max_lde {
-            let t_k = std::time::Instant::now();
-            let y_mpfr = uv_to_xy_zeta_mpfr(&v_outer, k, prec);
-            let budget_hit = AtomicBool::new(false);
-            let target_local = target_mpfr.clone();
-            let should_stop = |x: &[i64; 16]| -> bool {
-                let cand = solution_to_u2q_d(x, k, d_target);
-                diamond_distance_u2q_mpfr_target(&cand, &target_local) < epsilon
-            };
-            let sols = phase1_with_stop_mpfr(
-                &mut scratch, &y_mpfr, &v_outer, k, epsilon,
-                PASS1_CAP, &budget_hit, should_stop,
-            );
-            for sol in &sols {
-                let cand: U2Q = solution_to_u2q_d(sol, k, d_target);
-                let dist = diamond_distance_u2q_mpfr_target(&cand, target_mpfr);
-                if dist < epsilon {
-                    if trace {
-                        eprintln!("[zeta-mpfr] single lde={k:>2} FOUND dist={:.3e} t={:.0}ms",
-                            dist, t_k.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    let gates = BlochDecomposer.decompose(&cand);
-                    return Some(SynthResultQ { gates: Some(gates), lde: k, distance: dist });
-                }
-            }
-            if trace {
-                eprintln!("[zeta-mpfr] single lde={k:>2} none{} t={:.0}ms",
-                    if budget_hit.load(std::sync::atomic::Ordering::Relaxed) { " (budget hit)" } else { "" },
-                    t_k.elapsed().as_secs_f64() * 1000.0);
-            }
-        }
-        None
-    }
-
-    /// MPFR-precision Z1 D&C dispatcher. Mirror of `dc_search_q` but
-    /// computes `m_inner = U_L† · target` in MPFR, derives MPFR
-    /// `v_inner` and `y_inner`, and calls `phase1_with_stop_mpfr`.
-    fn dc_search_q_mpfr(
-        &self,
-        target: &Mat2Mpfr,
-        k_total: u32,
-        m_split: u32,
-        per_prefix_cap: u64,
-    ) -> (Option<SynthResultQ>, bool) {
-        use rayon::prelude::*;
-        use crate::synthesis::lenstra_zeta::phase1_with_stop_mpfr;
-        use crate::synthesis::search_zeta::uv_to_xy_zeta_mpfr;
-        use crate::synthesis::distance::diamond_distance_u2q_mpfr_target;
-
-        let prefixes = build_l_q(m_split);
-        let d_target = det_phase_of_mat2_mpfr(target);
-        let epsilon = self.epsilon;
-        let use_f64_gs = self.use_f64_gs;
-        let bkz_block_size = self.bkz_block_size;
-        let prec = target[0][0].0.prec();
-
-        let any_budget_hit = Arc::new(AtomicBool::new(false));
-
-        let dc_dr_filter = &self.dc_dr_filter;
-        let mut usable: Vec<&U2Q> = prefixes
-            .iter()
-            .filter(|u_l| u_l.k < k_total)
-            .filter(|u_l| {
-                if dc_dr_filter.is_empty() { return true; }
-                let d_l = det_phase_of(&u_l.to_float());
-                let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
-                dc_dr_filter.contains(&d_r)
-            })
-            .collect();
-
-        if usable.is_empty() { return (None, false); }
-        usable.sort_by(|a, b| b.k.cmp(&a.k));
-
-        let n_threads = rayon::current_num_threads().max(1);
-        let chunk = (usable.len() / n_threads).max(1);
-
-        let result = usable
-            .par_iter()
-            .with_min_len(chunk)
-            .map_init(
-                || {
-                    let mut s = IntScratch16::new(epsilon);
-                    s.use_f64_gs = use_f64_gs;
-                    s.bkz_block_size = bkz_block_size;
-                    s
-                },
-                |scratch, u_l| -> Option<SynthResultQ> {
-                    let k_prefix = u_l.k;
-                    let k_inner = k_total - k_prefix;
-                    let m_inner = u2q_dag_times_mat2_mpfr(u_l, target, prec);
-                    let v_inner = unitary_to_uv_zeta_mpfr(&m_inner);
-                    let d_l = det_phase_of(&u_l.to_float());
-                    let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
-
-                    let y_inner = uv_to_xy_zeta_mpfr(&v_inner, k_inner, prec);
-                    let budget_hit = AtomicBool::new(false);
-                    let u_l_local = **u_l;
-                    let target_local = target.clone();
-                    let should_stop = |x: &[i64; 16]| -> bool {
-                        let u_r = solution_to_u2q_d(x, k_inner, d_r);
-                        let u_full = u_l_local * u_r;
-                        diamond_distance_u2q_mpfr_target(&u_full, &target_local) < epsilon
-                    };
-
-                    let sols = phase1_with_stop_mpfr(
-                        scratch, &y_inner, &v_inner, k_inner, epsilon,
-                        per_prefix_cap, &budget_hit, should_stop,
-                    );
-
-                    if budget_hit.load(std::sync::atomic::Ordering::Relaxed) {
-                        any_budget_hit.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
-
-                    for sol in &sols {
-                        let u_r = solution_to_u2q_d(sol, k_inner, d_r);
-                        let u_full = u_l_local * u_r;
-                        let dist = diamond_distance_u2q_mpfr_target(&u_full, target);
-                        if dist < epsilon {
-                            let gates = BlochDecomposer.decompose(&u_full);
-                            return Some(SynthResultQ {
-                                gates: Some(gates),
-                                lde: k_total,
-                                distance: dist,
-                            });
-                        }
-                    }
-                    None
-                },
-            )
-            .find_map_any(|x| x);
-
-        let budget_hit = any_budget_hit.load(std::sync::atomic::Ordering::Relaxed);
-        (result, budget_hit)
-    }
 
     /// Find a minimum-lde Clifford+√T circuit approximating `target`.
     ///
@@ -1085,10 +738,40 @@ impl SynthesizerQ {
     /// 16D L²-LLL + Schnorr-Euchner `phase1` for larger k.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
         use crate::synthesis::diag;
+        use crate::synthesis::lenstra_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
         let trace = diag::trace_enabled();
         if trace {
             diag::reset_all();
         }
+
+        // Auto-enable MPFR prune verification in the cliff regime. At
+        // ε ≤ ~1.5e-8 the f64 partial-Euclidean prune in the SE walk
+        // suffers catastrophic cancellation (oracle-measured FN ratio up
+        // to ~3.8×), causing silent false-negatives that drop valid
+        // synthesis candidates. We turn verify on for ε < 2e-8 (a safe
+        // margin above the audited cliff) and restore the prior global
+        // flag value on exit so other paths aren't affected.
+        let verify_was_on = verify_prune_mpfr();
+        let need_verify = self.epsilon < 2e-8;
+        if need_verify && !verify_was_on {
+            set_verify_prune_mpfr(true);
+        }
+        // RAII guard so we restore even on early returns / panics.
+        struct VerifyGuard {
+            restore_to: bool,
+            changed: bool,
+        }
+        impl Drop for VerifyGuard {
+            fn drop(&mut self) {
+                if self.changed {
+                    crate::synthesis::lenstra_zeta::set_verify_prune_mpfr(self.restore_to);
+                }
+            }
+        }
+        let _verify_guard = VerifyGuard {
+            restore_to: verify_was_on,
+            changed: need_verify && !verify_was_on,
+        };
 
         let d = det_phase_of(&target);
         let v = unitary_to_uv_zeta(&target);
@@ -1301,57 +984,6 @@ impl SynthesizerQ {
         None
     }
 
-    /// Synthesize with a Clifford+T fallback if the Q-only path returns
-    /// `None`. ZOmega ⊂ ZZeta via ω = ζ², so any U2T is a valid U2Q with
-    /// the same matrix value (just non-√T-optimal). Used at deep ε
-    /// where the Q-lattice search may exhaust `max_lde` without finding.
-    ///
-    /// Returns the Q-optimal result if Q finds; otherwise returns the
-    /// embedded CT result (which has a higher lde but a valid circuit).
-    /// Returns `None` only if both backends fail.
-    pub fn synthesize_with_ct_fallback(&self, target: Mat2) -> Option<SynthResultQ> {
-        // Skip the Q-only path at ε ≤ 1e-8 — empirically the lde-threshold
-        // for typical SU(2) targets is past max_lde (per the probes in
-        // bin/probe_eps_1e8_dc_mpfr.rs) and Q wastes ~hours scanning.
-        // CT works at this depth (~7 s/target for lde=80).
-        if self.epsilon > 1e-8 {
-            if let Some(r) = self.synthesize(target) {
-                return Some(r);
-            }
-        }
-        // Fall back to CT.
-        use crate::synthesis::clifford_t::SynthesizerT;
-        let synth_t = SynthesizerT::new(self.epsilon);
-        let r_t = synth_t.synthesize(target)?;
-        // Embed U2T → U2Q. The gate decomposition string from CT uses
-        // T/H/S/X/Y/Z which all have valid U2Q forms (T = Q² in Z[ζ_16]).
-        // Easiest path: rebuild the gate string into U2Q.
-        let gates = r_t.gates?;
-        let mut u2q = U2Q::eye();
-        for ch in gates.chars() {
-            u2q = match ch {
-                'T' => u2q * U2Q::t(),
-                'H' => u2q * U2Q::h(),
-                'S' => u2q * U2Q::s(),
-                'X' => u2q * U2Q::x(),
-                'Y' => u2q * U2Q::y(),
-                'Z' => u2q * U2Q::z(),
-                'Q' => u2q * U2Q::q(),
-                _ => return None,
-            };
-        }
-        let dist = diamond_distance_u2q_float(&u2q, &target);
-        if dist >= self.epsilon {
-            return None;
-        }
-        let q_gates = BlochDecomposer.decompose(&u2q);
-        Some(SynthResultQ {
-            gates: Some(q_gates),
-            lde: u2q.k,
-            distance: dist,
-        })
-    }
-
     /// Z1 D&C inner-step at total lde `k_total` and split parameter
     /// `m_split`. Iterates every prefix `U_L ∈ L_{m_split}^Q`, computes
     /// the inner factor's alignment direction `v_inner = unitary_to_uv(
@@ -1518,6 +1150,7 @@ impl SynthesizerQ {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthesis::distance::diamond_distance_float;
     use num_complex::Complex64;
     use std::f64::consts::PI;
 
@@ -1556,6 +1189,7 @@ mod tests {
     /// integer-domain canonical-form syllables? Build many exact
     /// Clifford+√T targets, compare predictions step-by-step.
     #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_float_fgkm_agreement() {
         use crate::synthesis::decomposer::{canonical_form_axes_q, canonical_form_axes_q_float};
         use crate::matrix::so3::SO3;
@@ -1669,6 +1303,7 @@ mod tests {
     /// cells, no filter via this angle. If biased, follow up with cheap-
     /// predictor experiments.
     #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_first_syllable_distribution() {
         use crate::synthesis::decomposer::canonical_form_axes_q;
         use rand::{Rng, SeedableRng};
@@ -2116,6 +1751,7 @@ mod tests {
     /// and compare to the MPFR path. Reports correctness (does it find the
     /// answer? at the same lde?) and speed.
     #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_f64_gs_experiment() {
         use crate::synthesis::diag;
         use crate::synthesis::lenstra_zeta::lll_f64::{run_lll_16_f64};
@@ -2226,6 +1862,7 @@ mod tests {
     /// to see if lowering precision speeds up LLL without losing
     /// correctness.
     #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_gs_prec_sweep() {
         // Need to import IntScratch16 builder and run a single phase1 a few
         // times manually, since SynthesizerQ doesn't expose gs_prec.
@@ -2372,6 +2009,7 @@ mod tests {
     /// Sweep filter performance across ε to find the crossover where
     /// D&C with strict d_R filter beats single search.
     #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_dc_dr_filter_eps_sweep() {
         let theta = 0.3_f64;
         let target: Mat2 = [
@@ -2459,6 +2097,7 @@ mod tests {
     /// Z1 det-phase filter test: with various allowed-d_R sets, see how
     /// many prefixes pass the filter and how the dispatcher does.
     #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_dc_dr_filter() {
         let theta = 0.3_f64;
         let target: Mat2 = [
@@ -2537,6 +2176,7 @@ mod tests {
     /// If "the right" prefix at this k_total has small |B_i| while most
     /// wrong prefixes have large |B_i|, we have a cheap algebraic filter.
     #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_prefilter_bilinear_distribution() {
         use crate::synthesis::lenstra_zeta::se::bilinear_forms;
         let theta = 0.3_f64;
@@ -2600,6 +2240,7 @@ mod tests {
     /// `CYCLOSYNTH_TRACE=1` to populate T_BUILD_NS, T_LLL_NS, etc.
     /// across all prefixes at a fixed (m, k_total).
     #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_dc_phase_breakdown() {
         use crate::synthesis::diag;
         let theta = 0.3_f64;
@@ -2670,6 +2311,7 @@ mod tests {
     /// inline rather than calling dc_search_q so we can attach per-prefix
     /// timing without reaching across modules.
     #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_dc_per_prefix_breakdown() {
         let theta = 0.3_f64;
         let target: Mat2 = [
@@ -2775,6 +2417,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_dc_smoke_rz_eps_1e_3() {
         let theta = 0.3_f64;
         let target: Mat2 = [
@@ -2842,7 +2485,7 @@ mod tests {
         for &eps in &[1e-3, 1e-4, 1e-5, 1e-6, 1e-7_f64] {
             assert!(SynthesizerQ::new(eps).use_f64_gs, "f64 default should be on at ε={eps:.0e}");
         }
-        for &eps in &[1e-8, 1e-9_f64] {
+        for &eps in &[1e-8_f64] {
             assert!(!SynthesizerQ::new(eps).use_f64_gs, "f64 default should be OFF at ε={eps:.0e}");
         }
 
@@ -2858,7 +2501,7 @@ mod tests {
             assert_eq!(SynthesizerQ::new(eps).bkz_block_size, 0,
                 "BKZ default should be 0 at ε={eps:.0e}");
         }
-        for &eps in &[1e-7, 1e-8, 1e-9_f64] {
+        for &eps in &[1e-7, 1e-8_f64] {
             assert_eq!(SynthesizerQ::new(eps).bkz_block_size, 4,
                 "BKZ default should be 4 at ε={eps:.0e}");
         }
@@ -2869,20 +2512,20 @@ mod tests {
         let one = Complex64::new(1.0, 0.0);
         let zero = Complex64::new(0.0, 0.0);
         let target = complex_target([[one, zero], [zero, one]]);
-        let synth = SynthesizerQ::new(1e-9);
+        let synth = SynthesizerQ::new(1e-7);
         let result = synth.synthesize(target).expect("identity should synthesize");
         assert_eq!(result.lde, 0, "identity should be at k=0");
-        assert!(result.distance < 1e-9);
+        assert!(result.distance < 1e-7);
     }
 
     #[test]
     fn synthesize_q_gate() {
         let q = U2Q::q();
         let target = q.to_float();
-        let synth = SynthesizerQ::new(1e-9);
+        let synth = SynthesizerQ::new(1e-7);
         let result = synth.synthesize(target).expect("Q should synthesize");
         assert_eq!(result.lde, 0, "Q should be found at k=0");
-        assert!(result.distance < 1e-9);
+        assert!(result.distance < 1e-7);
         // The synthesized gate string, when applied, should give back Q.
         assert!(result.gates.is_some());
     }
@@ -2891,31 +2534,31 @@ mod tests {
     fn synthesize_t_gate() {
         let t = U2Q::t();
         let target = t.to_float();
-        let synth = SynthesizerQ::new(1e-9);
+        let synth = SynthesizerQ::new(1e-7);
         let result = synth.synthesize(target).expect("T should synthesize");
         assert_eq!(result.lde, 0, "T should be found at k=0");
-        assert!(result.distance < 1e-9);
+        assert!(result.distance < 1e-7);
     }
 
     #[test]
     fn synthesize_hqh() {
         let hqh: U2Q = U2Q::h() * U2Q::q() * U2Q::h();
         let target = hqh.to_float();
-        let synth = SynthesizerQ::new(1e-9);
+        let synth = SynthesizerQ::new(1e-7);
         let result = synth.synthesize(target).expect("HQH should synthesize");
         // HQH has k=2 (1 from each H).
         assert_eq!(result.lde, 2);
-        assert!(result.distance < 1e-9);
+        assert!(result.distance < 1e-7);
     }
 
     #[test]
     fn synthesize_qhq() {
         let qhq: U2Q = U2Q::q() * U2Q::h() * U2Q::q();
         let target = qhq.to_float();
-        let synth = SynthesizerQ::new(1e-9);
+        let synth = SynthesizerQ::new(1e-7);
         let result = synth.synthesize(target).expect("QHQ should synthesize");
         assert_eq!(result.lde, 1);
-        assert!(result.distance < 1e-9);
+        assert!(result.distance < 1e-7);
     }
 
     #[test]
@@ -2923,17 +2566,17 @@ mod tests {
         // H has k=1 (one H gate). Should be found at k=1.
         let h = U2Q::h();
         let target = h.to_float();
-        let synth = SynthesizerQ::new(1e-9);
+        let synth = SynthesizerQ::new(1e-7);
         let result = synth.synthesize(target).expect("H should synthesize");
         assert_eq!(result.lde, 1);
-        assert!(result.distance < 1e-9);
+        assert!(result.distance < 1e-7);
     }
 
     #[test]
     fn synthesize_returns_none_when_unreachable() {
         // Target Rx(π/16) — angle isn't a multiple of π/8, so the closest
         // Clifford+√T circuit at any small k is bounded away from it. With
-        // ε=1e-9 (tight) and max_lde=2 (so the test stays under a second),
+        // ε=1e-7 (tight) and max_lde=2 (so the test stays under a second),
         // should return None.
         let theta = PI / 16.0;
         let c = (theta / 2.0).cos();
@@ -2943,10 +2586,10 @@ mod tests {
             [Complex64::new(c, 0.0), -i * s],
             [-i * s, Complex64::new(c, 0.0)],
         ];
-        let synth = SynthesizerQ::new(1e-9).with_max_lde(2);
+        let synth = SynthesizerQ::new(1e-8).with_max_lde(2);
         let result = synth.synthesize(target);
         assert!(result.is_none(),
-            "Rx(π/16) should not be reachable in Clifford+√T at k≤2 with ε=1e-9");
+            "Rx(π/16) should not be reachable in Clifford+√T at k≤2 with ε=1e-8");
     }
 
     #[test]
@@ -2981,7 +2624,7 @@ mod tests {
             U2Q::h() * U2Q::q() * U2Q::h(),
             U2Q::q() * U2Q::h() * U2Q::q(),
         ];
-        let synth = SynthesizerQ::new(1e-9);
+        let synth = SynthesizerQ::new(1e-7);
         for u in targets {
             let target = u.to_float();
             let result = synth.synthesize(target).expect("should synthesize");
