@@ -23,19 +23,287 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
-/// Diagnostic-only: skip the partial Euclidean norm prune in the SE walk
-/// when `CYCLOSYNTH_BYPASS_NORM_PRUNE=1`. The leaf integer-exact
-/// `‖x‖² == 2^k` check still arbitrates correctness; this just disables
-/// the partial-sum prune that fires false positives at deep ε due to
-/// f64 imprecision in the partial accumulator.
+/// Diagnostic-only: skip the partial Euclidean norm prune in the SE walk.
+/// Initialized from `CYCLOSYNTH_BYPASS_NORM_PRUNE=1`, but **mutable at
+/// runtime** via `set_bypass_norm_prune` so a single process can toggle
+/// the prune between phases (e.g., probe Phase 1 captures with bypass on
+/// and Phase 4 watches with bypass off). The leaf integer-exact
+/// `‖x‖² == 2^k` check still arbitrates correctness.
+static BYPASS_NORM_PRUNE: AtomicBool = AtomicBool::new(false);
+static BYPASS_INIT: OnceLock<()> = OnceLock::new();
+
 fn bypass_norm_prune() -> bool {
-    static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("CYCLOSYNTH_BYPASS_NORM_PRUNE").ok().as_deref() == Some("1")
-    })
+    BYPASS_INIT.get_or_init(|| {
+        let v = std::env::var("CYCLOSYNTH_BYPASS_NORM_PRUNE").ok().as_deref() == Some("1");
+        BYPASS_NORM_PRUNE.store(v, Ordering::Relaxed);
+    });
+    BYPASS_NORM_PRUNE.load(Ordering::Relaxed)
+}
+
+/// Diagnostic-only: override the bypass flag at runtime.
+pub fn set_bypass_norm_prune(value: bool) {
+    BYPASS_INIT.get_or_init(|| {});
+    BYPASS_NORM_PRUNE.store(value, Ordering::Relaxed);
+}
+
+/// MPFR-128 verification of the f64 norm-shell prune predicate. When ON,
+/// every f64 prune-fire event is re-checked at 128-bit precision using the
+/// MPFR Cholesky factor; if MPFR says "keep" (true partial < threshold),
+/// the prune does NOT actually fire. Necessary at ε ≤ 1.5e-8 where the f64
+/// dot product suffers catastrophic cancellation (oracle-measured FN ratio
+/// up to 3.8×, p99 = 3.5×). At shallower ε, leave OFF — f64 is precise enough
+/// and the MPFR recompute would be pure overhead.
+static VERIFY_PRUNE_MPFR: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub fn verify_prune_mpfr() -> bool {
+    VERIFY_PRUNE_MPFR.load(Ordering::Relaxed)
+}
+
+pub fn set_verify_prune_mpfr(value: bool) {
+    VERIFY_PRUNE_MPFR.store(value, Ordering::Release);
+}
+
+// ─── Inline double-double primitives (~106 bits, ~32 decimal digits) ─────────
+//
+// Validated against rug-128 via `probe_dd_unit` to ~1e-33 relative error on
+// sqrt, recip, div, Cholesky, and dot-product cases. Used by
+// `verify_partial_dd_exceeds` for fast prune verification — ~10× cheaper
+// than rug-128 in the hot loop because no heap allocation and no mpfr_t
+// init/clear per op.
+
+#[inline]
+fn dd_quick_two_sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b;
+    let err = b - (s - a);
+    (s, err)
+}
+
+#[inline]
+fn dd_two_sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b;
+    let bb = s - a;
+    let err = (a - (s - bb)) + (b - bb);
+    (s, err)
+}
+
+#[inline]
+fn dd_two_prod(a: f64, b: f64) -> (f64, f64) {
+    let p = a * b;
+    let err = a.mul_add(b, -p);
+    (p, err)
+}
+
+/// Robust ("ieee") dd_add: separately captures lo-part sum via two_sum.
+/// Handles cancellation in a.0 + b.0 correctly.
+#[inline]
+pub fn dd_add(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    let (s1, e1) = dd_two_sum(a.0, b.0);
+    let (s2, e2) = dd_two_sum(a.1, b.1);
+    let e1 = e1 + s2;
+    let (s, e1) = dd_quick_two_sum(s1, e1);
+    let e1 = e1 + e2;
+    dd_quick_two_sum(s, e1)
+}
+
+#[inline]
+pub fn dd_sub(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    dd_add(a, (-b.0, -b.1))
+}
+
+#[inline]
+pub fn dd_mul(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    let (p, e) = dd_two_prod(a.0, b.0);
+    let e = e + a.0 * b.1 + a.1 * b.0;
+    dd_quick_two_sum(p, e)
+}
+
+#[inline]
+pub fn dd_recip(b: (f64, f64)) -> (f64, f64) {
+    let r0 = 1.0 / b.0;
+    let r0_dd = (r0, 0.0);
+    let bp = dd_mul(b, r0_dd);
+    let two_minus_bp = dd_sub((2.0, 0.0), bp);
+    dd_mul(r0_dd, two_minus_bp)
+}
+
+#[inline]
+pub fn dd_div(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    dd_mul(a, dd_recip(b))
+}
+
+#[inline]
+pub fn dd_sqrt(s: (f64, f64)) -> (f64, f64) {
+    if s.0 <= 0.0 { return (0.0, 0.0); }
+    let x = s.0.sqrt();
+    let x_dd = (x, 0.0);
+    let x_sq = dd_mul(x_dd, x_dd);
+    let resid = dd_sub(s, x_sq);
+    let two_x = dd_add(x_dd, x_dd);
+    let corr = dd_div(resid, two_x);
+    dd_add(x_dd, corr)
+}
+
+/// Convert i64 → dd. Exact for any i64 (since |z| ≤ 2^63 fits in dd's
+/// 2^106 range; two-piece split if |z| > 2^53).
+#[inline]
+fn dd_from_i64(z: i64) -> (f64, f64) {
+    if z.unsigned_abs() <= (1u64 << 53) {
+        (z as f64, 0.0)
+    } else {
+        let neg = z < 0;
+        let abs = z.unsigned_abs();
+        let hi = (abs >> 32) as u32 as f64;
+        let lo = (abs & 0xFFFFFFFF) as u32 as f64;
+        let two32 = (1u64 << 32) as f64;
+        let p = dd_mul((hi, 0.0), (two32, 0.0));
+        let r = dd_add(p, (lo, 0.0));
+        if neg { (-r.0, -r.1) } else { r }
+    }
+}
+
+// ─── Analytical depth-0 z[0] selection ───────────────────────────────────────
+//
+// At depth 0 with z[1..16] fixed and x = B·z computed (with the current z[0]
+// = z0_curr), the future ‖x_new‖² for any candidate z[0]_new = z0_curr + δ is
+//   ‖x_new‖² = A + 2·δ·B + δ²·C
+// where:
+//   A = ‖x − z0_curr·basis[0]‖²   (≡ ‖x‖² with z[0] set to 0)
+//   B = (x − z0_curr·basis[0]) · basis[0]
+//   C = ‖basis[0]‖²
+// All three are exact integers in i128. To hit the shell ‖x_new‖² = T = 2^k:
+//   C·δ² + 2B·δ + (A − T) = 0
+//   δ = (−B ± √(B² − C·(A − T))) / C
+//
+// We return up to 6 integer z[0] candidates: floor/ceil of each of the 2 roots
+// plus ±1 nudges, filtered to the SE bracket [z_low, z_high]. Conservative
+// (over-covers) so the leaf-filter's exact `‖x‖² == T` check arbitrates final
+// correctness — we cannot miss a shell hit.
+//
+// Replaces the full depth-0 bracket enumeration (up to ~10 z[0] values per
+// node), addressing the survivorship-data finding that ~75% of leaves come
+// from depth-1-near-threshold nodes where the brute z[0] sweep produces ~99%
+// far-above-shell candidates.
+
+#[inline]
+fn isqrt_i128(n: i128) -> i128 {
+    if n < 0 { return -1; }
+    if n < 2 { return n; }
+    let mut x = n;
+    let mut y = (n + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
+
+#[inline]
+fn floor_div_i128(a: i128, b: i128) -> i128 {
+    // b > 0 in our use; assert here keeps the codegen tight.
+    debug_assert!(b > 0);
+    let q = a / b;
+    let r = a % b;
+    if r < 0 { q - 1 } else { q }
+}
+
+/// Find integer z[0] candidates that could yield `‖x_new‖² == target_norm`,
+/// where `x_new = x − z0_curr·basis_0 + z0_new·basis_0`. Returns the count
+/// of candidates written into `out` (at most 6); each is unique and inside
+/// `[z_low, z_high]`. Returns 0 if no integer solution exists (discriminant
+/// < 0 or all candidates fall outside the bracket).
+#[inline]
+pub fn analytical_depth0_z0_candidates(
+    x: &[i64; 16],
+    z0_curr: i64,
+    basis_0: &[i64; 16],
+    target_norm: i128,
+    z_low: i64,
+    z_high: i64,
+    out: &mut [i64; 6],
+) -> usize {
+    let mut a: i128 = 0;
+    let mut b: i128 = 0;
+    let mut c: i128 = 0;
+    for i in 0..16 {
+        let b0 = basis_0[i] as i128;
+        let xz = (x[i] as i128) - (z0_curr as i128) * b0;
+        a += xz * xz;
+        b += xz * b0;
+        c += b0 * b0;
+    }
+    if c == 0 {
+        // basis[0] = 0: degenerate row. Bail (let caller use enumeration).
+        // In practice this doesn't happen with LLL-reduced bases.
+        return 0;
+    }
+    let d = a - target_norm;
+    // disc = B² − C·(A − T)
+    let disc = b * b - c * d;
+    if disc < 0 {
+        return 0;
+    }
+    let sqrt_disc = isqrt_i128(disc);
+    let mut n: usize = 0;
+    // Two roots: (−B ± sqrt_disc) / C. Compute floor; nudge by {−1, 0, +1}
+    // to cover rounding both for non-perfect-square disc and for integer-div
+    // rounding directionality.
+    for &sign in &[1_i128, -1_i128] {
+        let numerator = sign * sqrt_disc - b;
+        let q = floor_div_i128(numerator, c);
+        for nudge in -1_i64..=1 {
+            let cand_i128 = q + nudge as i128;
+            // Range check: must fit in i64 and within [z_low, z_high].
+            if cand_i128 < i64::MIN as i128 || cand_i128 > i64::MAX as i128 {
+                continue;
+            }
+            let cand = cand_i128 as i64;
+            if cand < z_low || cand > z_high {
+                continue;
+            }
+            let mut already = false;
+            for k in 0..n {
+                if out[k] == cand {
+                    already = true;
+                    break;
+                }
+            }
+            if !already && n < 6 {
+                out[n] = cand;
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// Compute `Σ_{i ≥ depth} (R · z)[i]²` in inline double-double (~106 bits)
+/// and return true iff the result exceeds `threshold`. No heap allocation,
+/// no thread-local state — fully stack-resident. About 10× faster than the
+/// rug-128 verify in the hot SE prune-firing path.
+#[inline]
+pub fn verify_partial_dd_exceeds(
+    r_eucl_dd: &[[(f64, f64); 16]; 16],
+    z: &[i64; 16],
+    depth: usize,
+    threshold: f64,
+) -> bool {
+    let mut total: (f64, f64) = (0.0, 0.0);
+    for i in depth..16 {
+        let mut row: (f64, f64) = (0.0, 0.0);
+        for j in i..16 {
+            let z_dd = dd_from_i64(z[j]);
+            let term = dd_mul(r_eucl_dd[i][j], z_dd);
+            row = dd_add(row, term);
+        }
+        let sq = dd_mul(row, row);
+        total = dd_add(total, sq);
+    }
+    // total > threshold (compare hi + lo to threshold)
+    total.0 + total.1 > threshold
 }
 
 // ─── Bilinear leaf checks ────────────────────────────────────────────────────
@@ -174,11 +442,21 @@ pub fn det16_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
 ///
 /// Returns `None` if the Gram is not positive-definite (only happens if the
 /// basis is rank-deficient — a bug upstream).
-pub fn euclidean_cholesky_16_mpfr(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]> {
+/// MPFR-128 Cholesky of `B·Bᵀ` (Euclidean Gram of an LLL-reduced lattice
+/// basis). Returns the upper-triangular factor R (`Rᵀ·R = B·Bᵀ`) as both an
+/// f64 snapshot (consumed by the SE walk's primary f64 prune) AND a
+/// double-double (~106-bit) projection (consumed by the verify path set via
+/// [`set_verify_prune_mpfr`]). The Cholesky itself runs at MPFR-128
+/// internally: 106-bit Cholesky was tried and produced rank-deficient
+/// false alarms at small lde where the intermediate
+/// `s -= l[i][k]*l[j][k]` cancellation is tight; 128-bit is safe. The
+/// dd projection of the final factor is probe-confirmed to match
+/// MPFR-192 oracle on the cliff failure instance.
+pub fn euclidean_cholesky_16_mpfr_dual(
+    basis: &[[i64; 16]; 16],
+) -> Option<([[f64; 16]; 16], [[(f64, f64); 16]; 16])> {
     use rug::Float;
     const PREC: u32 = 128;
-
-    // Step 1: integer Gram = B · Bᵀ in i128.
     let mut gram = [[0_i128; 16]; 16];
     for i in 0..16 {
         for j in 0..16 {
@@ -189,8 +467,6 @@ pub fn euclidean_cholesky_16_mpfr(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16];
             gram[i][j] = s;
         }
     }
-
-    // Step 2: lift to MPFR.
     let mut g: [[Float; 16]; 16] = std::array::from_fn(|_| {
         std::array::from_fn(|_| Float::with_val(PREC, 0.0))
     });
@@ -199,8 +475,6 @@ pub fn euclidean_cholesky_16_mpfr(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16];
             g[i][j] = i128_to_mpfr(gram[i][j], PREC);
         }
     }
-
-    // Step 3: MPFR Cholesky → L (lower-triangular) such that L·Lᵀ = G.
     let mut l: [[Float; 16]; 16] = std::array::from_fn(|_| {
         std::array::from_fn(|_| Float::with_val(PREC, 0.0))
     });
@@ -222,15 +496,23 @@ pub fn euclidean_cholesky_16_mpfr(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16];
             }
         }
     }
-
-    // Step 4: transpose to upper-triangular R = Lᵀ, snapshot to f64.
-    let mut r = [[0.0_f64; 16]; 16];
+    // R = L^T (upper-triangular). Snapshot to f64 (used by f64 prune) and
+    // project to dd (used by verify_partial_dd_exceeds). The MPFR factor
+    // itself is consumed here; the dd projection is the kept output.
+    let mut r_f64 = [[0.0_f64; 16]; 16];
+    let mut r_dd = [[(0.0_f64, 0.0_f64); 16]; 16];
     for i in 0..16 {
         for j in 0..16 {
-            r[i][j] = l[j][i].to_f64();
+            let rij = &l[j][i];
+            let hi = rij.to_f64();
+            let mut lo_f = Float::with_val(PREC, rij);
+            lo_f -= hi;
+            let lo = lo_f.to_f64();
+            r_f64[i][j] = hi;
+            r_dd[i][j] = (hi, lo);
         }
     }
-    Some(r)
+    Some((r_f64, r_dd))
 }
 
 /// Convert i128 → MPFR Float, lossless. rug doesn't accept i128 directly.
@@ -626,7 +908,35 @@ fn recurse_16_norm_pruned<F>(
         // recomputing from scratch each call.
         let level_eucl = w[d];
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
-        if !bypass_norm_prune() && depth > 0 && new_partial_eucl > target_norm_sq * (1.0 + 1e-9) {
+        let threshold = target_norm_sq * (1.0 + 1e-9);
+        let prune_fires = depth > 0 && new_partial_eucl > threshold;
+        let bypass = bypass_norm_prune();
+        if prune_fires && !bypass {
+            crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
+            if (depth as usize) < 16 {
+                crate::synthesis::diag::N_PRUNE_FIRES_AT_DEPTH[depth as usize]
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            let ratio = new_partial_eucl / threshold;
+            if ratio <= 1.10 {
+                crate::synthesis::diag::N_PRUNE_FIRES_NEAR.fetch_add(1, Ordering::Relaxed);
+            }
+            if ratio <= 1.01 {
+                crate::synthesis::diag::N_PRUNE_FIRES_VERY_NEAR.fetch_add(1, Ordering::Relaxed);
+            }
+            crate::synthesis::diag::sample_prune_event(depth, z, new_partial_eucl, threshold);
+            if crate::synthesis::diag::watch_path_match_at_depth(z, depth) {
+                crate::synthesis::diag::watch_record(crate::synthesis::diag::WatchHit {
+                    depth, z_at_prune: *z,
+                    partial_eucl_f64: new_partial_eucl,
+                    threshold,
+                    partial_q_f64: new_partial_q,
+                    r_eucl_diag_d: r_eucl[d as usize][d as usize],
+                    w_d: w[d as usize],
+                });
+            }
+        }
+        if !bypass && prune_fires {
             continue;
         }
         recurse_16_norm_pruned(
@@ -637,16 +947,44 @@ fn recurse_16_norm_pruned<F>(
     }
 }
 
-/// Compute `Σ_{j ≥ d} R_eucl[d][j] · z[j]` — the d-th component of `R_eucl·z`,
-/// given that z[d..16] are set. Used in the degenerate-diagonal branch where
-/// z[d] is forced to z_c[d] (no per-iteration cache available).
+struct Bracket {
+    tail: f64,
+    z_low: i64,
+    z_high: i64,
+    z_mid: i64,
+    max_off: i64,
+}
+
+/// Compute the SE bracket [z_low, z_high] for the current depth's z[d]
+/// enumeration. Returns None if the Q-bound is already exhausted.
 #[inline]
-fn compute_eucl_level(r_eucl: &[[f64; 16]; 16], z: &[i64; 16], d: usize) -> f64 {
-    let mut s = 0.0_f64;
-    for j in d..16 {
-        s += r_eucl[d][j] * (z[j] as f64);
+fn compute_bracket_at_depth(
+    d: usize,
+    l: &[[f64; 16]; 16],
+    z_c: &[i64; 16],
+    z: &[i64; 16],
+    partial_q: f64,
+    bound_sq: f64,
+    l_dd: f64,
+) -> Option<Bracket> {
+    let mut tail = 0.0_f64;
+    for j in (d + 1)..16 {
+        tail += l[d][j] * ((z[j] - z_c[j]) as f64);
     }
-    s
+    let rem = bound_sq - partial_q;
+    if rem < 0.0 {
+        return None;
+    }
+    let rem_sqrt = rem.sqrt();
+    let center_off = -tail / l_dd;
+    let span = rem_sqrt / l_dd.abs();
+    // Same i64 bracket fix as recurse_16: keep z_c[d] as i64 to avoid
+    // f64 quantization at deep ε where z_c can exceed 2^53.
+    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
+    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
+    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
+    let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
+    Some(Bracket { tail, z_low, z_high, z_mid, max_off })
 }
 
 /// Apply `x[c] += delta · basis[d][c]` for c=0..16. Fast tight loop —
@@ -860,6 +1198,7 @@ pub fn schnorr_euchner_16d_par_norm_pruned<F>(
     z_c: &[i64; 16],
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
+    r_eucl_dd: &[[(f64, f64); 16]; 16],
     target_norm_sq: f64,
     basis: &[[i64; 16]; 16],
     leaf_filter: F,
@@ -873,7 +1212,6 @@ where
 
     let aborted = AtomicBool::new(false);
     let l_15 = l[15][15];
-    let _r_15 = r_eucl[15][15];
     let target_norm_sq_i64 = target_norm_sq as i64;
     if l_15.abs() < 1e-30 {
         return (Vec::new(), false);
@@ -932,7 +1270,7 @@ where
             }
             let mut local: Vec<[i64; 16]> = Vec::new();
             recurse_collect_norm_pruned(
-                14, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
+                14, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
                 partial_q, partial_eucl, &mut z, &mut x, &mut w, basis,
                 &leaf_filter, budget, &aborted, &mut local,
             );
@@ -951,6 +1289,7 @@ fn recurse_collect_norm_pruned<F>(
     z_c: &[i64; 16],
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
+    r_eucl_dd: &[[(f64, f64); 16]; 16],
     target_norm_sq: f64,
     target_norm_sq_i64: i64,
     partial_q: f64,
@@ -969,10 +1308,27 @@ fn recurse_collect_norm_pruned<F>(
     if aborted.load(Ordering::Relaxed) {
         return;
     }
+    let trace = crate::synthesis::diag::trace_enabled();
+    if trace && depth >= 0 && (depth as usize) < 16 {
+        crate::synthesis::diag::N_RECURSE_ENTER_AT_DEPTH[depth as usize]
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    // Capture partial_eucl at depth-0 entry — this is the outgoing depth-1
+    // partial. Read at leaf time to condition the shell-ratio histogram.
+    if trace && depth == 0 {
+        crate::synthesis::diag::D1_PARTIAL_TLS.with(|c| c.set(partial_eucl));
+    }
     if depth < 0 {
         let prev = budget.fetch_sub(1, Ordering::Relaxed);
         if prev <= 1 {
             aborted.store(true, Ordering::Relaxed);
+        }
+        // Shell-ratio histogram: record where x lands relative to the
+        // target shell, regardless of leaf_filter outcome. Reveals whether
+        // the SE walk is delivering near-shell or far-interior leaves.
+        if trace {
+            let n: i64 = x.iter().map(|&v| v * v).sum();
+            crate::synthesis::diag::record_leaf_shell_ratio(n, target_norm_sq_i64);
         }
         match leaf_filter(x) {
             LeafAction::Skip => {}
@@ -1001,30 +1357,34 @@ fn recurse_collect_norm_pruned<F>(
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
         if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_collect_norm_pruned(
-                depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
+                depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
                 partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
                 budget, aborted, results,
             );
         }
         return;
     }
-    let mut tail = 0.0_f64;
-    for j in (d + 1)..16 {
-        tail += l[d][j] * ((z[j] - z_c[j]) as f64);
-    }
-    let rem = bound_sq - partial_q;
-    if rem < 0.0 {
-        return;
-    }
-    let rem_sqrt = rem.sqrt();
-    let center_off = -tail / l_dd;
-    let span = rem_sqrt / l_dd.abs();
-    // Same i64 bracket fix as recurse_16: keep z_c[d] as i64 to avoid
-    // f64 quantization at deep ε where z_c can exceed 2^53.
-    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
-    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
-    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
-    let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
+    let bracket = match compute_bracket_at_depth(d, l, z_c, z, partial_q, bound_sq, l_dd) {
+        Some(b) => b,
+        None => return,
+    };
+    let tail = bracket.tail;
+    let z_low = bracket.z_low;
+    let z_high = bracket.z_high;
+    let z_mid = bracket.z_mid;
+    let max_off = bracket.max_off;
+
+    // NOTE: a depth-0 analytical shell-equation elimination is available via
+    // [`analytical_depth0_z0_candidates`] (i128-exact integer roots of
+    // `‖x‖² = 2^k`). Plugging it into the SE walk here was tried multiple
+    // times and consistently regresses cliff wall-time (up to 5×) under
+    // the current per-leaf budget: fewer leaves per depth-0 enter just
+    // makes the walker exhaust budget after more depth-0 enters, each
+    // costing full recursion from depth 15 down. Unlocking it requires
+    // switching to a per-recurse-enter (or per-depth-0-enter) budget +
+    // recalibrating `dc_pass1_cap_for(eps)` / `PASS{1,2}_CAP` constants
+    // across the supported ε range. The helper is preserved for that
+    // future refactor.
 
     for raw in 0..=(2 * max_off + 1) {
         if aborted.load(Ordering::Relaxed) {
@@ -1060,11 +1420,89 @@ fn recurse_collect_norm_pruned<F>(
         // Norm-shell pruning using incremental w (no f64 cancellation).
         let level_eucl = w[d];
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
-        if !bypass_norm_prune() && depth > 0 && new_partial_eucl > target_norm_sq * (1.0 + 1e-9) {
+        let threshold = target_norm_sq * (1.0 + 1e-9);
+        let prune_fires = depth > 0 && new_partial_eucl > threshold;
+        let bypass = bypass_norm_prune();
+        if trace && prune_fires && !bypass {
+            crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
+            if (depth as usize) < 16 {
+                crate::synthesis::diag::N_PRUNE_FIRES_AT_DEPTH[depth as usize]
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            let ratio = new_partial_eucl / threshold;
+            if ratio <= 1.10 {
+                crate::synthesis::diag::N_PRUNE_FIRES_NEAR.fetch_add(1, Ordering::Relaxed);
+            }
+            if ratio <= 1.01 {
+                crate::synthesis::diag::N_PRUNE_FIRES_VERY_NEAR.fetch_add(1, Ordering::Relaxed);
+            }
+            crate::synthesis::diag::sample_prune_event(depth, z, new_partial_eucl, threshold);
+            if crate::synthesis::diag::watch_path_match_at_depth(z, depth) {
+                crate::synthesis::diag::watch_record(crate::synthesis::diag::WatchHit {
+                    depth, z_at_prune: *z,
+                    partial_eucl_f64: new_partial_eucl,
+                    threshold,
+                    partial_q_f64: new_partial_q,
+                    r_eucl_diag_d: r_eucl[d][d],
+                    w_d: w[d],
+                });
+            }
+        }
+        // Extended-precision verification of the prune-fire decision via
+        // inline double-double (~106 bits). Necessary at ε ≤ 1.5e-8 where
+        // the f64 partial-eucl accumulator suffers catastrophic cancellation
+        // in the dot product. Guard: only verify when ratio ≤ VERIFY_RATIO_CAP.
+        // Empirically 0 FNs in 1000 samples at ratio ≥ 5×T.
+        //
+        // Integer-exact fast-path: at depth d with z[0..d]=0, the relation
+        // ‖x‖² = z^T G z = prefix_d + partial_eucl_d (prefix_d ≥ 0) means
+        //   ‖x‖² ≤ T_int  ⟹  partial_eucl_d ≤ T_int  ⟹  do not prune.
+        // This is cheap (16 i64 muls; ~30 ns) and catches the FN subset
+        // where integer-exact norm proves the prune wrong, BEFORE running
+        // dd verify (~450 ns). Net win iff a non-negligible fraction of
+        // prune-fires have ‖x‖² ≤ T_int.
+        const VERIFY_RATIO_CAP: f64 = 5.0;
+        let actually_prune = if !bypass && prune_fires {
+            // Integer-exact short-circuit (no false negatives, may miss some
+            // true keeps where prefix_d > ‖x‖² − T).
+            let x_norm_sq: i64 = x.iter().map(|&v| v.wrapping_mul(v)).sum();
+            if x_norm_sq <= target_norm_sq_i64 {
+                false  // confirmed keep, skip dd verify
+            } else if verify_prune_mpfr() && new_partial_eucl <= threshold * VERIFY_RATIO_CAP {
+                let t_v = if trace { Some(std::time::Instant::now()) } else { None };
+                let dd_prune = verify_partial_dd_exceeds(r_eucl_dd, z, depth as usize, threshold);
+                if let Some(t) = t_v {
+                    crate::synthesis::diag::T_VERIFY_DD_NS
+                        .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    if !dd_prune {
+                        crate::synthesis::diag::N_VERIFY_PRUNE_CORRECTED.fetch_add(1, Ordering::Relaxed);
+                    }
+                    crate::synthesis::diag::N_VERIFY_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
+                }
+                dd_prune
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+        if actually_prune {
+            if trace && (depth as usize) < 16 {
+                crate::synthesis::diag::N_PRUNE_ACTUAL_AT_DEPTH[depth as usize]
+                    .fetch_add(1, Ordering::Relaxed);
+            }
             continue;
         }
+        // NOTE: a depth-0 integer-exact early-out (`if d==0 && Σx[i]² ≠ 2^k:
+        // continue;`) was tried here and regressed cliff wall-time **20×**
+        // (41.6s → 840.7s). Same root cause as the analytical depth-0
+        // candidate filter: under per-leaf budget the walk just consumes
+        // budget through more depth-0 enters when individual leaves are
+        // cheaper, multiplying tree-traversal cost. The integer check is
+        // already inside `leaf_filter`'s first stage; replicating it here
+        // is pure overhead without budget-model changes.
         recurse_collect_norm_pruned(
-            depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
+            depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
             new_partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
             budget, aborted, results,
         );

@@ -8,7 +8,7 @@
 //! start and dumped at the end, showing per-lde where time and prefix count
 //! went.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 static TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -37,6 +37,68 @@ pub fn try_capture(c: CapturedFind) {
         if guard.is_none() {
             *guard = Some(c);
         }
+    }
+}
+
+/// Watchdog: when set to a target z, the SE walk records every prune firing
+/// where the SE path's z[d..16] matches the watched target[d..16]. Used by
+/// the prune-mechanism diagnostic to find which prune (if any) rejects a
+/// known-good lattice point's enumeration path.
+pub static WATCH_Z_TARGET: Mutex<Option<[i64; 16]>> = Mutex::new(None);
+
+/// Lock-free fast-path gate. Cleared (false) means `watch_path_match_at_depth`
+/// returns immediately without touching the mutex, so the watchdog is free
+/// for runs that don't arm it (e.g. Phase 1 of probe_phase_oracle that
+/// captures x_target without watching).
+pub static WATCH_ARMED: AtomicBool = AtomicBool::new(false);
+
+pub fn watch_arm(target: [i64; 16]) {
+    if let Ok(mut guard) = WATCH_Z_TARGET.lock() {
+        *guard = Some(target);
+    }
+    WATCH_ARMED.store(true, Ordering::Release);
+}
+
+pub fn watch_disarm() {
+    WATCH_ARMED.store(false, Ordering::Release);
+    if let Ok(mut guard) = WATCH_Z_TARGET.lock() {
+        *guard = None;
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct WatchHit {
+    pub depth: i32,
+    pub z_at_prune: [i64; 16],
+    pub partial_eucl_f64: f64,
+    pub threshold: f64,
+    pub partial_q_f64: f64,
+    pub r_eucl_diag_d: f64,
+    pub w_d: f64,
+}
+
+pub static WATCH_HITS: Mutex<Vec<WatchHit>> = Mutex::new(Vec::new());
+
+#[inline]
+pub fn watch_path_match_at_depth(z: &[i64; 16], depth: i32) -> bool {
+    if !WATCH_ARMED.load(Ordering::Acquire) {
+        return false;
+    }
+    if let Ok(guard) = WATCH_Z_TARGET.lock() {
+        if let Some(target) = guard.as_ref() {
+            let d = depth.max(0) as usize;
+            for j in d..16 {
+                if z[j] != target[j] { return false; }
+            }
+            return true;
+        }
+    }
+    false
+}
+
+pub fn watch_record(hit: WatchHit) {
+    if let Ok(mut v) = WATCH_HITS.lock() {
+        v.push(hit);
     }
 }
 
@@ -120,6 +182,209 @@ pub static N_SOLS_RETURNED: AtomicU64 = AtomicU64::new(0);
 /// Time spent inside SE leaf-check closures (sum across all phase1 calls).
 pub static T_LEAF_CHECK_NS: AtomicU64 = AtomicU64::new(0);
 
+/// Total norm-shell prune firings across the SE walk.
+pub static N_PRUNE_FIRES: AtomicU64 = AtomicU64::new(0);
+/// Prune firings whose `new_partial_eucl` is within 10% above the threshold
+/// (i.e., `1.0 ≤ ratio ≤ 1.10`). These are the borderline cases where a
+/// numerically-imprecise partial accumulator could be the difference
+/// between firing and not-firing.
+pub static N_PRUNE_FIRES_NEAR: AtomicU64 = AtomicU64::new(0);
+/// Prune firings within 1% of the threshold (super-borderline).
+pub static N_PRUNE_FIRES_VERY_NEAR: AtomicU64 = AtomicU64::new(0);
+/// Prune firings that triggered MPFR verification (i.e., within the
+/// `VERIFY_RATIO_CAP` band and verify_prune_mpfr was on).
+pub static N_VERIFY_PRUNE_FIRES: AtomicU64 = AtomicU64::new(0);
+/// Prune firings where MPFR verification disagreed with f64 (MPFR said keep,
+/// f64 said prune). These are the false negatives the verification rescues.
+pub static N_VERIFY_PRUNE_CORRECTED: AtomicU64 = AtomicU64::new(0);
+
+/// CPU-summed nanoseconds spent inside `verify_partial_dd_exceeds`.
+pub static T_VERIFY_DD_NS: AtomicU64 = AtomicU64::new(0);
+
+// BKZ insertion branch counts (which case fires for each SVP coord vector).
+pub static N_BKZ_BRANCH1: AtomicU64 = AtomicU64::new(0);
+pub static N_BKZ_BRANCH2: AtomicU64 = AtomicU64::new(0);
+pub static N_BKZ_BRANCH3_SUCCESS: AtomicU64 = AtomicU64::new(0);
+pub static N_BKZ_BRANCH3_NONPRIMITIVE: AtomicU64 = AtomicU64::new(0);
+
+// ─── Per-depth survivorship (critic Step 1) ──────────────────────────────────
+//
+// Indexed by depth 0..16. recurse-call enter, prune-fire, and prune-actual
+// counters at each level. Reveal where the SE tree fans out and where
+// pruning actually trims.
+
+pub static N_RECURSE_ENTER_AT_DEPTH: [AtomicU64; 16] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+pub static N_PRUNE_FIRES_AT_DEPTH: [AtomicU64; 16] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+pub static N_PRUNE_ACTUAL_AT_DEPTH: [AtomicU64; 16] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+
+// ─── Distance-to-shell histogram at leaves ────────────────────────────────────
+//
+// For each leaf reached (i.e., passed all SE pruning), record where it lands
+// in the ratio r = ‖x‖² / 2^k. Bins:
+//   0: r ≤ 0.50      (far below shell)
+//   1: 0.50 < r ≤ 0.90
+//   2: 0.90 < r ≤ 0.99
+//   3: 0.99 < r < 1.0  (just below shell)
+//   4: r == 1.0        (exact shell — sols + bilin/align candidates)
+//   5: 1.0 < r ≤ 1.01  (just above)
+//   6: 1.01 < r ≤ 1.10
+//   7: r > 1.10        (far above; should not happen if prune is right)
+pub const N_SHELL_BINS: usize = 8;
+pub static N_LEAF_BY_SHELL_RATIO: [AtomicU64; 8] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+
+/// 2-D histogram: (depth-1 partial ratio p1/T, leaf shell ratio r).
+/// Tells us whether r>1.10 leaves come from already-near-T at depth 1 (loose
+/// at depth 1, depth-0 expansion adds little) or from arbitrary depth-1 mass
+/// (depth-0 adds substantial mass). Rows = 4 depth-1 partial bins, cols = 8
+/// shell-ratio bins.
+pub const N_D1_BINS: usize = 4;
+pub static N_LEAF_BY_D1_AND_SHELL: [[AtomicU64; 8]; 4] = [
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
+    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
+];
+
+thread_local! {
+    /// f64 partial_eucl captured at depth-0 entry (= depth-1 outgoing partial).
+    /// Read at leaf time to condition the shell-ratio histogram.
+    pub static D1_PARTIAL_TLS: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+}
+
+#[inline]
+fn shell_bin(r: f64) -> usize {
+    if r <= 0.50 { 0 }
+    else if r <= 0.90 { 1 }
+    else if r <= 0.99 { 2 }
+    else if r < 1.00  { 3 }
+    else if r == 1.00 { 4 }
+    else if r <= 1.01 { 5 }
+    else if r <= 1.10 { 6 }
+    else { 7 }
+}
+
+#[inline]
+fn d1_bin(p_over_t: f64) -> usize {
+    if p_over_t < 0.5 { 0 }
+    else if p_over_t < 0.9 { 1 }
+    else if p_over_t < 0.99 { 2 }
+    else { 3 } // 0.99..=1.0 (or above, but pruned at higher depths)
+}
+
+#[inline]
+pub fn record_leaf_shell_ratio(norm_sq: i64, target: i64) {
+    let r = norm_sq as f64 / target as f64;
+    let s_bin = shell_bin(r);
+    N_LEAF_BY_SHELL_RATIO[s_bin].fetch_add(1, Ordering::Relaxed);
+    let p1 = D1_PARTIAL_TLS.with(|c| c.get());
+    let p1_over_t = p1 / target as f64;
+    let d_bin = d1_bin(p1_over_t);
+    N_LEAF_BY_D1_AND_SHELL[d_bin][s_bin].fetch_add(1, Ordering::Relaxed);
+}
+
+/// One prune-event sample for the offline oracle audit. Captures z + depth
+/// + the f64 partial so we can recompute the MPFR oracle partial later and
+/// classify true-positive vs false-negative.
+#[derive(Clone, Copy, Debug)]
+pub struct PruneSample {
+    pub depth: i32,
+    pub z: [i64; 16],
+    pub f64_partial: f64,
+    pub threshold: f64,
+}
+
+/// Stratified reservoir: 5 bins × 1000 samples by `f64_partial / threshold`.
+/// Bin layout: [1.0,1.05), [1.05,1.5), [1.5,2.0), [2.0,5.0), [5.0,∞).
+pub static SAMPLES_BIN_0: Mutex<Vec<PruneSample>> = Mutex::new(Vec::new());
+pub static SAMPLES_BIN_1: Mutex<Vec<PruneSample>> = Mutex::new(Vec::new());
+pub static SAMPLES_BIN_2: Mutex<Vec<PruneSample>> = Mutex::new(Vec::new());
+pub static SAMPLES_BIN_3: Mutex<Vec<PruneSample>> = Mutex::new(Vec::new());
+pub static SAMPLES_BIN_4: Mutex<Vec<PruneSample>> = Mutex::new(Vec::new());
+
+pub static BIN_FULL_0: AtomicBool = AtomicBool::new(false);
+pub static BIN_FULL_1: AtomicBool = AtomicBool::new(false);
+pub static BIN_FULL_2: AtomicBool = AtomicBool::new(false);
+pub static BIN_FULL_3: AtomicBool = AtomicBool::new(false);
+pub static BIN_FULL_4: AtomicBool = AtomicBool::new(false);
+
+pub static SAMPLE_ARMED: AtomicBool = AtomicBool::new(false);
+
+const MAX_PER_BIN: usize = 1000;
+
+pub fn arm_sampling() {
+    for v in [&SAMPLES_BIN_0, &SAMPLES_BIN_1, &SAMPLES_BIN_2, &SAMPLES_BIN_3, &SAMPLES_BIN_4] {
+        if let Ok(mut g) = v.lock() { g.clear(); }
+    }
+    for f in [&BIN_FULL_0, &BIN_FULL_1, &BIN_FULL_2, &BIN_FULL_3, &BIN_FULL_4] {
+        f.store(false, Ordering::Relaxed);
+    }
+    SAMPLE_ARMED.store(true, Ordering::Release);
+}
+
+#[inline]
+fn bin_of(ratio: f64) -> usize {
+    if ratio < 1.05 { 0 }
+    else if ratio < 1.5 { 1 }
+    else if ratio < 2.0 { 2 }
+    else if ratio < 5.0 { 3 }
+    else { 4 }
+}
+
+#[inline]
+pub fn sample_prune_event(depth: i32, z: &[i64; 16], f64_partial: f64, threshold: f64) {
+    if !SAMPLE_ARMED.load(Ordering::Relaxed) { return; }
+    let ratio = f64_partial / threshold;
+    let bin = bin_of(ratio);
+    let (full, samples) = match bin {
+        0 => (&BIN_FULL_0, &SAMPLES_BIN_0),
+        1 => (&BIN_FULL_1, &SAMPLES_BIN_1),
+        2 => (&BIN_FULL_2, &SAMPLES_BIN_2),
+        3 => (&BIN_FULL_3, &SAMPLES_BIN_3),
+        _ => (&BIN_FULL_4, &SAMPLES_BIN_4),
+    };
+    if full.load(Ordering::Relaxed) { return; }
+    if let Ok(mut v) = samples.lock() {
+        if v.len() < MAX_PER_BIN {
+            v.push(PruneSample { depth, z: *z, f64_partial, threshold });
+            if v.len() >= MAX_PER_BIN {
+                full.store(true, Ordering::Release);
+            }
+        }
+    }
+}
+
+pub fn collect_all_samples() -> Vec<PruneSample> {
+    let mut all = Vec::new();
+    for v in [&SAMPLES_BIN_0, &SAMPLES_BIN_1, &SAMPLES_BIN_2, &SAMPLES_BIN_3, &SAMPLES_BIN_4] {
+        if let Ok(g) = v.lock() {
+            all.extend(g.iter().copied());
+        }
+    }
+    all
+}
+
 /// Record one lazy_size_reduce invocation's pass count.
 pub fn record_lazy_passes(passes: u64) {
     N_LAZY_PASSES_TOTAL.fetch_add(passes, Ordering::Relaxed);
@@ -183,8 +448,26 @@ pub fn reset_all() {
         &N_ALIGN_REJECTED,
         &N_SOLS_RETURNED,
         &T_LEAF_CHECK_NS,
+        &N_PRUNE_FIRES,
+        &N_PRUNE_FIRES_NEAR,
+        &N_PRUNE_FIRES_VERY_NEAR,
+        &N_VERIFY_PRUNE_FIRES,
+        &N_VERIFY_PRUNE_CORRECTED,
+        &T_VERIFY_DD_NS,
     ] {
         c.store(0, Ordering::Relaxed);
+    }
+    for c in N_RECURSE_ENTER_AT_DEPTH.iter()
+        .chain(N_PRUNE_FIRES_AT_DEPTH.iter())
+        .chain(N_PRUNE_ACTUAL_AT_DEPTH.iter())
+        .chain(N_LEAF_BY_SHELL_RATIO.iter())
+    {
+        c.store(0, Ordering::Relaxed);
+    }
+    for row in N_LEAF_BY_D1_AND_SHELL.iter() {
+        for c in row.iter() {
+            c.store(0, Ordering::Relaxed);
+        }
     }
 }
 

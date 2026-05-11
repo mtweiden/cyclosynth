@@ -48,6 +48,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
+use std::sync::atomic::Ordering;
 use super::scratch::IntScratch16;
 
 /// BKZ block size. β=2 is LLL-equivalent; β≥3 gives strict improvement.
@@ -239,18 +240,26 @@ fn enumerate_recursive(
 /// The Gram matrix is updated in lockstep using
 /// [`super::lll::gram_update_size_reduce`] for `add` ops and
 /// [`super::lll::gram_update_swap`] for swap ops.
+/// Returns `Ok(())` on successful insertion; `Err(())` when the SVP
+/// coordinate vector hits the unimplemented general-case (no ±1 entry)
+/// branch. The caller should skip the BKZ tour step in that case — the
+/// basis remains LLL-reduced (the prior reduction state is preserved).
 pub fn bkz_insert(
     scratch: &mut IntScratch16,
     kappa: usize,
     block_size: usize,
     x: &[i64],
-) {
+) -> Result<(), ()> {
     debug_assert_eq!(x.len(), block_size);
     debug_assert!(kappa + block_size <= 16);
+
+    // Diagnostic: count how often each branch fires (gated on tracing).
+    let trace = crate::synthesis::diag::trace_enabled();
 
     // Branch 1: all-zero except one ±1 — just move it to κ.
     let nonzero: Vec<usize> = (0..block_size).filter(|&i| x[i] != 0).collect();
     if nonzero.len() == 1 {
+        if trace { crate::synthesis::diag::N_BKZ_BRANCH1.fetch_add(1, Ordering::Relaxed); }
         let i = nonzero[0];
         let sign = x[i];
         if i != 0 {
@@ -265,11 +274,12 @@ pub fn bkz_insert(
         if sign < 0 {
             negate_row(scratch, kappa);
         }
-        return;
+        return Ok(());
     }
 
     // Branch 2: some |x[i]| = 1 — use it as a pivot.
     if let Some(piv_idx) = (0..block_size).find(|&i| x[i].abs() == 1) {
+        if trace { crate::synthesis::diag::N_BKZ_BRANCH2.fetch_add(1, Ordering::Relaxed); }
         let piv_sign = x[piv_idx];
         // For every other non-zero coord j, do
         //   b_{κ+piv_idx} ← b_{κ+piv_idx} + sign · |x[j]| · b_{κ+j}
@@ -315,47 +325,125 @@ pub fn bkz_insert(
                 super::lll::gram_update_swap(scratch, from, to);
             }
         }
-        return;
+        return Ok(());
     }
 
     // Branch 3: general case — binary-GCD tree on |x|, mirrored on
-    // basis rows. After the tree, one row equals the gcd-multiple
-    // of the target; if gcd = 1 (generic) it equals the target.
+    // basis rows. After the tree, one row equals the gcd-multiple of
+    // the target; if gcd = 1 (generic) it equals the target.
     //
-    // Algorithm (fplll bkz.cpp:332–369):
+    // **Cofactor ↔ basis relationship**: the SVP vector is v = Σᵢ xᵢ bᵢ.
+    // To preserve v, the cofactor op `x[k] ← x[k] − x[k_off]` must be
+    // mirrored by the basis op `b[k_off] ← b[k_off] + b[k]`. Proof: if
+    // we set b[k_off]' = b[k_off] + b[k] and substitute into v, then
+    // (x[k] − x[k_off])·b[k] + x[k_off]·b[k_off]' = x[k]·b[k] − x[k_off]·b[k]
+    // + x[k_off]·b[k_off] + x[k_off]·b[k] = x[k]·b[k] + x[k_off]·b[k_off]. ✓
     //
-    //   sign-normalise: for each i with x[i] < 0, negate x[i] AND
-    //     negate row κ+i (so x is non-negative).
-    //   off = 1
-    //   while off < block_size:
-    //       for k from block_size-1 down by 2*off, while k-off >= 0:
-    //           if x[k] < x[k-off]: swap x[k], x[k-off]; row_swap
-    //           while x[k-off] != 0:
-    //               while x[k-off] <= x[k]:
-    //                   x[k] -= x[k-off]
-    //                   row_add(κ+k-off, κ+k) i.e. b_{k-off} += b_k? no
-    //                      Actually the right primal op is:
-    //                      b_{κ+k} ← b_{κ+k} − b_{κ+(k-off)}? Let's
-    //                      re-derive. The agent's report says
-    //                      `m.row_add(κ+k-off, κ+k)` which in fplll
-    //                      adds row `κ+k` to row `κ+k-off`.
-    //                      Mirror: x[k-off] += x[k] (cofactor space),
-    //                      hence x[k-off] − x[k] in the loop = x[k]
-    //                      decrements... hmm need to re-check.
-    //               swap x[k], x[k-off]; row_swap
-    //       off *= 2
+    // Equivalent for swap: `x.swap(k, k_off)` mirrors `b.swap(k, k_off)`.
+    // Equivalent for negate: `x[i] ← -x[i]` mirrors `b[i] ← -b[i]`.
     //
-    // Result: gcd lands at x[block_size-1], which is the row to move
-    // into κ.
+    // **gcd > 1 case** (rare): the SVP returned a non-primitive vector
+    // — v = g·v_prim where v_prim is the truly shortest. We can't pull
+    // out the g factor with pure-integer ops on the basis. Bail (no
+    // mutation) so the caller can skip κ with the LLL-reduced basis
+    // intact. Detect early by computing gcd(x) up front.
+
+    // Compute gcd(|x[0..block_size]|). If > 1, return Err without
+    // mutating basis (caller skips, basis stays LLL-reduced).
+    fn gcd_i64(a: i64, b: i64) -> i64 {
+        let (mut a, mut b) = (a.unsigned_abs(), b.unsigned_abs());
+        while b != 0 {
+            let t = a % b;
+            a = b;
+            b = t;
+        }
+        a as i64
+    }
+    let mut g: i64 = 0;
+    for &xi in x {
+        g = gcd_i64(g, xi);
+        if g == 1 { break; }
+    }
+    if g != 1 {
+        if trace { crate::synthesis::diag::N_BKZ_BRANCH3_NONPRIMITIVE.fetch_add(1, Ordering::Relaxed); }
+        return Err(());
+    }
+    if trace { crate::synthesis::diag::N_BKZ_BRANCH3_SUCCESS.fetch_add(1, Ordering::Relaxed); }
+
+    // From here on, gcd = 1 guaranteed → the algorithm will succeed.
+    let mut x: Vec<i64> = x.to_vec();
+
+    // Sign-normalise: ensure x[i] ≥ 0 by negating both the cofactor
+    // and the corresponding basis row.
+    for i in 0..block_size {
+        if x[i] < 0 {
+            x[i] = -x[i];
+            negate_row(scratch, kappa + i);
+        }
+    }
+
+    // Binary-GCD-like tree: at off=1 reduce adjacent pairs, then off=2,
+    // off=4, … doubling each round. After each pair-reduction the
+    // higher index of the pair holds the partial gcd; the lower is 0.
     //
-    // (This branch is rare for SE output but must be correct. We'll
-    // implement and test it; SVP enum from a properly LLL-reduced
-    // basis usually returns x with at least one ±1 entry, hitting
-    // branch 2 above.)
-    panic!(
-        "bkz_insert: general case (x with no ±1 entry) not yet implemented; \
-         got x = {x:?} at kappa = {kappa}, block_size = {block_size}"
-    );
+    // Uses integer division (x[k] mod x[k_off]) for O(log) inner-loop
+    // instead of fplll's repeated subtraction. The corresponding
+    // basis op b[k_off] += q·b[k] is one row addition with multiplier q.
+    let mut off = 1usize;
+    while off < block_size {
+        let step = 2 * off;
+        let mut k = block_size - 1;
+        loop {
+            if k < off { break; }
+            let k_off = k - off;
+            // Ensure x[k] ≥ x[k_off] entering the Euclidean reduction.
+            if x[k] < x[k_off] {
+                x.swap(k, k_off);
+                scratch.basis.swap(kappa + k, kappa + k_off);
+                super::lll::gram_update_swap(scratch, kappa + k, kappa + k_off);
+            }
+            // Euclidean reduction: reduce x[k] mod x[k_off] until 0.
+            while x[k_off] != 0 {
+                // q = x[k] / x[k_off] ≥ 1 here (since x[k] ≥ x[k_off] > 0).
+                let q = x[k] / x[k_off];
+                x[k] -= q * x[k_off];
+                // Basis op: b[k_off] ← b[k_off] + q · b[k].
+                // Realize as: b[k_off] ← b[k_off] − (−q)·b[k].
+                for c in 0..16 {
+                    scratch.basis[kappa + k_off][c] +=
+                        q * scratch.basis[kappa + k][c];
+                }
+                super::lll::gram_update_size_reduce(
+                    scratch, kappa + k_off, kappa + k, -q,
+                );
+                // Now x[k] < x[k_off]. Swap to restore invariant.
+                x.swap(k, k_off);
+                scratch.basis.swap(kappa + k, kappa + k_off);
+                super::lll::gram_update_swap(scratch, kappa + k, kappa + k_off);
+            }
+            // x[k_off] = 0 here; x[k] holds gcd of the pair's originals.
+            if k < step { break; }
+            k -= step;
+        }
+        off *= 2;
+    }
+
+    // After all rounds: x[block_size - 1] = 1 (since we pre-checked gcd = 1).
+    // All other x[i] = 0. Row κ+block_size-1 now equals Σ x_orig[i]·b[κ+i].
+    let final_idx = block_size - 1;
+    debug_assert_eq!(x[final_idx], 1,
+        "branch-3 invariant: gcd-bearing position should equal 1 (gcd was checked = 1)");
+
+    // Move row κ+final_idx to position κ.
+    if final_idx != 0 {
+        for k in (0..final_idx).rev() {
+            let from = kappa + k + 1;
+            let to = kappa + k;
+            scratch.basis.swap(from, to);
+            super::lll::gram_update_swap(scratch, from, to);
+        }
+    }
+    Ok(())
 }
 
 /// Negate row `i` of the basis (and the corresponding rows/columns
@@ -447,8 +535,11 @@ pub fn bkz_tours(
             // strictly better (within δ-tolerance handled by radius_sq).
             if found_norm_sq < r_kk {
                 // Try the insertion. If it hits the unimplemented
-                // branch, panic propagates up; caller catches.
-                bkz_insert(scratch, kappa, block_size, &x);
+                // general-case branch, skip this κ and keep going —
+                // basis remains LLL-reduced.
+                if bkz_insert(scratch, kappa, block_size, &x).is_err() {
+                    continue;
+                }
                 clean = false;
                 any_change = true;
 
@@ -570,7 +661,7 @@ mod tests {
         let mut s = IntScratch16::new(1e-3);
         setup_identity_basis(&mut s);
         // x = [0, 1, 0, 0] at kappa=0: swap row 1 → row 0.
-        bkz_insert(&mut s, 0, 4, &[0, 1, 0, 0]);
+        bkz_insert(&mut s, 0, 4, &[0, 1, 0, 0]).expect("test case should succeed");
         // After swap: basis row 0 = e_1 = [0,1,0,...], row 1 = e_0.
         assert_eq!(s.basis[0][1], 1);
         assert_eq!(s.basis[0][0], 0);
@@ -584,7 +675,7 @@ mod tests {
         let mut s = IntScratch16::new(1e-3);
         setup_identity_basis(&mut s);
         // x = [-1, 0, 0, 0]: just negate row 0.
-        bkz_insert(&mut s, 0, 4, &[-1, 0, 0, 0]);
+        bkz_insert(&mut s, 0, 4, &[-1, 0, 0, 0]).expect("test case should succeed");
         assert_eq!(s.basis[0][0], -1);
         for j in 1..16 {
             assert_eq!(s.basis[0][j], 0);
@@ -597,7 +688,7 @@ mod tests {
         let mut s = IntScratch16::new(1e-3);
         setup_identity_basis(&mut s);
         // x = [1, 1, 0, 0]: row 0 ← e_0 + e_1 = [1, 1, 0, ...].
-        bkz_insert(&mut s, 0, 4, &[1, 1, 0, 0]);
+        bkz_insert(&mut s, 0, 4, &[1, 1, 0, 0]).expect("test case should succeed");
         assert_eq!(s.basis[0][0], 1);
         assert_eq!(s.basis[0][1], 1);
         for j in 2..16 {
@@ -612,7 +703,7 @@ mod tests {
         setup_identity_basis(&mut s);
         // x = [-1, 2, 1, 0]: pivot at idx=0 (sign=-1), absorbs 2·e_1 + 1·e_2.
         // Result: row 0 should equal -1·e_0 + 2·e_1 + 1·e_2 = [-1, 2, 1, 0,...].
-        bkz_insert(&mut s, 0, 4, &[-1, 2, 1, 0]);
+        bkz_insert(&mut s, 0, 4, &[-1, 2, 1, 0]).expect("test case should succeed");
         assert_eq!(s.basis[0][0], -1);
         assert_eq!(s.basis[0][1], 2);
         assert_eq!(s.basis[0][2], 1);
@@ -620,6 +711,51 @@ mod tests {
             assert_eq!(s.basis[0][j], 0);
         }
         assert_gram_matches_basis(&s);
+    }
+
+    #[test]
+    fn bkz_insert_branch3_general_case() {
+        let mut s = IntScratch16::new(1e-3);
+        setup_identity_basis(&mut s);
+        // x = [2, 3, 0, 0]: no ±1 entries. gcd(2,3) = 1.
+        // Row 0 should end up = 2·e_0 + 3·e_1 = [2, 3, 0, …].
+        bkz_insert(&mut s, 0, 4, &[2, 3, 0, 0]).expect("gcd=1 case should succeed");
+        assert_eq!(s.basis[0][0], 2);
+        assert_eq!(s.basis[0][1], 3);
+        for j in 2..16 {
+            assert_eq!(s.basis[0][j], 0);
+        }
+        assert_gram_matches_basis(&s);
+    }
+
+    #[test]
+    fn bkz_insert_branch3_negative_coords() {
+        let mut s = IntScratch16::new(1e-3);
+        setup_identity_basis(&mut s);
+        // x = [-3, 2, -5, 0]: negative entries, gcd(3,2,5) = 1.
+        // Row 0 should equal -3·e_0 + 2·e_1 + (-5)·e_2 = [-3, 2, -5, 0, ...].
+        bkz_insert(&mut s, 0, 4, &[-3, 2, -5, 0])
+            .expect("gcd=1 case should succeed");
+        assert_eq!(s.basis[0][0], -3);
+        assert_eq!(s.basis[0][1], 2);
+        assert_eq!(s.basis[0][2], -5);
+        for j in 3..16 {
+            assert_eq!(s.basis[0][j], 0);
+        }
+        assert_gram_matches_basis(&s);
+    }
+
+    #[test]
+    fn bkz_insert_branch3_nonprimitive_bails() {
+        let mut s = IntScratch16::new(1e-3);
+        setup_identity_basis(&mut s);
+        let basis_before = s.basis;
+        // x = [2, 4, 6, 0]: gcd = 2 > 1. Should return Err without
+        // mutating the basis.
+        let res = bkz_insert(&mut s, 0, 4, &[2, 4, 6, 0]);
+        assert!(res.is_err(), "non-primitive cofactor should return Err");
+        assert_eq!(s.basis, basis_before,
+            "basis must be unchanged when Branch 3 bails on gcd > 1");
     }
 
     /// End-to-end: run our LLL on a real Q-matrix (from a synthesis
