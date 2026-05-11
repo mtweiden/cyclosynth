@@ -207,6 +207,28 @@ pub static N_BKZ_BRANCH2: AtomicU64 = AtomicU64::new(0);
 pub static N_BKZ_BRANCH3_SUCCESS: AtomicU64 = AtomicU64::new(0);
 pub static N_BKZ_BRANCH3_NONPRIMITIVE: AtomicU64 = AtomicU64::new(0);
 
+// ─── Depth-1 shell-discriminant filter (measurement-only) ────────────────────
+//
+// At depth 1 with z[2..15] fixed, the shell equation ‖x‖² = T is a quadratic
+// in z[0] with coefficients depending on z[1]:
+//   a z[0]² + 2(G_01 z[1] + v_0) z[0] + (G_11 z[1]² + 2 v_1 z[1] + A − T) = 0
+// where a = G_00 = ‖basis[0]‖², G_01 = basis[0]·basis[1], G_11 = ‖basis[1]‖²,
+// v_j = y·basis[j], A = ‖y‖², y = x − z[0]_curr·basis[0] − z[1]_curr·basis[1].
+//
+// For an integer z[0] solution to exist, the discriminant D = b² − 4ac must
+// be (a) ≥ 0 and (b) a perfect square. Counters measure how often each
+// condition fires across z[1] candidates that survive the existing
+// partial_eucl prune (i.e., that would otherwise recurse to depth 0).
+//
+// The mod-16 check is a cheap necessary condition for perfect-square: every
+// perfect square is ≡ 0, 1, 4, or 9 mod 16, so D mod 16 ∉ {0,1,4,9} ⟹ not a
+// square ⟹ no integer z[0]. Mod-16 rejects ~75% of random non-squares.
+pub static N_QFILTER_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static N_QFILTER_D_NEG: AtomicU64 = AtomicU64::new(0);
+pub static N_QFILTER_D_GE0_MOD16_BAD: AtomicU64 = AtomicU64::new(0);
+pub static N_QFILTER_D_GE0_NOT_SQUARE: AtomicU64 = AtomicU64::new(0);
+pub static N_QFILTER_PERFECT_SQUARE: AtomicU64 = AtomicU64::new(0);
+
 // ─── Per-depth survivorship (critic Step 1) ──────────────────────────────────
 //
 // Indexed by depth 0..16. recurse-call enter, prune-fire, and prune-actual
@@ -454,6 +476,11 @@ pub fn reset_all() {
         &N_VERIFY_PRUNE_FIRES,
         &N_VERIFY_PRUNE_CORRECTED,
         &T_VERIFY_DD_NS,
+        &N_QFILTER_TOTAL,
+        &N_QFILTER_D_NEG,
+        &N_QFILTER_D_GE0_MOD16_BAD,
+        &N_QFILTER_D_GE0_NOT_SQUARE,
+        &N_QFILTER_PERFECT_SQUARE,
     ] {
         c.store(0, Ordering::Relaxed);
     }
