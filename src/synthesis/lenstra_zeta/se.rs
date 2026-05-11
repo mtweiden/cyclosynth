@@ -26,6 +26,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
+use i256::i256;
+
 /// Diagnostic-only: skip the partial Euclidean norm prune in the SE walk.
 /// Initialized from `CYCLOSYNTH_BYPASS_NORM_PRUNE=1`, but **mutable at
 /// runtime** via `set_bypass_norm_prune` so a single process can toggle
@@ -278,6 +280,123 @@ pub fn analytical_depth0_z0_candidates(
         }
     }
     n
+}
+
+/// Depth-1 shell-discriminant state. At depth 1 with `z[2..15]` fixed, the
+/// shell equation `‖x‖² = T` (T = `target_norm_sq_i64`) is the quadratic
+/// `G_00·z[0]² + 2(G_01·z[1] + v_0)·z[0] + (G_11·z[1]² + 2·v_1·z[1] + A − T) = 0`
+/// in z[0], parametrized by z[1]. For an integer solution to exist for a
+/// given z[1], the discriminant must be ≥ 0 and a perfect square.
+///
+/// Returns `(G_00, G_01, G_11, A, v_0, v_1)` as i256. Magnitudes can exceed
+/// i128 at cliff conditions (basis ~ 2^41, z_c ~ 2^43, so y_i ~ 2^88 and
+/// y_i² sum ~ 2^180). i256 carries everything safely.
+#[inline]
+fn qfilter_depth1_state(
+    basis: &[[i64; 16]; 16],
+    x: &[i64; 16],
+    z0_curr: i64,
+    z1_curr: i64,
+) -> (i256, i256, i256, i256, i256, i256) {
+    let mut g_00 = i256::from_i64(0);
+    let mut g_01 = i256::from_i64(0);
+    let mut g_11 = i256::from_i64(0);
+    for i in 0..16 {
+        let b0 = i256::from_i64(basis[0][i]);
+        let b1 = i256::from_i64(basis[1][i]);
+        g_00 = g_00.wrapping_add(b0.wrapping_mul(b0));
+        g_01 = g_01.wrapping_add(b0.wrapping_mul(b1));
+        g_11 = g_11.wrapping_add(b1.wrapping_mul(b1));
+    }
+    let z0 = i256::from_i64(z0_curr);
+    let z1 = i256::from_i64(z1_curr);
+    let mut a = i256::from_i64(0);
+    let mut v_0 = i256::from_i64(0);
+    let mut v_1 = i256::from_i64(0);
+    for i in 0..16 {
+        let b0 = i256::from_i64(basis[0][i]);
+        let b1 = i256::from_i64(basis[1][i]);
+        let y_i = i256::from_i64(x[i])
+            .wrapping_sub(z0.wrapping_mul(b0))
+            .wrapping_sub(z1.wrapping_mul(b1));
+        a = a.wrapping_add(y_i.wrapping_mul(y_i));
+        v_0 = v_0.wrapping_add(y_i.wrapping_mul(b0));
+        v_1 = v_1.wrapping_add(y_i.wrapping_mul(b1));
+    }
+    (g_00, g_01, g_11, a, v_0, v_1)
+}
+
+/// Newton's-method floor-isqrt for non-negative i256. Returns ⌊√n⌋. Caller
+/// must ensure n ≥ 0 (returns garbage for n < 0).
+///
+/// Convergence: with a 2^⌈bits/2⌉ seed, Newton's quadratic convergence
+/// reaches the fixed point in O(log(bits)) ≈ 7-8 iterations for full-i256.
+#[inline]
+fn isqrt_i256(n: i256) -> i256 {
+    let zero = i256::from_i64(0);
+    if n <= zero {
+        return zero;
+    }
+    if n < i256::from_i64(4) {
+        return i256::from_i64(1);
+    }
+    let bits = 256 - n.leading_zeros();
+    let seed_shift = (bits + 1) / 2;
+    let mut x = i256::from_i64(1).wrapping_shl(seed_shift);
+    loop {
+        let q = n.wrapping_div(x);
+        if q >= x {
+            break;
+        }
+        x = x.wrapping_add(q).wrapping_shr(1);
+    }
+    x
+}
+
+/// For a depth-1 z[1] candidate `zd`, classify the shell discriminant into
+/// four buckets:
+///   `0` — D < 0 (no real z[0] solution)
+///   `1` — D ≥ 0 but mod-16 says not a perfect square (no integer z[0])
+///   `2` — D ≥ 0, mod-16 OK, but isqrt²≠D (not a perfect square — no int z[0])
+///   `3` — D ≥ 0 and D is a perfect square (filter passes — recurse)
+///
+/// The mod-16 test is a cheap necessary condition; the isqrt test is the
+/// definitive integer-z[0]-existence check.
+///
+/// D = 4·D_per_4 where D_per_4 = `b_lin² − G_00·c`. D is a perfect square
+/// iff D_per_4 is (since 4 = 2²). So we operate on D_per_4 throughout.
+#[inline]
+fn qfilter_discriminant_class(
+    g_00: i256,
+    g_01: i256,
+    g_11: i256,
+    a: i256,
+    v_0: i256,
+    v_1: i256,
+    target_norm_sq_i64: i64,
+    zd: i64,
+) -> u8 {
+    let zd_i = i256::from_i64(zd);
+    let two = i256::from_i64(2);
+    let b_lin = g_01.wrapping_mul(zd_i).wrapping_add(v_0);
+    let c = g_11
+        .wrapping_mul(zd_i)
+        .wrapping_mul(zd_i)
+        .wrapping_add(two.wrapping_mul(v_1).wrapping_mul(zd_i))
+        .wrapping_add(a.wrapping_sub(i256::from_i64(target_norm_sq_i64)));
+    let d_per_4 = b_lin
+        .wrapping_mul(b_lin)
+        .wrapping_sub(g_00.wrapping_mul(c));
+    if d_per_4 < i256::from_i64(0) {
+        return 0;
+    }
+    let rem = d_per_4.wrapping_rem_i128(4);
+    let rem_pos = if rem < 0 { rem + 4 } else { rem };
+    if rem_pos != 0 && rem_pos != 1 {
+        return 1;
+    }
+    let s = isqrt_i256(d_per_4);
+    if s.wrapping_mul(s) == d_per_4 { 3 } else { 2 }
 }
 
 /// Compute `Σ_{i ≥ depth} (R · z)[i]²` in inline double-double (~106 bits)
@@ -1318,6 +1437,16 @@ fn recurse_collect_norm_pruned<F>(
     if trace && depth == 0 {
         crate::synthesis::diag::D1_PARTIAL_TLS.with(|c| c.set(partial_eucl));
     }
+    // Depth-1 shell-discriminant filter measurement (trace-gated). z[2..15]
+    // is fixed for the duration of this call's bracket loop; precompute
+    // (G_00, G_01, G_11, A, v_0, v_1) once, then bin each z[1] candidate
+    // by sign and mod-16 of the discriminant. No behaviour change.
+    let qfilter_state: Option<(i256, i256, i256, i256, i256, i256)> =
+        if trace && depth == 1 {
+            Some(qfilter_depth1_state(basis, x, z[0], z[1]))
+        } else {
+            None
+        };
     if depth < 0 {
         let prev = budget.fetch_sub(1, Ordering::Relaxed);
         if prev <= 1 {
@@ -1501,6 +1630,26 @@ fn recurse_collect_norm_pruned<F>(
         // cheaper, multiplying tree-traversal cost. The integer check is
         // already inside `leaf_filter`'s first stage; replicating it here
         // is pure overhead without budget-model changes.
+
+        // Depth-1 Q-filter measurement (trace-only, no behaviour change).
+        // Count whether this z[1] candidate could yield an integer z[0]
+        // hitting the shell exactly. See `qfilter_discriminant_class`.
+        if let Some((g_00, g_01, g_11, a_q, v_0, v_1)) = qfilter_state {
+            let class = qfilter_discriminant_class(
+                g_00, g_01, g_11, a_q, v_0, v_1, target_norm_sq_i64, zd,
+            );
+            crate::synthesis::diag::N_QFILTER_TOTAL.fetch_add(1, Ordering::Relaxed);
+            match class {
+                0 => crate::synthesis::diag::N_QFILTER_D_NEG.fetch_add(1, Ordering::Relaxed),
+                1 => crate::synthesis::diag::N_QFILTER_D_GE0_MOD16_BAD
+                    .fetch_add(1, Ordering::Relaxed),
+                2 => crate::synthesis::diag::N_QFILTER_D_GE0_NOT_SQUARE
+                    .fetch_add(1, Ordering::Relaxed),
+                _ => crate::synthesis::diag::N_QFILTER_PERFECT_SQUARE
+                    .fetch_add(1, Ordering::Relaxed),
+            };
+        }
+
         recurse_collect_norm_pruned(
             depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
             new_partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
