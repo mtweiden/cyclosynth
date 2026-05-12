@@ -57,20 +57,28 @@ pub fn set_bypass_norm_prune(value: bool) {
 // ‖x‖² = T exactly (the leaf filter's hard requirement). 99.98%
 // rejection rate at the cliff per the qfilter measurement.
 //
-// Why default off: the filter interacts badly with the multi-lde
-// search at deep ε. With filter active, depth-1 nodes are much
-// cheaper than depth-0 recursion, so the per-node budget lets the
-// walker explore ~9× wider at depth 1. At lde levels with no
-// solution, the walker burns the entire budget at filter overhead
-// (~200 ns/node × 9× wider × num_threads) instead of bailing
-// quickly. Cliff probe (theta=1.1, ε=1.5e-8): lde=21 (no sol)
-// took 631 s with filter vs ~5 s baseline.
+// Phantom-node budget (`PHANTOM_PER_REJECT`) charges each rejected
+// candidate ~8 budget units (matching the depth-0+leaves subtree the
+// filter saved), so the per-node budget admits roughly the same total
+// work as if the filter were inactive. Fixes the original "100× wider
+// admission" pathology (commit 073f09d → this commit).
+//
+// Why still default off: mixed results across ε=1e-8 targets.
+// theta=1.1 wins (9.6 s vs 11.85 s baseline), but easier-walk targets
+// regress (theta=0.3 at lde=24 takes 1134 s vs 627 s baseline,
+// theta=0.7 takes 24 s vs 16 s). The filter overhead in production
+// is higher than micro-benchmarks predict (cache contention across
+// 14 threads, precompute paid on every depth-1 entry even when
+// candidates would have been cheap to enumerate). Phase-4 work
+// needed before default-on:
+//   (a) selective enablement (e.g., only when partial_eucl is near
+//       threshold — the "shell-tight" regime where filter wins);
+//   (b) cheaper filter (f64 fast-path for D<0; lazy isqrt);
+//   (c) incremental v_0, v_1, A maintenance across depths 2..15 to
+//       amortize the 400 ns precompute.
 //
 // Set `CYCLOSYNTH_QFILTER=1` to enable, or call
-// `set_qfilter_enabled(true)`. Unlocking this in production
-// requires either: (a) bailing on "lde has no solution" before
-// exhausting budget; (b) a separate per-lde budget; or (c) a
-// cheaper depth-1 precompute.
+// `set_qfilter_enabled(true)`.
 static QFILTER_ENABLED: AtomicBool = AtomicBool::new(false);
 static QFILTER_INIT: OnceLock<()> = OnceLock::new();
 
@@ -329,6 +337,23 @@ pub fn analytical_depth0_z0_candidates(
 /// i128 at cliff conditions (basis ~ 2^41, z_c ~ 2^43, so y_i ~ 2^88 and
 /// y_i² sum ~ 2^180). i256 carries everything safely.
 #[inline]
+pub fn qfilter_depth1_state_pub(
+    basis: &[[i64; 16]; 16],
+    x: &[i64; 16],
+    z0_curr: i64,
+    z1_curr: i64,
+) -> (i256, i256, i256, i256, i256, i256) {
+    qfilter_depth1_state(basis, x, z0_curr, z1_curr)
+}
+pub fn isqrt_i256_pub(n: i256) -> i256 { isqrt_i256(n) }
+#[allow(clippy::too_many_arguments)]
+pub fn qfilter_discriminant_class_pub(
+    g_00: i256, g_01: i256, g_11: i256, a: i256, v_0: i256, v_1: i256,
+    target_norm_sq_i64: i64, zd: i64,
+) -> u8 {
+    qfilter_discriminant_class(g_00, g_01, g_11, a, v_0, v_1, target_norm_sq_i64, zd)
+}
+
 fn qfilter_depth1_state(
     basis: &[[i64; 16]; 16],
     x: &[i64; 16],
@@ -1696,6 +1721,22 @@ fn recurse_collect_norm_pruned<F>(
                 };
             }
             if class != 3 {
+                // Phantom-node budget: the filter saved us from a depth-0
+                // subtree visit. Charge the budget equal to the skipped
+                // subtree size (1 depth-0 entry + ~10 leaves) so the
+                // per-node budget admits the same total work as if the
+                // filter were inactive. Without this, filter-rejected
+                // entries consume only 1 node each, so the budget admits
+                // ~100× more depth-1 entries than the unfiltered case —
+                // making the filter ~10× slower at no-solution lde levels
+                // despite being correct.
+                const PHANTOM_PER_REJECT: u64 = 8;
+                if budget.fetch_sub(PHANTOM_PER_REJECT, Ordering::Relaxed)
+                    <= PHANTOM_PER_REJECT
+                {
+                    aborted.store(true, Ordering::Relaxed);
+                    return;
+                }
                 continue;
             }
         }
