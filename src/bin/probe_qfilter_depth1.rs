@@ -61,4 +61,72 @@ fn main() {
         let reject = d_neg + mod16_bad + not_sq;
         println!("    -- total filter rejections        {reject:>12} ({:>5.1}%)", pct(reject));
     }
+
+    // Per-depth profile: enter, prune-fires (f64 check), prune-actual (post
+    // verify rescue). At ε ≤ 2e-8 with verify on, fires ≠ actual.
+    println!();
+    println!("  per-depth enters / prune fires / prune actual:");
+    println!("    depth |  n_enter       |  n_fires        |  n_actual       | actual_rate");
+    for d in (0..16).rev() {
+        let n_e = diag::N_RECURSE_ENTER_AT_DEPTH[d].load(Ordering::Relaxed);
+        let n_p = diag::N_PRUNE_FIRES_AT_DEPTH[d].load(Ordering::Relaxed);
+        let n_a = diag::N_PRUNE_ACTUAL_AT_DEPTH[d].load(Ordering::Relaxed);
+        if n_e == 0 && n_p == 0 && n_a == 0 { continue; }
+        let rate = if n_e > 0 { 100.0 * n_a as f64 / n_e as f64 } else { 0.0 };
+        println!("    {d:>5} | {n_e:>14} | {n_p:>15} | {n_a:>15} | {rate:>6.1}%");
+    }
+
+    let n_vf = diag::N_VERIFY_PRUNE_FIRES.load(Ordering::Relaxed);
+    let n_vc = diag::N_VERIFY_PRUNE_CORRECTED.load(Ordering::Relaxed);
+    if n_vf > 0 {
+        println!("    verify rescue rate: {n_vc}/{n_vf} = {:.1}%", 100.0 * n_vc as f64 / n_vf as f64);
+    }
+
+    // Leaf-check ratio + mean per-leaf cost (A1)
+    let n_d0 = diag::N_RECURSE_ENTER_AT_DEPTH[0].load(Ordering::Relaxed);
+    let n_cb = diag::N_SE_CALLBACKS.load(Ordering::Relaxed);
+    let n_norm = diag::N_NORM_REJECTED.load(Ordering::Relaxed);
+    let n_bil = diag::N_BILINEAR_REJECTED.load(Ordering::Relaxed);
+    let n_sols = diag::N_SOLS_RETURNED.load(Ordering::Relaxed);
+    let t_leaf_ns = diag::T_LEAF_CHECK_NS.load(Ordering::Relaxed);
+    let t_dd_ns = diag::T_VERIFY_DD_NS.load(Ordering::Relaxed);
+    println!();
+    println!("  depth-0 → leaf accounting:");
+    println!("    depth-0 entries:           {n_d0:>14}");
+    println!("    leaf_filter calls:         {n_cb:>14}");
+    if n_d0 > 0 {
+        println!("    leaves per depth-0 entry:  {:>14.2}", n_cb as f64 / n_d0 as f64);
+    }
+    println!("    leaf norm-rejected:        {n_norm:>14}");
+    println!("    leaf bilinear-rejected:    {n_bil:>14}");
+    println!("    solutions returned:        {n_sols:>14}");
+    if n_cb > 0 {
+        println!("    mean leaf_filter time:   {:>14.1} ns", t_leaf_ns as f64 / n_cb as f64);
+    }
+    if n_vf > 0 {
+        println!("    mean dd verify time:     {:>14.1} ns", t_dd_ns as f64 / n_vf as f64);
+    }
+
+    // A3: production filter cost
+    let t_qpre = diag::T_QFILTER_PRECOMPUTE_NS.load(Ordering::Relaxed);
+    let t_qcls = diag::T_QFILTER_CLASSIFY_NS.load(Ordering::Relaxed);
+    let n_qpre = diag::N_QFILTER_PRECOMPUTE_CALLS.load(Ordering::Relaxed);
+    let n_qcls = diag::N_QFILTER_TOTAL.load(Ordering::Relaxed);
+    if n_qpre > 0 {
+        println!();
+        println!("  qfilter production timing (A3):");
+        println!("    mean precompute time:    {:>14.1} ns (n={n_qpre})", t_qpre as f64 / n_qpre as f64);
+        if n_qcls > 0 {
+            println!("    mean classify time:      {:>14.1} ns (n={n_qcls})", t_qcls as f64 / n_qcls as f64);
+        }
+    }
+
+    // Mechanism 3 discriminator: nodes consumed by first prefix's walker
+    // at the moment it returned the solution. Compare filter-on vs filter-
+    // off; similar ⇒ post-find drift; higher with filter ⇒ search-order
+    // disruption; lower with filter but wall still higher ⇒ per-node cost
+    // asymmetry dominates.
+    let nodes_at_find = diag::N_NODES_AT_FIRST_SOLUTION.load(Ordering::Relaxed);
+    println!();
+    println!("  *** nodes at first solution (per-prefix):  {nodes_at_find} ***");
 }
