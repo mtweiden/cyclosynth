@@ -79,57 +79,25 @@ pub fn phase1(
     max_phase2_calls: u64,
     budget_hit: &AtomicBool,
 ) -> Vec<[i64; 16]> {
-    phase1_with_stop(scratch, y, k, eps, max_phase2_calls, budget_hit, |_| false)
+    phase1_with_stop(scratch, y, k, eps, max_phase2_calls, budget_hit, |_| false, None, None)
 }
 
-/// Phase 1 with an early-exit predicate. `should_stop(x)` is called
-/// **only** for leaves that pass the integer-exact filter (norm shell +
-/// bilinear forms + alignment). When it returns `true`, the lattice
-/// search aborts after collecting that leaf — the caller can wrap
-/// expensive checks (e.g. ε-bounded diamond distance) here without
-/// paying their cost on every doomed leaf.
-pub fn phase1_with_stop<F>(
-    scratch: &mut IntScratch16,
-    y: &[Float; 16],
-    k: u32,
-    eps: Float,
-    max_phase2_calls: u64,
-    budget_hit: &AtomicBool,
-    should_stop: F,
-) -> Vec<[i64; 16]>
-where
-    F: Fn(&[i64; 16]) -> bool + Sync,
-{
-    phase1_with_stop_external_abort(
-        scratch, y, k, eps, max_phase2_calls, budget_hit, should_stop, None,
-    )
-}
-
-/// Same as [`phase1_with_stop`], plus a shared cross-task abort signal
-/// passed through to the SE walker. When set by a peer task (e.g. another
-/// LDE level finding a solution first under parallel speculation), the
-/// walker aborts at its next recurse-entry. Default callers pass `None`.
-pub fn phase1_with_stop_external_abort<F>(
-    scratch: &mut IntScratch16,
-    y: &[Float; 16],
-    k: u32,
-    eps: Float,
-    max_phase2_calls: u64,
-    budget_hit: &AtomicBool,
-    should_stop: F,
-    external_abort: Option<&AtomicBool>,
-) -> Vec<[i64; 16]>
-where
-    F: Fn(&[i64; 16]) -> bool + Sync,
-{
-    phase1_with_stop_external_abort_consumed(
-        scratch, y, k, eps, max_phase2_calls, budget_hit, should_stop,
-        external_abort, None,
-    )
-}
-
+/// Phase 1 with an early-exit predicate and optional speculation signals.
+///
+/// `should_stop(x)` is called **only** for leaves that pass the integer-exact
+/// filter (norm shell + bilinear forms + alignment). When it returns `true`,
+/// the lattice search aborts after collecting that leaf.
+///
+/// `external_abort` is a shared cross-task abort signal; when set by a peer
+/// task (e.g. another LDE level finding a solution first under parallel
+/// speculation), the walker aborts at its next recurse-entry.
+///
+/// `consumed` is a shared node counter, incremented on every recurse-entry.
+/// The parallel-LDE dispatcher uses it to observe search progress.
+///
+/// Callers that don't need the speculation signals pass `None, None`.
 #[allow(clippy::too_many_arguments)]
-pub fn phase1_with_stop_external_abort_consumed<F>(
+pub fn phase1_with_stop<F>(
     scratch: &mut IntScratch16,
     y: &[Float; 16],
     k: u32,
@@ -143,11 +111,9 @@ pub fn phase1_with_stop_external_abort_consumed<F>(
 where
     F: Fn(&[i64; 16]) -> bool + Sync,
 {
-    // Lift f64 y and recover f64 v from y; promote both to MPFR for the
-    // shared inner worker. This wrapper is for legacy callers that work
-    // at f64 precision (everything ≥ ε=1e-7). Direct MPFR-precision callers
-    // should use `phase1_with_stop_mpfr` to bypass the f64 floor (which
-    // bites at ε≤1e-8 where Δ_y/R = ε²/4 ≈ 2.5e-17 falls below f64 ULP).
+    // Promote f64 y to MPFR. This wrapper is for legacy callers at f64
+    // precision (everything ≥ ε=1e-7); ε ≤ 1e-8 should call
+    // `phase1_with_stop_mpfr` directly to bypass the f64 ULP floor in v.
     let prec = scratch.prec_q;
     let scale = 2.0_f64.powf(k as f64 / 2.0) / 4.0;
     let v_mpfr: [RFloat; 4] = [
@@ -157,57 +123,20 @@ where
         rfv(prec, y[12] / scale),
     ];
     let y_mpfr: [RFloat; 16] = std::array::from_fn(|i| rfv(prec, y[i]));
-    return phase1_with_stop_mpfr_external_abort_consumed(
+    phase1_with_stop_mpfr(
         scratch, &y_mpfr, &v_mpfr, k, eps, max_phase2_calls, budget_hit, should_stop,
         external_abort, consumed,
-    );
+    )
 }
 
 /// MPFR-precision entry point. Caller provides `y` and `v` already in MPFR;
-/// `Q` and the cap center `c[i]` are then computed without any f64
-/// round-trip. This is the only precision path that works at ε ≤ 1e-8 —
-/// see `build_q_mpfr_zeta_from_mpfr_v` for the rationale.
+/// `Q` and the cap center `c[i]` are computed without any f64 round-trip.
+/// The only precision path that works at ε ≤ 1e-8 (see
+/// `build_q_mpfr_zeta_from_mpfr_v`).
+///
+/// Same `external_abort` / `consumed` semantics as [`phase1_with_stop`].
+#[allow(clippy::too_many_arguments)]
 pub fn phase1_with_stop_mpfr<F>(
-    scratch: &mut IntScratch16,
-    y: &[RFloat; 16],
-    v: &[RFloat; 4],
-    k: u32,
-    eps: Float,
-    max_phase2_calls: u64,
-    budget_hit: &AtomicBool,
-    should_stop: F,
-) -> Vec<[i64; 16]>
-where
-    F: Fn(&[i64; 16]) -> bool + Sync,
-{
-    phase1_with_stop_mpfr_external_abort(
-        scratch, y, v, k, eps, max_phase2_calls, budget_hit, should_stop, None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn phase1_with_stop_mpfr_external_abort<F>(
-    scratch: &mut IntScratch16,
-    y: &[RFloat; 16],
-    v: &[RFloat; 4],
-    k: u32,
-    eps: Float,
-    max_phase2_calls: u64,
-    budget_hit: &AtomicBool,
-    should_stop: F,
-    external_abort: Option<&AtomicBool>,
-) -> Vec<[i64; 16]>
-where
-    F: Fn(&[i64; 16]) -> bool + Sync,
-{
-    phase1_with_stop_mpfr_external_abort_consumed(
-        scratch, y, v, k, eps, max_phase2_calls, budget_hit, should_stop,
-        external_abort, None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn phase1_with_stop_mpfr_external_abort_consumed<F>(
     scratch: &mut IntScratch16,
     y: &[RFloat; 16],
     v: &[RFloat; 4],
@@ -630,7 +559,7 @@ where
         }
     };
 
-    let (solutions, budget_was_hit) = crate::synthesis::lattice_zeta::se::schnorr_euchner_16d_par_norm_pruned_with_consumed(
+    let (solutions, budget_was_hit) = schnorr_euchner_16d_par_norm_pruned(
         &l_upper, &z_c, bound_sq, &r_eucl, &r_eucl_dd, target_norm_sq_f64, &basis,
         leaf_filter, &budget,
         external_abort, consumed,

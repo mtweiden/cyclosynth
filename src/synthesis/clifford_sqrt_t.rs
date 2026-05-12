@@ -870,7 +870,7 @@ impl SynthesizerQ {
                 diamond_distance_u2q_float(&cand, &target) < epsilon
             };
             let sols = phase1_with_stop(
-                s.as_mut(), &y, k, epsilon, budget, &budget_hit, should_stop,
+                s.as_mut(), &y, k, epsilon, budget, &budget_hit, should_stop, None, None,
             );
             (sols, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
         };
@@ -1019,7 +1019,7 @@ impl SynthesizerQ {
                                 if abort_ref.load(Ordering::Relaxed) { return; }
                             }
                             let t_k = std::time::Instant::now();
-                            let (result, budget_hit) = self.dc_search_q_with_abort_consumed(
+                            let (result, budget_hit) = self.dc_search_q(
                                 &target, k, m_split, dc_pass1_cap_for(self.epsilon),
                                 Some(abort_ref),
                                 Some(my_consumed.as_ref()),
@@ -1076,7 +1076,7 @@ impl SynthesizerQ {
                 if trace {
                     eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
                 }
-                let (result, _) = self.dc_search_q(&target, k, m_split, dc_pass2_cap_for(self.epsilon));
+                let (result, _) = self.dc_search_q(&target, k, m_split, dc_pass2_cap_for(self.epsilon), None, None);
                 if let Some(r) = result {
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
@@ -1170,32 +1170,8 @@ impl SynthesizerQ {
     /// parallel inside (the SE walker forks at `z[15]`), so we
     /// over-subscribe rayon — empirically wins because rayon's
     /// work-stealing gracefully handles nested parallel work.
+    #[allow(clippy::too_many_arguments)]
     fn dc_search_q(
-        &self,
-        target: &Mat2,
-        k_total: u32,
-        m_split: u32,
-        per_prefix_cap: u64,
-    ) -> (Option<SynthResultQ>, bool) {
-        self.dc_search_q_with_abort(target, k_total, m_split, per_prefix_cap, None)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn dc_search_q_with_abort(
-        &self,
-        target: &Mat2,
-        k_total: u32,
-        m_split: u32,
-        per_prefix_cap: u64,
-        external_abort: Option<&AtomicBool>,
-    ) -> (Option<SynthResultQ>, bool) {
-        self.dc_search_q_with_abort_consumed(
-            target, k_total, m_split, per_prefix_cap, external_abort, None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn dc_search_q_with_abort_consumed(
         &self,
         target: &Mat2,
         k_total: u32,
@@ -1296,7 +1272,7 @@ impl SynthesizerQ {
                         hit
                     };
 
-                    let sols = crate::synthesis::lattice_zeta::integer::phase1_with_stop_external_abort_consumed(
+                    let sols = phase1_with_stop(
                         scratch, &y, k_inner, epsilon,
                         per_prefix_cap, &budget_hit, should_stop,
                         external_abort, consumed,
@@ -1981,7 +1957,8 @@ mod tests {
                 s_mpfr.use_f64_gs = false;
                 let t = std::time::Instant::now();
                 let sols = phase1_with_stop(
-                    &mut s_mpfr, &y, k, eps, 100_000_000, &budget_hit, |_| false
+                    &mut s_mpfr, &y, k, eps, 100_000_000, &budget_hit, |_| false,
+                    None, None,
                 );
                 t_mpfr_total_us += t.elapsed().as_nanos() as u128 / 1000;
                 sols_mpfr_count += sols.len();
@@ -1991,7 +1968,8 @@ mod tests {
                 s_f64.use_f64_gs = true;
                 let t = std::time::Instant::now();
                 let sols = phase1_with_stop(
-                    &mut s_f64, &y, k, eps, 100_000_000, &budget_hit, |_| false
+                    &mut s_f64, &y, k, eps, 100_000_000, &budget_hit, |_| false,
+                    None, None,
                 );
                 t_f64_total_us += t.elapsed().as_nanos() as u128 / 1000;
                 sols_f64_count += sols.len();
@@ -2025,7 +2003,7 @@ mod tests {
                     let cand = solution_to_u2q_d(x, k_try, d);
                     diamond_distance_float(&cand.to_float(), &target_local) < eps
                 };
-                let sols = phase1_with_stop(&mut s, &y, k_try, eps, 100_000_000, &budget_hit, should_stop);
+                let sols = phase1_with_stop(&mut s, &y, k_try, eps, 100_000_000, &budget_hit, should_stop, None, None);
                 for sol in &sols {
                     let cand = solution_to_u2q_d(sol, k_try, d);
                     let dist = diamond_distance_float(&cand.to_float(), &target_local);
@@ -2081,7 +2059,8 @@ mod tests {
                 };
                 let t0 = std::time::Instant::now();
                 let sols = phase1_with_stop(
-                    &mut scratch, &y, k, eps, 100_000_000, &budget_hit, should_stop
+                    &mut scratch, &y, k, eps, 100_000_000, &budget_hit, should_stop,
+                    None, None,
                 );
                 total_ns += t0.elapsed().as_nanos();
                 for sol in &sols {
@@ -2468,7 +2447,7 @@ mod tests {
             let _ = first_call;
             let _sols = phase1_with_stop(
                 &mut scratch, &y, k_inner, eps,
-                10_000, &budget_hit, |_| false,
+                10_000, &budget_hit, |_| false, None, None,
             );
             n_processed += 1;
         }
@@ -2541,7 +2520,7 @@ mod tests {
             let t_prefix = std::time::Instant::now();
             let _sols = phase1_with_stop(
                 &mut scratch, &y, k_inner, eps,
-                10_000, &budget_hit, |_| false,
+                10_000, &budget_hit, |_| false, None, None,
             );
             let dt = t_prefix.elapsed().as_nanos() as u64;
             // Just counting non-trivial returns; not validating distance here.

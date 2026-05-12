@@ -782,7 +782,7 @@ mod tests {
 
         // First run regular LLL+SE to get an LLL-reduced basis.
         let budget_hit = AtomicBool::new(false);
-        let _sols = phase1_with_stop(&mut s, &y, k, eps, 100_000, &budget_hit, |_| false);
+        let _sols = phase1_with_stop(&mut s, &y, k, eps, 100_000, &budget_hit, |_| false, None, None);
 
         // Verify basis is unimodular pre-BKZ.
         let det_pre = det16_exact(&s.basis);
