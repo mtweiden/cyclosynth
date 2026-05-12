@@ -37,11 +37,17 @@ fn main() {
         synth = synth.with_parallel_lde_window(plde_window);
         eprintln!("  (parallel-LDE window: {plde_window})");
     }
-    // Optional stagger (5th arg, ms).
+    // Optional stagger (5th arg, ms). Legacy / time-based.
     let plde_stagger_ms = args.get(4).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
     if plde_stagger_ms > 0 {
         synth = synth.with_parallel_lde_stagger_ms(plde_stagger_ms);
         eprintln!("  (parallel-LDE stagger: {plde_stagger_ms}ms)");
+    }
+    // Optional budget-trigger threshold (6th arg, node count). Preferred.
+    let plde_trigger = args.get(5).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    if plde_trigger > 0 {
+        synth = synth.with_parallel_lde_trigger_nodes(plde_trigger);
+        eprintln!("  (parallel-LDE budget trigger: {plde_trigger} nodes)");
     }
     let t0 = Instant::now();
     let result = synth.synthesize(target);

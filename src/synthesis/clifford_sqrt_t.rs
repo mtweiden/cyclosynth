@@ -317,17 +317,25 @@ pub struct SynthesizerQ {
     /// [`Self::with_parallel_lde_window`].
     pub parallel_lde_window: u32,
     /// Stagger delay (ms) between successive LDE-task spawns under
-    /// parallel-LDE speculation. The i-th LDE in the window waits
-    /// `stagger_ms × i` before launching, checking the cross-LDE
-    /// abort flag every 50ms during the wait. Easy targets typically
-    /// find at the predicted LDE before the stagger expires, so peer
-    /// LDEs never launch and there's zero parallelism overhead.
-    /// Hard targets exhaust the predicted LDE's early budget, the
-    /// stagger expires, peer LDEs launch and compete for cores via
-    /// rayon's native work-stealing. Tunable — values of 2-10 seconds
-    /// are reasonable for ε=1e-8. Default 0 (immediate spawn, original
-    /// behavior). Builder: [`Self::with_parallel_lde_stagger_ms`].
+    /// parallel-LDE speculation. Time-based; brittle across hardware
+    /// (different core counts / load → different stagger meanings).
+    /// **Prefer `parallel_lde_trigger_nodes`** which is hardware-
+    /// agnostic. Kept for backward compat. Default 0 (disabled).
     pub parallel_lde_stagger_ms: u64,
+    /// **Budget-triggered speculation** (hardware-agnostic). Each LDE
+    /// task at index i > 0 waits until the predecessor LDE has
+    /// consumed at least this many search-tree nodes without finding
+    /// a solution. Polled every 50ms; cross-LDE abort exits the wait
+    /// immediately. Easy targets find before the predecessor reaches
+    /// the threshold, so peer LDEs never launch (zero overhead).
+    /// Hard targets exhaust the predicted LDE's threshold worth of
+    /// search, peers spawn, rayon work-stealing balances them.
+    ///
+    /// Recommended starting value: 25% of estimated total cap. For
+    /// ε=1e-8 with dc_pass1_cap_for=100M nodes × ~9 usable prefixes
+    /// = ~900M total → threshold ≈ 225M. Default 0 (disabled).
+    /// Builder: [`Self::with_parallel_lde_trigger_nodes`].
+    pub parallel_lde_trigger_nodes: u64,
 }
 
 /// k cutoff: brute-force handles `k ≤ BRUTE_LIMIT`, the 16D LLL+SE
@@ -690,6 +698,7 @@ impl SynthesizerQ {
             bkz_block_size,
             parallel_lde_window: 1,
             parallel_lde_stagger_ms: 0,
+            parallel_lde_trigger_nodes: 0,
         }
     }
 
@@ -705,6 +714,13 @@ impl SynthesizerQ {
     /// See the field comment on `parallel_lde_stagger_ms`.
     pub fn with_parallel_lde_stagger_ms(mut self, ms: u64) -> Self {
         self.parallel_lde_stagger_ms = ms;
+        self
+    }
+
+    /// Set the budget-triggered speculation threshold (default 0).
+    /// See the field comment on `parallel_lde_trigger_nodes`.
+    pub fn with_parallel_lde_trigger_nodes(mut self, nodes: u64) -> Self {
+        self.parallel_lde_trigger_nodes = nodes;
         self
     }
 
@@ -943,24 +959,25 @@ impl SynthesizerQ {
                 }
                 let t_window = std::time::Instant::now();
 
-                // Asymmetric Staggered Speculation: each LDE task spawns
-                // immediately, but tasks at index i > 0 sleep for
-                // `stagger * i` before doing real work, checking the
-                // cross-LDE abort every 50ms during the wait. On easy
-                // targets, LDE[0] (the predicted lattice_start) finds
-                // before any peer launches, the abort fires, and the
-                // sleeping peers exit without consuming any work —
-                // zero parallelism overhead on the common case. On
-                // hard targets the predicted LDE doesn't find in
-                // time, the stagger expires, peer LDEs launch and
-                // compete for cores via rayon's native work-stealing.
+                // Asymmetric Staggered Speculation, budget-triggered.
+                // Each LDE task at index i > 0 waits until the
+                // predecessor (index i-1) has consumed `trigger_nodes`
+                // search-tree nodes without finding, OR the cross-LDE
+                // abort fires. Hardware-agnostic — depends on tree
+                // geometry, not wall clock. Easy targets find before
+                // the predecessor reaches the threshold → peers never
+                // launch → zero overhead. Hard targets exhaust the
+                // predicted LDE → peers spawn → rayon work-stealing
+                // balances them.
                 //
-                // Uses std::thread::scope (not rayon::scope) so that
-                // the staggered sleep yields the OS thread rather than
-                // holding a rayon worker. The actual lde-task work
-                // still uses rayon internally via dc_search_q_with_abort.
+                // Falls back to time-based stagger if trigger_nodes is
+                // 0 but stagger_ms > 0 (legacy behavior).
+                let trigger_nodes = self.parallel_lde_trigger_nodes;
                 let stagger_ms = self.parallel_lde_stagger_ms;
-                let stagger = std::time::Duration::from_millis(stagger_ms);
+                let consumed_counters: Vec<std::sync::Arc<std::sync::atomic::AtomicU64>> =
+                    (0..lde_window.len())
+                        .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
+                        .collect();
                 let results: Mutex<Vec<(u32, Option<SynthResultQ>, bool)>> =
                     Mutex::new(Vec::new());
                 std::thread::scope(|s| {
@@ -968,33 +985,56 @@ impl SynthesizerQ {
                         let results_ref = &results;
                         let abort_ref = &cross_lde_abort;
                         let pass2_ref = &pass2_collector;
-                        let task_stagger = stagger * (i as u32);
+                        let my_consumed = consumed_counters[i].clone();
+                        let predecessor_consumed: Option<std::sync::Arc<std::sync::atomic::AtomicU64>> =
+                            if i > 0 { Some(consumed_counters[i - 1].clone()) } else { None };
+                        let task_stagger_ms = stagger_ms * (i as u64);
                         s.spawn(move || {
-                            // Staggered launch: wait `stagger * i` ms,
-                            // checking abort every 50 ms.
-                            if !task_stagger.is_zero() {
-                                let start = std::time::Instant::now();
-                                while start.elapsed() < task_stagger {
+                            // Wait for trigger: either budget-consumed
+                            // threshold crossed on predecessor, or
+                            // (legacy) time-based stagger expires, or
+                            // cross-LDE abort fires.
+                            if i > 0 {
+                                let use_budget = trigger_nodes > 0;
+                                let stagger_deadline = if !use_budget && task_stagger_ms > 0 {
+                                    Some(std::time::Instant::now() + std::time::Duration::from_millis(task_stagger_ms))
+                                } else {
+                                    None
+                                };
+                                loop {
                                     if abort_ref.load(Ordering::Relaxed) { return; }
+                                    if let Some(ref pred) = predecessor_consumed {
+                                        if use_budget && pred.load(Ordering::Relaxed) >= trigger_nodes {
+                                            break;
+                                        }
+                                    }
+                                    if let Some(deadline) = stagger_deadline {
+                                        if std::time::Instant::now() >= deadline { break; }
+                                    } else if !use_budget {
+                                        // No trigger configured: launch immediately.
+                                        break;
+                                    }
                                     std::thread::sleep(std::time::Duration::from_millis(50));
                                 }
                                 if abort_ref.load(Ordering::Relaxed) { return; }
                             }
                             let t_k = std::time::Instant::now();
-                            let (result, budget_hit) = self.dc_search_q_with_abort(
+                            let (result, budget_hit) = self.dc_search_q_with_abort_consumed(
                                 &target, k, m_split, dc_pass1_cap_for(self.epsilon),
                                 Some(abort_ref),
+                                Some(my_consumed.as_ref()),
                             );
                             let dt = t_k.elapsed().as_secs_f64() * 1000.0;
                             if let Some(ref r) = result {
                                 abort_ref.store(true, Ordering::Relaxed);
                                 if trace {
-                                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
-                                        r.distance, dt);
+                                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms  (consumed={})",
+                                        r.distance, dt, my_consumed.load(Ordering::Relaxed));
                                 }
                             } else if trace {
-                                eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms (stagger={:.0}ms)",
-                                    if budget_hit { " (budget hit)" } else { "" }, dt, task_stagger.as_secs_f64() * 1000.0);
+                                eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms  (consumed={})",
+                                    if budget_hit { " (budget hit)" } else { "" }, dt,
+                                    my_consumed.load(Ordering::Relaxed));
                             }
                             if result.is_none() && budget_hit {
                                 pass2_ref.lock().unwrap().push(k);
@@ -1149,6 +1189,21 @@ impl SynthesizerQ {
         per_prefix_cap: u64,
         external_abort: Option<&AtomicBool>,
     ) -> (Option<SynthResultQ>, bool) {
+        self.dc_search_q_with_abort_consumed(
+            target, k_total, m_split, per_prefix_cap, external_abort, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dc_search_q_with_abort_consumed(
+        &self,
+        target: &Mat2,
+        k_total: u32,
+        m_split: u32,
+        per_prefix_cap: u64,
+        external_abort: Option<&AtomicBool>,
+        consumed: Option<&std::sync::atomic::AtomicU64>,
+    ) -> (Option<SynthResultQ>, bool) {
         use rayon::prelude::*;
         use crate::synthesis::diag;
 
@@ -1241,10 +1296,10 @@ impl SynthesizerQ {
                         hit
                     };
 
-                    let sols = crate::synthesis::lenstra_zeta::integer::phase1_with_stop_external_abort(
+                    let sols = crate::synthesis::lenstra_zeta::integer::phase1_with_stop_external_abort_consumed(
                         scratch, &y, k_inner, epsilon,
                         per_prefix_cap, &budget_hit, should_stop,
-                        external_abort,
+                        external_abort, consumed,
                     );
 
                     // Propagate this prefix's budget-hit signal to the
