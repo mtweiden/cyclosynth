@@ -5,8 +5,7 @@
 
 use cyclosynth::matrix::U2Q;
 use cyclosynth::synthesis::clifford_sqrt_t::{
-    SynthesizerQ, Mat2Mpfr, build_l_q, det_phase_of, solution_to_u2q_d,
-    u2q_dag_times_mat2_mpfr, unitary_to_uv_zeta_mpfr,
+    SynthesizerQ, build_l_q, det_phase_of, solution_to_u2q_d,
 };
 use cyclosynth::synthesis::diag;
 use cyclosynth::synthesis::distance::diamond_distance_float;
@@ -25,6 +24,86 @@ use std::sync::atomic::AtomicBool;
 
 type C64 = Complex<f64>;
 type Mat2 = [[C64; 2]; 2];
+
+// ─── MPFR helpers (moved from synthesis::clifford_sqrt_t — used only here) ───
+
+/// MPFR-precision 2×2 complex matrix.
+type Mat2Mpfr = [[(rug::Float, rug::Float); 2]; 2];
+
+/// Convert `U2Q` to `Mat2Mpfr`. Lifts ZZeta integer coefficients to MPFR
+/// via the basis `(cos(kπ/8), sin(kπ/8))`, k=0..7, then divides by `√2^k`.
+fn u2q_to_mat2_mpfr(u: &U2Q, prec: u32) -> Mat2Mpfr {
+    use std::f64::consts::PI;
+    use cyclosynth::rings::types::int_to_f64;
+
+    let two = RFloat::with_val(prec, 2.0);
+    let inv_sqrt2 = RFloat::with_val(prec, 1.0) / two.clone().sqrt();
+    let half_k = u.k / 2;
+    let mut inv_scale = RFloat::with_val(prec, 1.0);
+    inv_scale >>= half_k;
+    if u.k % 2 == 1 {
+        inv_scale *= &inv_sqrt2;
+    }
+    let basis: [(RFloat, RFloat); 8] = std::array::from_fn(|k| {
+        let theta = (k as f64) * PI / 8.0;
+        (RFloat::with_val(prec, theta.cos()), RFloat::with_val(prec, theta.sin()))
+    });
+    let zzeta_to_re_im = |z: &cyclosynth::rings::ZZeta| -> (RFloat, RFloat) {
+        let coeffs = [
+            int_to_f64(z.a), int_to_f64(z.b), int_to_f64(z.c), int_to_f64(z.d),
+            int_to_f64(z.e), int_to_f64(z.f), int_to_f64(z.g), int_to_f64(z.h),
+        ];
+        let mut re = RFloat::with_val(prec, 0.0);
+        let mut im = RFloat::with_val(prec, 0.0);
+        for k in 0..8 {
+            let c = RFloat::with_val(prec, coeffs[k]);
+            re += RFloat::with_val(prec, &c * &basis[k].0);
+            im += RFloat::with_val(prec, &c * &basis[k].1);
+        }
+        (re * &inv_scale, im * &inv_scale)
+    };
+    [
+        [zzeta_to_re_im(&u.u11), zzeta_to_re_im(&u.u12)],
+        [zzeta_to_re_im(&u.u21), zzeta_to_re_im(&u.u22)],
+    ]
+}
+
+/// MPFR `U_L† · target`.
+fn u2q_dag_times_mat2_mpfr(u_l: &U2Q, target: &Mat2Mpfr, prec: u32) -> Mat2Mpfr {
+    let u = u2q_to_mat2_mpfr(u_l, prec);
+    let ud00 = (u[0][0].0.clone(), RFloat::with_val(prec, -&u[0][0].1));
+    let ud01 = (u[1][0].0.clone(), RFloat::with_val(prec, -&u[1][0].1));
+    let ud10 = (u[0][1].0.clone(), RFloat::with_val(prec, -&u[0][1].1));
+    let ud11 = (u[1][1].0.clone(), RFloat::with_val(prec, -&u[1][1].1));
+    let mul = |a: &(RFloat, RFloat), b: &(RFloat, RFloat)| -> (RFloat, RFloat) {
+        let re = RFloat::with_val(prec, &a.0 * &b.0)
+            - RFloat::with_val(prec, &a.1 * &b.1);
+        let im = RFloat::with_val(prec, &a.0 * &b.1)
+            + RFloat::with_val(prec, &a.1 * &b.0);
+        (RFloat::with_val(prec, re), RFloat::with_val(prec, im))
+    };
+    let add = |a: (RFloat, RFloat), b: (RFloat, RFloat)| -> (RFloat, RFloat) {
+        (RFloat::with_val(prec, &a.0 + &b.0), RFloat::with_val(prec, &a.1 + &b.1))
+    };
+    [
+        [
+            add(mul(&ud00, &target[0][0]), mul(&ud01, &target[1][0])),
+            add(mul(&ud00, &target[0][1]), mul(&ud01, &target[1][1])),
+        ],
+        [
+            add(mul(&ud10, &target[0][0]), mul(&ud11, &target[1][0])),
+            add(mul(&ud10, &target[0][1]), mul(&ud11, &target[1][1])),
+        ],
+    ]
+}
+
+/// Column-1 of an MPFR target as `(Re V₀₀, Im V₀₀, Re V₁₀, Im V₁₀)`.
+fn unitary_to_uv_zeta_mpfr(target: &Mat2Mpfr) -> [rug::Float; 4] {
+    [
+        target[0][0].0.clone(), target[0][0].1.clone(),
+        target[1][0].0.clone(), target[1][0].1.clone(),
+    ]
+}
 
 fn rz_f64(t: f64) -> Mat2 {
     [[C64::from_polar(1.0, -t / 2.0), C64::new(0.0, 0.0)],
