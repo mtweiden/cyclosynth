@@ -5,7 +5,7 @@
 //! discriminant evaluation in 3 paths (D<0 short-circuit / mod-16 reject /
 //! full isqrt). Tells us where the per-node cost actually lives.
 
-use cyclosynth::synthesis::lenstra_zeta::se::{
+use cyclosynth::synthesis::lattice_zeta::se::{
     isqrt_i256_pub as isqrt_i256, qfilter_depth1_state_pub as qfilter_depth1_state,
     qfilter_discriminant_class_pub as qfilter_discriminant_class,
 };

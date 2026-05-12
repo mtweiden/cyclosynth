@@ -2,7 +2,7 @@
 //!
 //! Constructs Q in lattice coordinates at MPFR precision, then snapshots to
 //! i256 with adaptive scaling for the integer LLL. Z[ζ_16] analog of
-//! [`super::super::lenstra::q_metric`].
+//! [`super::super::lattice::q_metric`].
 
 #![allow(clippy::needless_range_loop)]
 

@@ -1,6 +1,6 @@
 //! Items shared between the two Lenstra-style LLL+SE backends:
-//! [`super::lenstra`] (8D, Z[ω], Clifford+T) and
-//! [`super::lenstra_zeta`] (16D, Z[ζ_16], Clifford+√T).
+//! [`super::lattice`] (8D, Z[ω], Clifford+T) and
+//! [`super::lattice_zeta`] (16D, Z[ζ_16], Clifford+√T).
 //!
 //! Most of each backend is dim-specialized hot-path code (using
 //! `[[T; 8]; 8]` vs `[[T; 16]; 16]`), and the inner-loop performance

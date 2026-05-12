@@ -6,7 +6,7 @@
 
 use cyclosynth::synthesis::clifford_sqrt_t::SynthesizerQ;
 use cyclosynth::synthesis::diag;
-use cyclosynth::synthesis::lenstra_zeta::set_verify_prune_mpfr;
+use cyclosynth::synthesis::lattice_zeta::set_verify_prune_mpfr;
 use num_complex::Complex;
 use std::io::Write;
 use std::sync::atomic::Ordering;

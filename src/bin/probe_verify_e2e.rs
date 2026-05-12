@@ -3,7 +3,7 @@
 //! Defaults: theta=1.1 eps=1.5e-8. Always uses verify_prune_mpfr=on.
 
 use cyclosynth::synthesis::clifford_sqrt_t::SynthesizerQ;
-use cyclosynth::synthesis::lenstra_zeta::set_verify_prune_mpfr;
+use cyclosynth::synthesis::lattice_zeta::set_verify_prune_mpfr;
 use num_complex::Complex;
 use std::time::Instant;
 

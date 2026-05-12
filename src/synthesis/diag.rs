@@ -48,8 +48,8 @@ pub static WATCH_Z_TARGET: Mutex<Option<[i64; 16]>> = Mutex::new(None);
 
 /// Lock-free fast-path gate. Cleared (false) means `watch_path_match_at_depth`
 /// returns immediately without touching the mutex, so the watchdog is free
-/// for runs that don't arm it (e.g. Phase 1 of probe_phase_oracle that
-/// captures x_target without watching).
+/// for runs that don't arm it (e.g. the capture phase of
+/// probe_prune_oracle that records x_target without watching).
 pub static WATCH_ARMED: AtomicBool = AtomicBool::new(false);
 
 pub fn watch_arm(target: [i64; 16]) {

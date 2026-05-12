@@ -3,7 +3,7 @@
 //! ## Status (M4 chunk 2)
 //!
 //! Full Schnorr-Euchner walk with Q-bound pruning, in f64 arithmetic. Mirrors
-//! the 8D path in `super::super::lenstra::se`, dimension-bumped to d=16 and
+//! the 8D path in `super::super::lattice::se`, dimension-bumped to d=16 and
 //! switched from MPFR to f64 for the inner walk: at d=16 with the L³-reduced
 //! invariant after L²-LLL, the conditioning bound `κ(G) ≤ (4/3)^15 ≈ 240`
 //! gives ~8 bits of conditioning loss in f64, well within the 53-bit mantissa
@@ -492,7 +492,7 @@ pub fn verify_partial_dd_exceeds(
 /// Per-element β_1: see `clifford_sqrt_t_research.md` for derivation.
 /// Returns i128 to avoid silent overflow on pairwise products at deep k.
 ///
-/// Mirror of [`super::super::lenstra::se::bilinear_b`] for the Z[ζ_16] /
+/// Mirror of [`super::super::lattice::se::bilinear_b`] for the Z[ζ_16] /
 /// Clifford+√T flow. Three forms here vs one in 8D because the
 /// totally-real-subring decomposition of unitarity over Z[ζ_16] yields
 /// three independent constraints (one per non-σ_1 Galois embedding).

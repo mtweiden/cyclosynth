@@ -39,7 +39,7 @@
 use i256::i256;
 
 use super::scratch::IntScratch16;
-use crate::synthesis::lenstra_common::{LllResult, L2_DELTA_BAR, L2_ETA_BAR, MAX_LAZY_PASSES};
+use crate::synthesis::lattice_common::{LllResult, L2_DELTA_BAR, L2_ETA_BAR, MAX_LAZY_PASSES};
 
 /// Convert i256 to f64. Combines limbs in increasing-precision order so
 /// low bits round, not high.

@@ -2,15 +2,15 @@
 //! flow. Mirrors the role of [`super::search`] for the Z[ω] / Clifford+T
 //! flow: y-vector construction (`compute_align_vec_zeta`, `uv_to_xy_zeta`)
 //! plus a brute-force enumerator (`phase1_brute`) used as a correctness
-//! oracle for the lattice pipeline in [`super::lenstra_zeta`].
+//! oracle for the lattice pipeline in [`super::lattice_zeta`].
 //!
 //! Cost of `phase1_brute` is exponential in `k` (the shell at k=4 has
 //! ~5·10⁸ points); useful for `k ≤ 4` for full enumeration. The L²-LLL +
-//! Schnorr-Euchner port is in [`super::lenstra_zeta`].
+//! Schnorr-Euchner port is in [`super::lattice_zeta`].
 
 use std::f64::consts::PI;
 
-use super::lenstra_zeta::se::bilinear_forms;
+use super::lattice_zeta::se::bilinear_forms;
 
 // ─── y-vector helpers ────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ pub fn compute_align_vec_zeta(v: [f64; 4]) -> [f64; 16] {
 }
 
 /// Scale a 4-element alignment direction `v` to the 16-element y vector
-/// used by the Z[ζ_16] lenstra pipeline. Convention chosen so that
+/// used by the Z[ζ_16] lattice pipeline. Convention chosen so that
 /// `Σ_full · y = √(2^k) · v_padded` (target × √(2^k) on σ_1, zero on
 /// σ_5/9/13), consistent with the Z[ω] flow's scale convention.
 pub fn uv_to_xy_zeta(v: [f64; 4], k: u32) -> [f64; 16] {
