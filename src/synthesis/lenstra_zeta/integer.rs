@@ -122,6 +122,27 @@ pub fn phase1_with_stop_external_abort<F>(
 where
     F: Fn(&[i64; 16]) -> bool + Sync,
 {
+    phase1_with_stop_external_abort_consumed(
+        scratch, y, k, eps, max_phase2_calls, budget_hit, should_stop,
+        external_abort, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn phase1_with_stop_external_abort_consumed<F>(
+    scratch: &mut IntScratch16,
+    y: &[Float; 16],
+    k: u32,
+    eps: Float,
+    max_phase2_calls: u64,
+    budget_hit: &AtomicBool,
+    should_stop: F,
+    external_abort: Option<&AtomicBool>,
+    consumed: Option<&AtomicU64>,
+) -> Vec<[i64; 16]>
+where
+    F: Fn(&[i64; 16]) -> bool + Sync,
+{
     // Lift f64 y and recover f64 v from y; promote both to MPFR for the
     // shared inner worker. This wrapper is for legacy callers that work
     // at f64 precision (everything ≥ ε=1e-7). Direct MPFR-precision callers
@@ -136,9 +157,9 @@ where
         rfv(prec, y[12] / scale),
     ];
     let y_mpfr: [RFloat; 16] = std::array::from_fn(|i| rfv(prec, y[i]));
-    return phase1_with_stop_mpfr_external_abort(
+    return phase1_with_stop_mpfr_external_abort_consumed(
         scratch, &y_mpfr, &v_mpfr, k, eps, max_phase2_calls, budget_hit, should_stop,
-        external_abort,
+        external_abort, consumed,
     );
 }
 
@@ -175,6 +196,28 @@ pub fn phase1_with_stop_mpfr_external_abort<F>(
     budget_hit: &AtomicBool,
     should_stop: F,
     external_abort: Option<&AtomicBool>,
+) -> Vec<[i64; 16]>
+where
+    F: Fn(&[i64; 16]) -> bool + Sync,
+{
+    phase1_with_stop_mpfr_external_abort_consumed(
+        scratch, y, v, k, eps, max_phase2_calls, budget_hit, should_stop,
+        external_abort, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn phase1_with_stop_mpfr_external_abort_consumed<F>(
+    scratch: &mut IntScratch16,
+    y: &[RFloat; 16],
+    v: &[RFloat; 4],
+    k: u32,
+    eps: Float,
+    max_phase2_calls: u64,
+    budget_hit: &AtomicBool,
+    should_stop: F,
+    external_abort: Option<&AtomicBool>,
+    consumed: Option<&AtomicU64>,
 ) -> Vec<[i64; 16]>
 where
     F: Fn(&[i64; 16]) -> bool + Sync,
@@ -587,10 +630,10 @@ where
         }
     };
 
-    let (solutions, budget_was_hit) = schnorr_euchner_16d_par_norm_pruned(
+    let (solutions, budget_was_hit) = crate::synthesis::lenstra_zeta::se::schnorr_euchner_16d_par_norm_pruned_with_consumed(
         &l_upper, &z_c, bound_sq, &r_eucl, &r_eucl_dd, target_norm_sq_f64, &basis,
         leaf_filter, &budget,
-        external_abort,
+        external_abort, consumed,
     );
     if budget_was_hit {
         budget_hit.store(true, Ordering::Relaxed);

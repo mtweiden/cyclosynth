@@ -1389,6 +1389,33 @@ pub fn schnorr_euchner_16d_par_norm_pruned<F>(
 where
     F: Fn(&[i64; 16]) -> LeafAction + Sync,
 {
+    schnorr_euchner_16d_par_norm_pruned_with_consumed(
+        l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, basis,
+        leaf_filter, budget, external_abort, None,
+    )
+}
+
+/// Same as above + an optional shared `consumed` counter (incremented on
+/// every recurse-enter). Used by the budget-triggered parallel-LDE
+/// dispatcher to observe how much of the search space has been explored
+/// — hardware-agnostic stagger trigger.
+#[allow(clippy::too_many_arguments)]
+pub fn schnorr_euchner_16d_par_norm_pruned_with_consumed<F>(
+    l: &[[f64; 16]; 16],
+    z_c: &[i64; 16],
+    bound_sq: f64,
+    r_eucl: &[[f64; 16]; 16],
+    r_eucl_dd: &[[(f64, f64); 16]; 16],
+    target_norm_sq: f64,
+    basis: &[[i64; 16]; 16],
+    leaf_filter: F,
+    budget: &AtomicU64,
+    external_abort: Option<&AtomicBool>,
+    consumed: Option<&AtomicU64>,
+) -> (Vec<[i64; 16]>, bool)
+where
+    F: Fn(&[i64; 16]) -> LeafAction + Sync,
+{
     use rayon::prelude::*;
     use std::sync::atomic::AtomicBool;
 
@@ -1458,7 +1485,7 @@ where
             recurse_collect_norm_pruned(
                 14, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
                 partial_q, partial_eucl, &mut z, &mut x, &mut w, basis,
-                &leaf_filter, budget, &aborted, external_abort, &mut local,
+                &leaf_filter, budget, &aborted, external_abort, consumed, &mut local,
             );
             local.into_iter()
         })
@@ -1488,6 +1515,7 @@ fn recurse_collect_norm_pruned<F>(
     budget: &AtomicU64,
     aborted: &std::sync::atomic::AtomicBool,
     external_abort: Option<&std::sync::atomic::AtomicBool>,
+    consumed: Option<&AtomicU64>,
     results: &mut Vec<[i64; 16]>,
 ) where
     F: Fn(&[i64; 16]) -> LeafAction,
@@ -1501,6 +1529,13 @@ fn recurse_collect_norm_pruned<F>(
     if external_abort.map_or(false, |e| e.load(Ordering::Relaxed)) {
         aborted.store(true, Ordering::Relaxed);
         return;
+    }
+    // Shared consumed-node counter for budget-triggered speculation.
+    // Increment per recurse-enter so the outer dispatcher can observe
+    // search-tree progress hardware-agnostically (depends on tree
+    // geometry, not wall clock).
+    if let Some(c) = consumed {
+        c.fetch_add(1, Ordering::Relaxed);
     }
     // Per-node budget (phase 1): decrement on every recurse-enter so the
     // budget bounds total tree-traversal work, not just leaf checks. This
@@ -1578,7 +1613,7 @@ fn recurse_collect_norm_pruned<F>(
             recurse_collect_norm_pruned(
                 depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
                 partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
-                budget, aborted, external_abort, results,
+                budget, aborted, external_abort, consumed, results,
             );
         }
         return;
@@ -1770,7 +1805,7 @@ fn recurse_collect_norm_pruned<F>(
         recurse_collect_norm_pruned(
             depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
             new_partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
-            budget, aborted, external_abort, results,
+            budget, aborted, external_abort, consumed, results,
         );
     }
 }
