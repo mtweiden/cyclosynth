@@ -228,6 +228,17 @@ pub static N_QFILTER_D_NEG: AtomicU64 = AtomicU64::new(0);
 pub static N_QFILTER_D_GE0_MOD16_BAD: AtomicU64 = AtomicU64::new(0);
 pub static N_QFILTER_D_GE0_NOT_SQUARE: AtomicU64 = AtomicU64::new(0);
 pub static N_QFILTER_PERFECT_SQUARE: AtomicU64 = AtomicU64::new(0);
+/// Wall-time accumulators for the depth-1 Q-filter (phase 3) — trace-only.
+/// Used to validate microbench numbers against production cache state.
+pub static T_QFILTER_PRECOMPUTE_NS: AtomicU64 = AtomicU64::new(0);
+pub static T_QFILTER_CLASSIFY_NS: AtomicU64 = AtomicU64::new(0);
+pub static N_QFILTER_PRECOMPUTE_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Nodes consumed in the first SE walk that returns a solution (= when
+/// `should_stop` returns true on a leaf). Used to discriminate whether
+/// filter-on regression is post-find drift, search-order disruption, or
+/// per-node cost asymmetry. Recorded via compare_exchange so only the
+/// first writer wins. Trace-only.
+pub static N_NODES_AT_FIRST_SOLUTION: AtomicU64 = AtomicU64::new(0);
 
 // ─── Per-depth survivorship (critic Step 1) ──────────────────────────────────
 //
@@ -481,6 +492,10 @@ pub fn reset_all() {
         &N_QFILTER_D_GE0_MOD16_BAD,
         &N_QFILTER_D_GE0_NOT_SQUARE,
         &N_QFILTER_PERFECT_SQUARE,
+        &T_QFILTER_PRECOMPUTE_NS,
+        &T_QFILTER_CLASSIFY_NS,
+        &N_QFILTER_PRECOMPUTE_CALLS,
+        &N_NODES_AT_FIRST_SOLUTION,
     ] {
         c.store(0, Ordering::Relaxed);
     }

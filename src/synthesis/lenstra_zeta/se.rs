@@ -1384,6 +1384,7 @@ pub fn schnorr_euchner_16d_par_norm_pruned<F>(
     basis: &[[i64; 16]; 16],
     leaf_filter: F,
     budget: &AtomicU64,
+    external_abort: Option<&AtomicBool>,
 ) -> (Vec<[i64; 16]>, bool)
 where
     F: Fn(&[i64; 16]) -> LeafAction + Sync,
@@ -1420,6 +1421,10 @@ where
             if aborted.load(Ordering::Relaxed) {
                 return Vec::new().into_iter();
             }
+            if external_abort.map_or(false, |e| e.load(Ordering::Relaxed)) {
+                aborted.store(true, Ordering::Relaxed);
+                return Vec::new().into_iter();
+            }
             // Q-bound contribution at depth 15.
             let level_q = l_15 * ((z_15 - z_c[15]) as f64);
             let partial_q = level_q * level_q;
@@ -1453,7 +1458,7 @@ where
             recurse_collect_norm_pruned(
                 14, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
                 partial_q, partial_eucl, &mut z, &mut x, &mut w, basis,
-                &leaf_filter, budget, &aborted, &mut local,
+                &leaf_filter, budget, &aborted, external_abort, &mut local,
             );
             local.into_iter()
         })
@@ -1482,11 +1487,19 @@ fn recurse_collect_norm_pruned<F>(
     leaf_filter: &F,
     budget: &AtomicU64,
     aborted: &std::sync::atomic::AtomicBool,
+    external_abort: Option<&std::sync::atomic::AtomicBool>,
     results: &mut Vec<[i64; 16]>,
 ) where
     F: Fn(&[i64; 16]) -> LeafAction,
 {
     if aborted.load(Ordering::Relaxed) {
+        return;
+    }
+    // Cross-LDE abort signal (parallel LDE speculation): when a peer LDE
+    // task at a different lattice level finds a solution, it sets this
+    // shared flag. Check once per recurse entry — cheap atomic load.
+    if external_abort.map_or(false, |e| e.load(Ordering::Relaxed)) {
+        aborted.store(true, Ordering::Relaxed);
         return;
     }
     // Per-node budget (phase 1): decrement on every recurse-enter so the
@@ -1516,7 +1529,15 @@ fn recurse_collect_norm_pruned<F>(
     // for status. Default off; opt-in via `CYCLOSYNTH_QFILTER=1`.
     let qfilter_state: Option<(i256, i256, i256, i256, i256, i256)> =
         if depth == 1 && qfilter_enabled() {
-            Some(qfilter_depth1_state(basis, x, z[0], z[1]))
+            let t_pre = if trace { Some(std::time::Instant::now()) } else { None };
+            let s = qfilter_depth1_state(basis, x, z[0], z[1]);
+            if let Some(t) = t_pre {
+                crate::synthesis::diag::T_QFILTER_PRECOMPUTE_NS
+                    .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                crate::synthesis::diag::N_QFILTER_PRECOMPUTE_CALLS
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            Some(s)
         } else {
             None
         };
@@ -1557,7 +1578,7 @@ fn recurse_collect_norm_pruned<F>(
             recurse_collect_norm_pruned(
                 depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
                 partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
-                budget, aborted, results,
+                budget, aborted, external_abort, results,
             );
         }
         return;
@@ -1705,9 +1726,14 @@ fn recurse_collect_norm_pruned<F>(
         // exists. Sound: leaf_filter requires ‖x‖² == T strictly, so a
         // non-perfect-square discriminant guarantees no leaf survives.
         if let Some((g_00, g_01, g_11, a_q, v_0, v_1)) = qfilter_state {
+            let t_cls = if trace { Some(std::time::Instant::now()) } else { None };
             let class = qfilter_discriminant_class(
                 g_00, g_01, g_11, a_q, v_0, v_1, target_norm_sq_i64, zd,
             );
+            if let Some(t) = t_cls {
+                crate::synthesis::diag::T_QFILTER_CLASSIFY_NS
+                    .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            }
             if trace {
                 crate::synthesis::diag::N_QFILTER_TOTAL.fetch_add(1, Ordering::Relaxed);
                 match class {
@@ -1744,7 +1770,7 @@ fn recurse_collect_norm_pruned<F>(
         recurse_collect_norm_pruned(
             depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
             new_partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
-            budget, aborted, results,
+            budget, aborted, external_abort, results,
         );
     }
 }

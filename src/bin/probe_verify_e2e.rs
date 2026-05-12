@@ -25,11 +25,17 @@ fn main() {
     // Don't force it here, so we exercise the production path.
     let _ = set_verify_prune_mpfr;
     let bkz_override = args.get(2).and_then(|s| s.parse::<u32>().ok());
+    // Optional parallel-LDE window (4th arg). >=2 enables parallel speculation.
+    let plde_window = args.get(3).and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
     let target = rz_f64(theta);
     let mut synth = SynthesizerQ::new(eps).with_max_lde(35);
     if let Some(bs) = bkz_override {
         synth = synth.with_bkz(bs);
         eprintln!("  (BKZ block_size override: {bs})");
+    }
+    if plde_window > 1 {
+        synth = synth.with_parallel_lde_window(plde_window);
+        eprintln!("  (parallel-LDE window: {plde_window})");
     }
     let t0 = Instant::now();
     let result = synth.synthesize(target);

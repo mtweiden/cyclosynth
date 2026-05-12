@@ -37,7 +37,8 @@ use num_complex::Complex64;
 use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
+use rayon::prelude::*;
 
 // ─── Solution → U2Q reconstruction (Z[ζ_16] analog of solution_to_u2t) ───────
 
@@ -309,6 +310,14 @@ pub struct SynthesizerQ {
     pub use_f64_gs: bool,
     /// Optional BKZ-β post-pass (0 = disable). Builder: [`Self::with_bkz`].
     pub bkz_block_size: u32,
+    /// Parallel-LDE speculation window size. When ≥ 2, the dc_split path
+    /// dispatches that many lde levels concurrently via rayon, with a
+    /// cross-LDE abort signal so the first finder cancels its peers.
+    /// Trade-off: hard targets (needs higher lde than expected) gain
+    /// large wall improvements; easy targets pay 1.5-2× thread-dilution
+    /// overhead. Default 1 (sequential, no change). Builder:
+    /// [`Self::with_parallel_lde_window`].
+    pub parallel_lde_window: u32,
 }
 
 /// k cutoff: brute-force handles `k ≤ BRUTE_LIMIT`, the 16D LLL+SE
@@ -669,7 +678,16 @@ impl SynthesizerQ {
             dc_dr_filter,
             use_f64_gs,
             bkz_block_size,
+            parallel_lde_window: 1,
         }
+    }
+
+    /// Set the parallel-LDE speculation window (default 1 = sequential).
+    /// See the field comment on `parallel_lde_window`.
+    pub fn with_parallel_lde_window(mut self, window: u32) -> Self {
+        debug_assert!(window >= 1);
+        self.parallel_lde_window = window;
+        self
     }
 
     pub fn with_max_lde(mut self, max_lde: u32) -> Self {
@@ -863,48 +881,90 @@ impl SynthesizerQ {
         // (a budget-hit lde is never skipped) while letting easy targets
         // bail fast on NO-lde levels.
         if let Some(m_split) = self.dc_split {
-            let mut pass2_queue: Vec<u32> = Vec::new();
-            for k in lattice_start..=self.max_lde {
+            // Sequential small-k pass: dc_search_q cannot help for k <= m_split
+            // (k_inner ≤ 0). These are typically few levels near lattice_start.
+            for k in lattice_start..=m_split.min(self.max_lde) {
                 let t_k = std::time::Instant::now();
-                if k <= m_split {
-                    // k_inner would be ≤ 0 for the smallest-k_prefix prefixes,
-                    // so D&C can't help here — still need to handle this k via
-                    // the single-search path to stay complete. Fall through to
-                    // the existing pass1 logic for these k values.
-                    let (sols, _) = try_lattice_k(k, PASS1_CAP, &mut scratch);
-                    if let Some(r) = check_sols(&sols, k) {
-                        if trace {
-                            eprintln!("[zeta] dc lde={k:>2} (single fallback)  FOUND  dist={:.3e}  t={:.0}ms",
-                                r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
-                        }
-                        return Some(r);
-                    }
+                let (sols, _) = try_lattice_k(k, PASS1_CAP, &mut scratch);
+                if let Some(r) = check_sols(&sols, k) {
                     if trace {
-                        eprintln!("[zeta] dc lde={k:>2} (single fallback)  none   t={:.0}ms",
-                            t_k.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    continue;
-                }
-                if trace {
-                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1 dispatching ...");
-                }
-                let (result, budget_hit) = self.dc_search_q(&target, k, m_split, dc_pass1_cap_for(self.epsilon));
-                if let Some(r) = result {
-                    if trace {
-                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
+                        eprintln!("[zeta] dc lde={k:>2} (single fallback)  FOUND  dist={:.3e}  t={:.0}ms",
                             r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
                     }
                     return Some(r);
                 }
                 if trace {
-                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
-                        if budget_hit { " (budget hit)" } else { "" },
+                    eprintln!("[zeta] dc lde={k:>2} (single fallback)  none   t={:.0}ms",
                         t_k.elapsed().as_secs_f64() * 1000.0);
                 }
-                if budget_hit {
-                    pass2_queue.push(k);
-                }
             }
+
+            // Parallel-LDE speculation (Path #1, executed): for k > m_split,
+            // run a window of LDE levels concurrently via rayon. The first
+            // task to find a solution sets the shared `cross_lde_abort`
+            // signal; in-flight peer walkers see it at their next
+            // recurse-entry and abort. Wall-time on hard targets drops from
+            // "sum of no-sol burns + find" to "find at find-lde alone, with
+            // thread-dilution overhead." Easy targets pay 1.5-2× wall
+            // overhead from CPU split across the window — accepted trade
+            // for tail-latency improvement on hard targets.
+            use std::sync::Mutex;
+            let cross_lde_abort = AtomicBool::new(false);
+            let pass2_collector: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+            let lde_window_size: u32 = self.parallel_lde_window.max(1);
+            let mut k_cursor = (m_split + 1).max(lattice_start);
+
+            let parallel_result: Option<SynthResultQ> = 'outer: loop {
+                if k_cursor > self.max_lde { break 'outer None; }
+                if cross_lde_abort.load(Ordering::Relaxed) { break 'outer None; }
+
+                let window_end = (k_cursor + lde_window_size - 1).min(self.max_lde);
+                let lde_window: Vec<u32> = (k_cursor..=window_end).collect();
+                if trace {
+                    eprintln!("[zeta] dc m={m_split} pass1 parallel-lde window={:?} dispatching ...", lde_window);
+                }
+                let t_window = std::time::Instant::now();
+
+                let res = lde_window.par_iter().find_map_any(|&k| {
+                    if cross_lde_abort.load(Ordering::Relaxed) { return None; }
+                    let t_k = std::time::Instant::now();
+                    let (result, budget_hit) = self.dc_search_q_with_abort(
+                        &target, k, m_split, dc_pass1_cap_for(self.epsilon),
+                        Some(&cross_lde_abort),
+                    );
+                    let dt = t_k.elapsed().as_secs_f64() * 1000.0;
+                    if let Some(ref r) = result {
+                        cross_lde_abort.store(true, Ordering::Relaxed);
+                        if trace {
+                            eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
+                                r.distance, dt);
+                        }
+                    } else {
+                        if trace {
+                            eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
+                                if budget_hit { " (budget hit)" } else { "" }, dt);
+                        }
+                        if budget_hit {
+                            pass2_collector.lock().unwrap().push(k);
+                        }
+                    }
+                    result
+                });
+
+                if let Some(r) = res {
+                    if trace {
+                        eprintln!("[zeta] dc parallel-lde window wall  t={:.0}ms",
+                            t_window.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    break 'outer Some(r);
+                }
+                k_cursor = window_end + 1;
+            };
+
+            if let Some(r) = parallel_result { return Some(r); }
+
+            let mut pass2_queue: Vec<u32> = pass2_collector.into_inner().unwrap();
+            pass2_queue.sort_unstable();
 
             // Pass 2 retries: only the lde levels where pass 1's prefixes
             // hit budget without finding. Other lde levels were
@@ -1015,6 +1075,18 @@ impl SynthesizerQ {
         m_split: u32,
         per_prefix_cap: u64,
     ) -> (Option<SynthResultQ>, bool) {
+        self.dc_search_q_with_abort(target, k_total, m_split, per_prefix_cap, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dc_search_q_with_abort(
+        &self,
+        target: &Mat2,
+        k_total: u32,
+        m_split: u32,
+        per_prefix_cap: u64,
+        external_abort: Option<&AtomicBool>,
+    ) -> (Option<SynthResultQ>, bool) {
         use rayon::prelude::*;
         use crate::synthesis::diag;
 
@@ -1107,9 +1179,10 @@ impl SynthesizerQ {
                         hit
                     };
 
-                    let sols = phase1_with_stop(
+                    let sols = crate::synthesis::lenstra_zeta::integer::phase1_with_stop_external_abort(
                         scratch, &y, k_inner, epsilon,
                         per_prefix_cap, &budget_hit, should_stop,
+                        external_abort,
                     );
 
                     // Propagate this prefix's budget-hit signal to the
