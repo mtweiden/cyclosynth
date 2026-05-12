@@ -925,31 +925,53 @@ impl SynthesizerQ {
                 }
                 let t_window = std::time::Instant::now();
 
-                let res = lde_window.par_iter().find_map_any(|&k| {
-                    if cross_lde_abort.load(Ordering::Relaxed) { return None; }
-                    let t_k = std::time::Instant::now();
-                    let (result, budget_hit) = self.dc_search_q_with_abort(
-                        &target, k, m_split, dc_pass1_cap_for(self.epsilon),
-                        Some(&cross_lde_abort),
-                    );
-                    let dt = t_k.elapsed().as_secs_f64() * 1000.0;
-                    if let Some(ref r) = result {
-                        cross_lde_abort.store(true, Ordering::Relaxed);
-                        if trace {
-                            eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
-                                r.distance, dt);
-                        }
-                    } else {
-                        if trace {
-                            eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
-                                if budget_hit { " (budget hit)" } else { "" }, dt);
-                        }
-                        if budget_hit {
-                            pass2_collector.lock().unwrap().push(k);
-                        }
+                // Explicit rayon::scope::spawn forces each lde task to run
+                // concurrently rather than relying on par_iter's adaptive
+                // splitting (which on small Vec is non-deterministic — we
+                // saw 30-100s bimodal variance when 3 nested par_iter
+                // tasks compete for 14 cores via work-stealing).
+                let results: Mutex<Vec<(u32, Option<SynthResultQ>, bool)>> =
+                    Mutex::new(Vec::new());
+                rayon::scope(|s| {
+                    for &k in &lde_window {
+                        let results_ref = &results;
+                        let abort_ref = &cross_lde_abort;
+                        let pass2_ref = &pass2_collector;
+                        s.spawn(move |_| {
+                            if abort_ref.load(Ordering::Relaxed) { return; }
+                            let t_k = std::time::Instant::now();
+                            let (result, budget_hit) = self.dc_search_q_with_abort(
+                                &target, k, m_split, dc_pass1_cap_for(self.epsilon),
+                                Some(abort_ref),
+                            );
+                            let dt = t_k.elapsed().as_secs_f64() * 1000.0;
+                            if let Some(ref r) = result {
+                                abort_ref.store(true, Ordering::Relaxed);
+                                if trace {
+                                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
+                                        r.distance, dt);
+                                }
+                            } else if trace {
+                                eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
+                                    if budget_hit { " (budget hit)" } else { "" }, dt);
+                            }
+                            if result.is_none() && budget_hit {
+                                pass2_ref.lock().unwrap().push(k);
+                            }
+                            results_ref.lock().unwrap().push((k, result, budget_hit));
+                        });
                     }
-                    result
                 });
+                // Pick the lowest-lde finder among the results (smallest lde
+                // wins to maintain minimum-circuit semantics).
+                let mut found_results: Vec<(u32, SynthResultQ)> = results
+                    .into_inner()
+                    .unwrap()
+                    .into_iter()
+                    .filter_map(|(k, r, _)| r.map(|x| (k, x)))
+                    .collect();
+                found_results.sort_by_key(|(k, _)| *k);
+                let res = found_results.into_iter().next().map(|(_, r)| r);
 
                 if let Some(r) = res {
                     if trace {
