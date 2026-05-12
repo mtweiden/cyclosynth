@@ -316,12 +316,6 @@ pub struct SynthesizerQ {
     /// Default 1 (sequential, no change). Builder:
     /// [`Self::with_parallel_lde_window`].
     pub parallel_lde_window: u32,
-    /// Stagger delay (ms) between successive LDE-task spawns under
-    /// parallel-LDE speculation. Time-based; brittle across hardware
-    /// (different core counts / load → different stagger meanings).
-    /// **Prefer `parallel_lde_trigger_nodes`** which is hardware-
-    /// agnostic. Kept for backward compat. Default 0 (disabled).
-    pub parallel_lde_stagger_ms: u64,
     /// **Budget-triggered speculation** (hardware-agnostic). Each LDE
     /// task at index i > 0 waits until the predecessor LDE has
     /// consumed at least this many search-tree nodes without finding
@@ -432,108 +426,6 @@ fn dc_pass2_cap_for(epsilon: f64) -> u64 {
 /// budget). 10M is generous enough to cover the hard-target cases where
 /// the right prefix needs many millions of leaves to converge.
 const DC_PASS2_CAP: u64 = 10_000_000;
-
-/// MPFR-precision 2×2 complex matrix: `[[(re,im); 2]; 2]`.
-///
-/// Used by `synthesize_mpfr` and the MPFR D&C path to keep cap
-/// localization at full precision down to ε ≤ 1e-8 (where f64 ULP
-/// exceeds the cap-radial direction Δ_y/R = ε²/4).
-pub type Mat2Mpfr = [[(rug::Float, rug::Float); 2]; 2];
-
-
-/// Convert a `U2Q` to `Mat2Mpfr`. Reads ZZeta integer coefficients and
-/// evaluates against `(cos(kπ/8), sin(kπ/8))` for k=0..7 in MPFR, then
-/// divides by `√2^k` in MPFR (binary shift + optional ×1/√2).
-pub fn u2q_to_mat2_mpfr(u: &U2Q, prec: u32) -> Mat2Mpfr {
-    use rug::Float as RFloat;
-    use std::f64::consts::PI;
-    use crate::rings::types::int_to_f64;
-
-    let two = RFloat::with_val(prec, 2.0);
-    let inv_sqrt2 = RFloat::with_val(prec, 1.0) / two.clone().sqrt();
-    let half_k = u.k / 2;
-    let mut inv_scale = RFloat::with_val(prec, 1.0);
-    inv_scale >>= half_k;
-    if u.k % 2 == 1 {
-        inv_scale *= &inv_sqrt2;
-    }
-
-    let basis: [(RFloat, RFloat); 8] = std::array::from_fn(|k| {
-        let theta = (k as f64) * PI / 8.0;
-        (RFloat::with_val(prec, theta.cos()), RFloat::with_val(prec, theta.sin()))
-    });
-
-    let zzeta_to_re_im = |z: &crate::rings::ZZeta| -> (RFloat, RFloat) {
-        let coeffs = [
-            int_to_f64(z.a), int_to_f64(z.b), int_to_f64(z.c), int_to_f64(z.d),
-            int_to_f64(z.e), int_to_f64(z.f), int_to_f64(z.g), int_to_f64(z.h),
-        ];
-        let mut re = RFloat::with_val(prec, 0.0);
-        let mut im = RFloat::with_val(prec, 0.0);
-        for k in 0..8 {
-            let c = RFloat::with_val(prec, coeffs[k]);
-            re += RFloat::with_val(prec, &c * &basis[k].0);
-            im += RFloat::with_val(prec, &c * &basis[k].1);
-        }
-        (re * &inv_scale, im * &inv_scale)
-    };
-
-    [
-        [zzeta_to_re_im(&u.u11), zzeta_to_re_im(&u.u12)],
-        [zzeta_to_re_im(&u.u21), zzeta_to_re_im(&u.u22)],
-    ]
-}
-
-/// MPFR analog of `u2q_dag_times_mat2`. Computes `U_L† · target` at MPFR
-/// precision, lifting `U_L`'s exact ZZeta entries to MPFR via
-/// `u2q_to_mat2_mpfr`. The `target` precision sets the result precision.
-pub fn u2q_dag_times_mat2_mpfr(u_l: &U2Q, target: &Mat2Mpfr, prec: u32) -> Mat2Mpfr {
-    use rug::Float as RFloat;
-    let u = u2q_to_mat2_mpfr(u_l, prec);
-    // (U†)[i][j] = conj(U[j][i])
-    let ud00 = (u[0][0].0.clone(), RFloat::with_val(prec, -&u[0][0].1));
-    let ud01 = (u[1][0].0.clone(), RFloat::with_val(prec, -&u[1][0].1));
-    let ud10 = (u[0][1].0.clone(), RFloat::with_val(prec, -&u[0][1].1));
-    let ud11 = (u[1][1].0.clone(), RFloat::with_val(prec, -&u[1][1].1));
-    let mul = |a: &(RFloat, RFloat), b: &(RFloat, RFloat)| -> (RFloat, RFloat) {
-        let re = RFloat::with_val(prec, &a.0 * &b.0)
-            - RFloat::with_val(prec, &a.1 * &b.1);
-        let im = RFloat::with_val(prec, &a.0 * &b.1)
-            + RFloat::with_val(prec, &a.1 * &b.0);
-        (RFloat::with_val(prec, re), RFloat::with_val(prec, im))
-    };
-    let add = |a: (RFloat, RFloat), b: (RFloat, RFloat)| -> (RFloat, RFloat) {
-        (RFloat::with_val(prec, &a.0 + &b.0), RFloat::with_val(prec, &a.1 + &b.1))
-    };
-    [
-        [
-            add(mul(&ud00, &target[0][0]), mul(&ud01, &target[1][0])),
-            add(mul(&ud00, &target[0][1]), mul(&ud01, &target[1][1])),
-        ],
-        [
-            add(mul(&ud10, &target[0][0]), mul(&ud11, &target[1][0])),
-            add(mul(&ud10, &target[0][1]), mul(&ud11, &target[1][1])),
-        ],
-    ]
-}
-
-/// Column-1 of an MPFR target as `(Re V₀₀, Im V₀₀, Re V₁₀, Im V₁₀)`.
-/// MPFR analog of `unitary_to_uv_zeta`.
-pub fn unitary_to_uv_zeta_mpfr(target: &Mat2Mpfr) -> [rug::Float; 4] {
-    [
-        target[0][0].0.clone(),
-        target[0][0].1.clone(),
-        target[1][0].0.clone(),
-        target[1][0].1.clone(),
-    ]
-}
-
-/// MPFR analog of `det_phase_of`. Computes `det = a·d − b·c` (complex)
-/// in MPFR, then `arg(det) / (π/8) → Z/16`. Returns the phase index in
-/// 0..16. f64 is sufficient for the angle quantization step (`atan2`
-/// resolves 1/16 well enough), but the determinant's complex value is
-/// computed in MPFR for stability when the target is near a det-phase
-/// boundary.
 
 /// Compute `U_L† · target` as a continuous Mat2.
 /// `U_L` is exact (`U2Q`), `target` is float (`Mat2`). Mirrors the 8D
@@ -697,7 +589,6 @@ impl SynthesizerQ {
             use_f64_gs,
             bkz_block_size,
             parallel_lde_window: 1,
-            parallel_lde_stagger_ms: 0,
             parallel_lde_trigger_nodes: 0,
         }
     }
@@ -707,13 +598,6 @@ impl SynthesizerQ {
     pub fn with_parallel_lde_window(mut self, window: u32) -> Self {
         debug_assert!(window >= 1);
         self.parallel_lde_window = window;
-        self
-    }
-
-    /// Set the inter-LDE spawn stagger in milliseconds (default 0).
-    /// See the field comment on `parallel_lde_stagger_ms`.
-    pub fn with_parallel_lde_stagger_ms(mut self, ms: u64) -> Self {
-        self.parallel_lde_stagger_ms = ms;
         self
     }
 
@@ -963,17 +847,9 @@ impl SynthesizerQ {
                 // Each LDE task at index i > 0 waits until the
                 // predecessor (index i-1) has consumed `trigger_nodes`
                 // search-tree nodes without finding, OR the cross-LDE
-                // abort fires. Hardware-agnostic — depends on tree
-                // geometry, not wall clock. Easy targets find before
-                // the predecessor reaches the threshold → peers never
-                // launch → zero overhead. Hard targets exhaust the
-                // predicted LDE → peers spawn → rayon work-stealing
-                // balances them.
-                //
-                // Falls back to time-based stagger if trigger_nodes is
-                // 0 but stagger_ms > 0 (legacy behavior).
+                // abort fires. When `trigger_nodes == 0` peers launch
+                // immediately (window becomes naive parallel).
                 let trigger_nodes = self.parallel_lde_trigger_nodes;
-                let stagger_ms = self.parallel_lde_stagger_ms;
                 let consumed_counters: Vec<std::sync::Arc<std::sync::atomic::AtomicU64>> =
                     (0..lde_window.len())
                         .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
@@ -988,32 +864,14 @@ impl SynthesizerQ {
                         let my_consumed = consumed_counters[i].clone();
                         let predecessor_consumed: Option<std::sync::Arc<std::sync::atomic::AtomicU64>> =
                             if i > 0 { Some(consumed_counters[i - 1].clone()) } else { None };
-                        let task_stagger_ms = stagger_ms * (i as u64);
                         s.spawn(move || {
-                            // Wait for trigger: either budget-consumed
-                            // threshold crossed on predecessor, or
-                            // (legacy) time-based stagger expires, or
-                            // cross-LDE abort fires.
-                            if i > 0 {
-                                let use_budget = trigger_nodes > 0;
-                                let stagger_deadline = if !use_budget && task_stagger_ms > 0 {
-                                    Some(std::time::Instant::now() + std::time::Duration::from_millis(task_stagger_ms))
-                                } else {
-                                    None
-                                };
+                            // Wait for predecessor to consume `trigger_nodes`
+                            // search-tree nodes (or for cross-LDE abort).
+                            if i > 0 && trigger_nodes > 0 {
+                                let pred = predecessor_consumed.as_ref().unwrap();
                                 loop {
                                     if abort_ref.load(Ordering::Relaxed) { return; }
-                                    if let Some(ref pred) = predecessor_consumed {
-                                        if use_budget && pred.load(Ordering::Relaxed) >= trigger_nodes {
-                                            break;
-                                        }
-                                    }
-                                    if let Some(deadline) = stagger_deadline {
-                                        if std::time::Instant::now() >= deadline { break; }
-                                    } else if !use_budget {
-                                        // No trigger configured: launch immediately.
-                                        break;
-                                    }
+                                    if pred.load(Ordering::Relaxed) >= trigger_nodes { break; }
                                     std::thread::sleep(std::time::Duration::from_millis(50));
                                 }
                                 if abort_ref.load(Ordering::Relaxed) { return; }

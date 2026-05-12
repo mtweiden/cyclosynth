@@ -1128,46 +1128,6 @@ fn recurse_16_norm_pruned<F>(
     }
 }
 
-struct Bracket {
-    tail: f64,
-    z_low: i64,
-    z_high: i64,
-    z_mid: i64,
-    max_off: i64,
-}
-
-/// Compute the SE bracket [z_low, z_high] for the current depth's z[d]
-/// enumeration. Returns None if the Q-bound is already exhausted.
-#[inline]
-fn compute_bracket_at_depth(
-    d: usize,
-    l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
-    z: &[i64; 16],
-    partial_q: f64,
-    bound_sq: f64,
-    l_dd: f64,
-) -> Option<Bracket> {
-    let mut tail = 0.0_f64;
-    for j in (d + 1)..16 {
-        tail += l[d][j] * ((z[j] - z_c[j]) as f64);
-    }
-    let rem = bound_sq - partial_q;
-    if rem < 0.0 {
-        return None;
-    }
-    let rem_sqrt = rem.sqrt();
-    let center_off = -tail / l_dd;
-    let span = rem_sqrt / l_dd.abs();
-    // Same i64 bracket fix as recurse_16: keep z_c[d] as i64 to avoid
-    // f64 quantization at deep ε where z_c can exceed 2^53.
-    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
-    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
-    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
-    let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
-    Some(Bracket { tail, z_low, z_high, z_mid, max_off })
-}
-
 /// Apply `x[c] += delta · basis[d][c]` for c=0..16. Fast tight loop —
 /// LLVM auto-vectorizes this on Apple Silicon (4 i64s per NEON op).
 #[inline]
@@ -1599,15 +1559,24 @@ fn recurse_collect_norm_pruned<F>(
         }
         return;
     }
-    let bracket = match compute_bracket_at_depth(d, l, z_c, z, partial_q, bound_sq, l_dd) {
-        Some(b) => b,
-        None => return,
-    };
-    let tail = bracket.tail;
-    let z_low = bracket.z_low;
-    let z_high = bracket.z_high;
-    let z_mid = bracket.z_mid;
-    let max_off = bracket.max_off;
+    // SE bracket [z_low, z_high] for the current depth's z[d] enumeration.
+    let mut tail = 0.0_f64;
+    for j in (d + 1)..16 {
+        tail += l[d][j] * ((z[j] - z_c[j]) as f64);
+    }
+    let rem = bound_sq - partial_q;
+    if rem < 0.0 {
+        return;
+    }
+    let rem_sqrt = rem.sqrt();
+    let center_off = -tail / l_dd;
+    let span = rem_sqrt / l_dd.abs();
+    // Keep z_c[d] as i64 to avoid f64 quantization at deep ε where z_c can
+    // exceed 2^53.
+    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
+    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
+    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
+    let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
     // NOTE: a depth-0 analytical shell-equation elimination is available via
     // [`analytical_depth0_z0_candidates`] (i128-exact integer roots of
