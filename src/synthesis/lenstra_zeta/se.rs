@@ -51,6 +51,43 @@ pub fn set_bypass_norm_prune(value: bool) {
     BYPASS_NORM_PRUNE.store(value, Ordering::Relaxed);
 }
 
+// Depth-1 Q-filter (phase 3). DEFAULT OFF.
+//
+// Sound: rejects only z[1] candidates with no integer z[0] making
+// ‖x‖² = T exactly (the leaf filter's hard requirement). 99.98%
+// rejection rate at the cliff per the qfilter measurement.
+//
+// Why default off: the filter interacts badly with the multi-lde
+// search at deep ε. With filter active, depth-1 nodes are much
+// cheaper than depth-0 recursion, so the per-node budget lets the
+// walker explore ~9× wider at depth 1. At lde levels with no
+// solution, the walker burns the entire budget at filter overhead
+// (~200 ns/node × 9× wider × num_threads) instead of bailing
+// quickly. Cliff probe (theta=1.1, ε=1.5e-8): lde=21 (no sol)
+// took 631 s with filter vs ~5 s baseline.
+//
+// Set `CYCLOSYNTH_QFILTER=1` to enable, or call
+// `set_qfilter_enabled(true)`. Unlocking this in production
+// requires either: (a) bailing on "lde has no solution" before
+// exhausting budget; (b) a separate per-lde budget; or (c) a
+// cheaper depth-1 precompute.
+static QFILTER_ENABLED: AtomicBool = AtomicBool::new(false);
+static QFILTER_INIT: OnceLock<()> = OnceLock::new();
+
+fn qfilter_enabled() -> bool {
+    QFILTER_INIT.get_or_init(|| {
+        let v = std::env::var("CYCLOSYNTH_QFILTER").ok().as_deref() == Some("1");
+        QFILTER_ENABLED.store(v, Ordering::Relaxed);
+    });
+    QFILTER_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Diagnostic-only: enable the depth-1 Q-filter at runtime.
+pub fn set_qfilter_enabled(value: bool) {
+    QFILTER_INIT.get_or_init(|| {});
+    QFILTER_ENABLED.store(value, Ordering::Relaxed);
+}
+
 /// MPFR-128 verification of the f64 norm-shell prune predicate. When ON,
 /// every f64 prune-fire event is re-checked at 128-bit precision using the
 /// MPFR Cholesky factor; if MPFR says "keep" (true partial < threshold),
@@ -1450,12 +1487,10 @@ fn recurse_collect_norm_pruned<F>(
     if trace && depth == 0 {
         crate::synthesis::diag::D1_PARTIAL_TLS.with(|c| c.set(partial_eucl));
     }
-    // Depth-1 shell-discriminant filter measurement (trace-gated). z[2..15]
-    // is fixed for the duration of this call's bracket loop; precompute
-    // (G_00, G_01, G_11, A, v_0, v_1) once, then bin each z[1] candidate
-    // by sign and mod-16 of the discriminant. No behaviour change.
+    // Depth-1 shell-discriminant filter (phase 3) — see `qfilter_enabled`
+    // for status. Default off; opt-in via `CYCLOSYNTH_QFILTER=1`.
     let qfilter_state: Option<(i256, i256, i256, i256, i256, i256)> =
-        if trace && depth == 1 {
+        if depth == 1 && qfilter_enabled() {
             Some(qfilter_depth1_state(basis, x, z[0], z[1]))
         } else {
             None
@@ -1640,23 +1675,29 @@ fn recurse_collect_norm_pruned<F>(
         // already inside `leaf_filter`'s first stage; replicating it here
         // is pure overhead without budget-model changes.
 
-        // Depth-1 Q-filter measurement (trace-only, no behaviour change).
-        // Count whether this z[1] candidate could yield an integer z[0]
-        // hitting the shell exactly. See `qfilter_discriminant_class`.
+        // Depth-1 Q-filter: at z[1] = zd, decide if any integer z[0] makes
+        // ‖x‖² = T exactly. Skip recursion when no perfect-square solution
+        // exists. Sound: leaf_filter requires ‖x‖² == T strictly, so a
+        // non-perfect-square discriminant guarantees no leaf survives.
         if let Some((g_00, g_01, g_11, a_q, v_0, v_1)) = qfilter_state {
             let class = qfilter_discriminant_class(
                 g_00, g_01, g_11, a_q, v_0, v_1, target_norm_sq_i64, zd,
             );
-            crate::synthesis::diag::N_QFILTER_TOTAL.fetch_add(1, Ordering::Relaxed);
-            match class {
-                0 => crate::synthesis::diag::N_QFILTER_D_NEG.fetch_add(1, Ordering::Relaxed),
-                1 => crate::synthesis::diag::N_QFILTER_D_GE0_MOD16_BAD
-                    .fetch_add(1, Ordering::Relaxed),
-                2 => crate::synthesis::diag::N_QFILTER_D_GE0_NOT_SQUARE
-                    .fetch_add(1, Ordering::Relaxed),
-                _ => crate::synthesis::diag::N_QFILTER_PERFECT_SQUARE
-                    .fetch_add(1, Ordering::Relaxed),
-            };
+            if trace {
+                crate::synthesis::diag::N_QFILTER_TOTAL.fetch_add(1, Ordering::Relaxed);
+                match class {
+                    0 => crate::synthesis::diag::N_QFILTER_D_NEG.fetch_add(1, Ordering::Relaxed),
+                    1 => crate::synthesis::diag::N_QFILTER_D_GE0_MOD16_BAD
+                        .fetch_add(1, Ordering::Relaxed),
+                    2 => crate::synthesis::diag::N_QFILTER_D_GE0_NOT_SQUARE
+                        .fetch_add(1, Ordering::Relaxed),
+                    _ => crate::synthesis::diag::N_QFILTER_PERFECT_SQUARE
+                        .fetch_add(1, Ordering::Relaxed),
+                };
+            }
+            if class != 3 {
+                continue;
+            }
         }
 
         recurse_collect_norm_pruned(
