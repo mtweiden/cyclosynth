@@ -313,11 +313,21 @@ pub struct SynthesizerQ {
     /// Parallel-LDE speculation window size. When ≥ 2, the dc_split path
     /// dispatches that many lde levels concurrently via rayon, with a
     /// cross-LDE abort signal so the first finder cancels its peers.
-    /// Trade-off: hard targets (needs higher lde than expected) gain
-    /// large wall improvements; easy targets pay 1.5-2× thread-dilution
-    /// overhead. Default 1 (sequential, no change). Builder:
+    /// Default 1 (sequential, no change). Builder:
     /// [`Self::with_parallel_lde_window`].
     pub parallel_lde_window: u32,
+    /// Stagger delay (ms) between successive LDE-task spawns under
+    /// parallel-LDE speculation. The i-th LDE in the window waits
+    /// `stagger_ms × i` before launching, checking the cross-LDE
+    /// abort flag every 50ms during the wait. Easy targets typically
+    /// find at the predicted LDE before the stagger expires, so peer
+    /// LDEs never launch and there's zero parallelism overhead.
+    /// Hard targets exhaust the predicted LDE's early budget, the
+    /// stagger expires, peer LDEs launch and compete for cores via
+    /// rayon's native work-stealing. Tunable — values of 2-10 seconds
+    /// are reasonable for ε=1e-8. Default 0 (immediate spawn, original
+    /// behavior). Builder: [`Self::with_parallel_lde_stagger_ms`].
+    pub parallel_lde_stagger_ms: u64,
 }
 
 /// k cutoff: brute-force handles `k ≤ BRUTE_LIMIT`, the 16D LLL+SE
@@ -679,6 +689,7 @@ impl SynthesizerQ {
             use_f64_gs,
             bkz_block_size,
             parallel_lde_window: 1,
+            parallel_lde_stagger_ms: 0,
         }
     }
 
@@ -687,6 +698,13 @@ impl SynthesizerQ {
     pub fn with_parallel_lde_window(mut self, window: u32) -> Self {
         debug_assert!(window >= 1);
         self.parallel_lde_window = window;
+        self
+    }
+
+    /// Set the inter-LDE spawn stagger in milliseconds (default 0).
+    /// See the field comment on `parallel_lde_stagger_ms`.
+    pub fn with_parallel_lde_stagger_ms(mut self, ms: u64) -> Self {
+        self.parallel_lde_stagger_ms = ms;
         self
     }
 
@@ -925,20 +943,43 @@ impl SynthesizerQ {
                 }
                 let t_window = std::time::Instant::now();
 
-                // Explicit rayon::scope::spawn forces each lde task to run
-                // concurrently rather than relying on par_iter's adaptive
-                // splitting (which on small Vec is non-deterministic — we
-                // saw 30-100s bimodal variance when 3 nested par_iter
-                // tasks compete for 14 cores via work-stealing).
+                // Asymmetric Staggered Speculation: each LDE task spawns
+                // immediately, but tasks at index i > 0 sleep for
+                // `stagger * i` before doing real work, checking the
+                // cross-LDE abort every 50ms during the wait. On easy
+                // targets, LDE[0] (the predicted lattice_start) finds
+                // before any peer launches, the abort fires, and the
+                // sleeping peers exit without consuming any work —
+                // zero parallelism overhead on the common case. On
+                // hard targets the predicted LDE doesn't find in
+                // time, the stagger expires, peer LDEs launch and
+                // compete for cores via rayon's native work-stealing.
+                //
+                // Uses std::thread::scope (not rayon::scope) so that
+                // the staggered sleep yields the OS thread rather than
+                // holding a rayon worker. The actual lde-task work
+                // still uses rayon internally via dc_search_q_with_abort.
+                let stagger_ms = self.parallel_lde_stagger_ms;
+                let stagger = std::time::Duration::from_millis(stagger_ms);
                 let results: Mutex<Vec<(u32, Option<SynthResultQ>, bool)>> =
                     Mutex::new(Vec::new());
-                rayon::scope(|s| {
-                    for &k in &lde_window {
+                std::thread::scope(|s| {
+                    for (i, &k) in lde_window.iter().enumerate() {
                         let results_ref = &results;
                         let abort_ref = &cross_lde_abort;
                         let pass2_ref = &pass2_collector;
-                        s.spawn(move |_| {
-                            if abort_ref.load(Ordering::Relaxed) { return; }
+                        let task_stagger = stagger * (i as u32);
+                        s.spawn(move || {
+                            // Staggered launch: wait `stagger * i` ms,
+                            // checking abort every 50 ms.
+                            if !task_stagger.is_zero() {
+                                let start = std::time::Instant::now();
+                                while start.elapsed() < task_stagger {
+                                    if abort_ref.load(Ordering::Relaxed) { return; }
+                                    std::thread::sleep(std::time::Duration::from_millis(50));
+                                }
+                                if abort_ref.load(Ordering::Relaxed) { return; }
+                            }
                             let t_k = std::time::Instant::now();
                             let (result, budget_hit) = self.dc_search_q_with_abort(
                                 &target, k, m_split, dc_pass1_cap_for(self.epsilon),
@@ -952,8 +993,8 @@ impl SynthesizerQ {
                                         r.distance, dt);
                                 }
                             } else if trace {
-                                eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
-                                    if budget_hit { " (budget hit)" } else { "" }, dt);
+                                eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms (stagger={:.0}ms)",
+                                    if budget_hit { " (budget hit)" } else { "" }, dt, task_stagger.as_secs_f64() * 1000.0);
                             }
                             if result.is_none() && budget_hit {
                                 pass2_ref.lock().unwrap().push(k);
@@ -962,8 +1003,7 @@ impl SynthesizerQ {
                         });
                     }
                 });
-                // Pick the lowest-lde finder among the results (smallest lde
-                // wins to maintain minimum-circuit semantics).
+                // Pick the lowest-lde finder (minimum-circuit semantics).
                 let mut found_results: Vec<(u32, SynthResultQ)> = results
                     .into_inner()
                     .unwrap()

@@ -37,6 +37,12 @@ fn main() {
         synth = synth.with_parallel_lde_window(plde_window);
         eprintln!("  (parallel-LDE window: {plde_window})");
     }
+    // Optional stagger (5th arg, ms).
+    let plde_stagger_ms = args.get(4).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    if plde_stagger_ms > 0 {
+        synth = synth.with_parallel_lde_stagger_ms(plde_stagger_ms);
+        eprintln!("  (parallel-LDE stagger: {plde_stagger_ms}ms)");
+    }
     let t0 = Instant::now();
     let result = synth.synthesize(target);
     let dt = t0.elapsed().as_secs_f64();
