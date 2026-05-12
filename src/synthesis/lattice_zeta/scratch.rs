@@ -1,6 +1,6 @@
 //! Per-thread scratch buffers for the 16D Z[ζ_16] L²-LLL pipeline.
 //!
-//! Mirrors `super::super::lenstra::scratch` but extended to dimension 16:
+//! Mirrors `super::super::lattice::scratch` but extended to dimension 16:
 //!
 //!   - `q_int`: i256 16x16 scaled Q-metric snapshot.
 //!   - `basis`: i64 16x16 LLL basis (rows = basis vectors).
@@ -33,10 +33,10 @@ use rug::Float as RFloat;
 // ─── Adaptive precision constants ────────────────────────────────────────────
 
 // TARGET_BITS, GRAM_OVERFLOW_THRESHOLD_BITS, and compute_scale_bits live
-// in lenstra_common — same values for both backends. (At d=16 the
+// in lattice_common — same values for both backends. (At d=16 the
 // dimensional growth in the Gram budget is absorbed via the threshold
 // headroom rather than a smaller TARGET_BITS.)
-pub use crate::synthesis::lenstra_common::{
+pub use crate::synthesis::lattice_common::{
     compute_scale_bits, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
 };
 

@@ -28,11 +28,11 @@ use std::sync::atomic::AtomicBool;
 
 /// Per-worker scratch buffers, allocated once via rayon's `map_init` and
 /// reused across all MA prefixes that worker handles.
-pub struct LenstraScratch {
+pub struct LatticeScratch {
     inner: scratch::IntScratch,
 }
 
-impl LenstraScratch {
+impl LatticeScratch {
     pub fn new(eps: Float) -> Self {
         Self { inner: scratch::IntScratch::new(eps) }
     }
@@ -42,7 +42,7 @@ impl LenstraScratch {
 /// Returns integer 8-vectors satisfying the synthesis constraints (norm
 /// shell, bilinear, alignment).
 pub fn phase1(
-    scratch: &mut LenstraScratch,
+    scratch: &mut LatticeScratch,
     y: &[Float; 8],
     k: u32,
     eps: Float,
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn integer_path_at_eps_1e_3_runs() {
-        let mut scratch = LenstraScratch::new(1e-3);
+        let mut scratch = LatticeScratch::new(1e-3);
         let y = realistic_y(14);
         let budget_hit = AtomicBool::new(false);
         let _ = phase1(&mut scratch, &y, 14, 1e-3, 1_000, &budget_hit);
@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn integer_path_at_eps_1e_5_runs() {
-        let mut scratch = LenstraScratch::new(1e-5);
+        let mut scratch = LatticeScratch::new(1e-5);
         let y = realistic_y(21);
         let budget_hit = AtomicBool::new(false);
         let _ = phase1(&mut scratch, &y, 21, 1e-5, 1_000, &budget_hit);

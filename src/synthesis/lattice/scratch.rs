@@ -11,9 +11,9 @@ use crate::rings::Float;
 use i256::i256;
 use rug::{Assign, Float as RFloat};
 
-// ─── Adaptive precision constants — re-exported from lenstra_common ─────────
+// ─── Adaptive precision constants — re-exported from lattice_common ─────────
 
-pub use crate::synthesis::lenstra_common::{
+pub use crate::synthesis::lattice_common::{
     compute_scale_bits, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
 };
 

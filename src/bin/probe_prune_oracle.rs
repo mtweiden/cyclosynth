@@ -10,14 +10,14 @@ use cyclosynth::synthesis::clifford_sqrt_t::{
 };
 use cyclosynth::synthesis::diag;
 use cyclosynth::synthesis::distance::diamond_distance_float;
-use cyclosynth::synthesis::lenstra_zeta::{
+use cyclosynth::synthesis::lattice_zeta::{
     IntScratch16, build_q_int_zeta, build_q_mpfr_zeta_from_mpfr_v,
     det16_exact, phase1_with_stop_mpfr, set_bypass_norm_prune,
 };
-use cyclosynth::synthesis::lenstra_zeta::cholesky_lu::{
+use cyclosynth::synthesis::lattice_zeta::cholesky_lu::{
     cholesky_f64_16, lu_solve_int_inplace_16,
 };
-use cyclosynth::synthesis::lenstra_zeta::lll::run_lll_16;
+use cyclosynth::synthesis::lattice_zeta::lll::run_lll_16;
 use cyclosynth::synthesis::search_zeta::uv_to_xy_zeta_mpfr;
 use num_complex::Complex;
 use rug::{Assign, Float as RFloat};

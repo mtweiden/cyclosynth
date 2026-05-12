@@ -58,7 +58,7 @@ use crate::rings::Float;
 use crate::synthesis::diag;
 
 /// MPFR precision used by the alignment-threshold dot product. Same as 8D
-/// `super::super::lenstra::se::SE_PREC` — 128 bits gives ~38 digits of
+/// `super::super::lattice::se::SE_PREC` — 128 bits gives ~38 digits of
 /// headroom past the precision walls in the f64 formula at ε ≲ √(machine_eps).
 const ALIGN_PREC: u32 = 128;
 
@@ -351,7 +351,7 @@ where
     if let Some(d) = det_check {
         if d != 1 && d != -1 {
             eprintln!(
-                "[lenstra_zeta] LLL non-unimodular even after MPFR escalation \
+                "[lattice_zeta] LLL non-unimodular even after MPFR escalation \
                 (det={}) at eps={:e}, k={}; bailing.",
                 d, eps, k
             );
@@ -381,7 +381,7 @@ where
             Some(1) | Some(-1) | None => {}
             Some(d) => {
                 eprintln!(
-                    "[lenstra_zeta] BKZ-{block_size} non-unimodular (det={d}) \
+                    "[lattice_zeta] BKZ-{block_size} non-unimodular (det={d}) \
                      at eps={eps:e}, k={k}; bailing."
                 );
                 return Vec::new();
@@ -398,7 +398,7 @@ where
     }
     if !chol_ok {
         eprintln!(
-            "[lenstra_zeta] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
+            "[lattice_zeta] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
             eps, k
         );
         return Vec::new();
@@ -412,7 +412,7 @@ where
     }
     if !lu_ok {
         eprintln!(
-            "[lenstra_zeta] LU solve failed at eps={:e}, k={}; bailing.",
+            "[lattice_zeta] LU solve failed at eps={:e}, k={}; bailing.",
             eps, k
         );
         return Vec::new();
@@ -528,7 +528,7 @@ where
         Some(pair) => pair,
         None => {
             eprintln!(
-                "[lenstra_zeta] Euclidean Cholesky failed (rank-deficient basis) at \
+                "[lattice_zeta] Euclidean Cholesky failed (rank-deficient basis) at \
                  eps={:e}, k={}; bailing.",
                 eps, k
             );
@@ -630,7 +630,7 @@ where
         }
     };
 
-    let (solutions, budget_was_hit) = crate::synthesis::lenstra_zeta::se::schnorr_euchner_16d_par_norm_pruned_with_consumed(
+    let (solutions, budget_was_hit) = crate::synthesis::lattice_zeta::se::schnorr_euchner_16d_par_norm_pruned_with_consumed(
         &l_upper, &z_c, bound_sq, &r_eucl, &r_eucl_dd, target_norm_sq_f64, &basis,
         leaf_filter, &budget,
         external_abort, consumed,

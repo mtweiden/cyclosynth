@@ -1,6 +1,6 @@
 //! Native 16D Lenstra-style search for Clifford+√T (Z[ζ_16]) synthesis.
 //!
-//! This module is the Z[ζ_16] analog of [`super::lenstra`] (which targets
+//! This module is the Z[ζ_16] analog of [`super::lattice`] (which targets
 //! Z[ω] / Clifford+T). The two modules are deliberately kept separate to
 //! isolate the precision and integer-width choices: f64 Gram-Schmidt is
 //! provably sufficient at d=8 (Theorem 2 of Nguyen-Stehlé 2009) but not at
@@ -22,7 +22,7 @@
 //!      validate against the synthesis constraints (norm shell, 3 bilinear
 //!      forms `B_1, B_2, B_3 = 0`, alignment cap).
 //!
-//! ## Module layout (mirrors [`super::lenstra`])
+//! ## Module layout (mirrors [`super::lattice`])
 //!
 //! - [`cholesky_lu`] — Cholesky / LU helpers for d=16.
 //! - [`integer`] — phase1 driver wiring all stages.

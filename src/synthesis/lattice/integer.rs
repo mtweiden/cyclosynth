@@ -133,14 +133,14 @@ pub fn phase1(
         Some(1) | Some(-1) => {}
         Some(d) => {
             eprintln!(
-                "[lenstra] LLL non-unimodular (det={}) at eps={:e}, k={}; bailing.",
+                "[lattice] LLL non-unimodular (det={}) at eps={:e}, k={}; bailing.",
                 d, eps, k
             );
             return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
         }
         None => {
             eprintln!(
-                "[lenstra] det8_exact overflow at eps={:e}, k={}; bailing.",
+                "[lattice] det8_exact overflow at eps={:e}, k={}; bailing.",
                 eps, k
             );
             return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
@@ -157,7 +157,7 @@ pub fn phase1(
     }
     if !chol_ok {
         eprintln!(
-            "[lenstra] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
+            "[lattice] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
             eps, k
         );
         return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
@@ -183,7 +183,7 @@ pub fn phase1(
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     if !lu_ok {
-        eprintln!("[lenstra] LU solve failed at eps={:e}, k={}; bailing.", eps, k);
+        eprintln!("[lattice] LU solve failed at eps={:e}, k={}; bailing.", eps, k);
         return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
     }
     let z_c_se: [RFloat; 8] = std::array::from_fn(|i| {

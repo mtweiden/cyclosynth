@@ -14,7 +14,7 @@
 //! for small Clifford+√T targets.
 //!
 //! For `k > BRUTE_LIMIT`: 16D L²-LLL + Schnorr-Euchner via
-//! [`crate::synthesis::lenstra_zeta::phase1`] with adaptive leaf budget
+//! [`crate::synthesis::lattice_zeta::phase1`] with adaptive leaf budget
 //! scaling exponentially in `k`. Reaches ε ≲ 1e-5 at k ≈ 30.
 //!
 //! ## Reconstruction
@@ -31,7 +31,7 @@ use crate::rings::types::Int;
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2q_float, Mat2};
-use crate::synthesis::lenstra_zeta::{phase1_with_stop, IntScratch16};
+use crate::synthesis::lattice_zeta::{phase1_with_stop, IntScratch16};
 use crate::synthesis::search_zeta::{phase1_brute, uv_to_xy_zeta};
 use num_complex::Complex64;
 use std::collections::HashMap;
@@ -790,7 +790,7 @@ impl SynthesizerQ {
     /// 16D L²-LLL + Schnorr-Euchner `phase1` for larger k.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
         use crate::synthesis::diag;
-        use crate::synthesis::lenstra_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
+        use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
         let trace = diag::trace_enabled();
         if trace {
             diag::reset_all();
@@ -816,7 +816,7 @@ impl SynthesizerQ {
         impl Drop for VerifyGuard {
             fn drop(&mut self) {
                 if self.changed {
-                    crate::synthesis::lenstra_zeta::set_verify_prune_mpfr(self.restore_to);
+                    crate::synthesis::lattice_zeta::set_verify_prune_mpfr(self.restore_to);
                 }
             }
         }
@@ -1296,7 +1296,7 @@ impl SynthesizerQ {
                         hit
                     };
 
-                    let sols = crate::synthesis::lenstra_zeta::integer::phase1_with_stop_external_abort_consumed(
+                    let sols = crate::synthesis::lattice_zeta::integer::phase1_with_stop_external_abort_consumed(
                         scratch, &y, k_inner, epsilon,
                         per_prefix_cap, &budget_hit, should_stop,
                         external_abort, consumed,
@@ -1944,8 +1944,8 @@ mod tests {
     #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_f64_gs_experiment() {
         use crate::synthesis::diag;
-        use crate::synthesis::lenstra_zeta::lll_f64::{run_lll_16_f64};
-        use crate::synthesis::lenstra_zeta::lll::run_lll_16;
+        use crate::synthesis::lattice_zeta::lll_f64::{run_lll_16_f64};
+        use crate::synthesis::lattice_zeta::lll::run_lll_16;
 
         let theta = 0.3_f64;
         let target: Mat2 = [
@@ -2368,7 +2368,7 @@ mod tests {
     #[test]
     #[ignore = "slow diagnostic; run with --ignored"]
     fn z1_prefilter_bilinear_distribution() {
-        use crate::synthesis::lenstra_zeta::se::bilinear_forms;
+        use crate::synthesis::lattice_zeta::se::bilinear_forms;
         let theta = 0.3_f64;
         let target: Mat2 = [
             [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
