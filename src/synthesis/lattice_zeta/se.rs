@@ -1374,33 +1374,14 @@ pub enum LeafAction {
 /// `Fn + Sync`. Returns a [`LeafAction`]: `Take`/`Skip`/`TakeAndStop`.
 ///
 /// Returns `(solutions, budget_hit)`.
-pub fn schnorr_euchner_16d_par_norm_pruned<F>(
-    l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
-    bound_sq: f64,
-    r_eucl: &[[f64; 16]; 16],
-    r_eucl_dd: &[[(f64, f64); 16]; 16],
-    target_norm_sq: f64,
-    basis: &[[i64; 16]; 16],
-    leaf_filter: F,
-    budget: &AtomicU64,
-    external_abort: Option<&AtomicBool>,
-) -> (Vec<[i64; 16]>, bool)
-where
-    F: Fn(&[i64; 16]) -> LeafAction + Sync,
-{
-    schnorr_euchner_16d_par_norm_pruned_with_consumed(
-        l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, basis,
-        leaf_filter, budget, external_abort, None,
-    )
-}
-
-/// Same as above + an optional shared `consumed` counter (incremented on
-/// every recurse-enter). Used by the budget-triggered parallel-LDE
-/// dispatcher to observe how much of the search space has been explored
-/// — hardware-agnostic stagger trigger.
+/// Parallel SE walker with norm-shell prune. `external_abort` is an
+/// optional cross-task abort signal (set by a peer LDE task that found
+/// first under parallel speculation). `consumed` is an optional shared
+/// node counter (incremented per recurse-entry) used by the budget-
+/// triggered LDE-stagger dispatcher to observe search progress. Pass
+/// `None, None` if you don't need either.
 #[allow(clippy::too_many_arguments)]
-pub fn schnorr_euchner_16d_par_norm_pruned_with_consumed<F>(
+pub fn schnorr_euchner_16d_par_norm_pruned<F>(
     l: &[[f64; 16]; 16],
     z_c: &[i64; 16],
     bound_sq: f64,

@@ -531,7 +531,7 @@ fn main() {
     };
     let _sols = phase1_with_stop_mpfr(
         &mut scratch2, &y_inner_mpfr, &v_inner_mpfr, k_inner, eps,
-        100_000_000, &budget_hit, should_stop,
+        100_000_000, &budget_hit, should_stop, None, None,
     );
     eprintln!("  phase1_with_stop_mpfr done. budget_hit={}", budget_hit.load(std::sync::atomic::Ordering::Relaxed));
     eprintln!("  sols.len() = {}", _sols.len());
