@@ -332,21 +332,14 @@ pub struct SynthesizerQ {
     pub parallel_lde_trigger_nodes: u64,
 }
 
-/// k cutoff: brute-force handles `k ≤ BRUTE_LIMIT`, the 16D LLL+SE
-/// backend handles larger k.
-///
-/// **Was 4** until profiling found that `phase1_brute(4)` (~5·10⁸ shell
-/// points, ~10 s) was wasted on every approximation target at moderate-
-/// or-deep ε, since the actual answer lives in the lattice regime at k≥5.
-/// At BRUTE_LIMIT=3, brute tops out at ~10⁷ shell points (~100 ms) and
-/// the lattice walker handles k=4 efficiently when needed.
+/// k cutoff: brute-force handles `k ≤ BRUTE_LIMIT`, lattice handles the rest.
+/// At 3, brute tops out at ~10⁷ shell points (~100 ms).
 const BRUTE_LIMIT: u32 = 3;
 
-/// Estimate the smallest lde at which a generic SU(2) target is reachable
-/// within ε. Empirical from the ε-1e-3 / ε-1e-4 / ε-1e-5 benches: lde lands
-/// at roughly `⌈-log₂(ε)⌉ - 3`, with a per-target jitter of ±2. We start
-/// the lattice search 2 below the estimate so that easy targets land
-/// without an extra full-shell sweep, and harder ones advance into deeper k.
+/// Smallest lde where a generic SU(2) target is reachable within ε,
+/// per the Gaussian heuristic over the Minkowski-embedded Z[ζ_16]
+/// lattice. We start the search 2 below this estimate so easy targets
+/// land without an extra full-shell sweep.
 fn lattice_lde_estimate(epsilon: f64) -> u32 {
     if !(epsilon > 0.0 && epsilon < 1.0) {
         return 0;
@@ -355,52 +348,14 @@ fn lattice_lde_estimate(epsilon: f64) -> u32 {
     raw.max(0) as u32
 }
 
-/// Two-pass leaf-budget strategy (mirrors 8D `dc_search`):
-///   - **Pass 1** is the aggressive cap: small enough that doomed k
-///     (where no sol exists in this ε regime) bail quickly. At each k
-///     in the lattice range we try Pass 1 first.
-///   - If Pass 1 finds a sol, return.
-///   - If Pass 1 exhausts the SE region (no budget hit, no sol), the
-///     search was complete at this k — advance to k+1.
-///   - If Pass 1 budget-hits without finding a sol, mark this k for
-///     Pass 2 retry and continue to k+1.
-///   - **Pass 2** is the unbounded cap: only run on k's that Pass 1
-///     budget-hit, after the Pass-1 sweep finishes without finding a
-///     sol elsewhere. Guarantees no completeness loss.
-///
-/// Empirically: at ε=1e-5 target_01 lands at lde=13 but k=12 has no
-/// sol — single-pass with 4G budget burns ~30 s on k=12 before
-/// advancing. Pass 1 at 100 M lets k=12 bail in ~7 s, k=13 finds
-/// quickly.
+/// Two-pass leaf-budget strategy: pass 1 bails fast on doomed lde levels;
+/// budget-hit lde levels are queued for pass 2 with a much larger cap.
+/// Preserves completeness — a budget-hit lde is never skipped.
 const PASS1_CAP: u64 = 100_000_000;
 const PASS2_CAP: u64 = 4_000_000_000;
 
-/// Per-prefix budget for the Z1 D&C dispatcher's pass 1.
-///
-/// **Tried and abandoned**: a tiered budget by lde proximity to
-/// `lattice_lde_estimate(eps)` — small cap at "below-expected" lde
-/// levels (where the SE region is presumed empty), full cap at the
-/// expected zone. Two values tested:
-///
-///   100K low_cap: target_02 ε=1e-7 regressed lde=19 → lde=20.
-///                 SE budget is shared across 16 z[15]-subtree workers
-///                 → 6K/worker, too few; some genuine answers missed.
-///   500K low_cap: target_00 ε=1e-7 regressed lde=20 → lde=21.
-///                 The pass-1 region for target_00's right prefix at
-///                 lde=20 was empty within 5M budget, so the parallel
-///                 race outcome shifted: at small budget the
-///                 first-find-wins resolution returned a higher-lde
-///                 answer.
-///
-/// The flat 5M cap preserves all baseline lde across our test set
-/// while still being 2× faster than 10M on NO-levels.
-const DC_PASS1_CAP: u64 = 5_000_000;
-
-/// At deep ε the post-LLL SE region grows exponentially in k_inner. The
-/// flat 5M leaf budget that works at ε≥1e-7 hits budget at every lde
-/// 22..27 at ε=1e-8 without finding a single candidate (per probe in
-/// `bin/probe_eps_1e8_v2.rs`). Scale pass1's per-prefix budget with ε so
-/// the SE walk has room to reach the cap interior.
+/// Per-prefix Z1 D&C pass-1 budget; scaled with ε since the post-LLL
+/// SE region grows exponentially in k_inner.
 fn dc_pass1_cap_for(epsilon: f64) -> u64 {
     if epsilon <= 1e-8 {
         100_000_000
@@ -421,10 +376,7 @@ fn dc_pass2_cap_for(epsilon: f64) -> u64 {
     }
 }
 
-/// Pass 2: only runs on lde levels where pass 1's prefixes hit budget
-/// without finding (= search may have missed a solution past pass-1
-/// budget). 10M is generous enough to cover the hard-target cases where
-/// the right prefix needs many millions of leaves to converge.
+const DC_PASS1_CAP: u64 = 5_000_000;
 const DC_PASS2_CAP: u64 = 10_000_000;
 
 /// Compute `U_L† · target` as a continuous Mat2.
@@ -470,56 +422,14 @@ impl SynthesizerQ {
     ///
     /// `min_lde = 0`: start from the trivial shell so exact small-T
     /// Clifford+√T targets (e.g. Q itself) are found immediately.
-    /// `max_lde = 30`: high enough to reach ε ≲ 1e-5 via the LLL backend.
-    /// Override via [`with_max_lde`] for a tighter (faster) ceiling, e.g.
-    /// `with_max_lde(4)` to stay in the brute regime.
-    /// Construct a synthesizer with sensible defaults. **Z1 D&C is
-    /// auto-enabled at ε ≤ 1e-6**: empirically, single search becomes
-    /// pathological at this depth (per-target time can run into minutes,
-    /// 1/3 fail at max_lde=30), while filtered D&C stays in the seconds.
-    /// At ε > 1e-6 we keep single search since it's always faster on
-    /// the lattice levels it needs to reach.
-    ///
-    /// Override either via [`Self::with_dc_split`] / [`Self::with_dc_dr_filter`].
+    /// Construct a synthesizer with sensible defaults. Auto-enables Z1
+    /// D&C at ε ≤ 1e-6 (single search becomes pathological at deeper ε)
+    /// and BKZ-4 at ε ≤ 1e-7 (where the SE region is large enough to
+    /// pay for BKZ's tighter Hermite factor).
     pub fn new(epsilon: f64) -> Self {
-        // At deep ε, auto-enable D&C with the empirically-best filter
-        // (m=1, |d_R|≤1). See `project_zeta_z1_empirics.md` for the data
-        // — wins 22-1534× over single at ε=1e-7. Threshold of 1e-6 is
-        // a touch aggressive (single still has variance there), but the
-        // upside on slow targets (hours → seconds) dominates the
-        // downside on easy targets.
-        // Auto-D&C config:
-        //   ε > 1e-6:   single search (D&C overhead not worth it)
-        //   ε ∈ [1e-7, 1e-6]: m=1, |d_R|≤1 (relaxed). 36 prefixes; the
-        //                    relaxed filter avoids structural gaps at
-        //                    low lde where m=2 strict misses.
-        //   ε ≤ 1e-7:   m=2, d_R=0 (strict). 144 prefixes but each at
-        //               higher k_prefix → smaller k_inner → faster SE
-        //               per prefix. Empirically wins lde quality
-        //               (consistent minimum-lde finds) AND speed at
-        //               this depth (27% faster vs m=1 on 8-target
-        //               bench at ε=1e-7). Lde quality wins because the
-        //               m=2 prefix set has more k_inner coverage at
-        //               deep lde. Avoid at moderate ε (1e-6) because
-        //               the strict filter creates structural gaps in
-        //               the prefix set there (lde regression seen).
-        // Auto-D&C config:
-        //   ε > 1e-6:   single search (D&C overhead not worth it)
-        //   ε ∈ (1e-7, 1e-6]: m=1, |d_R|≤1 (relaxed). 36 prefixes; the
-        //                    relaxed filter avoids structural gaps at
-        //                    low lde where m=2 strict misses.
-        //   ε ≤ 1e-7:   m=2, d_R=0 (strict). 144 prefixes but each at
-        //               higher k_prefix → smaller k_inner → faster SE
-        //               per prefix. Empirically (8-target bench at
-        //               ε=1e-7, time_zeta_synthesis seed):
-        //                 m=1: 2856 ms/target avg, worst lde=24
-        //                 m=2: 2036 ms/target avg, worst lde=20
-        //               m=2 wins 40% on speed AND has consistent
-        //               lde=19-20 finds (m=1 has occasional lde=24
-        //               regressions on hard targets). Avoid at moderate
-        //               ε (1e-6) because the strict filter creates
-        //               structural gaps at low lde (lde regressions
-        //               seen 15 → 17).
+        // ε ≤ 1e-7: m=2 strict (more k_inner coverage at deep lde).
+        // ε ∈ (1e-7, 1e-6]: m=1 relaxed (avoids m=2 structural gaps at
+        // low lde). ε > 1e-6: single search.
         let (dc_split, dc_dr_filter) = if epsilon <= 1e-7 {
             (Some(2u32), vec![0u32])
         } else if epsilon <= 1e-6 {
@@ -527,58 +437,30 @@ impl SynthesizerQ {
         } else {
             (None, Vec::new())
         };
-        // Default max_lde scales with ε. At ε=1e-7 we observed
-        // single-search lde=19; D&C may need lde=20-21 with the
-        // |d_R|≤1 filter (each prefix's k_inner = k_total − k_prefix).
-        // 35 is safe for the supported range (ε ≥ 1e-8).
         let max_lde = if epsilon <= 1e-7 { 35 } else { 30 };
-        // **Adaptive precision default**: f64 GS works through ε=1e-7
-        // (52-bit mantissa vs ~46-bit requirement). At ε ≤ 1e-8 the
-        // requirement crosses ~50 bits, leaving f64 with a 2-bit margin —
-        // empirically the LLL spends much of its time in escalation,
-        // doubling LLL cost vs going to MPFR-80 directly. Skip the f64
-        // attempt entirely there.
-        //
-        // Inside `phase1_with_stop` the precision ladder still escalates
-        // f64 → MPFR-80 if any individual LLL call fails the unimodularity
-        // check, so users who manually call `with_f64_gs(true)` at deep ε
-        // get correctness via the ladder (just slower than the
-        // MPFR-only path at ε ≤ 1e-8).
+        // f64 GS is precision-sufficient through ε=1e-7 (~46-bit
+        // requirement, 52-bit mantissa); at ε ≤ 1e-8 the requirement
+        // crosses 50 bits and the LLL would spend most time in
+        // f64 → MPFR-80 escalation. Skip f64 entirely there.
         let use_f64_gs = epsilon > 1e-8;
 
-        // **Min/max lde scaling at deep ε**: Z[ζ_16] needs ~0.30× the lde
-        // of Z[ω] to reach the same ε (per `project_baseline_2026_05_07.md`
-        // empirics). Without scaling, `min_lde=0` wastes time scanning
-        // low-lde levels guaranteed to fail, and `max_lde=35` is at the
-        // boundary for ε=1e-8 where the predicted lde is ~24-30.
-        // Empirics: ε=1e-7 lands at lde=19-20. At ε=1e-8 (10× tighter,
-        // ~+2 ldes per density argument), expect lde≈22-24 typical, with
-        // hard targets needing 28-32. So at ε=1e-8 use min_lde=18, max_lde=45.
+        // At ε ≤ 1e-8 typical lde lands ~22-24 with hard targets needing
+        // ~28-32; scale min_lde / max_lde to skip guaranteed-empty levels
+        // and reach the deep tail.
         let log2_recip = if epsilon > 0.0 && epsilon < 1.0 {
             (1.0 / epsilon).log2()
         } else { 0.0 };
         let min_lde = if epsilon <= 1e-8 {
-            // ~0.7×log2(1/ε) — leaves a small buffer below the typical landing
             (0.7 * log2_recip).floor() as u32
         } else {
             0
         };
         let max_lde_override = if epsilon <= 1e-8 {
-            // 1.7×log2(1/ε) covers ~+15 ldes above the typical landing.
             (1.7 * log2_recip).ceil() as u32
         } else {
             max_lde
         };
 
-        // **Auto-BKZ default**: enable BKZ-4 only at ε ≤ 1e-7. Empirically
-        // (8-target Rz·Ry·Rz bench, seed 0xC0FFEEBAADD0E):
-        //   ε=1e-5: 0.37× (BKZ overhead crushes already-cheap SE walks)
-        //   ε=1e-6: 1.04× (break-even, high variance)
-        //   ε=1e-7: 1.44× (consistent win; one lde improvement)
-        // At ε≤1e-7 the post-LLL SE region is large enough that BKZ-4's
-        // tighter Hermite factor pays for the per-LLL-call tour cost.
-        // Above that threshold, SE is already cheap and BKZ adds pure
-        // overhead. Override via `with_bkz(β)`.
         let bkz_block_size = if epsilon <= 1e-7 { 4 } else { 0 };
         Self {
             epsilon,
@@ -715,24 +597,14 @@ impl SynthesizerQ {
         // Lattice scratch is allocated lazily on first lattice call.
         let mut scratch: Option<Box<IntScratch16>> = None;
 
-        // k schedule:
-        //   - Brute regime [min_lde .. BRUTE_LIMIT]: cheap exact-find for
-        //     small Clifford+√T targets (Q, T, H, …).
-        //   - Lattice regime: skip k that the empirical ε→lde fit
-        //     `lde ≈ ⌈-log₂(ε)⌉ - 3` says are too small. Start 2 below the
-        //     estimate to absorb per-target jitter, then advance to
-        //     `max_lde` with two-pass budgeting.
         let lattice_start = lattice_lde_estimate(self.epsilon)
             .saturating_sub(2)
             .max(BRUTE_LIMIT + 1)
             .max(self.min_lde);
 
-        // Lattice search with early-exit. The `should_stop` predicate
-        // runs only on leaves that pass the integer-exact filter (norm
-        // shell, bilinear, alignment) — typically a handful per call —
-        // and short-circuits the walker once we find a candidate whose
-        // diamond distance to `target` is already below ε. At deep ε this
-        // can cut the walk by orders of magnitude.
+        // `should_stop` runs only on leaves passing the integer-exact
+        // filter (typically a handful per call) and short-circuits the
+        // walker once a candidate's diamond distance is below ε.
         let epsilon = self.epsilon;
         let use_f64_gs = self.use_f64_gs;
         let bkz_block_size = self.bkz_block_size;
@@ -1209,250 +1081,6 @@ mod tests {
         }
     }
 
-    /// Z1 filter — does the float-domain FGKM faithfully predict the
-    /// integer-domain canonical-form syllables? Build many exact
-    /// Clifford+√T targets, compare predictions step-by-step.
-    #[test]
-    #[ignore = "slow diagnostic; run with --ignored"]
-    fn z1_float_fgkm_agreement() {
-        use crate::synthesis::decomposer::{canonical_form_axes_q, canonical_form_axes_q_float};
-        use crate::matrix::so3::SO3;
-        use crate::rings::ZZeta;
-        use rand::{Rng, SeedableRng};
-        use rand::rngs::StdRng;
-
-        let bases: [U2Q; 3] = [
-            U2Q::h() * U2Q::q() * U2Q::h(),
-            U2Q::s() * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s().dagger(),
-            U2Q::q(),
-        ];
-        let mut syllables: [[U2Q; 3]; 3] = [[U2Q::eye(); 3]; 3];
-        for (axis, base) in bases.iter().enumerate() {
-            let mut acc = U2Q::eye();
-            for a in 0..3 {
-                acc = acc * *base;
-                syllables[axis][a] = acc;
-            }
-        }
-        let cliffords_q: Vec<U2Q> = CLIFFORD_TABLE_T
-            .iter()
-            .map(|(name, _)| {
-                name.chars().fold(U2Q::eye(), |acc, ch| {
-                    acc * match ch {
-                        'H' => U2Q::h(),
-                        'S' => U2Q::s(),
-                        'X' => U2Q::x(),
-                        'Y' => U2Q::y(),
-                        'Z' => U2Q::z(),
-                        _ => U2Q::eye(),
-                    }
-                })
-            })
-            .collect();
-
-        let mut rng = StdRng::seed_from_u64(0xC1FF1);
-        let n_trials = 2000;
-
-        for &target_len in &[3usize, 5, 8, 12] {
-            let mut step_match = vec![0u64; target_len];
-            let mut step_total = vec![0u64; target_len];
-            let mut full_match: u64 = 0;
-            let mut full_first_match: u64 = 0;
-
-            for _ in 0..n_trials {
-                let mut prev_axis: usize = 3;
-                let mut body = U2Q::eye();
-                for _ in 0..target_len {
-                    let mut axis = rng.random_range(0..3);
-                    if axis == prev_axis { axis = (axis + 1) % 3; }
-                    if axis == prev_axis { axis = (axis + 1) % 3; }
-                    let a = rng.random_range(0..3);
-                    body = body * syllables[axis][a];
-                    prev_axis = axis;
-                }
-                let c_idx = rng.random_range(0..cliffords_q.len());
-                let target = body * cliffords_q[c_idx];
-
-                let canon_int = canonical_form_axes_q(&target);
-                // Build float SO3 from the integer SO3 of target.
-                let so3_int = SO3::<crate::matrix::so3::R4>::from_u2(&target);
-                let mut so3_f = so3_int.to_float();
-                let canon_float = canonical_form_axes_q_float(&mut so3_f, target_len + 4);
-
-                let n = canon_int.len().min(canon_float.len()).min(target_len);
-                let mut all_match = canon_int.len() == canon_float.len();
-                for i in 0..n {
-                    step_total[i] += 1;
-                    if canon_int[i] == canon_float[i] {
-                        step_match[i] += 1;
-                    } else {
-                        all_match = false;
-                    }
-                }
-                if !canon_int.is_empty() && !canon_float.is_empty()
-                   && canon_int[0] == canon_float[0] {
-                    full_first_match += 1;
-                }
-                if all_match { full_match += 1; }
-            }
-
-            eprintln!(
-                "\n=== target_len={target_len}, n_trials={n_trials} ==="
-            );
-            eprintln!(
-                "  full sequence agreement     : {}/{} = {:.1}%",
-                full_match, n_trials,
-                100.0 * (full_match as f64) / (n_trials as f64)
-            );
-            eprintln!(
-                "  first-syllable agreement     : {}/{} = {:.1}%",
-                full_first_match, n_trials,
-                100.0 * (full_first_match as f64) / (n_trials as f64)
-            );
-            eprintln!("  per-step agreement:");
-            for i in 0..target_len {
-                if step_total[i] == 0 { continue; }
-                eprintln!(
-                    "    step {i:>2}: {:>5}/{:>5} = {:.1}%",
-                    step_match[i], step_total[i],
-                    100.0 * (step_match[i] as f64) / (step_total[i] as f64)
-                );
-            }
-        }
-    }
-
-    /// Z1 filter investigation: build random Clifford+√T targets by composing
-    /// known FGKM bodies, then look at where the canonical-form *first*
-    /// syllable lands. If the distribution is uniform across all 9 (axis, a)
-    /// cells, no filter via this angle. If biased, follow up with cheap-
-    /// predictor experiments.
-    #[test]
-    #[ignore = "slow diagnostic; run with --ignored"]
-    fn z1_first_syllable_distribution() {
-        use crate::synthesis::decomposer::canonical_form_axes_q;
-        use rand::{Rng, SeedableRng};
-        use rand::rngs::StdRng;
-
-        // Build the 9 base syllables (same as build_l_q_inner).
-        let bases: [U2Q; 3] = [
-            U2Q::h() * U2Q::q() * U2Q::h(),
-            U2Q::s() * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s().dagger(),
-            U2Q::q(),
-        ];
-        let mut syllables: [[U2Q; 3]; 3] = [[U2Q::eye(); 3]; 3];
-        for (axis, base) in bases.iter().enumerate() {
-            let mut acc = U2Q::eye();
-            for a in 0..3 {
-                acc = acc * *base;
-                syllables[axis][a] = acc;
-            }
-        }
-        // Cliffords as U2Q.
-        let cliffords_q: Vec<U2Q> = CLIFFORD_TABLE_T
-            .iter()
-            .map(|(name, _)| {
-                name.chars().fold(U2Q::eye(), |acc, ch| {
-                    acc * match ch {
-                        'H' => U2Q::h(),
-                        'S' => U2Q::s(),
-                        'X' => U2Q::x(),
-                        'Y' => U2Q::y(),
-                        'Z' => U2Q::z(),
-                        _ => U2Q::eye(),
-                    }
-                })
-            })
-            .collect();
-
-        let mut rng = StdRng::seed_from_u64(0xC1FF0);
-        let n_trials = 5000;
-
-        for &target_len in &[3usize, 5, 8, 12] {
-            // Bin: hist[axis][a-1] for first syllable.
-            let mut first_hist = [[0u64; 3]; 3];
-            // Compare to bin of *body construction's* first syllable.
-            let mut construct_hist = [[0u64; 3]; 3];
-            // Track length-mismatches (canonical-form length vs constructed length).
-            let mut len_short = 0u64;
-            let mut len_match = 0u64;
-            let mut len_long = 0u64;
-            // Sample variability in returned length.
-            let mut sum_len = 0u64;
-
-            for _ in 0..n_trials {
-                // Build a random length-target_len FGKM body with adjacency.
-                let mut prev_axis: usize = 3;
-                let mut body = U2Q::eye();
-                let mut constructed: Vec<(u8, u8)> = Vec::new();
-                for _ in 0..target_len {
-                    // pick axis ≠ prev_axis
-                    let mut axis = rng.random_range(0..3);
-                    if axis == prev_axis {
-                        axis = (axis + 1) % 3;
-                    }
-                    if axis == prev_axis {
-                        axis = (axis + 1) % 3;
-                    }
-                    let a = rng.random_range(0..3); // 0..=2 → a∈{1,2,3}
-                    body = body * syllables[axis][a];
-                    constructed.push((axis as u8, (a + 1) as u8));
-                    prev_axis = axis;
-                }
-                let c_idx = rng.random_range(0..cliffords_q.len());
-                let target = body * cliffords_q[c_idx];
-
-                // Canonical-form decomposition.
-                let canon = canonical_form_axes_q(&target);
-                if !canon.is_empty() {
-                    let (p, a) = canon[0];
-                    first_hist[p as usize][(a - 1) as usize] += 1;
-                }
-                let (cp, ca) = constructed[0];
-                construct_hist[cp as usize][(ca - 1) as usize] += 1;
-
-                sum_len += canon.len() as u64;
-                if canon.len() < target_len { len_short += 1; }
-                else if canon.len() == target_len { len_match += 1; }
-                else { len_long += 1; }
-            }
-
-            eprintln!(
-                "\n=== target_len={target_len}, n_trials={n_trials} ==="
-            );
-            eprintln!(
-                "Canonical-form length:  exact={len_match}  shorter={len_short}  longer={len_long}  avg={:.2}",
-                (sum_len as f64) / (n_trials as f64)
-            );
-            eprintln!("Constructed-first vs canonical-form-first  (counts, % of trials)");
-            eprintln!("        constructed                canonical");
-            eprintln!("        a=1   a=2   a=3            a=1   a=2   a=3");
-            let labels = ["x", "y", "z"];
-            for axis in 0..3 {
-                eprint!("  {}    ", labels[axis]);
-                for a in 0..3 {
-                    eprint!("{:>5} ", construct_hist[axis][a]);
-                }
-                eprint!("           ");
-                for a in 0..3 {
-                    eprint!("{:>5} ", first_hist[axis][a]);
-                }
-                eprintln!();
-            }
-            // Quick numeric summary of canonical-form-first balance.
-            let total: u64 = first_hist.iter().flatten().sum();
-            let z_share: u64 = first_hist[2].iter().sum();
-            let nonz_share = total - z_share;
-            eprintln!(
-                "  first-syllable z-axis share: {} / {} = {:.1}%   (uniform = 33.3%)",
-                z_share, total, 100.0 * (z_share as f64) / (total as f64)
-            );
-            eprintln!(
-                "  first-syllable non-z share : {} / {} = {:.1}%   (uniform = 66.7%)",
-                nonz_share, total, 100.0 * (nonz_share as f64) / (total as f64)
-            );
-        }
-    }
-
     /// Back-of-envelope: under cost model C(k) = c·α^k, the D&C cost
     /// ratio (vs single search at k_total) is
     ///   S(m, α) = Σ_k count(m, k) / α^k
@@ -1552,398 +1180,6 @@ mod tests {
         }
     }
 
-    /// Z1 viability at ε=1e-7: single search becomes unreliable here (per
-    /// perf-state memo, 1/3 fail at max_lde=30). Test whether filtered D&C
-    /// reliably finds solutions and how long it takes.
-    #[test]
-    #[ignore]  // long: per-target time can run into minutes
-    fn z1_dc_eps_1e_7() {
-        use rand::{Rng, SeedableRng};
-        use rand::rngs::StdRng;
-
-        fn rz(t: f64) -> Mat2 {
-            [
-                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
-                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
-            ]
-        }
-        fn ry(t: f64) -> Mat2 {
-            let c = (t/2.0).cos();
-            let s = (t/2.0).sin();
-            [
-                [Complex64::new(c, 0.0), Complex64::new(-s, 0.0)],
-                [Complex64::new(s, 0.0), Complex64::new(c, 0.0)],
-            ]
-        }
-        fn matmul(a: Mat2, b: Mat2) -> Mat2 {
-            [
-                [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
-                [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
-            ]
-        }
-
-        let mut rng = StdRng::seed_from_u64(0x1E7);
-        let n = 3;
-        let eps = 1e-7_f64;
-
-        eprintln!("\n=== ε={eps:.0e}, {n} targets, max_lde=35 ===");
-        for i in 0..n {
-            let alpha = 2.0 * std::f64::consts::PI * rng.random::<f64>();
-            let beta = 2.0 * std::f64::consts::PI * rng.random::<f64>();
-            let gamma = 2.0 * std::f64::consts::PI * rng.random::<f64>();
-            let target = matmul(matmul(rz(alpha), ry(beta)), rz(gamma));
-
-            // Single search.
-            let synth_s = SynthesizerQ::new(eps).with_max_lde(35);
-            let t0 = std::time::Instant::now();
-            let r_s = synth_s.synthesize(target);
-            let ts = t0.elapsed().as_secs_f64();
-            let s_label = match &r_s {
-                Some(r) => format!("lde={} dist={:.2e}", r.lde, r.distance),
-                None => "FAILED".to_string(),
-            };
-            eprintln!("  trial {i}  single   {s_label:<32} t={ts:>7.1}s");
-
-            // m=1 relaxed.
-            let synth_m1 = SynthesizerQ::new(eps).with_max_lde(35)
-                .with_dc_split(1).with_dc_dr_filter(vec![0, 1, 15]);
-            let t0 = std::time::Instant::now();
-            let r_m1 = synth_m1.synthesize(target);
-            let tm1 = t0.elapsed().as_secs_f64();
-            let m1_label = match &r_m1 {
-                Some(r) => format!("lde={} dist={:.2e}", r.lde, r.distance),
-                None => "FAILED".to_string(),
-            };
-            eprintln!("  trial {i}  m1_relax {m1_label:<32} t={tm1:>7.1}s  ({:.2}× vs single)",
-                if tm1 > 0.0 { ts/tm1 } else { 0.0 });
-
-            // m=2 strict.
-            let synth_m2 = SynthesizerQ::new(eps).with_max_lde(35)
-                .with_dc_split(2).with_dc_dr_filter(vec![0]);
-            let t0 = std::time::Instant::now();
-            let r_m2 = synth_m2.synthesize(target);
-            let tm2 = t0.elapsed().as_secs_f64();
-            let m2_label = match &r_m2 {
-                Some(r) => format!("lde={} dist={:.2e}", r.lde, r.distance),
-                None => "FAILED".to_string(),
-            };
-            eprintln!("  trial {i}  m2_strict{m2_label:<32} t={tm2:>7.1}s  ({:.2}× vs single)",
-                if tm2 > 0.0 { ts/tm2 } else { 0.0 });
-            eprintln!();
-        }
-    }
-
-    /// Compare D&C split-parameter configurations at deep ε.
-    /// m=1 |d_R|≤1 (default, 36 prefixes) vs m=2 d_R=0 (144 prefixes
-    /// but each at higher k_prefix → smaller k_inner → faster SE).
-    ///
-    /// Decides whether to switch the auto-D&C default at very deep ε.
-    #[test]
-    #[ignore]
-    fn z1_m1_vs_m2_deep_eps() {
-        use rand::{Rng, SeedableRng};
-        use rand::rngs::StdRng;
-
-        fn rz(t: f64) -> Mat2 {
-            [
-                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
-                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
-            ]
-        }
-        fn ry(t: f64) -> Mat2 {
-            let c = (t/2.0).cos();
-            let s = (t/2.0).sin();
-            [
-                [Complex64::new(c, 0.0), Complex64::new(-s, 0.0)],
-                [Complex64::new(s, 0.0), Complex64::new(c, 0.0)],
-            ]
-        }
-        fn matmul(a: Mat2, b: Mat2) -> Mat2 {
-            [
-                [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
-                [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
-            ]
-        }
-
-        let mut rng = StdRng::seed_from_u64(0xC0FFEE);
-        let n: usize = std::env::var("M_N")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(3);
-        let eps: f64 = std::env::var("M_EPS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1e-7);
-        eprintln!("\n=== ε={eps:.0e}, {n} random U3 targets ===");
-
-        for i in 0..n {
-            let alpha = 2.0 * std::f64::consts::PI * rng.random::<f64>();
-            let beta = 2.0 * std::f64::consts::PI * rng.random::<f64>();
-            let gamma = 2.0 * std::f64::consts::PI * rng.random::<f64>();
-            let target = matmul(matmul(rz(alpha), ry(beta)), rz(gamma));
-
-            // m=1 |d_R|≤1 (current default).
-            let synth_m1 = SynthesizerQ::new(eps).with_max_lde(30);
-            let t0 = std::time::Instant::now();
-            let r_m1 = synth_m1.synthesize(target);
-            let t_m1 = t0.elapsed();
-
-            // m=2 strict d_R=0.
-            let synth_m2 = SynthesizerQ::new(eps).with_max_lde(30)
-                .with_dc_split(2).with_dc_dr_filter(vec![0]);
-            let t0 = std::time::Instant::now();
-            let r_m2 = synth_m2.synthesize(target);
-            let t_m2 = t0.elapsed();
-
-            let ms = |t: std::time::Duration| t.as_secs_f64() * 1000.0;
-            eprintln!(
-                "  trial {i}  m=1: lde={:?} t={:.0}ms  | m=2: lde={:?} t={:.0}ms  ratio={:.2}×",
-                r_m1.as_ref().map(|r| r.lde),
-                ms(t_m1),
-                r_m2.as_ref().map(|r| r.lde),
-                ms(t_m2),
-                ms(t_m1) / ms(t_m2),
-            );
-        }
-    }
-
-    /// Quick diagnostic at ε=1e-8: f64 vs MPFR, single target, short
-    /// timeout. Reports first lde where solution is found (if any), and
-    /// whether the path completes.
-    #[test]
-    #[ignore]
-    fn z1_eps_1e_8_diag() {
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        let eps = 1e-8_f64;
-        // MPFR first (the path that should actually work at this depth),
-        // then f64 with the ladder (slower / may not finish).
-        for (label, use_f64) in &[("MPFR", false), ("f64+ladder", true)] {
-            // Cap max_lde at 35 to bound runtime.
-            let synth = SynthesizerQ::new(eps).with_max_lde(35).with_f64_gs(*use_f64);
-            let t0 = std::time::Instant::now();
-            let r = synth.synthesize(target);
-            let dt = t0.elapsed();
-            eprintln!(
-                "  {label:<10}: lde={:?}  dist={:?}  t={:.0}ms",
-                r.as_ref().map(|r| r.lde),
-                r.as_ref().map(|r| r.distance),
-                dt.as_secs_f64() * 1000.0
-            );
-        }
-    }
-
-    /// f64 GS at deep ε via the SynthesizerQ builder. Apples-to-apples
-    /// comparison: same code path, only `use_f64_gs` differs.
-    #[test]
-    #[ignore]
-    fn z1_f64_gs_deep_eps() {
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-
-        for &eps in &[1e-5, 1e-6, 1e-7_f64] {
-            eprintln!("\n=== ε={eps:.0e} ===");
-
-            let synth_mpfr = SynthesizerQ::new(eps);
-            let t0 = std::time::Instant::now();
-            let r_mpfr = synth_mpfr.synthesize(target);
-            let t_mpfr = t0.elapsed();
-            eprintln!("  MPFR: lde={:?} dist={:?} t={:.0}ms",
-                r_mpfr.as_ref().map(|r| r.lde),
-                r_mpfr.as_ref().map(|r| r.distance),
-                t_mpfr.as_secs_f64() * 1000.0);
-
-            let synth_f64 = SynthesizerQ::new(eps).with_f64_gs(true);
-            let t0 = std::time::Instant::now();
-            let r_f64 = synth_f64.synthesize(target);
-            let t_f64 = t0.elapsed();
-            let speedup = t_mpfr.as_secs_f64() / t_f64.as_secs_f64();
-            eprintln!("  f64 : lde={:?} dist={:?} t={:.0}ms  ({speedup:.2}× vs MPFR)",
-                r_f64.as_ref().map(|r| r.lde),
-                r_f64.as_ref().map(|r| r.distance),
-                t_f64.as_secs_f64() * 1000.0);
-        }
-    }
-
-    /// f64 GS state experiment: try the f64 LLL path on synth at various ε
-    /// and compare to the MPFR path. Reports correctness (does it find the
-    /// answer? at the same lde?) and speed.
-    #[test]
-    #[ignore = "slow diagnostic; run with --ignored"]
-    fn z1_f64_gs_experiment() {
-        use crate::synthesis::diag;
-        use crate::synthesis::lattice_zeta::lll_f64::{run_lll_16_f64};
-        use crate::synthesis::lattice_zeta::lll::run_lll_16;
-
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        let v = unitary_to_uv_zeta(&target);
-
-        for &eps in &[1e-3, 1e-4, 1e-5_f64] {
-            eprintln!("\n=== ε={eps:.0e} ===");
-            let max_lde = if eps >= 1e-4 { 14u32 } else { 16 };
-
-            // Phase A: pure LLL timing — set up scratch, run LLL only.
-            // Same Q, side-by-side timing of MPFR vs f64.
-            let mut s_mpfr = IntScratch16::new(eps);
-            let mut s_f64 = IntScratch16::new(eps);
-
-            // Pick a representative k for timing.
-            let k = max_lde - 2;
-            let y = uv_to_xy_zeta(v, k);
-
-            // Build Q + Gram for both scratches identically (no LLL yet).
-            // Since `phase1_with_stop` is the easiest entry, use it twice:
-            // once with use_f64_gs=false, once true. Time only.
-            let runs = 5;
-            let mut t_mpfr_total_us = 0u128;
-            let mut t_f64_total_us = 0u128;
-            let mut sols_mpfr_count = 0;
-            let mut sols_f64_count = 0;
-            for _ in 0..runs {
-                diag::reset_all();
-                let budget_hit = AtomicBool::new(false);
-                s_mpfr.use_f64_gs = false;
-                let t = std::time::Instant::now();
-                let sols = phase1_with_stop(
-                    &mut s_mpfr, &y, k, eps, 100_000_000, &budget_hit, |_| false,
-                    None, None,
-                );
-                t_mpfr_total_us += t.elapsed().as_nanos() as u128 / 1000;
-                sols_mpfr_count += sols.len();
-
-                diag::reset_all();
-                let budget_hit = AtomicBool::new(false);
-                s_f64.use_f64_gs = true;
-                let t = std::time::Instant::now();
-                let sols = phase1_with_stop(
-                    &mut s_f64, &y, k, eps, 100_000_000, &budget_hit, |_| false,
-                    None, None,
-                );
-                t_f64_total_us += t.elapsed().as_nanos() as u128 / 1000;
-                sols_f64_count += sols.len();
-            }
-            eprintln!("  phase1 single call (k={k}, {runs} runs):");
-            eprintln!("    MPFR: avg {:.0} μs, {} total sols",
-                (t_mpfr_total_us as f64) / runs as f64, sols_mpfr_count);
-            eprintln!("    f64 : avg {:.0} μs, {} total sols",
-                (t_f64_total_us as f64) / runs as f64, sols_f64_count);
-            let speedup = (t_mpfr_total_us as f64) / (t_f64_total_us as f64);
-            eprintln!("    speedup: {speedup:.2}×");
-
-            // Phase B: end-to-end synth, MPFR vs f64.
-            let synth_mpfr = SynthesizerQ::new(eps).with_max_lde(max_lde);
-            let t0 = std::time::Instant::now();
-            let r_mpfr = synth_mpfr.synthesize(target);
-            let t_mpfr = t0.elapsed();
-
-            // We hijack a synth via direct phase1 calls — synth doesn't yet
-            // expose use_f64_gs as a builder. Build a minimal harness:
-            let mut s = IntScratch16::new(eps);
-            s.use_f64_gs = true;
-            let mut found = None;
-            let t0 = std::time::Instant::now();
-            for k_try in 4..=max_lde {
-                let y = uv_to_xy_zeta(v, k_try);
-                let budget_hit = AtomicBool::new(false);
-                let target_local = target;
-                let d = det_phase_of(&target);
-                let should_stop = |x: &[i64; 16]| -> bool {
-                    let cand = solution_to_u2q_d(x, k_try, d);
-                    diamond_distance_float(&cand.to_float(), &target_local) < eps
-                };
-                let sols = phase1_with_stop(&mut s, &y, k_try, eps, 100_000_000, &budget_hit, should_stop, None, None);
-                for sol in &sols {
-                    let cand = solution_to_u2q_d(sol, k_try, d);
-                    let dist = diamond_distance_float(&cand.to_float(), &target_local);
-                    if dist < eps {
-                        found = Some((k_try, dist));
-                        break;
-                    }
-                }
-                if found.is_some() { break; }
-            }
-            let t_f64 = t0.elapsed();
-
-            eprintln!("  end-to-end synth:");
-            eprintln!("    MPFR: lde={:?} dist={:?} t={:.1}ms",
-                r_mpfr.as_ref().map(|r| r.lde),
-                r_mpfr.as_ref().map(|r| r.distance),
-                t_mpfr.as_secs_f64() * 1000.0);
-            eprintln!("    f64 : found={:?}  t={:.1}ms",
-                found, t_f64.as_secs_f64() * 1000.0);
-        }
-    }
-
-    /// LLL precision sweep: time single search at different GS_PREC values
-    /// to see if lowering precision speeds up LLL without losing
-    /// correctness.
-    #[test]
-    #[ignore = "slow diagnostic; run with --ignored"]
-    fn z1_gs_prec_sweep() {
-        // Need to import IntScratch16 builder and run a single phase1 a few
-        // times manually, since SynthesizerQ doesn't expose gs_prec.
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        let eps = 1e-4_f64;
-        let v = unitary_to_uv_zeta(&target);
-
-        for &gs_prec in &[64u32, 80, 96, 128] {
-            let mut scratch = IntScratch16::with_gs_prec(eps, gs_prec);
-            // Run phase1 at lde=10, 11, 12 (where ε=1e-4 typically lands).
-            let mut total_ns = 0u128;
-            let mut found = false;
-            let mut found_dist = f64::INFINITY;
-            for k in 9..=14u32 {
-                let y = uv_to_xy_zeta(v, k);
-                let budget_hit = AtomicBool::new(false);
-                let target_local = target;
-                let d = det_phase_of(&target);
-                let should_stop = |x: &[i64; 16]| -> bool {
-                    let cand = solution_to_u2q_d(x, k, d);
-                    diamond_distance_float(&cand.to_float(), &target_local) < eps
-                };
-                let t0 = std::time::Instant::now();
-                let sols = phase1_with_stop(
-                    &mut scratch, &y, k, eps, 100_000_000, &budget_hit, should_stop,
-                    None, None,
-                );
-                total_ns += t0.elapsed().as_nanos();
-                for sol in &sols {
-                    let cand = solution_to_u2q_d(sol, k, d);
-                    let dist = diamond_distance_float(&cand.to_float(), &target_local);
-                    if dist < eps && !found {
-                        found = true;
-                        found_dist = dist;
-                        eprintln!(
-                            "  gs_prec={gs_prec:>3}  found at lde={k}  dist={dist:.3e}  k={k} cum_t={:.0}ms",
-                            (total_ns as f64) / 1e6
-                        );
-                        break;
-                    }
-                }
-                if found { break; }
-            }
-            if !found {
-                eprintln!("  gs_prec={gs_prec:>3}  NOT FOUND  cum_t={:.0}ms", (total_ns as f64) / 1e6);
-            } else {
-                let _ = found_dist;
-            }
-        }
-    }
-
     /// Multi-target benchmark: average D&C-with-filter vs single across
     /// random U3 targets at fixed ε.
     #[test]
@@ -2033,94 +1269,6 @@ mod tests {
         eprintln!("  wins:  m1_relaxed {wins_m1}/{n}   m2_strict {wins_m2}/{n}");
     }
 
-    /// Sweep filter performance across ε to find the crossover where
-    /// D&C with strict d_R filter beats single search.
-    #[test]
-    #[ignore = "slow diagnostic; run with --ignored"]
-    fn z1_dc_dr_filter_eps_sweep() {
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        for &eps in &[1e-3, 1e-4, 1e-5_f64] {
-            eprintln!("\n=== ε={eps:.0e} ===");
-            let max_lde = ((-eps.log2() * 2.0) as u32).max(15);
-
-            let synth_single = SynthesizerQ::new(eps).with_max_lde(max_lde);
-            let t0 = std::time::Instant::now();
-            let r_single = synth_single.synthesize(target);
-            let t_single = t0.elapsed();
-            let single_ms = t_single.as_secs_f64() * 1000.0;
-            eprintln!("  single                  lde={:?}  t={single_ms:.0}ms",
-                r_single.as_ref().map(|r| r.lde));
-
-            let configs: &[(u32, &[u32], &str)] = &[
-                (1, &[0, 1, 15], "m=1 |d_R|≤1"),
-                (2, &[0], "m=2 strict"),
-                (2, &[0, 1, 15], "m=2 |d_R|≤1"),
-            ];
-            for (m, filter, label) in configs {
-                let synth = SynthesizerQ::new(eps)
-                    .with_max_lde(max_lde)
-                    .with_dc_split(*m)
-                    .with_dc_dr_filter(filter.to_vec());
-                let t0 = std::time::Instant::now();
-                let r = synth.synthesize(target);
-                let dt = t0.elapsed();
-                let ms = dt.as_secs_f64() * 1000.0;
-                let speedup = single_ms / ms;
-                eprintln!("  {label:<22}  lde={:?}  t={ms:>7.0}ms  ({speedup:>5.2}× vs single)",
-                    r.as_ref().map(|r| r.lde));
-            }
-        }
-    }
-
-    /// Z1 det-phase filter at deep ε. Single search is slow there so D&C
-    /// has more room to win.
-    #[test]
-    #[ignore]
-    fn z1_dc_dr_filter_deep_eps() {
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        let eps = 1e-6_f64;
-
-        let synth_single = SynthesizerQ::new(eps).with_max_lde(35);
-        let t0 = std::time::Instant::now();
-        let r_single = synth_single.synthesize(target);
-        let t_single = t0.elapsed();
-        eprintln!(
-            "single  lde={:?}  t={:.0}ms",
-            r_single.as_ref().map(|r| r.lde),
-            t_single.as_secs_f64() * 1000.0
-        );
-
-        let configs: &[(u32, &[u32], &str)] = &[
-            (1, &[0, 1, 15], "m=1 |d_R|≤1"),
-            (1, &[0, 1, 2, 14, 15], "m=1 |d_R|≤2"),
-            (2, &[0], "m=2 strict d_R=0"),
-            (2, &[0, 1, 15], "m=2 |d_R|≤1"),
-            (3, &[0], "m=3 strict d_R=0"),
-        ];
-        for (m, filter, label) in configs {
-            let synth = SynthesizerQ::new(eps)
-                .with_max_lde(35)
-                .with_dc_split(*m)
-                .with_dc_dr_filter(filter.to_vec());
-            let t0 = std::time::Instant::now();
-            let r = synth.synthesize(target);
-            let dt = t0.elapsed();
-            eprintln!(
-                "  {label:<22} lde={:?}  t={:.0}ms",
-                r.as_ref().map(|r| r.lde),
-                dt.as_secs_f64() * 1000.0
-            );
-        }
-    }
-
     /// Z1 det-phase filter test: with various allowed-d_R sets, see how
     /// many prefixes pass the filter and how the dispatcher does.
     #[test]
@@ -2191,254 +1339,6 @@ mod tests {
                 "  m={m} {label:<22} pass={n_pass:>5}/{l_size:<6}  lde={:?}  t={:>7.0}ms",
                 r.as_ref().map(|r| r.lde),
                 dt.as_secs_f64() * 1000.0
-            );
-        }
-    }
-
-    /// Z1 pre-filter probe: for each prefix, compute the rounded integer
-    /// encoding of v_inner and evaluate the bilinear forms (the
-    /// totally-real-subring decomposition of unitarity). Classify prefixes
-    /// by max|B_i| and look at how the distribution separates.
-    ///
-    /// If "the right" prefix at this k_total has small |B_i| while most
-    /// wrong prefixes have large |B_i|, we have a cheap algebraic filter.
-    #[test]
-    #[ignore = "slow diagnostic; run with --ignored"]
-    fn z1_prefilter_bilinear_distribution() {
-        use crate::synthesis::lattice_zeta::se::bilinear_forms;
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        let m = 3u32;
-        let k_total = 10u32;
-
-        let prefixes = build_l_q(m);
-
-        // Also need to know the "right" prefix's bilinear so we can see
-        // separation. Use a known lattice solution from a single-search
-        // run for comparison — but for this test we just look at the
-        // distribution and the minimum.
-
-        // Bin prefixes by max|B_i| of rounded scaled y.
-        // Buckets: |B|=0..=3, 4..=15, 16..=63, 64..=255, ..., else.
-        let bin_of = |max_b: i128| -> usize {
-            if max_b == 0 { 0 }
-            else if max_b <= 3 { 1 }
-            else if max_b <= 15 { 2 }
-            else if max_b <= 63 { 3 }
-            else if max_b <= 255 { 4 }
-            else if max_b <= 1023 { 5 }
-            else if max_b <= 4095 { 6 }
-            else { 7 }
-        };
-        let bin_label = ["=0", "1-3", "4-15", "16-63", "64-255",
-                         "256-1023", "1024-4095", ">4095"];
-        let mut bins = vec![0u64; bin_label.len()];
-        let mut min_b: i128 = i128::MAX;
-        let mut min_b_kprefix: u32 = 0;
-
-        for u_l in prefixes.iter() {
-            if u_l.k >= k_total { continue; }
-            let k_inner = k_total - u_l.k;
-            let m_inner = u2q_dag_times_mat2(u_l, &target);
-            let v_inner = unitary_to_uv_zeta(&m_inner);
-            let y = uv_to_xy_zeta(v_inner, k_inner);
-            let y_int: [i64; 16] = std::array::from_fn(|i| y[i].round() as i64);
-            let (b1, b2, b3) = bilinear_forms(&y_int);
-            let max_b = b1.abs().max(b2.abs()).max(b3.abs());
-            bins[bin_of(max_b)] += 1;
-            if max_b < min_b {
-                min_b = max_b;
-                min_b_kprefix = u_l.k;
-            }
-        }
-
-        eprintln!("\n=== bilinear_forms(round(y)) over L_{m}^Q  k_total={k_total} ===");
-        for (i, &c) in bins.iter().enumerate() {
-            eprintln!("  max|B_i| {:>10}: {:>6}  ({:>5.1}%)",
-                bin_label[i], c, 100.0 * (c as f64) / (prefixes.len() as f64));
-        }
-        eprintln!("  min max|B_i| = {min_b}  (at a prefix with k_prefix={min_b_kprefix})");
-    }
-
-    /// Z1 phase-by-phase breakdown using the diag counters. Run with
-    /// `CYCLOSYNTH_TRACE=1` to populate T_BUILD_NS, T_LLL_NS, etc.
-    /// across all prefixes at a fixed (m, k_total).
-    #[test]
-    #[ignore = "slow diagnostic; run with --ignored"]
-    fn z1_dc_phase_breakdown() {
-        use crate::synthesis::diag;
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        let eps = 1e-3_f64;
-        let m = 3u32;
-        let k_total = 10u32;
-
-        if !diag::trace_enabled() {
-            eprintln!("(set CYCLOSYNTH_TRACE=1 to see phase breakdown)");
-        }
-        diag::reset_all();
-
-        let prefixes = build_l_q(m);
-        let d_target = det_phase_of(&target);
-        let mut scratch = IntScratch16::new(eps);
-        scratch.use_f64_gs = true;
-        let first_call = true;
-        let _ = first_call;
-
-        let t_total = std::time::Instant::now();
-        let mut n_processed = 0u64;
-        for u_l in prefixes.iter() {
-            if u_l.k >= k_total { continue; }
-            let k_inner = k_total - u_l.k;
-            let m_inner = u2q_dag_times_mat2(u_l, &target);
-            let v_inner = unitary_to_uv_zeta(&m_inner);
-            let d_l = det_phase_of(&u_l.to_float());
-            let _d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
-            let y = uv_to_xy_zeta(v_inner, k_inner);
-            let budget_hit = AtomicBool::new(false);
-            let _ = first_call;
-            let _sols = phase1_with_stop(
-                &mut scratch, &y, k_inner, eps,
-                10_000, &budget_hit, |_| false, None, None,
-            );
-            n_processed += 1;
-        }
-        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-
-        let s = diag::snapshot();
-        eprintln!("\n=== dc m={m}  k_total={k_total}  prefixes processed {n_processed}  wall {total_ms:.0}ms ===");
-        eprintln!("  build  {:>8.1} ms", s.t_build_ms);
-        eprintln!("  lll    {:>8.1} ms  (iters total {}, avg {:.1}, max {})",
-            s.t_lll_ms, s.lll_iters_total,
-            (s.lll_iters_total as f64) / (n_processed.max(1) as f64),
-            s.lll_iters_max);
-        eprintln!("  chol   {:>8.1} ms", s.t_cholesky_ms);
-        eprintln!("  lu     {:>8.1} ms", s.t_lu_ms);
-        eprintln!("  se     {:>8.1} ms", s.t_se_ms);
-        let phase_sum = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
-        eprintln!("  sum    {:>8.1} ms  ({:>5.1}% of wall)", phase_sum, 100.0 * phase_sum / total_ms);
-        if n_processed > 0 {
-            eprintln!("  per-prefix breakdown (μs each):");
-            eprintln!("    build  {:>8.1}", s.t_build_ms * 1000.0 / n_processed as f64);
-            eprintln!("    lll    {:>8.1}", s.t_lll_ms * 1000.0 / n_processed as f64);
-            eprintln!("    chol   {:>8.1}", s.t_cholesky_ms * 1000.0 / n_processed as f64);
-            eprintln!("    lu     {:>8.1}", s.t_lu_ms * 1000.0 / n_processed as f64);
-            eprintln!("    se     {:>8.1}", s.t_se_ms * 1000.0 / n_processed as f64);
-        }
-    }
-
-    /// Z1 instrumentation: time each prefix separately and bin by k_inner
-    /// to see *where* the per-prefix cost is going. Repeats the inner search
-    /// inline rather than calling dc_search_q so we can attach per-prefix
-    /// timing without reaching across modules.
-    #[test]
-    #[ignore = "slow diagnostic; run with --ignored"]
-    fn z1_dc_per_prefix_breakdown() {
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        let eps = 1e-3_f64;
-        let m = 3u32;
-        let k_total = 10u32;
-
-        let prefixes = build_l_q(m);
-        let d_target = det_phase_of(&target);
-        let mut scratch = IntScratch16::new(eps);
-
-        // Bin per-prefix time by k_inner.
-        let mut bin_count: Vec<u64> = vec![0; (k_total + 1) as usize];
-        let mut bin_time_ns: Vec<u64> = vec![0; (k_total + 1) as usize];
-        let mut bin_sols: Vec<u64> = vec![0; (k_total + 1) as usize];
-        let mut total_skipped = 0u64;
-
-        let t_total = std::time::Instant::now();
-        for u_l in prefixes.iter() {
-            let k_prefix = u_l.k;
-            if k_prefix >= k_total {
-                total_skipped += 1;
-                continue;
-            }
-            let k_inner = k_total - k_prefix;
-            let m_inner = u2q_dag_times_mat2(u_l, &target);
-            let v_inner = unitary_to_uv_zeta(&m_inner);
-            let d_l = det_phase_of(&u_l.to_float());
-            let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
-
-            let y = uv_to_xy_zeta(v_inner, k_inner);
-            let budget_hit = AtomicBool::new(false);
-
-            let t_prefix = std::time::Instant::now();
-            let _sols = phase1_with_stop(
-                &mut scratch, &y, k_inner, eps,
-                10_000, &budget_hit, |_| false, None, None,
-            );
-            let dt = t_prefix.elapsed().as_nanos() as u64;
-            // Just counting non-trivial returns; not validating distance here.
-            bin_count[k_inner as usize] += 1;
-            bin_time_ns[k_inner as usize] += dt;
-            bin_sols[k_inner as usize] += _sols.len() as u64;
-            let _ = (m_inner, d_r);
-        }
-        let total_time = t_total.elapsed();
-
-        eprintln!("\n=== dc m={m}  k_total={k_total}  total {:.0} ms  skipped {total_skipped}/{} ===",
-            total_time.as_secs_f64() * 1000.0,
-            prefixes.len()
-        );
-        eprintln!("  k_inner   count    total_ms    per_prefix_us    sols");
-        for k in 0..=k_total {
-            let n = bin_count[k as usize];
-            if n == 0 { continue; }
-            let total_ms = (bin_time_ns[k as usize] as f64) / 1e6;
-            let per_us = (bin_time_ns[k as usize] as f64) / (n as f64) / 1e3;
-            eprintln!("    {k:>3}  {:>7}  {total_ms:>10.1}  {per_us:>14.0}  {:>6}",
-                n, bin_sols[k as usize]);
-        }
-    }
-
-    /// Z1 prototype smoke test: synthesize Rz(0.3) at ε=1e-3 with D&C
-    /// at m=3, verify it lands at a similar lde to single-search and
-    /// time both for an A/B comparison.
-    #[test]
-    #[ignore]  // long: ~1 minute with 10M leaf budget
-    fn z1_dc_smoke_rz_eps_1e_5() {
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        let eps = 1e-5_f64;
-
-        let synth_single = SynthesizerQ::new(eps).with_max_lde(28);
-        let t0 = std::time::Instant::now();
-        let r_single = synth_single.synthesize(target);
-        let t_single = t0.elapsed();
-        eprintln!(
-            "single: lde={:?} dist={:?} t={:.0}ms",
-            r_single.as_ref().map(|r| r.lde),
-            r_single.as_ref().map(|r| r.distance),
-            t_single.as_secs_f64() * 1000.0
-        );
-
-        for m in [1u32, 2, 3] {
-            let synth_dc = SynthesizerQ::new(eps).with_max_lde(28).with_dc_split(m);
-            let t1 = std::time::Instant::now();
-            let r_dc = synth_dc.synthesize(target);
-            let t_dc = t1.elapsed();
-            let l_size = build_l_q(m).len();
-            eprintln!(
-                "  d&c m={m}: |L|={l_size}  lde={:?}  dist={:?}  t={:.0}ms",
-                r_dc.as_ref().map(|r| r.lde),
-                r_dc.as_ref().map(|r| r.distance),
-                t_dc.as_secs_f64() * 1000.0
             );
         }
     }
