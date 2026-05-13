@@ -15,4 +15,7 @@ classifiers = [
 
 [tool.maturin]
 features = ["python"]
-strip = true
+# `strip = true` conflicts with Cargo.toml's `[profile.release] debug = 1`
+# (maturin refuses to strip a binary that asked for debuginfo). Leaving
+# symbols in — small wheel-size cost, easier dev profiling.
+strip = false
