@@ -14,7 +14,7 @@ def ry(t):
     return np.array([[c, -s],
                      [s,  c]], dtype=np.complex128)
 
-epsilon = 1e-6
+epsilon = 1e-7
 synth = cyclosynth.Synthesizer(epsilon=epsilon)
 
 for _ in range(10):

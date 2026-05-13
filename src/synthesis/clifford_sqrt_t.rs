@@ -689,18 +689,73 @@ impl SynthesizerQ {
                 }
             }
 
-            // Parallel-LDE speculation (Path #1, executed): for k > m_split,
-            // run a window of LDE levels concurrently via rayon. The first
-            // task to find a solution sets the shared `cross_lde_abort`
-            // signal; in-flight peer walkers see it at their next
-            // recurse-entry and abort. Wall-time on hard targets drops from
-            // "sum of no-sol burns + find" to "find at find-lde alone, with
-            // thread-dilution overhead." Easy targets pay 1.5-2× wall
-            // overhead from CPU split across the window — accepted trade
-            // for tail-latency improvement on hard targets.
             use std::sync::Mutex;
-            let cross_lde_abort = AtomicBool::new(false);
             let pass2_collector: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+            // ε > 1.6e-8: simple sequential loop, zero parallel-LDE
+            // machinery (no thread::scope, no shared atomics, no
+            // consumed-counter increments in the SE walker's hot path).
+            // Atomic fetch_add on a 14-thread-shared counter costs ~25 ns
+            // per recurse on contention; for million-node walks at
+            // ε≥1e-7 that's a 30-50% wall regression for zero benefit
+            // (parallel-LDE speculation only helps when hard targets
+            // overshoot the predicted LDE, which doesn't happen at
+            // shallow ε).
+            if self.epsilon > 1.6e-8 {
+                for k in (m_split + 1).max(lattice_start)..=self.max_lde {
+                    let t_k = std::time::Instant::now();
+                    let (result, budget_hit) = self.dc_search_q(
+                        &target, k, m_split, dc_pass1_cap_for(self.epsilon),
+                        None, None,
+                    );
+                    if let Some(r) = result {
+                        if trace {
+                            eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
+                                r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                        }
+                        return Some(r);
+                    }
+                    if trace {
+                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
+                            if budget_hit { " (budget hit)" } else { "" },
+                            t_k.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    if budget_hit { pass2_collector.lock().unwrap().push(k); }
+                }
+                let mut pass2_queue: Vec<u32> = pass2_collector.into_inner().unwrap();
+                pass2_queue.sort_unstable();
+                for k in pass2_queue {
+                    let t_k = std::time::Instant::now();
+                    if trace {
+                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
+                    }
+                    let (result, _) = self.dc_search_q(
+                        &target, k, m_split, dc_pass2_cap_for(self.epsilon), None, None,
+                    );
+                    if let Some(r) = result {
+                        if trace {
+                            eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
+                                r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                        }
+                        return Some(r);
+                    }
+                    if trace {
+                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
+                            t_k.elapsed().as_secs_f64() * 1000.0);
+                    }
+                }
+                return None;
+            }
+
+            // ε ≤ 1.6e-8: parallel-LDE speculation. For k > m_split, run
+            // a window of LDE levels concurrently. The first task to find
+            // sets `cross_lde_abort`; in-flight peer walkers see it at
+            // their next recurse-entry and abort. Hard-target wall drops
+            // from "sum of no-sol burns + find" to "find at find-lde
+            // alone" at the cost of thread-dilution overhead on easy
+            // targets — only enabled in this regime because that's where
+            // hard targets overshoot the predicted LDE.
+            let cross_lde_abort = AtomicBool::new(false);
             let lde_window_size: u32 = self.parallel_lde_window.max(1);
             let mut k_cursor = (m_split + 1).max(lattice_start);
 
@@ -749,10 +804,24 @@ impl SynthesizerQ {
                                 if abort_ref.load(Ordering::Relaxed) { return; }
                             }
                             let t_k = std::time::Instant::now();
+                            // Pass shared signals only when they could
+                            // actually fire: window=1 has no peer LDEs to
+                            // abort us, and trigger_nodes=0 means no
+                            // watcher reads the consumed counter. The
+                            // SE walker pays an atomic load + fetch_add
+                            // per recurse-enter on a contended cache
+                            // line if either is Some — non-trivial wall
+                            // overhead at deep ε.
+                            let abort_opt = if lde_window_size > 1 { Some(abort_ref) } else { None };
+                            let consumed_opt = if trigger_nodes > 0 {
+                                Some(my_consumed.as_ref())
+                            } else {
+                                None
+                            };
                             let (result, budget_hit) = self.dc_search_q(
                                 &target, k, m_split, dc_pass1_cap_for(self.epsilon),
-                                Some(abort_ref),
-                                Some(my_consumed.as_ref()),
+                                abort_opt,
+                                consumed_opt,
                             );
                             let dt = t_k.elapsed().as_secs_f64() * 1000.0;
                             if let Some(ref r) = result {
