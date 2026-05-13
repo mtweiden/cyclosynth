@@ -16,6 +16,10 @@
 //! synthesis constraints (norm shell, bilinear form, alignment cap), and
 //! returns the first candidate that passes.
 
+// 8×8 matrix code reads more clearly with explicit (i, j) indexing than with
+// iterator combinators that thread multiple arrays in lockstep.
+#![allow(clippy::needless_range_loop)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rug::{Assign, Float as RFloat};

@@ -230,58 +230,33 @@ synthesized circuit through the Bloch decomposer and assert
 ## Performance
 
 Wall-clock minimums from `time_synthesis --trials 3` on Apple M-series,
-8 threads. The `lde` column is the inner T-count budget at which a
-solution was found (≈ T-count + small adjustment for the search
+8 threads, against 10 random SU(2) targets per ε from a fixed
+xorshift64 seed. The `lde` column is the inner T-count budget at which
+a solution was found (≈ T-count + small adjustment for the search
 convention).
 
-| Target                | ε      | lde | Time (ms) |
-| --------------------- | ------ | --- | ----------|
-| `identity`            | 1e-2   | 18  |     1.3   |
-| `H`                   | 1e-2   | 18  |     1.3   |
-| `T`                   | 1e-2   | 18  |     1.6   |
-| `Rz(0.30)`            | 1e-2   | 18  |     2.0   |
-| `Rz(1.34)`            | 1e-2   | 18  |     1.9   |
-| `Rz(π/7)`             | 1e-2   | 20  |     9.4   |
-| `Ry(0.50)`            | 1e-2   | 18  |     1.1   |
-| `U3(0.3,0.7,1.2)`     | 1e-2   | 18  |     0.8   |
-| `U3(1.1,0.4,2.3)`     | 1e-2   | 18  |     1.0   |
-| `Rz(0.30)`            | 1e-3   | 28  |     2.7   |
-| `Rz(1.34)`            | 1e-3   | 28  |     2.4   |
-| `Rz(π/7)`             | 1e-3   | 28  |     1.6   |
-| `Ry(0.50)`            | 1e-3   | 28  |     1.7   |
-| `U3(0.3,0.7,1.2)`     | 1e-3   | 28  |     1.7   |
-| `Rz(0.30)`            | 1e-4   | 37  |     2.2   |
-| `Ry(π/7)`             | 1e-4   | 37  |     3.3   |
-| `U3(0.3,0.7,1.2)`     | 1e-4   | 37  |     1.9   |
-| `U3(4.3,1.8,0.2)`     | 1e-4   | 37  |     2.1   |
-| `U3(6.1,3.4,3.3)`     | 1e-4   | 37  |     2.1   |
-| `Rz(0.30)`            | 1e-5   | 49  |    45     |
-| `Ry(π/7)`             | 1e-5   | 51  |   219     |
-| `U3(0.3,0.7,1.2)`     | 1e-5   | 47  |     1.6   |
-| `U3(4.3,1.8,0.2)`     | 1e-5   | 47  |     1.6   |
-| `U3(6.1,3.4,3.3)`     | 1e-5   | 47  |    30     |
-| `Rz(0.30)`            | 1e-6   | 59  |   223     |
-| `Ry(π/7)`             | 1e-6   | 55  |     4.7   |
-| `U3(0.3,0.7,1.2)`     | 1e-6   | 57  |    61     |
-| `U3(4.3,1.8,0.2)`     | 1e-6   | 55  |     7.8   |
-| `U3(6.1,3.4,3.3)`     | 1e-6   | 59  |   279     |
-| `Rz(0.30)`            | 1e-7   | 66  |    22     |
-| `Ry(π/7)`             | 1e-7   | 70  |  1220     |
-| `U3(0.3,0.7,1.2)`     | 1e-7   | 66  |    23     |
-| `U3(4.3,1.8,0.2)`     | 1e-7   | 66  |    32     |
-| `U3(6.1,3.4,3.3)`     | 1e-7   | 68  |   280     |
-| `Rz(0.30)`            | 1e-8   | 82  | 22100     |
+| ε    | typical lde | min (ms) | median (ms) | max (ms) | mean (ms) |
+| ---- | ----------- | -------- | ----------- | -------- | --------- |
+| 1e-2 | 18          | 0.4      | 0.6         | 0.9      | 0.6       |
+| 1e-3 | 26          | 0.5      | 0.7         | 1.0      | 0.7       |
+| 1e-4 | 35–39       | 0.5      | 2.0         | 14.3     | 3.1       |
+| 1e-5 | 43–49       | 0.6      | 5.5         | 77       | 18.3      |
+| 1e-6 | 55–59       | 3.6      | 65          | 223      | 81        |
+| 1e-7 | 66          | 1.1      | 25          | 89       | 32        |
+| 1e-8 | 74–80       | 4        | 2,492       | 9,841    | 3,160     |
 
-Total (sum of minimums across all 36 cases): **24.6 s**.
+Total (sum of minimums across all 70 runs): **32.9 s**.
 
-Per-target time can be highly non-monotonic in ε. The dominant cost is
-the number of MA prefixes processed before a valid `(u₁, u₂)` candidate
-turns up, which depends on where the target sits in the modular
-fundamental domain — some `(target, ε)` combinations land on a "lucky"
-prefix early in the search order. `Rz(0.30)_1e-7` (22 ms) finishing
-faster than `Rz(0.30)_1e-6` (223 ms) is normal: the lde=66 search
-happens to find a valid lattice point at a low-numbered prefix, while
-the lde=59 search needs to walk further.
+Per-target time can be highly non-monotonic in ε and varies by orders
+of magnitude across the 10-target sweep at deeper ε. The dominant cost
+is the number of MA prefixes processed before a valid `(u₁, u₂)`
+candidate turns up, which depends on where the target sits in the
+modular fundamental domain — some `(target, ε)` combinations land on a
+"lucky" prefix early in the search order. The mean-vs-median gap at
+ε ≤ 1e-5 reflects this: a few hard outliers per sweep dominate the
+mean while the median stays modest. The same phenomenon explains why
+ε=1e-7's mean (32 ms) is *smaller* than ε=1e-6's (81 ms) here — the
+ε=1e-6 sweep happened to land on more high-prefix-index targets.
 
 Some angles also need a higher T-count than others at the same ε.
 `π/n` for small `n` (and similar small-period rationals) tend to fall

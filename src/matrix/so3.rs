@@ -39,6 +39,10 @@
 //!   2Re(z) as R2 with exp=1: R2(2(b-d), 2a)
 //!   2Im(z) as R2 with exp=1: R2(2(b+d), 2c)
 
+// 3×3 matrix code reads more clearly with explicit (i, j) indexing than with
+// iterator combinators threading multiple arrays in lockstep.
+#![allow(clippy::needless_range_loop)]
+
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
 use std::f64::consts::SQRT_2;
@@ -46,7 +50,7 @@ use std::f64::consts::SQRT_2;
 use std::f64::consts::FRAC_1_SQRT_2;
 use crate::matrix::{U2T, U2Q};
 use crate::rings::{ZOmega, ZZeta, Int};
-use crate::rings::types::{INT_ZERO, INT_ONE, INT_TWO, INT_THREE, int_to_f64};
+use crate::rings::types::{INT_ZERO, INT_ONE, INT_TWO, int_to_f64};
 
 
 // ─── R2 ───────────────────────────────────────────────────────────────────────
@@ -210,6 +214,42 @@ impl R4 {
     pub fn mul_gamma(self) -> Self {
         R4(INT_TWO*self.2 + INT_TWO*self.3, self.2 + INT_TWO*self.3, self.0, self.1)
     }
+
+    /// √2-adic valuation: largest n such that √2^n divides self.
+    ///
+    /// Iterated div_sqrt2 until impossible. R4(a, b, c, d) is divisible by √2
+    /// iff a and c are even (since √2·R4(b, a/2, d, c/2) = R4(a, b, c, d)).
+    pub fn sqrt2_valuation(self) -> u32 {
+        if self == R4::ZERO {
+            return u32::MAX;
+        }
+        let mut v = 0u32;
+        let mut x = self;
+        loop {
+            if x.0 % INT_TWO != INT_ZERO || x.2 % INT_TWO != INT_ZERO {
+                break;
+            }
+            x = R4(x.1, x.0 / INT_TWO, x.3, x.2 / INT_TWO);
+            v += 1;
+        }
+        v
+    }
+
+    /// Divide by √2 (exact; panics in debug if not divisible).
+    /// Requires self.0 and self.2 to be even.
+    pub fn div_sqrt2(self) -> Self {
+        debug_assert!(
+            self.0 % INT_TWO == INT_ZERO && self.2 % INT_TWO == INT_ZERO,
+            "R4::div_sqrt2: not divisible by √2, got R4({},{},{},{})",
+            self.0, self.1, self.2, self.3
+        );
+        R4(self.1, self.0 / INT_TWO, self.3, self.2 / INT_TWO)
+    }
+
+    /// Multiply by √2: (a + b√2 + cγ + dγ√2)·√2 = 2b + a√2 + 2dγ + cγ√2.
+    pub fn mul_sqrt2(self) -> Self {
+        R4(INT_TWO*self.1, self.0, INT_TWO*self.3, self.2)
+    }
 }
 
 impl Add for R4 {
@@ -308,9 +348,13 @@ impl fmt::Display for R4 {
 /// A ring element divided by the ring-specific denominator unit to the power `exp`.
 ///
 /// - For `Ratio<R2>`: actual value = `num / √2^exp`
-/// - For `Ratio<R4>`: actual value = `num / γ^exp`
+/// - For `Ratio<R4>`: actual value = `num / √2^exp`
 ///
-/// Mirrors Python's `AlgebraicIntegerOverRoot2(numerator, denominator_power)`.
+/// Note: `Ratio<R4>` uses √2 as the denominator base (same as `Ratio<R2>`),
+/// not γ. This is because SO3 entries from a U2 with k denominator have
+/// the form `Re(z)/2^k = Re(z)/√2^(2k)`. The R4 ring still includes
+/// `mul_gamma`/`div_gamma`/`gamma_valuation` as algebraic operations on the
+/// ring itself, but `Ratio<R4>` doesn't use them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ratio<R> {
     pub num: R,
@@ -375,24 +419,23 @@ impl Ratio<R4> {
     pub const ZERO: Self = Ratio { num: R4::ZERO, exp: 0 };
     pub const ONE:  Self = Ratio { num: R4::ONE,  exp: 0 };
 
-    /// Cancel common γ factors between numerator and denominator.
+    /// Cancel common √2 factors between numerator and denominator.
     pub fn simplify(&mut self) {
         if self.num == R4::ZERO { self.exp = 0; return; }
-        let v = self.num.gamma_valuation().min(self.exp);
-        for _ in 0..v { self.num = self.num.div_gamma(); }
+        let v = self.num.sqrt2_valuation().min(self.exp);
+        for _ in 0..v { self.num = self.num.div_sqrt2(); }
         self.exp -= v;
     }
 
-    /// Multiply numerator by γ^n (used to align exponents before addition).
+    /// Multiply numerator by √2^n (used to align exponents before addition).
     fn lift_num(self, n: u32) -> R4 {
         let mut x = self.num;
-        for _ in 0..n { x = x.mul_gamma(); }
+        for _ in 0..n { x = x.mul_sqrt2(); }
         x
     }
 
     pub fn to_f64(self) -> f64 {
-        let gamma = (2.0f64 + SQRT_2).sqrt();
-        self.num.to_f64() / gamma.powi(self.exp as i32)
+        self.num.to_f64() / SQRT_2.powi(self.exp as i32)
     }
 }
 
@@ -595,14 +638,22 @@ impl SO3<R4> {
     ///
     /// Works for any unitary matrix (not just SU(2)) with entries in Z[ζ].
     ///
-    /// Derivation: same as SO3<R2>::from_u2 but extracting Re/Im into R4.
-    /// For z ∈ Z[ζ], Re(z)·γ³ and Im(z)·γ³ land in Z[γ], giving exp = 2k+3.
+    /// Derivation: SO3 from U2. Mirrors the SO3<R2>::from_u2 structure but
+    /// extracts Re/Im into R4 = Z[γ] = Z[1, √2, γ, γ√2].
     ///
-    ///   re3(z): let p=z.b−z.h, q=z.c−z.g, r=z.d−z.f
-    ///           → R4(3p+r, 2p+r, 2·z.a+q, z.a+q)
-    ///   im3(z): let s=z.b+z.h, t=z.c+z.g, u=z.d+z.f
-    ///           → R4(3u+s, 2u+s, 2·z.e+t, z.e+t)
-    ///   cz:     N is real ZZeta(n,0,..,0) with n even → R4(0, 0, n, n/2)
+    /// For z ∈ Z[ζ_16], 2·Re(z) and 2·Im(z) land in Z[γ] (the /2 factors in
+    /// cos(jπ/8), sin(jπ/8) are absorbed by the leading 2). Using
+    /// Ratio<R4>'s √2-denominator and `init_exp = 2k+2`, each entry value is
+    ///   `entry = num / √2^(2k+2) = num / 2^(k+1)`
+    /// Off-diagonal entries: num = 2·Re/Im(z), so entry = Re/Im(z)/2^k. ✓
+    /// (3,3) entry: num = N (real Z[γ] element), so entry = N/2^(k+1). ✓
+    ///
+    ///   re3(z) = 2·Re(z) in R4 basis:
+    ///     R4(2·z.a, z.c−z.g, z.b−z.h−z.d+z.f, z.d−z.f)
+    ///   im3(z) = 2·Im(z) in R4 basis:
+    ///     R4(2·z.e, z.c+z.g, z.d+z.f−z.b−z.h, z.b+z.h)
+    ///   cz: N is real Z[ζ_16] (N.e=0, N.f=−N.d, N.g=−N.c, N.h=−N.b). In
+    ///     Z[γ] basis {1, √2, γ, γ√2}, N = R4(N.a, N.c, N.b−N.d, N.d).
     pub fn from_u2(u: &U2Q) -> Self {
         let a = u.u11; let b = u.u12;
         let c = u.u21; let d = u.u22;
@@ -616,19 +667,38 @@ impl SO3<R4> {
         let s  = a * c.conj() - b * d.conj();
         let n  = a * a.conj() - b * b.conj() - c * c.conj() + d * d.conj();
 
+        // 2·Re(z) for z = a + bζ + cζ² + dζ³ + eζ⁴ + fζ⁵ + gζ⁶ + hζ⁷.
+        // Re(z) = a + (b−h)·γ/2 + (c−g)·√2/2 + (d−f)·(γ√2−γ)/2,
+        // so 2·Re(z) = 2a + (c−g)·√2 + (b−h−d+f)·γ + (d−f)·γ√2.
         let re3 = |z: ZZeta| -> R4 {
-            let pp = z.b - z.h; let qq = z.c - z.g; let rr = z.d - z.f;
-            R4(INT_THREE*pp + rr, INT_TWO*pp + rr, INT_TWO*z.a + qq, z.a + qq)
+            R4(
+                INT_TWO * z.a,
+                z.c - z.g,
+                z.b - z.h - z.d + z.f,
+                z.d - z.f,
+            )
         };
+        // 2·Im(z) for z's coefficients (z.e is the imaginary-axis component).
+        // Im(z) = e + (c+g)·√2/2 + (d+f−b−h)·γ/2... wait, Im of cos terms is 0,
+        // and Im of i·ζ^k = sin terms. Recompute:
+        //   Im(z) = b·sin(π/8) + c·sin(π/4) + d·sin(3π/8) + e·sin(π/2)
+        //         + f·sin(5π/8) + g·sin(3π/4) + h·sin(7π/8)
+        //         = e + (c+g)·√2/2 + (d+f)·γ/2 + (b+h)·(γ√2−γ)/2
+        // So 2·Im(z) = 2e + (c+g)·√2 + (d+f−b−h)·γ + (b+h)·γ√2.
         let im3 = |z: ZZeta| -> R4 {
-            let ss = z.b + z.h; let tt = z.c + z.g; let uu = z.d + z.f;
-            R4(INT_THREE*uu + ss, INT_TWO*uu + ss, INT_TWO*z.e + tt, z.e + tt)
+            R4(
+                INT_TWO * z.e,
+                z.c + z.g,
+                z.d + z.f - z.b - z.h,
+                z.b + z.h,
+            )
         };
 
-        // N is real: ZZeta(n.a, 0, ..., 0) with n.a always even.
-        let cz = R4(INT_ZERO, INT_ZERO, n.a, n.a / INT_TWO);
+        // N is a real Z[ζ_16] element: N.e = 0, N.f = -N.d, N.g = -N.c,
+        // N.h = -N.b. In R4 basis it's R4(N.a, N.c, N.b−N.d, N.d).
+        let cz = R4(n.a, n.c, n.b - n.d, n.d);
 
-        let init_exp = 2 * k + 3;
+        let init_exp = 2 * k + 2;
         let raw: [R4; 9] = [
             re3(p),  im3(q),  re3(s),
            -im3(p),  re3(q), -im3(s),
@@ -810,20 +880,24 @@ pub fn ry_neg() -> SO3<R2> {
 
 // ─── Rotation factories for SO3<R4> (π/8 steps) ──────────────────────────────
 //
-// cos(π/8) = √(2+√2)/2 = γ/2  ↔  R4(3,2,0,0) / γ³
-// sin(π/8) = √2/(2γ)          ↔  R4(1,1,0,0) / γ³
-// 1                            ↔  R4(0,0,2,1) / γ³   [γ³ = 2γ+γ√2]
+// SO3 entries in the new √2-denominator convention:
+//   cos(π/8) = γ/2 = R4(0,0,1,0) / √2²
+//   sin(π/8) = (γ√2−γ)/2 = R4(0,0,−1,1) / √2²
+//   −sin(π/8) = R4(0,0,1,−1) / √2²
+//   1 = R4(2,0,0,0) / √2²  (held at exp=2 for uniform-exp matrix storage;
+//                            simplify reduces to R4(1,0,0,0)/√2⁰)
 //
-// Standard Rz(π/8) = [[cos,-sin,0],[sin,cos,0],[0,0,1]], exp=3.
+// Standard Rz(π/8) = [[cos,-sin,0],[sin,cos,0],[0,0,1]], pre-simplify exp=2.
 
 /// Rz(+π/8) as SO3<R4>.
 pub fn rz_pos_q() -> SO3<R4> {
     let mut e = [Ratio::<R4>::ZERO; 9];
-    e[0] = Ratio { num: R4::from_i32( 3, 2, 0, 0), exp: 3 };  // cos(π/8)
-    e[1] = Ratio { num: R4::from_i32(-1,-1, 0, 0), exp: 3 };  // -sin(π/8)
-    e[3] = Ratio { num: R4::from_i32( 1, 1, 0, 0), exp: 3 };  // sin(π/8)
-    e[4] = Ratio { num: R4::from_i32( 3, 2, 0, 0), exp: 3 };  // cos(π/8)
-    e[8] = Ratio { num: R4::from_i32( 0, 0, 2, 1), exp: 3 };  // 1
+    e[0] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
+    e[1] = Ratio { num: R4::from_i32(0, 0,  1, -1), exp: 2 };  // -sin(π/8)
+    e[3] = Ratio { num: R4::from_i32(0, 0, -1,  1), exp: 2 };  // sin(π/8)
+    e[4] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
+    e[8] = Ratio { num: R4::from_i32(2, 0,  0,  0), exp: 2 };  // 1
+    for entry in e.iter_mut() { entry.simplify(); }
     SO3 { e }
 }
 
@@ -837,11 +911,12 @@ pub fn rz_neg_q() -> SO3<R4> {
 /// Rx(+π/8) as SO3<R4>.
 pub fn rx_pos_q() -> SO3<R4> {
     let mut e = [Ratio::<R4>::ZERO; 9];
-    e[0] = Ratio { num: R4::from_i32( 0, 0, 2, 1), exp: 3 };
-    e[4] = Ratio { num: R4::from_i32( 3, 2, 0, 0), exp: 3 };
-    e[5] = Ratio { num: R4::from_i32(-1,-1, 0, 0), exp: 3 };
-    e[7] = Ratio { num: R4::from_i32( 1, 1, 0, 0), exp: 3 };
-    e[8] = Ratio { num: R4::from_i32( 3, 2, 0, 0), exp: 3 };
+    e[0] = Ratio { num: R4::from_i32(2, 0,  0,  0), exp: 2 };  // 1
+    e[4] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
+    e[5] = Ratio { num: R4::from_i32(0, 0,  1, -1), exp: 2 };  // -sin(π/8)
+    e[7] = Ratio { num: R4::from_i32(0, 0, -1,  1), exp: 2 };  // sin(π/8)
+    e[8] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
+    for entry in e.iter_mut() { entry.simplify(); }
     SO3 { e }
 }
 
@@ -855,11 +930,12 @@ pub fn rx_neg_q() -> SO3<R4> {
 /// Ry(+π/8) as SO3<R4>.
 pub fn ry_pos_q() -> SO3<R4> {
     let mut e = [Ratio::<R4>::ZERO; 9];
-    e[0] = Ratio { num: R4::from_i32( 3, 2, 0, 0), exp: 3 };
-    e[2] = Ratio { num: R4::from_i32( 1, 1, 0, 0), exp: 3 };
-    e[4] = Ratio { num: R4::from_i32( 0, 0, 2, 1), exp: 3 };
-    e[6] = Ratio { num: R4::from_i32(-1,-1, 0, 0), exp: 3 };
-    e[8] = Ratio { num: R4::from_i32( 3, 2, 0, 0), exp: 3 };
+    e[0] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
+    e[2] = Ratio { num: R4::from_i32(0, 0, -1,  1), exp: 2 };  // sin(π/8)
+    e[4] = Ratio { num: R4::from_i32(2, 0,  0,  0), exp: 2 };  // 1
+    e[6] = Ratio { num: R4::from_i32(0, 0,  1, -1), exp: 2 };  // -sin(π/8)
+    e[8] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
+    for entry in e.iter_mut() { entry.simplify(); }
     SO3 { e }
 }
 
