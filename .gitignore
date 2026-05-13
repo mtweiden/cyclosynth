@@ -18,3 +18,5 @@ synth/
 .claude
 target/
 .pytest_cache/
+pgo/cyclosynth.profdata
+.cargo/config.toml
