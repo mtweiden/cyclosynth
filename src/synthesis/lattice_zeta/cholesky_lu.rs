@@ -1,5 +1,5 @@
 //! Post-LLL linear algebra at d=16: Cholesky and LU on the reduced Gram +
-//! basis. Mirrors `super::super::lenstra::cholesky_lu` (the d=8 path) with
+//! basis. Mirrors `super::super::lattice::cholesky_lu` (the d=8 path) with
 //! buffers and loops dimension-bumped to 16.
 //!
 //! Production path:
@@ -25,8 +25,8 @@
 use rug::{Assign, Float as RFloat};
 
 use super::scratch::{rfv, rfz, IntScratch16};
-use crate::synthesis::lenstra::cholesky_lu::i256_to_rfloat;
-use crate::synthesis::lenstra::lll::i256_to_f64;
+use crate::synthesis::lattice::cholesky_lu::i256_to_rfloat;
+use crate::synthesis::lattice::lll::i256_to_f64;
 
 // ─── snapshot Gram to MPFR (test-oracle) ─────────────────────────────────────
 

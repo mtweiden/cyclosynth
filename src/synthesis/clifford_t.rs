@@ -338,7 +338,7 @@ fn trace_dump_pass(
 // ─── LLL-based aligned search (used by dc_search inner step) ─────────────────
 
 /// Scale a 4-element alignment vector `v` to the 8-element y vector used by
-/// the lenstra pipeline. `y = compute_align_vec(v) · sqrt(2^k) / 2`,
+/// the lattice pipeline. `y = compute_align_vec(v) · sqrt(2^k) / 2`,
 /// satisfying `‖y‖² = 2^(k-1)`. Used `powf` (not bit-shift) so `k ≥ 64`
 /// stays well-defined.
 fn uv_to_xy(v: [Float; 4], k: u32) -> [Float; 8] {
@@ -365,7 +365,7 @@ const PASS2_CAP: u64 = u64::MAX;
 /// caps the per-prefix SE budget; if reached, `budget_hit` is set so the
 /// caller can choose to retry with a larger budget.
 fn lll_aligned_search(
-    scratch: &mut crate::synthesis::lenstra::LenstraScratch,
+    scratch: &mut crate::synthesis::lattice::LatticeScratch,
     v: [Float; 4],
     k: u32,
     eps: Float,
@@ -386,7 +386,7 @@ fn lll_aligned_search(
     // MPFR (rug) at adaptive precision in the LLL+Cholesky setup phase. The
     // SE step downcasts to f64. Scratch is reused across all prefixes within
     // one rayon worker via map_init in dc_search.
-    let sols = crate::synthesis::lenstra::phase1(
+    let sols = crate::synthesis::lattice::phase1(
         scratch, &y, k, eps, max_phase2_calls, budget_hit,
     );
     if max_solutions >= sols.len() {
@@ -752,7 +752,7 @@ impl SynthesizerT {
     /// Inner step uses lll_aligned_search (CVP-based), which is O(1) near a
     /// solution — fast exactly when DC is needed (large t, small eps).
     /// Even and odd inner branches are both tried per prefix.
-    /// `max_phase2_calls` is forwarded to lll_aligned_search → lenstra::phase1.
+    /// `max_phase2_calls` is forwarded to lll_aligned_search → lattice::phase1.
     /// Returns `(solution, budget_was_hit)` where `budget_was_hit=true` means at least
     /// one phase1 invocation exhausted its SE-callback budget — the caller may want to
     /// retry at the same lde with a larger budget. If `false` and `solution` is `None`,
@@ -816,7 +816,7 @@ impl SynthesizerT {
         let target_parity = det_zeta_parity(target);
 
         // Per-worker scratch: rayon's `map_init` allocates one
-        // `LenstraScratch` (pre-allocated MPFR/i256 buffers at the right
+        // `LatticeScratch` (pre-allocated MPFR/i256 buffers at the right
         // precision for `eps`) per worker thread and reuses it across every
         // prefix that worker handles, avoiding per-op allocation in the
         // hot path.
@@ -824,7 +824,7 @@ impl SynthesizerT {
             .par_iter()
             .with_min_len(chunk)
             .map_init(
-                || crate::synthesis::lenstra::LenstraScratch::new(eps),
+                || crate::synthesis::lattice::LatticeScratch::new(eps),
                 |scratch, u_l| -> Option<SynthResultT> {
                     if let Some(tp) = target_parity {
                         if det_zeta_parity(&u_l.to_float()) != Some(tp) {
@@ -1169,6 +1169,56 @@ mod tests {
         println!("{:?}", result.gates);
 
         check_result(&result, &target, 0.01);
+    }
+
+    /// Empirical sister of `clifford_sqrt_t::tests::build_l_q_dc_cost_ratio`.
+    /// Computes the same `S(t', α)` cost-ratio (Σ count(t', k)/α^k) for
+    /// Clifford+T's `build_l` so we can directly compare what the naive
+    /// cost model predicts for D&C in each ring.
+    #[test]
+    fn build_l_size_and_cost_ratio() {
+        eprintln!("\n|L_{{t'}}| sizes:");
+        for t_prime in 0..=10 {
+            let l = build_l(t_prime);
+            eprintln!("  t'={t_prime:>2}  |L_{{t'}}|={:>8}", l.len());
+        }
+
+        eprintln!("\nk_prefix histogram (Clifford+T, build_l):");
+        for t_prime in 1..=8 {
+            let l = build_l(t_prime);
+            let mut counts: Vec<u64> = vec![0; 64];
+            for u in l.iter() {
+                let k = u.k as usize;
+                if k < counts.len() { counts[k] += 1; }
+            }
+            let mut k_min = u32::MAX; let mut k_max = 0;
+            for u in l.iter() { k_min = k_min.min(u.k); k_max = k_max.max(u.k); }
+            eprintln!(
+                "  t'={t_prime:>2}  total={:>8}  k range [{k_min}, {k_max}]",
+                l.len()
+            );
+        }
+
+        eprintln!("\nS(t', α) = Σ_k count(t', k) / α^k  (D&C cost ratio):");
+        eprintln!("  t'  total      α=2.0    α=2.5    α=3.0    α=3.5    α=4.0");
+        for t_prime in 1..=10 {
+            let l = build_l(t_prime);
+            let mut counts: Vec<u64> = vec![0; 64];
+            for u in l.iter() {
+                let k = u.k as usize;
+                if k < counts.len() { counts[k] += 1; }
+            }
+            eprint!("  {t_prime:>2}  {:>8}", l.len());
+            for &alpha in &[2.0_f64, 2.5, 3.0, 3.5, 4.0] {
+                let s: f64 = counts
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &c)| (c as f64) / alpha.powi(k as i32))
+                    .sum();
+                eprint!("   {s:>8.2}");
+            }
+            eprintln!();
+        }
     }
 
     /// Test that DC (Algorithm 3.11) fires and finds a solution.

@@ -12,38 +12,11 @@ use i256::i256;
 
 use super::scratch::{IntScratch, GRAM_OVERFLOW_THRESHOLD_BITS};
 
-// ─── L²-LLL parameters ───────────────────────────────────────────────────────
+// ─── L²-LLL parameters & result type — moved to lattice_common ───────────────
 
-/// L² parameter η: relaxed size-reduction factor. Must satisfy 1/2 < η < √δ.
-/// Per Figure 7, (δ=0.75, η=0.55) supports d ≤ 11 in f64.
-pub const L2_ETA: f64 = 0.55;
-/// L² parameter δ: Lovász factor. (δ=0.75 is the classical LLL value.)
-pub const L2_DELTA: f64 = 0.75;
-/// δ̄ = (δ + 1) / 2 (used by the main loop's Lovász test, per Figure 6 step 2).
-pub const L2_DELTA_BAR: f64 = (L2_DELTA + 1.0) / 2.0;
-/// η̄ = (η + 1/2) / 2 (used by lazy size-reduction, per Figure 5 step 1).
-pub const L2_ETA_BAR: f64 = (L2_ETA + 0.5) / 2.0;
-
-/// Hard cap on lazy-size-reduce iterations per κ; never expected to fire.
-pub const MAX_LAZY_PASSES: usize = 32;
-
-// ─── Result type ─────────────────────────────────────────────────────────────
-
-/// Outcome of `lll_l2_8`. Convergence with a unimodular basis on success;
-/// overflow or iteration-cap on failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LllResult {
-    /// LLL converged within `max_iter` iterations and no overflow.
-    Converged,
-    /// A Gram entry's magnitude exceeded `GRAM_OVERFLOW_THRESHOLD_BITS`
-    /// during transient basis growth. Indicates the i256 buffer is no
-    /// longer wide enough for the current ε regime; the caller should
-    /// reject this prefix.
-    GramOverflow,
-    /// Reached the iteration cap without convergence (cycling or near-
-    /// boundary precision noise). Diagnostic only.
-    IterCap,
-}
+pub use crate::synthesis::lattice_common::{
+    L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
+};
 
 // ─── i256 → f64 conversion (used by CFA on the exact Gram) ───────────────────
 
@@ -54,24 +27,20 @@ pub enum LllResult {
 /// no overflow risk for our magnitudes.
 #[inline]
 pub fn i256_to_f64(v: i256) -> f64 {
-    let zero = i256::from_i64(0);
-    if v == zero {
-        return 0.0;
-    }
-    let neg = v < zero;
+    // Hot path. Use sign-bit check + direct limb access; precompute
+    // constants. See `lattice_zeta::lll_f64::i256_to_f64` for details
+    // (including why the two's-complement direct path is wrong).
+    const SCALE_64: f64 = 18446744073709551616.0;
+    const SCALE_128: f64 = SCALE_64 * SCALE_64;
+    const SCALE_192: f64 = SCALE_128 * SCALE_64;
+    let neg = v.is_negative();
     let abs = if neg { -v } else { v };
-    let bytes = abs.to_le_bytes();
-    let l0 = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
-    let l1 = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
-    let l2 = u64::from_le_bytes(bytes[16..24].try_into().unwrap());
-    let l3 = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
-    // Combine in increasing-precision order so the accumulation rounds the
-    // low bits, not the high bits.
-    let result = (l0 as f64)
-        + (l1 as f64) * 2f64.powi(64)
-        + (l2 as f64) * 2f64.powi(128)
-        + (l3 as f64) * 2f64.powi(192);
-    if neg { -result } else { result }
+    let limbs = abs.to_ne_limbs();
+    let r = (limbs[0] as f64)
+        + (limbs[1] as f64) * SCALE_64
+        + (limbs[2] as f64) * SCALE_128
+        + (limbs[3] as f64) * SCALE_192;
+    if neg { -r } else { r }
 }
 
 // ─── Cholesky Factorization Algorithm (Figure 4) ─────────────────────────────

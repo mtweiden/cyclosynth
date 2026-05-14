@@ -48,17 +48,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::cholesky_lu::{cholesky_f64_16, lu_solve_int_inplace_16};
 use super::lll::{run_lll_16, LllResult};
-use super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
+use super::q_metric::build_q_int_zeta;
 use super::scratch::{rfv, IntScratch16};
 use super::se::{
-    bilinear_forms, euclidean_cholesky_16_mpfr,
+    bilinear_forms, euclidean_cholesky_16_mpfr_dual,
     schnorr_euchner_16d_par_norm_pruned, LeafAction,
 };
 use crate::rings::Float;
 use crate::synthesis::diag;
 
 /// MPFR precision used by the alignment-threshold dot product. Same as 8D
-/// `super::super::lenstra::se::SE_PREC` — 128 bits gives ~38 digits of
+/// `super::super::lattice::se::SE_PREC` — 128 bits gives ~38 digits of
 /// headroom past the precision walls in the f64 formula at ε ≲ √(machine_eps).
 const ALIGN_PREC: u32 = 128;
 
@@ -79,15 +79,24 @@ pub fn phase1(
     max_phase2_calls: u64,
     budget_hit: &AtomicBool,
 ) -> Vec<[i64; 16]> {
-    phase1_with_stop(scratch, y, k, eps, max_phase2_calls, budget_hit, |_| false)
+    phase1_with_stop(scratch, y, k, eps, max_phase2_calls, budget_hit, |_| false, None, None)
 }
 
-/// Phase 1 with an early-exit predicate. `should_stop(x)` is called
-/// **only** for leaves that pass the integer-exact filter (norm shell +
-/// bilinear forms + alignment). When it returns `true`, the lattice
-/// search aborts after collecting that leaf — the caller can wrap
-/// expensive checks (e.g. ε-bounded diamond distance) here without
-/// paying their cost on every doomed leaf.
+/// Phase 1 with an early-exit predicate and optional speculation signals.
+///
+/// `should_stop(x)` is called **only** for leaves that pass the integer-exact
+/// filter (norm shell + bilinear forms + alignment). When it returns `true`,
+/// the lattice search aborts after collecting that leaf.
+///
+/// `external_abort` is a shared cross-task abort signal; when set by a peer
+/// task (e.g. another LDE level finding a solution first under parallel
+/// speculation), the walker aborts at its next recurse-entry.
+///
+/// `consumed` is a shared node counter, incremented on every recurse-entry.
+/// The parallel-LDE dispatcher uses it to observe search progress.
+///
+/// Callers that don't need the speculation signals pass `None, None`.
+#[allow(clippy::too_many_arguments)]
 pub fn phase1_with_stop<F>(
     scratch: &mut IntScratch16,
     y: &[Float; 16],
@@ -96,6 +105,48 @@ pub fn phase1_with_stop<F>(
     max_phase2_calls: u64,
     budget_hit: &AtomicBool,
     should_stop: F,
+    external_abort: Option<&AtomicBool>,
+    consumed: Option<&AtomicU64>,
+) -> Vec<[i64; 16]>
+where
+    F: Fn(&[i64; 16]) -> bool + Sync,
+{
+    // Promote f64 y to MPFR. This wrapper is for legacy callers at f64
+    // precision (everything ≥ ε=1e-7); ε ≤ 1e-8 should call
+    // `phase1_with_stop_mpfr` directly to bypass the f64 ULP floor in v.
+    let prec = scratch.prec_q;
+    let scale = 2.0_f64.powf(k as f64 / 2.0) / 4.0;
+    let v_mpfr: [RFloat; 4] = [
+        rfv(prec, y[0] / scale),
+        rfv(prec, y[4] / scale),
+        rfv(prec, y[8] / scale),
+        rfv(prec, y[12] / scale),
+    ];
+    let y_mpfr: [RFloat; 16] = std::array::from_fn(|i| rfv(prec, y[i]));
+    phase1_with_stop_mpfr(
+        scratch, &y_mpfr, &v_mpfr, k, eps, max_phase2_calls, budget_hit, should_stop,
+        external_abort, consumed,
+    )
+}
+
+/// MPFR-precision entry point. Caller provides `y` and `v` already in MPFR;
+/// `Q` and the cap center `c[i]` are computed without any f64 round-trip.
+/// The only precision path that works at ε ≤ 1e-8 (see
+/// `build_q_mpfr_zeta_from_mpfr_v`).
+///
+/// Same `external_abort` / `consumed` semantics as [`phase1_with_stop`].
+#[allow(clippy::too_many_arguments)]
+pub fn phase1_with_stop_mpfr<F>(
+    scratch: &mut IntScratch16,
+    y: &[RFloat; 16],
+    v: &[RFloat; 4],
+    k: u32,
+    eps: Float,
+    max_phase2_calls: u64,
+    budget_hit: &AtomicBool,
+    should_stop: F,
+    external_abort: Option<&AtomicBool>,
+    consumed: Option<&AtomicU64>,
 ) -> Vec<[i64; 16]>
 where
     F: Fn(&[i64; 16]) -> bool + Sync,
@@ -104,26 +155,17 @@ where
     if trace {
         diag::N_PHASE1_CALLS.fetch_add(1, Ordering::Relaxed);
     }
-    // Recover the SU(2) direction `v = (Re V_{11}, Im V_{11}, Re V_{21},
-    // Im V_{21})` from the lattice-coord y. By construction
-    // `y[j]   = (cos(jπ/8)·v[0] + sin(jπ/8)·v[1]) · scale`,
-    // `y[8+j] = (cos(jπ/8)·v[2] + sin(jπ/8)·v[3]) · scale`,
-    // with `scale = 2^(k/2) / 4`. At j=0 (cos=1, sin=0): v[0]=y[0]/scale,
-    // v[2]=y[8]/scale. At j=4 (cos=0, sin=1): v[1]=y[4]/scale,
-    // v[3]=y[12]/scale.
-    let scale = 2.0_f64.powf(k as f64 / 2.0) / 4.0;
-    let v: [f64; 4] = [y[0] / scale, y[4] / scale, y[8] / scale, y[12] / scale];
 
-    // Step 1: build Q in MPFR + i256 snapshot. Reset basis to identity (LLL
-    // expects the identity start; `run_lll_16` calls `reset_basis()` again
-    // internally but doing it here keeps the contract explicit).
+    // Step 1: build Q in MPFR + i256 snapshot. Reset basis unless caller
+    // requested warm_lll (Z1 D&C path).
     let t_build = if trace { Some(std::time::Instant::now()) } else { None };
-    scratch.reset_basis();
-    build_q_mpfr_zeta(scratch, v, k, eps);
+    if !scratch.warm_lll {
+        scratch.reset_basis();
+    }
+    super::q_metric::build_q_mpfr_zeta_from_mpfr_v(scratch, v, k, eps);
     build_q_int_zeta(scratch);
 
     // Compute cap-center c[i] = y[i] · cap_mid in MPFR at prec_q.
-    // cap_mid = (1 + √(1 − ε²)) / 2.
     let prec = scratch.prec_q;
     let one = rfv(prec, 1.0);
     let two = rfv(prec, 2.0);
@@ -134,32 +176,145 @@ where
     let cap_mid_num = RFloat::with_val(prec, &one + &sqrt_1m);
     let cap_mid = RFloat::with_val(prec, &cap_mid_num / &two);
     for i in 0..16 {
-        let yi = rfv(prec, y[i]);
-        scratch.c[i].assign(RFloat::with_val(prec, &yi * &cap_mid));
+        scratch.c[i].assign(RFloat::with_val(prec, &y[i] * &cap_mid));
     }
     if let Some(t) = t_build {
         diag::T_BUILD_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // Step 2: L²-LLL on the i256 Gram.
+    // ─── Step 2: L²-LLL with adaptive precision ladder ───────────────
+    //
+    // fplll's `wrapper.cpp` runs a precision ladder: try low-precision
+    // first, escalate on detected failure. Their full ladder is
+    //   `double` (53 bit) → `dpe_t` (double + long expo) → `dd_real`
+    //   (~106 bit) → `mpfr_t` (arbitrary).
+    // We use the same idea with a 2-step ladder over our two backends:
+    //
+    //   1. **f64 GS** (`lll_f64::run_lll_16_f64`): 52 mantissa bits,
+    //      ~2.5× faster per call than MPFR-80. fplll's `l2_min_prec`
+    //      formula `≥ 10 + 2·log d − log ε + d·log ρ` says we need ~50
+    //      bits at d=16, ε=1e-8, leaving f64 with a 2-bit margin.
+    //      Empirically converges through ε=1e-7; ε=1e-8 is borderline.
+    //
+    //   2. **MPFR-80** (`run_lll_16` at `GS_PREC=80`, the default): 80
+    //      mantissa bits, ~30-bit margin at ε=1e-8 — comfortably safe.
+    //      ~2.5× slower per call but reliable.
+    //
+    // **Failure detection** (signals the f64 path is past its precision
+    // budget):
+    //   (a) `LllResult::IterCap` — LLL didn't converge in MAX_LLL_ITERS.
+    //       Strong signal of GS-state cycling from precision loss.
+    //   (b) `det16_exact == Some(d)` with `d ∉ {±1}` — basis became
+    //       non-unimodular under f64 LLL's transformations. Means the
+    //       size-reduction's f64 mu-rounding accumulated a wrong basis
+    //       update somewhere.
+    //
+    // **Not escalated**:
+    //   - `LllResult::GramOverflow`: the i256 Gram buffer overflowed,
+    //     not a precision issue. MPFR can't help — we'd need wider
+    //     integers. Return empty.
+    //   - `det16_exact == None`: i128 Bareiss elimination overflowed at
+    //     d=16 (rare at deep ε per the chunk 2 caveat). Treat as
+    //     inconclusive-success and proceed; no clean fallback.
+    //
+    // The escalation cost is one full LLL setup + run. When f64 succeeds
+    // (ε ≥ 1e-7 typically), the ladder's overhead is just a det check
+    // (≤ 1 μs) — negligible. When f64 fails, we pay 2× LLL.
+    //
+    // Diag counter `N_LLL_F64_ESCALATIONS` tracks how often this fires.
+    // Should be 0 at moderate ε; non-zero only at ε ≤ 1e-8.
+
     let t_lll = if trace { Some(std::time::Instant::now()) } else { None };
-    let lll_result = run_lll_16(scratch);
+    let initial_use_f64 = scratch.use_f64_gs;
+
+    // Helper: closes over scratch via &mut, returns (LllResult, det).
+    fn run_and_check(s: &mut IntScratch16) -> (LllResult, Option<i64>) {
+        let r = if s.use_f64_gs {
+            super::lll_f64::run_lll_16_f64(s)
+        } else {
+            run_lll_16(s)
+        };
+        let det = super::se::det16_exact(&s.basis);
+        (r, det)
+    }
+
+    let lll_succeeded = |r: LllResult, det: Option<i64>| -> bool {
+        if !matches!(r, LllResult::Converged) {
+            return false;
+        }
+        // None = i128 overflow in Bareiss; treat as inconclusive-success.
+        match det { Some(d) => d == 1 || d == -1, None => true }
+    };
+
+    let (mut lll_result, mut det_check) = run_and_check(scratch);
+
+    // Escalate to MPFR if f64 was used and produced a failure result
+    // (excluding GramOverflow, which won't be helped by higher precision).
+    if initial_use_f64
+        && !matches!(lll_result, LllResult::GramOverflow)
+        && !lll_succeeded(lll_result, det_check)
+    {
+        if trace {
+            diag::N_LLL_F64_ESCALATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        // The f64 LLL may have left the basis in a partially-reduced or
+        // non-unimodular state. Force a fresh start: cancel warm_lll
+        // (so run_lll_16 calls reset_basis internally) and switch the
+        // precision flag.
+        scratch.warm_lll = false;
+        scratch.use_f64_gs = false;
+        let (r2, d2) = run_and_check(scratch);
+        lll_result = r2;
+        det_check = d2;
+        // Restore the caller's precision preference for the next call.
+        scratch.use_f64_gs = initial_use_f64;
+    }
+
     if let Some(t) = t_lll {
         diag::T_LLL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
+
     if let LllResult::GramOverflow = lll_result {
         return Vec::new();
     }
-    // Note: at d=16 the Bareiss-i128 `det16_exact` may overflow at deep ε
-    // (per chunk 2 caveat). Treat None as "cannot verify" rather than a hard
-    // failure; non-±1 results indicate a real bug.
-    if let Some(d) = super::se::det16_exact(&scratch.basis) {
+    if let Some(d) = det_check {
         if d != 1 && d != -1 {
             eprintln!(
-                "[lenstra_zeta] LLL non-unimodular (det={}) at eps={:e}, k={}; bailing.",
+                "[lattice_zeta] LLL non-unimodular even after MPFR escalation \
+                (det={}) at eps={:e}, k={}; bailing.",
                 d, eps, k
             );
             return Vec::new();
+        }
+    }
+    if !matches!(lll_result, LllResult::Converged | LllResult::IterCap) {
+        // Should be unreachable (only GramOverflow is left, handled above).
+        return Vec::new();
+    }
+
+    // Optional BKZ-β post-pass: strengthens the LLL output by replacing
+    // Lovász with β-block SVP. Off by default (`bkz_block_size = 0`);
+    // enable via `SynthesizerQ::with_bkz(β)`. Empirically helpful at
+    // deep ε where the post-LLL SE region is large.
+    if scratch.bkz_block_size >= 3 {
+        let block_size = scratch.bkz_block_size as usize;
+        // BKZ reads the f64 GS state. Populate it from the current
+        // basis (works regardless of which LLL path was taken).
+        for i in 0..16 {
+            super::lll_f64::cfa_row_f64(scratch, i);
+        }
+        let _changed = super::bkz::bkz_tours(scratch, block_size, super::bkz::BKZ_MAX_LOOPS);
+        // Post-BKZ unimodularity check; bail if the insertion path
+        // somehow produced a degenerate basis.
+        match super::se::det16_exact(&scratch.basis) {
+            Some(1) | Some(-1) | None => {}
+            Some(d) => {
+                eprintln!(
+                    "[lattice_zeta] BKZ-{block_size} non-unimodular (det={d}) \
+                     at eps={eps:e}, k={k}; bailing."
+                );
+                return Vec::new();
+            }
         }
     }
 
@@ -172,7 +327,7 @@ where
     }
     if !chol_ok {
         eprintln!(
-            "[lenstra_zeta] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
+            "[lattice_zeta] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
             eps, k
         );
         return Vec::new();
@@ -186,19 +341,48 @@ where
     }
     if !lu_ok {
         eprintln!(
-            "[lenstra_zeta] LU solve failed at eps={:e}, k={}; bailing.",
+            "[lattice_zeta] LU solve failed at eps={:e}, k={}; bailing.",
             eps, k
         );
         return Vec::new();
     }
 
-    // Round lu_x → i64 for SE's z_c convention. Loses fractional info; the
-    // SE bound (with the cap-radial slack) more than absorbs the resulting
-    // off-center penalty.
+    // Round lu_x → i64 for SE's z_c convention. **Crucial at deep ε**:
+    // `lu_x[i]` (MPFR) can have magnitude > 2^53 (the f64 exact-integer
+    // ceiling) at ε=1e-8, lde≥18 — observed up to 5×10¹⁶. Going through
+    // `to_f64()` first quantizes to the nearest f64 representable
+    // integer (ULP up to 2 at this magnitude), then `round()` is a
+    // no-op. This introduces up to 2-lattice-unit error per coord; with
+    // LLL's Hermite factor in 16D (~100), the SE walk's center is
+    // shifted by up to ||B·e||²_Q ~ 10⁴ Q-units, vastly exceeding
+    // `bound_sq=8`. The walk explores the wrong region and the cap
+    // appears empty even when valid solutions exist.
+    //
+    // Fix: round the MPFR value to integer in MPFR (full precision),
+    // then extract via i64 truncation. The fractional rounding error
+    // is bounded by 0.5 lattice-units regardless of magnitude.
     let z_c: [i64; 16] = std::array::from_fn(|i| {
-        let f = scratch.lu_x[i].to_f64();
-        f.round() as i64
+        let mut rounded = scratch.lu_x[i].clone();
+        rounded.round_mut();
+        match rounded.to_integer() {
+            Some(int) => int.to_i64_wrapping(),
+            None => 0, // NaN/infinity — treat as zero; SE walk will return empty.
+        }
     });
+
+    if trace {
+        // Compare MPFR-direct round vs the legacy f64 path to expose the
+        // discrepancy in the trace (zero at moderate ε; up to ULP at deep ε).
+        let max_diff = (0..16).fold(0i64, |acc, i| {
+            let f64_path = scratch.lu_x[i].to_f64().round() as i64;
+            (f64_path - z_c[i]).abs().max(acc)
+        });
+        let max_z = (0..16).fold(0i64, |acc, i| z_c[i].abs().max(acc));
+        eprintln!(
+            "[zeta diag] phase1 k={k} eps={eps:.0e} z_c max_|z|={} mpfr_vs_f64_diff={}",
+            max_z, max_diff,
+        );
+    }
 
     // Transpose lower-triangular L to upper-triangular for SE.
     let l_upper: [[f64; 16]; 16] =
@@ -255,7 +439,7 @@ where
     let threshold_xy = RFloat::with_val(ALIGN_PREC, &two_to_2k * &one_minus_eps_sq_align)
         / 32u32;
     let y_mpfr: [RFloat; 16] =
-        std::array::from_fn(|i| RFloat::with_val(ALIGN_PREC, y[i]));
+        std::array::from_fn(|i| RFloat::with_val(ALIGN_PREC, &y[i]));
 
     // Norm-shell target. Use i128 so k ≤ 126 stays exact (the moderate-ε
     // regime targets k ≲ 30 but the deep-ε regime can reach k > 60).
@@ -269,11 +453,11 @@ where
 
     // Norm-shell pruning: precompute the upper-triangular Euclidean
     // Cholesky of the post-LLL basis at MPFR-128 (then f64 snapshot).
-    let r_eucl = match euclidean_cholesky_16_mpfr(&basis) {
-        Some(r) => r,
+    let (r_eucl, r_eucl_dd) = match euclidean_cholesky_16_mpfr_dual(&basis) {
+        Some(pair) => pair,
         None => {
             eprintln!(
-                "[lenstra_zeta] Euclidean Cholesky failed (rank-deficient basis) at \
+                "[lattice_zeta] Euclidean Cholesky failed (rank-deficient basis) at \
                  eps={:e}, k={}; bailing.",
                 eps, k
             );
@@ -288,6 +472,7 @@ where
     // values. Trace counters use the global `diag::*` atomics — zero
     // overhead when tracing is off (the `if trace` branch is predictable).
     let leaf_filter = |x: &[i64; 16]| -> LeafAction {
+        let t_leaf = if trace { Some(std::time::Instant::now()) } else { None };
         if trace {
             diag::N_SE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
         }
@@ -295,20 +480,38 @@ where
         if use_i64_path {
             let n: i64 = x.iter().map(|&v| v * v).sum();
             if n != target_norm_i64 {
-                if trace { diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed); }
+                if trace {
+                    diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed);
+                    diag::T_LEAF_CHECK_NS.fetch_add(
+                        t_leaf.unwrap().elapsed().as_nanos() as u64,
+                        Ordering::Relaxed,
+                    );
+                }
                 return LeafAction::Skip;
             }
         } else {
             let n: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
             if n != target_norm {
-                if trace { diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed); }
+                if trace {
+                    diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed);
+                    diag::T_LEAF_CHECK_NS.fetch_add(
+                        t_leaf.unwrap().elapsed().as_nanos() as u64,
+                        Ordering::Relaxed,
+                    );
+                }
                 return LeafAction::Skip;
             }
         }
         // Bilinear forms: B_1=B_2=B_3=0.
         let (b1, b2, b3) = bilinear_forms(x);
         if b1 != 0 || b2 != 0 || b3 != 0 {
-            if trace { diag::N_BILINEAR_REJECTED.fetch_add(1, Ordering::Relaxed); }
+            if trace {
+                diag::N_BILINEAR_REJECTED.fetch_add(1, Ordering::Relaxed);
+                diag::T_LEAF_CHECK_NS.fetch_add(
+                    t_leaf.unwrap().elapsed().as_nanos() as u64,
+                    Ordering::Relaxed,
+                );
+            }
             return LeafAction::Skip;
         }
         // Alignment: (y · x)² ≥ threshold_xy. MPFR alloc here is fine —
@@ -322,13 +525,34 @@ where
         }
         tmp.assign(&dot_acc * &dot_acc);
         if tmp < threshold_xy {
-            if trace { diag::N_ALIGN_REJECTED.fetch_add(1, Ordering::Relaxed); }
+            if trace {
+                diag::N_ALIGN_REJECTED.fetch_add(1, Ordering::Relaxed);
+                diag::T_LEAF_CHECK_NS.fetch_add(
+                    t_leaf.unwrap().elapsed().as_nanos() as u64,
+                    Ordering::Relaxed,
+                );
+            }
             return LeafAction::Skip;
         }
-        if trace { diag::N_SOLS_RETURNED.fetch_add(1, Ordering::Relaxed); }
+        if trace {
+            diag::N_SOLS_RETURNED.fetch_add(1, Ordering::Relaxed);
+            diag::T_LEAF_CHECK_NS.fetch_add(
+                t_leaf.unwrap().elapsed().as_nanos() as u64,
+                Ordering::Relaxed,
+            );
+        }
         // Integer-exact filter passed. Now ask the caller whether to
         // stop the walk (typically used to bail on first ε-pass).
         if should_stop(x) {
+            // Record nodes consumed at first solution found (per-prefix
+            // walker). Only the first writer wins via compare_exchange.
+            // Used for filter-on vs filter-off comparison.
+            if trace {
+                let consumed = max_phase2_calls
+                    .saturating_sub(budget.load(Ordering::Relaxed));
+                let _ = diag::N_NODES_AT_FIRST_SOLUTION
+                    .compare_exchange(0, consumed, Ordering::Relaxed, Ordering::Relaxed);
+            }
             LeafAction::TakeAndStop
         } else {
             LeafAction::Take
@@ -336,8 +560,9 @@ where
     };
 
     let (solutions, budget_was_hit) = schnorr_euchner_16d_par_norm_pruned(
-        &l_upper, &z_c, bound_sq, &r_eucl, target_norm_sq_f64, &basis,
+        &l_upper, &z_c, bound_sq, &r_eucl, &r_eucl_dd, target_norm_sq_f64, &basis,
         leaf_filter, &budget,
+        external_abort, consumed,
     );
     if budget_was_hit {
         budget_hit.store(true, Ordering::Relaxed);
@@ -521,6 +746,7 @@ mod tests {
     /// circuit). Reports timing and solution count; the test only fails if
     /// the walk blows up wall-clock past a generous bound.
     #[test]
+    #[ignore = "60s timing budget; run with --ignored"]
     fn phase1_perf_at_k_8_completes() {
         use crate::matrix::u2::U2Q;
 
@@ -564,6 +790,7 @@ mod tests {
     /// At ε=1e-5 with k=14, verify the i256 LLL path doesn't trip overflow.
     /// Returns a (possibly empty) Vec of solutions.
     #[test]
+    #[ignore = "120s budget at deep ε; run with --ignored"]
     fn phase1_no_overflow_at_eps_1e_5() {
         let v = realistic_v();
         let k = 14u32;

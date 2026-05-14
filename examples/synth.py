@@ -17,7 +17,7 @@ def ry(t):
 epsilon = 1e-7
 synth = cyclosynth.Synthesizer(epsilon=epsilon)
 
-for _ in range(100):
+for _ in range(10):
     alpha, beta, gamma = [2 * np.pi * random() for _ in range(3)]
     target = rz(alpha) @ ry(beta) @ rz(gamma)
 

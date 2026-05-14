@@ -435,6 +435,119 @@ fn canonical_candidates() -> Vec<CanonicalCandidate> {
 /// At each step we left-multiply the SO3 residual by `R_p(-a·π/8)` for each
 /// `(p, a) ∈ {x,y,z} × {1,2,3}` and pick the candidate that minimises
 /// `max_exp`. The optimum is unique (Theorem 4.1(c)) once `max_exp > 0`.
+/// Float-domain analog of [`canonical_form_axes_q`]. Operates on a 3×3
+/// `f64` SO3 matrix so it can be applied to *continuous* targets (or to
+/// inexact integer targets), returning the predicted FGKM syllable
+/// sequence. The argmin proxy is `max(|entry|)` — the closest smooth
+/// analog of integer-FGKM's `max_exp`.
+///
+/// Used by the Z1 prefix filter investigation: if this float prediction
+/// matches the integer FGKM output for exact Clifford+√T targets, it's a
+/// faithful predictor for arbitrary continuous targets too. `max_steps`
+/// caps the iteration count for non-rounding-friendly inputs.
+#[allow(dead_code)]
+pub(crate) fn canonical_form_axes_q_float(
+    so3: &mut [[f64; 3]; 3],
+    max_steps: usize,
+) -> Vec<(u8, u8)> {
+    // Precompute the 9 candidate SO3 left-multipliers as 3×3 f64 matrices.
+    // canonical_candidates() returns these for the (axis, a) ∈ {x,y,z} × {1,2,3} grid.
+    let candidates = canonical_candidates();
+    let cand_f: Vec<[[f64; 3]; 3]> = candidates.iter().map(|c| c.so3_neg.to_float()).collect();
+    let cand_meta: Vec<(u8, u8)> = candidates.iter().map(|c| (c.axis, c.a)).collect();
+
+    let max_abs = |m: &[[f64; 3]; 3]| -> f64 {
+        let mut best: f64 = 0.0;
+        for r in 0..3 {
+            for c in 0..3 {
+                let v = m[r][c].abs();
+                if v > best { best = v; }
+            }
+        }
+        best
+    };
+
+    let matmul = |a: &[[f64; 3]; 3], b: &[[f64; 3]; 3]| -> [[f64; 3]; 3] {
+        let mut out = [[0.0f64; 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                let mut s = 0.0_f64;
+                for k in 0..3 { s += a[i][k] * b[k][j]; }
+                out[i][j] = s;
+            }
+        }
+        out
+    };
+
+    // Convergence threshold: when max|entry| ≲ 1 we treat the residual as
+    // a rotation by O(1) (i.e. effectively a Clifford in the float-domain
+    // sense — there's no further reduction to pursue).
+    const STOP_THRESHOLD: f64 = 1.0 + 1e-9;
+
+    let mut out: Vec<(u8, u8)> = Vec::new();
+    for _ in 0..max_steps {
+        if max_abs(so3) <= STOP_THRESHOLD {
+            break;
+        }
+        let mut best_idx: usize = 0;
+        let first_trial = matmul(&cand_f[0], so3);
+        let mut best_norm = max_abs(&first_trial);
+        let mut best_so3 = first_trial;
+        for (idx, cand) in cand_f.iter().enumerate().skip(1) {
+            let trial = matmul(cand, so3);
+            let n = max_abs(&trial);
+            if n < best_norm {
+                best_norm = n;
+                best_idx = idx;
+                best_so3 = trial;
+            }
+        }
+        *so3 = best_so3;
+        out.push(cand_meta[best_idx]);
+        if best_norm <= STOP_THRESHOLD { break; }
+    }
+    out
+}
+
+/// Sister of [`decompose_so3_canonical_q`] that returns the FGKM
+/// canonical-form `(axis, a)` syllable sequence directly, without
+/// translating it to a gate string. Useful for the Z1 prefix-filter
+/// investigation where we need the syllables, not their gate
+/// representation. Same algorithm, same termination guarantee.
+#[allow(dead_code)]
+pub(crate) fn canonical_form_axes_q(target: &U2Q) -> Vec<(u8, u8)> {
+    let candidates = canonical_candidates();
+    let mut so3 = SO3Q::from_u2(target);
+    let max_steps = (so3.max_exp() as usize) * 4 + 32;
+    let mut out: Vec<(u8, u8)> = Vec::new();
+    for _ in 0..max_steps {
+        if so3.max_exp() == 0 {
+            break;
+        }
+        let mut best_idx: usize = 0;
+        let mut best_so3 = so3.clone();
+        best_so3.left_mul(&candidates[0].so3_neg);
+        let mut best_exp = best_so3.max_exp();
+        for (idx, cand) in candidates.iter().enumerate().skip(1) {
+            let mut trial = so3.clone();
+            trial.left_mul(&cand.so3_neg);
+            let trial_exp = trial.max_exp();
+            if trial_exp < best_exp {
+                best_exp = trial_exp;
+                best_idx = idx;
+                best_so3 = trial;
+            }
+        }
+        let cand = &candidates[best_idx];
+        so3 = best_so3;
+        out.push((cand.axis, cand.a));
+        if best_exp == 0 {
+            break;
+        }
+    }
+    out
+}
+
 fn decompose_so3_canonical_q(target: &U2Q) -> String {
     let candidates = canonical_candidates();
 

@@ -1,6 +1,6 @@
 //! Native 16D Lenstra-style search for Clifford+√T (Z[ζ_16]) synthesis.
 //!
-//! This module is the Z[ζ_16] analog of [`super::lenstra`] (which targets
+//! This module is the Z[ζ_16] analog of [`super::lattice`] (which targets
 //! Z[ω] / Clifford+T). The two modules are deliberately kept separate to
 //! isolate the precision and integer-width choices: f64 Gram-Schmidt is
 //! provably sufficient at d=8 (Theorem 2 of Nguyen-Stehlé 2009) but not at
@@ -22,7 +22,7 @@
 //!      validate against the synthesis constraints (norm shell, 3 bilinear
 //!      forms `B_1, B_2, B_3 = 0`, alignment cap).
 //!
-//! ## Module layout (mirrors [`super::lenstra`])
+//! ## Module layout (mirrors [`super::lattice`])
 //!
 //! - [`cholesky_lu`] — Cholesky / LU helpers for d=16.
 //! - [`integer`] — phase1 driver wiring all stages.
@@ -49,9 +49,11 @@
 //!
 //!   `U = [[u_1, −u_2*], [u_2, u_1*]] / √(2^k)`
 
+pub mod bkz;
 pub mod cholesky_lu;
 pub mod integer;
 pub mod lll;
+pub mod lll_f64;
 pub mod q_metric;
 pub mod scratch;
 pub mod se;
@@ -60,13 +62,14 @@ pub use cholesky_lu::{
     cholesky_f64_16, cholesky_int_16, lu_solve_int_inplace_16,
     snapshot_gram_to_mpfr_16,
 };
-pub use integer::{phase1, phase1_with_stop};
+pub use integer::{phase1, phase1_with_stop, phase1_with_stop_mpfr};
 pub use lll::{lll_l2_16, run_lll_16, LllResult};
-pub use q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
+pub use q_metric::{build_q_int_zeta, build_q_mpfr_zeta, build_q_mpfr_zeta_from_mpfr_v};
 pub use scratch::IntScratch16;
 pub use se::{
     beta_1, beta_2, beta_3, bilinear_forms, det16_exact, euclidean_cholesky_16,
-    reconstruct_x, schnorr_euchner_16d,
+    reconstruct_x, schnorr_euchner_16d, set_bypass_norm_prune, set_verify_prune_mpfr,
+    verify_prune_mpfr,
 };
 
 // ─── Tests preserving the previous flat-module test suite ────────────────────

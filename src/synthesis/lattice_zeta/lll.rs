@@ -33,27 +33,17 @@ use super::scratch::{IntScratch16, GRAM_OVERFLOW_THRESHOLD_BITS};
 
 // ─── L²-LLL parameters ───────────────────────────────────────────────────────
 
-/// L² parameter η: relaxed size-reduction factor.
-pub const L2_ETA: f64 = 0.55;
-/// L² parameter δ: Lovász factor.
-pub const L2_DELTA: f64 = 0.75;
-pub const L2_DELTA_BAR: f64 = (L2_DELTA + 1.0) / 2.0;
-pub const L2_ETA_BAR: f64 = (L2_ETA + 0.5) / 2.0;
+// ─── L²-LLL parameters & result type — moved to lattice_common ──────────────
 
-/// Hard cap on lazy-size-reduce iterations per κ.
-pub const MAX_LAZY_PASSES: usize = 32;
+pub use crate::synthesis::lattice_common::{
+    L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
+};
 
-/// Hard cap on outer LLL iterations.
+/// Hard cap on outer L²-LLL iterations. **lattice_zeta-specific**: the 8D
+/// path doesn't have an iter cap because empirically the 8D loop always
+/// converges fast; the 16D loop in our regime averages ~230 iterations
+/// and the cap is a safety net.
 pub const MAX_LLL_ITERS: usize = 50_000;
-
-// ─── Result type ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LllResult {
-    Converged,
-    GramOverflow,
-    IterCap,
-}
 
 // ─── i256 → MPFR conversion ──────────────────────────────────────────────────
 
@@ -67,7 +57,7 @@ pub fn i256_to_rfloat_inplace(v: i256, dst: &mut RFloat) {
 }
 
 /// Bit count of |v| (≈ ⌈log₂(|v|)⌉, returns -1 for v=0).
-fn i256_log2_ceil(v: &i256) -> i32 {
+pub(super) fn i256_log2_ceil(v: &i256) -> i32 {
     let zero = i256::from_i64(0);
     if *v == zero {
         return -1;
@@ -87,7 +77,7 @@ fn i256_log2_ceil(v: &i256) -> i32 {
 }
 
 /// Check whether any Gram entry exceeds the overflow threshold.
-fn gram_overflow_check(scratch: &IntScratch16) -> bool {
+pub(super) fn gram_overflow_check(scratch: &IntScratch16) -> bool {
     let thresh = GRAM_OVERFLOW_THRESHOLD_BITS as i32;
     for i in 0..16 {
         for j in 0..16 {
@@ -188,7 +178,7 @@ pub(super) fn gram_update_swap(scratch: &mut IntScratch16, a: usize, b: usize) {
 }
 
 /// L² INSERT operation: move basis row `kappa_orig` to `kappa_insert`.
-fn basis_insert(scratch: &mut IntScratch16, kappa_orig: usize, kappa_insert: usize) {
+pub(super) fn basis_insert(scratch: &mut IntScratch16, kappa_orig: usize, kappa_insert: usize) {
     debug_assert!(kappa_insert <= kappa_orig);
     let mut current = kappa_orig;
     while current > kappa_insert {
@@ -378,8 +368,13 @@ pub fn lll_l2_16(scratch: &mut IntScratch16) -> LllResult {
 }
 
 /// Convenience: prepare Gram from current basis and Q_int, then run LLL.
+/// Honours `scratch.warm_lll` — when true, the caller-supplied basis is
+/// reused as the LLL starting point (Z1 D&C amortisation); otherwise we
+/// reset to identity (default single-search behaviour).
 pub fn run_lll_16(scratch: &mut IntScratch16) -> LllResult {
-    scratch.reset_basis();
+    if !scratch.warm_lll {
+        scratch.reset_basis();
+    }
     if !compute_gram_full(scratch) {
         return LllResult::GramOverflow;
     }

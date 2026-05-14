@@ -2,7 +2,7 @@
 //!
 //! Constructs Q in lattice coordinates at MPFR precision, then snapshots to
 //! i256 with adaptive scaling for the integer LLL. Z[ζ_16] analog of
-//! [`super::super::lenstra::q_metric`].
+//! [`super::super::lattice::q_metric`].
 
 #![allow(clippy::needless_range_loop)]
 
@@ -31,6 +31,102 @@ use crate::rings::Float;
 /// ```
 ///
 /// `v` is the SU(2) direction `(Re V_{11}, Im V_{11}, Re V_{21}, Im V_{21})`.
+/// MPFR-precision variant: `v` is provided in MPFR, so `y` (and downstream
+/// `Q` and the cap center derived from it) carry whatever precision the
+/// caller gave us. At ε=1e-8 the cap-radial direction `Δ_y/R = ε²/4 ≈ 2.5e-17`
+/// is below f64 ULP at unit scale (~2.2e-16); the f64-input version below
+/// loses the cap localization in this regime.
+pub fn build_q_mpfr_zeta_from_mpfr_v(
+    scratch: &mut IntScratch16,
+    v: &[rug::Float; 4],
+    k: u32,
+    eps: Float,
+) {
+    let prec = scratch.prec_q;
+    let one = rfv(prec, 1.0);
+    let two = rfv(prec, 2.0);
+
+    let r_sq_f = 2.0_f64.powi(k as i32);
+    let r_sq = rfv(prec, r_sq_f);
+    let r = r_sq.clone().sqrt();
+    let eps_rf = rfv(prec, eps);
+
+    let eps_sq = RFloat::with_val(prec, &eps_rf * &eps_rf);
+    let one_minus_eps_sq = RFloat::with_val(prec, &one - &eps_sq);
+    let sqrt_1m = one_minus_eps_sq.sqrt();
+    let denom_inner = RFloat::with_val(prec, &one + &sqrt_1m);
+    let denom = RFloat::with_val(prec, &denom_inner * &two);
+    let r_eps_sq = RFloat::with_val(prec, &r * &eps_sq);
+    let delta_y = RFloat::with_val(prec, &r_eps_sq / &denom);
+    let delta_perp = RFloat::with_val(prec, &r * &eps_rf);
+
+    let dy_sq = RFloat::with_val(prec, &delta_y * &delta_y);
+    let dp_sq = RFloat::with_val(prec, &delta_perp * &delta_perp);
+    let inv_dy_sq = RFloat::with_val(prec, &one / &dy_sq);
+    let inv_dp_sq = RFloat::with_val(prec, &one / &dp_sq);
+    let inv_r_sq = RFloat::with_val(prec, &one / &r_sq);
+
+    let coef_yy = RFloat::with_val(prec, &inv_dy_sq - &inv_dp_sq);
+    let coef_p_sigma1 = RFloat::with_val(prec, &inv_dp_sq - &inv_r_sq);
+    let coef_id = inv_r_sq;
+
+    // Compute y entirely in MPFR. cos(jπ/8), sin(jπ/8) at f64 → MPFR is exact
+    // (single-rounding), so the f64 cos/sin are used as the only f64 entry
+    // points. The multiplication and sum are MPFR-exact at `prec` bits, so
+    // y[j]'s precision matches v's.
+    let mut y: [RFloat; 16] = std::array::from_fn(|_| rfz(prec));
+    for j in 0..8 {
+        let theta = (j as f64) * PI / 8.0;
+        let c_f = theta.cos();
+        let s_f = theta.sin();
+        let c = rfv(prec, c_f);
+        let s = rfv(prec, s_f);
+        // y[j] = c·v[0] + s·v[1]
+        let cv0 = RFloat::with_val(prec, &c * &v[0]);
+        let sv1 = RFloat::with_val(prec, &s * &v[1]);
+        y[j].assign(RFloat::with_val(prec, &cv0 + &sv1));
+        // y[8+j] = c·v[2] + s·v[3]
+        let cv2 = RFloat::with_val(prec, &c * &v[2]);
+        let sv3 = RFloat::with_val(prec, &s * &v[3]);
+        y[8 + j].assign(RFloat::with_val(prec, &cv2 + &sv3));
+    }
+    let mut y_norm_sq = rfz(prec);
+    for i in 0..16 {
+        let yi_sq = RFloat::with_val(prec, &y[i] * &y[i]);
+        y_norm_sq += yi_sq;
+    }
+    let y_norm = y_norm_sq.clone().sqrt();
+    let y_zero = y_norm_sq.is_zero();
+    let mut yhat: [RFloat; 16] = std::array::from_fn(|_| rfz(prec));
+    if !y_zero {
+        for i in 0..16 {
+            yhat[i].assign(RFloat::with_val(prec, &y[i] / &y_norm));
+        }
+    }
+
+    for i in 0..16 {
+        for j in 0..16 {
+            let mut qij = rfz(prec);
+            let yyi = RFloat::with_val(prec, &yhat[i] * &yhat[j]);
+            qij += RFloat::with_val(prec, &coef_yy * &yyi);
+
+            let same_block = (i < 8 && j < 8) || (i >= 8 && j >= 8);
+            if same_block {
+                let m = (i % 8) as f64 - (j % 8) as f64;
+                let p_sigma1 = 0.25 * (m * PI / 8.0).cos();
+                let p = rfv(prec, p_sigma1);
+                qij += RFloat::with_val(prec, &coef_p_sigma1 * &p);
+            }
+
+            if i == j {
+                qij += &coef_id;
+            }
+
+            scratch.q_mpfr[i][j].assign(&qij);
+        }
+    }
+}
+
 pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: Float) {
     let prec = scratch.prec_q;
     let one = rfv(prec, 1.0);
