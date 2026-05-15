@@ -1,3 +1,4 @@
+pub mod clifford_pi6;
 pub mod clifford_sqrt_t;
 pub mod clifford_t;
 pub mod cliffords;
