@@ -11,6 +11,7 @@ use pyo3::prelude::*;
 #[pymodule]
 fn cyclosynth(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<rings::zomega::PyZOmega>()?;
+    m.add_class::<rings::zomicron::PyZOmicron>()?;
     m.add_class::<rings::zzeta::PyZZeta>()?;
     m.add_class::<matrix::u2::PyU2>()?;
     m.add_class::<synthesis::decomposer::PyBlochDecomposer>()?;
