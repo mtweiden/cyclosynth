@@ -37,6 +37,8 @@
 use num_complex::Complex64;
 use rayon::prelude::*;
 use std::f64::consts::PI;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::distance::{diamond_distance_float, Mat2};
@@ -344,7 +346,11 @@ pub fn direct_search_n6(
 ) -> Vec<[i64; 8]> {
     if max_sol == 0 { return Vec::new(); }
     let norm2 = 2 * target_k;          // 2·3^k
-    let thresh_sq = target_k as f64 * (1.0 - eps * eps);
+    let thresh_sq = if eps > 0.0 {
+        target_k as f64 * (1.0 - eps * eps)
+    } else {
+        0.0  // no alignment filter — avoids f64 rounding at the exact threshold
+    };
     let do_prune = eps > 0.0;
     let thresh = thresh_sq.max(0.0).sqrt();
 
@@ -391,6 +397,237 @@ pub fn direct_search_n6(
         }
     }
     out
+}
+
+// ─── SO3 float utilities ──────────────────────────────────────────────────────
+
+type SO3f = [[f64; 3]; 3];
+
+/// Compute the adjoint SO(3) representation of a 2×2 unitary (float).
+///
+/// M_{ij} = (1/2) Re(Tr(σ_i · U · σ_j · U†)),  σ_i ∈ {σ_x, σ_y, σ_z}.
+fn mat_to_so3(u: &Mat2) -> SO3f {
+    let zero = Complex64::new(0.0, 0.0);
+    let paulis: [Mat2; 3] = [
+        [[zero, Complex64::new(1.,0.)], [Complex64::new(1.,0.), zero]],
+        [[zero, Complex64::new(0.,-1.)], [Complex64::new(0.,1.), zero]],
+        [[Complex64::new(1.,0.), zero], [zero, Complex64::new(-1.,0.)]],
+    ];
+    let ud = [[u[0][0].conj(), u[1][0].conj()], [u[0][1].conj(), u[1][1].conj()]];
+    let mut m = [[0.0f64; 3]; 3];
+    for j in 0..3 {
+        let usj = mat_mul(*u, paulis[j]);
+        let usjud = mat_mul(usj, ud);
+        for i in 0..3 {
+            let prod = mat_mul(paulis[i], usjud);
+            m[i][j] = (prod[0][0] + prod[1][1]).re / 2.0;
+        }
+    }
+    m
+}
+
+#[inline]
+fn so3_mul(a: SO3f, b: SO3f) -> SO3f {
+    let mut out = [[0.0f64; 3]; 3];
+    for i in 0..3 { for j in 0..3 { for k in 0..3 { out[i][j] += a[i][k] * b[k][j]; } } }
+    out
+}
+
+#[inline] fn so3_rz(t: f64) -> SO3f { let (c,s)=(t.cos(),t.sin()); [[c,-s,0.],[s,c,0.],[0.,0.,1.]] }
+#[inline] fn so3_rx(t: f64) -> SO3f { let (c,s)=(t.cos(),t.sin()); [[1.,0.,0.],[0.,c,-s],[0.,s,c]] }
+#[inline] fn so3_ry(t: f64) -> SO3f { let (c,s)=(t.cos(),t.sin()); [[c,0.,s],[0.,1.,0.],[-s,0.,c]] }
+
+/// How far an SO3 matrix is from being a Clifford (entries in {−1,0,1}).
+#[inline]
+fn clifford_dist(m: &SO3f) -> f64 {
+    m.iter().flat_map(|r| r.iter())
+        .map(|&v| { let n = v.round().clamp(-1., 1.); (v - n).abs() })
+        .sum()
+}
+
+/// Precomputed SO3 representations of the 24 Cliffords.
+static CLIFFORD_SO3: LazyLock<Vec<(SO3f, &'static str)>> =
+    LazyLock::new(|| CLIFFORD_TABLE_T.iter()
+        .map(|(name, u2t)| (mat_to_so3(&u2t.to_float()), *name))
+        .collect());
+
+/// Identify the Clifford gate nearest to the given SO3 matrix.
+fn identify_clifford_so3(m: &SO3f) -> &'static str {
+    CLIFFORD_SO3.iter()
+        .map(|(cs, name)| {
+            let d: f64 = (0..3).flat_map(|i| (0..3).map(move |j| (m[i][j]-cs[i][j]).powi(2))).sum();
+            (d, *name)
+        })
+        .min_by(|(a,_),(b,_)| a.partial_cmp(b).unwrap())
+        .map(|(_, n)| n).unwrap_or("I")
+}
+
+// ─── n=6 gate string decomposer ───────────────────────────────────────────────
+
+/// Simplify a Clifford+R gate string (R = Rz(π/6)).
+///
+/// Identities (up to global phase):
+///   RRR = S,  SS = Z,  ZZ = "",  HH = "",  XX = "",  YY = "",
+///   RRRRRR = Z,  ZR = RZ, ...
+pub fn simplify_n6(input: &str) -> String {
+    let mut s = input.to_string();
+    let mut prev = String::new();
+    while s != prev {
+        prev = s.clone();
+        // Combinations using RRR=S, SS=Z
+        s = s.replace("RRRRRR", "Z");
+        s = s.replace("RRR", "S");
+        s = s.replace("SS", "Z");
+        s = s.replace("ZZ", "");
+        // Cancellations
+        s = s.replace("HH", "");
+        s = s.replace("XX", "");
+        s = s.replace("YY", "");
+        // Commutations
+        s = s.replace("SZ", "ZS");
+        s = s.replace("RZ", "ZR");
+    }
+    s
+}
+
+/// Candidate generators used in the greedy SO3 peeling: (neg_so3, gate_removed).
+///
+/// Left-multiply SO3 by neg_so3; the gate being removed from the front is gate_removed.
+/// Tries three axes × two step sizes (π/6 and 2π/6 = π/3), always NEGATIVE generators
+/// (removing positive gates from the left of the sequence).
+fn peel_candidates() -> [(SO3f, &'static str); 6] {
+    let s = PI / 6.0;
+    [
+        (so3_rz(-s),       "R"),          // peel Rz(+π/6) → gate "R"
+        (so3_rz(-2.*s),    "RR"),         // peel Rz(+π/3)
+        (so3_rx(-s),       "HRH"),        // peel Rx(+π/6) = H·R·H
+        (so3_rx(-2.*s),    "HRRH"),       // peel Rx(+π/3)
+        (so3_ry(-s),       "SHRHSSS"),    // peel Ry(+π/6) = S·H·R·H·S†
+        (so3_ry(-2.*s),    "SHRRHSSS"),   // peel Ry(+π/3) = S·H·RR·H·S†
+    ]
+}
+
+/// Decompose a float matrix into a Clifford+R gate string via greedy SO3 peeling.
+///
+/// Iteratively left-peels one of 6 generators (Rz/Rx/Ry at ±π/6, ±π/3) that
+/// most reduces the Clifford-distance of the residual. Terminates when the
+/// residual is a Clifford (all entries ≈ {−1, 0, 1}).
+///
+/// Returns a gate string in {H, S, R, X, Y, Z}  (R = Rz(π/6)).
+pub fn decompose_pi6(mat: &Mat2) -> String {
+    let candidates = peel_candidates();
+    let mut so3 = mat_to_so3(mat);
+    let max_steps = 200;
+    let mut gate_parts: Vec<&'static str> = Vec::new();
+
+    for _ in 0..max_steps {
+        if clifford_dist(&so3) < 1e-7 { break; }
+        let (best_so3, best_gate) = candidates.iter()
+            .map(|(neg, gs)| { let m = so3_mul(*neg, so3); (m, *gs, clifford_dist(&m)) })
+            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
+            .map(|(m, gs, _)| (m, gs))
+            .unwrap();
+        so3 = best_so3;
+        gate_parts.push(best_gate);
+    }
+
+    let cliff = identify_clifford_so3(&so3);
+    let combined: String = gate_parts.into_iter().chain(
+        if cliff == "I" { None } else { Some(cliff) }
+    ).collect::<Vec<_>>().join("");
+    simplify_n6(&combined)
+}
+
+// ─── MA prefix set for DC search ──────────────────────────────────────────────
+
+/// Float canonical key for deduplication of prefix matrices, phase-invariant.
+fn canonical_key_f64(m: &Mat2) -> [i64; 8] {
+    let flat = [m[0][0], m[0][1], m[1][0], m[1][1]];
+    let (idx, _) = flat.iter().enumerate()
+        .max_by(|(_, a), (_, b)| a.norm_sqr().partial_cmp(&b.norm_sqr()).unwrap())
+        .unwrap();
+    let piv = flat[idx];
+    let rot: Vec<f64> = if piv.norm() < 1e-12 {
+        flat.iter().flat_map(|c| [c.re, c.im]).collect()
+    } else {
+        let phase = piv / piv.norm();
+        flat.iter().flat_map(|c| { let r = c / phase; [r.re, r.im] }).collect()
+    };
+    rot.iter().map(|x| (x * 1_000_000.0).round() as i64)
+        .collect::<Vec<_>>().try_into().unwrap()
+}
+
+fn eye_mat() -> Mat2 {
+    let one = Complex64::new(1.0, 0.0);
+    let z   = Complex64::new(0.0, 0.0);
+    [[one, z], [z, one]]
+}
+
+fn mat_dag(m: &Mat2) -> Mat2 {
+    [[m[0][0].conj(), m[1][0].conj()], [m[0][1].conj(), m[1][1].conj()]]
+}
+
+/// Build the n=6 MA-like prefix set L_{k'} as (gate_string, float_Mat2) pairs.
+///
+/// Syllables: H·R (b=0) and H·S·R (b=1), analogous to n=4's H·T and H·S·T.
+/// L_0 = {(I, "")}
+/// L_{k'} (even): (HS^b R)^{k'} · Clifford for all bit patterns b.
+/// L_{k'} (odd branch): R · (HS^b R)^{k'−1} · Clifford.
+/// Deduplicated by canonical_key_f64.
+fn build_l_pi6(k_prime: u32) -> Arc<Vec<(String, Mat2)>> {
+    static CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<(String, Mat2)>>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    {
+        let cache = CACHE.lock().unwrap();
+        if let Some(v) = cache.get(&k_prime) { return Arc::clone(v); }
+    }
+
+    let result = Arc::new(build_l_pi6_inner(k_prime));
+    CACHE.lock().unwrap().insert(k_prime, Arc::clone(&result));
+    result
+}
+
+fn build_l_pi6_inner(k_prime: u32) -> Vec<(String, Mat2)> {
+    if k_prime == 0 {
+        return vec![("".to_string(), eye_mat())];
+    }
+    let h_mat   = CLIFFORD_TABLE_T.iter().find(|(n,_)| *n == "H").unwrap().1.to_float();
+    let s_mat   = CLIFFORD_TABLE_T.iter().find(|(n,_)| *n == "S").unwrap().1.to_float();
+    let rz_mat  = rz_pi6_mat();
+
+    let hs0r = mat_mul(h_mat, rz_mat);              // H·R
+    let hs1r = mat_mul(mat_mul(h_mat, s_mat), rz_mat); // H·S·R
+
+    let mut candidates: Vec<(String, Mat2)> = Vec::new();
+    let n_even = 1u32 << k_prime;
+    for bits in 0..n_even {
+        let mut m = eye_mat();
+        let mut g = String::new();
+        for i in 0..k_prime {
+            if (bits >> i) & 1 == 1 { m = mat_mul(m, hs1r); g.push_str("HSR"); }
+            else                    { m = mat_mul(m, hs0r); g.push_str("HR"); }
+        }
+        for (c_str, c_u2t) in CLIFFORD_TABLE_T {
+            candidates.push((format!("{g}{c_str}"), mat_mul(m, c_u2t.to_float())));
+        }
+    }
+    if k_prime >= 1 {
+        let n_odd = 1u32 << (k_prime - 1);
+        for bits in 0..n_odd {
+            let mut m = rz_mat;
+            let mut g = "R".to_string();
+            for i in 0..(k_prime - 1) {
+                if (bits >> i) & 1 == 1 { m = mat_mul(m, hs1r); g.push_str("HSR"); }
+                else                    { m = mat_mul(m, hs0r); g.push_str("HR"); }
+            }
+            for (c_str, c_u2t) in CLIFFORD_TABLE_T {
+                candidates.push((format!("{g}{c_str}"), mat_mul(m, c_u2t.to_float())));
+            }
+        }
+    }
+    let mut seen: std::collections::HashSet<[i64; 8]> = std::collections::HashSet::new();
+    candidates.into_iter().filter(|(_, m)| seen.insert(canonical_key_f64(m))).collect()
 }
 
 // ─── Result type ─────────────────────────────────────────────────────────────
@@ -456,19 +693,76 @@ impl SynthesizerPi6 {
         let v = normalize4(raw).unwrap_or([1.0, 0.0, 0.0, 0.0]);
 
         for k in self.min_lde..=self.max_lde {
-            if k <= self.direct_limit {
-                if let Some(r) = self.direct_search(&target, v, k) {
-                    return Some(r);
-                }
+            let result = if k <= self.direct_limit {
+                self.direct_search(&target, v, k)
             } else {
-                // DC search not yet implemented — fall through to direct for now.
-                // TODO: implement DC+LLL path (analogous to clifford_t.rs::dc_search).
-                if let Some(r) = self.direct_search(&target, v, k) {
-                    return Some(r);
-                }
-            }
+                let k_prefix = k - self.direct_limit;
+                self.dc_search(&target, v, k, k_prefix)
+            };
+            if result.is_some() { return result; }
         }
         None
+    }
+
+    /// Divide-and-conquer search using MA-like prefix set L_{k_prefix}.
+    ///
+    /// For each prefix U_L ∈ L_{k_prefix}:
+    ///   1. Compute inner target V_inner = U_L† · target.
+    ///   2. Extract uv direction from V_inner.
+    ///   3. Run direct_search_n6 at k_inner = k − k_prefix (even branch).
+    ///   4. Also try R_z(π/6) on the right (odd branch).
+    fn dc_search(
+        &self,
+        target: &Mat2,
+        _v: [f64; 4],
+        k: u32,
+        k_prefix: u32,
+    ) -> Option<SynthResultPi6> {
+        let k_inner = k - k_prefix;
+        let eps = self.epsilon;
+        let target_k_inner = pow3(k_inner);
+
+        let prefixes = build_l_pi6(k_prefix);
+
+        // Parallel search over all prefixes.
+        prefixes.par_iter().find_map_any(|(prefix_gates, u_l)| {
+            let u_l_dag = mat_dag(u_l);
+            let m_inner = mat_mul(u_l_dag, *target);
+
+            // Extract uv direction from float inner target.
+            let v_inner = unitary_to_uv_n6(&m_inner);
+
+            // Even branch: U_L · U_R ≈ target
+            let y = compute_y(v_inner[0], v_inner[1]);
+            for sol in direct_search_n6(target_k_inner, &y, eps, 1) {
+                let u_r = solution_to_mat2(&sol, k_inner);
+                let full = mat_mul(*u_l, u_r);
+                let dist = diamond_distance_float(&full, target);
+                if dist < eps {
+                    let gates = simplify_n6(
+                        &format!("{}{}", prefix_gates, decompose_pi6(&u_r))
+                    );
+                    return Some(SynthResultPi6 { gates: Some(gates), lde: k, distance: dist });
+                }
+            }
+
+            // Odd branch: U_L · U_R · R ≈ target  →  search at uv(V_inner · R†)
+            if k_inner > 0 {
+                let v_inner_r = apply_rz_dag_to_uv(v_inner);
+                let y_r = compute_y(v_inner_r[0], v_inner_r[1]);
+                for sol in direct_search_n6(target_k_inner, &y_r, eps, 1) {
+                    let u_r = solution_to_mat2(&sol, k_inner);
+                    let full = mat_mul(*u_l, mat_mul(u_r, rz_pi6_mat()));
+                    let dist = diamond_distance_float(&full, target);
+                    if dist < eps {
+                        let inner_str = format!("{}R", decompose_pi6(&u_r));
+                        let gates = simplify_n6(&format!("{}{}", prefix_gates, inner_str));
+                        return Some(SynthResultPi6 { gates: Some(gates), lde: k, distance: dist });
+                    }
+                }
+            }
+            None
+        })
     }
 
     /// Brute-force direct search at lde `k`.
@@ -523,12 +817,23 @@ impl SynthesizerPi6 {
 
                 let dist = diamond_distance_float(&full_mat, target);
                 if dist < eps {
-                    // Gate-string extraction is a TODO.
-                    return Some(SynthResultPi6 {
-                        gates: None, // TODO: exact synthesis syllable decomposition
-                        lde: k,
-                        distance: dist,
+                    // Decompose the inner u_mat, then apply branch affixes.
+                    let inner_gates = decompose_pi6(&u_mat);
+                    let gates = simplify_n6(&match tag {
+                        Branch::Even    => inner_gates,
+                        Branch::Rz      => format!("{inner_gates}R"),
+                        Branch::RzDag   => format!("{inner_gates}RRRRR"),
+                        Branch::Clif(i) => {
+                            format!("{}{inner_gates}", CLIFFORD_TABLE_T[*i].0)
+                        }
+                        Branch::ClifRz(i) => {
+                            format!("{}{inner_gates}R", CLIFFORD_TABLE_T[*i].0)
+                        }
+                        Branch::ClifRzDag(i) => {
+                            format!("{}{inner_gates}RRRRR", CLIFFORD_TABLE_T[*i].0)
+                        }
                     });
+                    return Some(SynthResultPi6 { gates: Some(gates), lde: k, distance: dist });
                 }
             }
             None
@@ -808,6 +1113,143 @@ mod tests {
         let result = synth.synthesize(target).expect("should synthesize Rz(0.3)");
         assert!(result.distance < 0.05, "distance={:.4e}", result.distance);
         eprintln!("Rz(0.3) @ eps=0.05: lde={} dist={:.4e}", result.lde, result.distance);
+    }
+
+    // ── SO3 and decomposer ────────────────────────────────────────────────────
+
+    #[test]
+    fn so3_of_identity_is_identity() {
+        let id = eye_mat();
+        let m = mat_to_so3(&id);
+        for i in 0..3 { for j in 0..3 {
+            let expected = if i == j { 1.0 } else { 0.0 };
+            assert!(near(m[i][j], expected, 1e-12), "SO3(I)[{i}][{j}]={}", m[i][j]);
+        }}
+    }
+
+    #[test]
+    fn so3_of_rz_pi6_matches_formula() {
+        let rz = rz_pi6_mat();
+        let m = mat_to_so3(&rz);
+        // SO3(Rz(θ)) = [[cos(θ),-sin(θ),0],[sin(θ),cos(θ),0],[0,0,1]] where θ=π/6
+        let (c, s) = ((PI/6.).cos(), (PI/6.).sin());
+        assert!(near(m[0][0], c, 1e-10));
+        assert!(near(m[0][1], -s, 1e-10));
+        assert!(near(m[1][0], s, 1e-10));
+        assert!(near(m[1][1], c, 1e-10));
+        assert!(near(m[2][2], 1.0, 1e-12));
+        assert!(near(m[0][2], 0., 1e-12));
+        assert!(near(m[2][0], 0., 1e-12));
+    }
+
+    #[test]
+    fn decompose_identity_gives_empty_or_clifford() {
+        let id = eye_mat();
+        let g = decompose_pi6(&id);
+        // Identity should decompose to "" or some Clifford equivalent of I
+        let m = eval_gate_string(&g);
+        let d = diamond_distance_float(&m, &id);
+        assert!(d < 1e-9, "decompose(I)=\"{g}\" dist={d:.3e}");
+    }
+
+    #[test]
+    fn decompose_rz_pi6_round_trip() {
+        let rz = rz_pi6_mat();
+        let g = decompose_pi6(&rz);
+        let m = eval_gate_string(&g);
+        let d = diamond_distance_float(&m, &rz);
+        assert!(d < 1e-9, "decompose(Rz(π/6))=\"{g}\" dist={d:.3e}");
+    }
+
+    #[test]
+    fn decompose_s_gate_round_trip() {
+        let s: Mat2 = [
+            [Complex64::new(1., 0.), Complex64::new(0., 0.)],
+            [Complex64::new(0., 0.), Complex64::new(0., 1.)],
+        ];
+        let g = decompose_pi6(&s);
+        let m = eval_gate_string(&g);
+        let d = diamond_distance_float(&m, &s);
+        assert!(d < 1e-9, "decompose(S)=\"{g}\" dist={d:.3e}");
+    }
+
+    // ── Gate string round-trip ────────────────────────────────────────────────
+
+    #[test]
+    fn synthesize_identity_gates_round_trip() {
+        let id: Mat2 = eye_mat();
+        let synth = SynthesizerPi6::new(0.01).with_min_lde(0);
+        let result = synth.synthesize(id).expect("should synthesize identity");
+        assert!(result.distance < 0.01);
+        if let Some(ref g) = result.gates {
+            let m = eval_gate_string(g);
+            let d = diamond_distance_float(&m, &id);
+            assert!(d < 0.01, "gate round-trip failed: \"{g}\" dist={d:.3e}");
+        }
+    }
+
+    #[test]
+    fn synthesize_rz_pi6_gates_round_trip() {
+        let target = rz(PI / 3.0);
+        let synth = SynthesizerPi6::new(0.01).with_min_lde(0).with_max_lde(5);
+        let result = synth.synthesize(target).expect("should synthesize Rz(π/3)");
+        assert!(result.distance < 0.01, "dist={:.4e}", result.distance);
+        if let Some(ref g) = result.gates {
+            let m = eval_gate_string(g);
+            let d = diamond_distance_float(&m, &target);
+            assert!(d < 0.01, "gate round-trip: \"{g}\" dist={d:.3e}");
+            eprintln!("Rz(π/3): lde={} gates=\"{g}\" dist={:.4e}", result.lde, result.distance);
+        }
+    }
+
+    #[test]
+    fn dc_search_fires_and_finds_solution() {
+        // Force DC path by setting direct_limit=2, then synthesize at k>2.
+        let target = rz(0.3);
+        let synth = SynthesizerPi6::new(0.1)
+            .with_min_lde(0)
+            .with_max_lde(12)
+            .with_direct_limit(2);
+        let result = synth.synthesize(target).expect("DC should find a solution");
+        assert!(result.distance < 0.1, "dist={:.4e}", result.distance);
+        eprintln!("DC Rz(0.3) @ eps=0.1: lde={} dist={:.4e} gates={:?}", result.lde, result.distance, result.gates);
+        if let Some(ref g) = result.gates {
+            let m = eval_gate_string(g);
+            let d = diamond_distance_float(&m, &target);
+            assert!(d < 0.1, "gate round-trip dist={d:.3e}");
+        }
+    }
+
+    #[test]
+    fn build_l_pi6_sizes() {
+        for k_prime in 0u32..=4 {
+            let l = build_l_pi6(k_prime);
+            eprintln!("|L_{{{}}}| = {}", k_prime, l.len());
+            assert!(!l.is_empty());
+            // k'=0: only identity; k'≥1: at least 24 (one Clifford per syllable pattern)
+            if k_prime == 0 { assert_eq!(l.len(), 1); }
+            else { assert!(l.len() >= 24); }
+        }
+    }
+
+    // ── Helper: evaluate a gate string to a float Mat2 ────────────────────────
+
+    fn eval_gate_string(gates: &str) -> Mat2 {
+        let mut m = eye_mat();
+        for ch in gates.chars() {
+            let g: Mat2 = match ch {
+                'H' => CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="H").unwrap().1.to_float(),
+                'S' => CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="S").unwrap().1.to_float(),
+                'X' => CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="X").unwrap().1.to_float(),
+                'Y' => CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="Y").unwrap().1.to_float(),
+                'Z' => CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="Z").unwrap().1.to_float(),
+                'R' => rz_pi6_mat(),
+                'I' => eye_mat(),
+                other => panic!("unknown gate '{other}'"),
+            };
+            m = mat_mul(m, g);
+        }
+        m
     }
 
     #[test]
