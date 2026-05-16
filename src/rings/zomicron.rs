@@ -732,7 +732,7 @@ mod tests {
             }
             assert_eq!(
                 gram_form,
-                2 * (r as i64),
+                2 * r.as_i64(),
                 "Gram form should equal 2·rational(|z|²) for ({a},{b},{c},{d})"
             );
         }
