@@ -565,7 +565,8 @@ fn build_l_pi6_inner(k_prime: u32) -> Vec<(String, Mat2)> {
             else                    { m = mat_mul(m, hs0r); g.push_str("HR"); }
         }
         for (c_str, c_u2t) in CLIFFORD_TABLE_T {
-            candidates.push((format!("{g}{c_str}"), mat_mul(m, c_u2t.to_float())));
+            let c_rev: String = c_str.chars().rev().collect();
+            candidates.push((format!("{g}{c_rev}"), mat_mul(m, c_u2t.to_float())));
         }
     }
     if k_prime >= 1 {
@@ -578,7 +579,8 @@ fn build_l_pi6_inner(k_prime: u32) -> Vec<(String, Mat2)> {
                 else                    { m = mat_mul(m, hs0r); g.push_str("HR"); }
             }
             for (c_str, c_u2t) in CLIFFORD_TABLE_T {
-                candidates.push((format!("{g}{c_str}"), mat_mul(m, c_u2t.to_float())));
+                let c_rev: String = c_str.chars().rev().collect();
+                candidates.push((format!("{g}{c_rev}"), mat_mul(m, c_u2t.to_float())));
             }
         }
     }
@@ -759,13 +761,16 @@ impl SynthesizerPi6 {
                         Branch::Rz      => format!("{inner_gates}R"),
                         Branch::RzDag   => format!("{inner_gates}RRRRR"),
                         Branch::Clif(i) => {
-                            format!("{}{inner_gates}", CLIFFORD_TABLE_T[*i].0)
+                            let c_rev: String = CLIFFORD_TABLE_T[*i].0.chars().rev().collect();
+                            format!("{}{inner_gates}", c_rev)
                         }
                         Branch::ClifRz(i) => {
-                            format!("{}{inner_gates}R", CLIFFORD_TABLE_T[*i].0)
+                            let c_rev: String = CLIFFORD_TABLE_T[*i].0.chars().rev().collect();
+                            format!("{}{inner_gates}R", c_rev)
                         }
                         Branch::ClifRzDag(i) => {
-                            format!("{}{inner_gates}RRRRR", CLIFFORD_TABLE_T[*i].0)
+                            let c_rev: String = CLIFFORD_TABLE_T[*i].0.chars().rev().collect();
+                            format!("{}{inner_gates}RRRRR", c_rev)
                         }
                     });
                     return Some(SynthResultPi6 { gates: Some(gates), lde: k, distance: dist });
@@ -1324,6 +1329,417 @@ mod tests {
             let m = eval_gate_string(gates);
             let d = diamond_distance_float(&m, &hrh);
             eprintln!("round-trip dist = {:.3e}", d);
+        }
+    }
+
+    // #[test]
+    // fn clifford_names_reversed_match() {
+    //     // After reversal, eval_gate_string should match the table's matrix.
+    //     for (name, u2t) in CLIFFORD_TABLE_T {
+    //         let m_table = u2t.to_float();
+    //         let name_rev: String = name.chars().rev().collect();
+    //         let m_eval = eval_gate_string(&name_rev);
+    //         let d = diamond_distance_float(&m_table, &m_eval);
+    //         if d > 1e-10 {
+    //             eprintln!("STILL MISMATCH for {name:?} (rev: {name_rev:?}): dist = {d:.3e}");
+    //         }
+    //     }
+    // }
+
+    // #[test]
+    // fn verify_clifford_name_convention() {
+    //     // For each Clifford in the table, check whether eval_gate_string(name) 
+    //     // equals the table's U2 matrix (up to phase).
+    //     for (name, u2t) in CLIFFORD_TABLE_T {
+    //         let m_table = u2t.to_float();
+    //         let m_eval = eval_gate_string(name);
+    //         let d = diamond_distance_float(&m_table, &m_eval);
+    //         let prefix = if d > 1e-10 { "MISMATCH" } else { "ok      " };
+    //         eprintln!("{prefix} {name:>5}: table dist eval = {:.3e}", d);
+    //     }
+    // }
+
+    // #[test]
+    // fn diagnose_synthesizer_intermediates() {
+    //     let theta = -0.0699_f64;
+    //     let target = rz(theta);
+    //     let synth = SynthesizerPi6::new(0.01).with_min_lde(0).with_max_lde(15);
+    //     let result = synth.synthesize(target).expect("should synthesize");
+        
+    //     eprintln!("Final gates: {:?}", result.gates);
+    //     eprintln!("Claimed dist: {:.3e}", result.distance);
+        
+    //     if let Some(ref gates) = result.gates {
+    //         let m_eval = eval_gate_string(gates);
+    //         let d_eval = diamond_distance_float(&m_eval, &target);
+    //         eprintln!("eval_gate_string dist to target: {:.3e}", d_eval);
+    //         eprintln!("m_eval[0][0] = {:?}", m_eval[0][0]);
+    //         eprintln!("m_eval[0][1] = {:?}", m_eval[0][1]);
+    //         eprintln!("target[0][0] = {:?}", target[0][0]);
+    //         eprintln!("target[0][1] = {:?}", target[0][1]);
+    //     }
+    // }
+
+    // #[test]
+    // fn check_solution_consistency() {
+    //     // For the exact solutions found at k=10, verify the two construction paths agree.
+    //     let test_cases: Vec<([i64; 8], u32)> = vec![
+    //         ([1, 0, 0, 0, 1, 0, 0, 0], 1),
+    //         ([-3, -15, 0, 7, -7, 7, 2, -5], 8),
+    //         ([-15, -19, -1, 9, -19, 16, 9, -15], 10),
+    //     ];
+        
+    //     for (x, k) in test_cases {
+    //         let m_float = solution_to_mat2(&x, k);
+    //         let m_ring_float = solution_to_u2_omicron(&x, k).to_float();
+            
+    //         let d = diamond_distance_float(&m_float, &m_ring_float);
+    //         eprintln!("x={x:?}, k={k}:");
+    //         eprintln!("  diamond dist between two construction paths: {d:.3e}");
+            
+    //         // Also compute raw entrywise distance (not phase-insensitive)
+    //         let entry_dist: f64 = (0..2).flat_map(|i| (0..2).map(move |j| {
+    //             (m_float[i][j] - m_ring_float[i][j]).norm_sqr()
+    //         })).sum::<f64>().sqrt();
+    //         eprintln!("  raw entrywise L2 dist: {entry_dist:.3e}");
+    //         eprintln!("  m_float[0]      = {:?}", m_float[0]);
+    //         eprintln!("  m_ring_float[0] = {:?}", m_ring_float[0]);
+    //     }
+    // }
+
+    // #[test]
+    // fn diagnose_simplify_bug() {
+    //     // Reproduce the failing test, but inspect the gate string BEFORE simplification.
+    //     // We can't easily do that without modifying the synthesizer, so instead test
+    //     // simplify_gate_string_n6 directly on the produced output.
+    //     let theta = -0.0699_f64;
+    //     let target = rz(theta);
+    //     let synth = SynthesizerPi6::new(0.01).with_min_lde(0).with_max_lde(15);
+    //     let result = synth.synthesize(target).expect("should synthesize");
+        
+    //     if let Some(ref gates) = result.gates {
+    //         eprintln!("simplified gates: {gates:?}");
+    //         let m_simplified = eval_gate_string(gates);
+    //         let d_simplified = diamond_distance_float(&m_simplified, &target);
+    //         eprintln!("simplified round-trip dist: {d_simplified:.3e}");
+    //         // We know this is large (0.866). The question is: was the pre-simplified
+    //         // string correct?
+    //     }
+        
+    //     // Test simplify_gate_string_n6 directly on suspicious patterns.
+    //     // (Use whatever import path you have for it.)
+    //     use crate::synthesis::decomposer::simplify_gate_string_n6;
+        
+    //     let test_cases = [
+    //         "RRRRRR",   // should == Z or I?
+    //         "RRRRR",    // R†
+    //         "HH",       // == I
+    //         "HRH",      // should be unchanged
+    //         "RRRRRRRRRRRR",  // R^12 = I
+    //         "HRHRRHXHSR",   // a known-good 10-char from HRH test
+    //     ];
+        
+    //     for s in test_cases {
+    //         let simplified = simplify_gate_string_n6(s);
+    //         let m_orig = eval_gate_string(s);
+    //         let m_simp = eval_gate_string(&simplified);
+    //         let d = diamond_distance_float(&m_orig, &m_simp);
+    //         eprintln!("{s:?} -> {simplified:?} (dist between orig/simplified: {d:.3e})");
+    //     }
+    // }
+
+    // #[test]
+    // fn decompose_known_ring_solution() {
+    //     // Pick a known x that solves the n=6 norm/bilinear constraints at k=1.
+    //     // For example: u = 1 (so a₀=1, a₁=a₂=a₃=0), t = 1 (b₀=1, b₁=b₂=b₃=0).
+    //     // |u|² + |t|² = 1 + 1 = 2 = 2^1. ✓
+    //     // Bilinear: 0 + 0 = 0. ✓
+    //     let x: [i64; 8] = [1, 0, 0, 0, 1, 0, 0, 0];
+    //     let k = 1;
+        
+    //     // Build the ring-valued unitary from the solution.
+    //     let u_ring = solution_to_u2_omicron(&x, k);
+        
+    //     // Decompose it.
+    //     let gates = decompose_pi6(&u_ring);
+        
+    //     // Convert ring-valued matrix to float, get round-trip distance.
+    //     let target_float = u_ring.to_float();
+    //     let reconstructed = eval_gate_string(&gates);
+    //     let dist = diamond_distance_float(&reconstructed, &target_float);
+        
+    //     eprintln!("x = {x:?}, k = {k}");
+    //     eprintln!("u_ring as float = {target_float:?}");
+    //     eprintln!("decompose_pi6 returned: {gates:?}");
+    //     eprintln!("round-trip dist: {dist:.3e}");
+    //     assert!(dist < 1e-7, "decompose mismatch: dist={dist:.3e}");
+    // }
+
+    // #[test]
+    // fn decompose_small_angle_solution() {
+    //     // Reproduce the failing case: find a solution at k=10 close to R_z(-0.0699),
+    //     // then check whether decompose_pi6 on the ring-valued solution round-trips.
+    //     let theta = -0.0699_f64;
+    //     let target = rz(theta);
+    //     let k = 10;
+    //     let target_k = 1_i64 << k;
+    //     let eps = 0.01;
+        
+    //     let v = unitary_to_uv_n6(&target);
+    //     let y = compute_y(v[0], v[1], v[2], v[3]);
+    //     let sols = direct_search_n6(target_k, &y, eps, 5);  // up to 5 solutions
+        
+    //     eprintln!("Found {} solutions at k={k} for θ={theta}", sols.len());
+        
+    //     for (i, sol) in sols.iter().enumerate() {
+    //         let u_ring = solution_to_u2_omicron(sol, k);
+    //         let u_float = u_ring.to_float();
+    //         let dist_target = diamond_distance_float(&u_float, &target);
+            
+    //         let gates = decompose_pi6(&u_ring);
+    //         let reconstructed = eval_gate_string(&gates);
+    //         let dist_roundtrip = diamond_distance_float(&reconstructed, &u_float);
+            
+    //         eprintln!(
+    //             "[{i}] sol={sol:?}\n     u_to_target={dist_target:.3e}  decompose_roundtrip={dist_roundtrip:.3e}\n     gates={gates:?}",
+    //         );
+    //     }
+    // }
+
+    // #[test]
+    // fn decompose_word_products() {
+    //     let r = U2::<ZOmicron>::new(
+    //     ZOmicron::ONE,
+    //     ZOmicron::ZERO,
+    //     ZOmicron::ZERO,
+    //     ZOmicron::XI,
+    //     0,
+    // );
+    //     // Build (u, t) by multiplying known gates in the ring directly.
+    //     // These are guaranteed-valid ring elements at the right LDE.
+    //     let h: U2<ZOmicron> = U2::h();
+    //     let s: U2<ZOmicron> = U2::s();
+    //     let r: U2<ZOmicron> = r;
+        
+    //     // Try various word products
+    //     let words: Vec<(&str, U2<ZOmicron>)> = vec![
+    //         ("H", h.clone()),
+    //         ("HR", h.clone() * r.clone()),
+    //         ("HRH", h.clone() * r.clone() * h.clone()),
+    //         ("HRHR", h.clone() * r.clone() * h.clone() * r.clone()),
+    //         ("HRHRH", h.clone() * r.clone() * h.clone() * r.clone() * h.clone()),
+    //         ("HRSHRSH", h.clone() * r.clone() * s.clone() * h.clone() * r.clone() * s.clone() * h.clone()),
+    //     ];
+        
+    //     for (label, u_ring) in words {
+    //         let m_orig = u_ring.to_float();
+    //         match std::panic::catch_unwind(|| decompose_pi6(&u_ring)) {
+    //             Ok(gates) => {
+    //                 let m_recon = eval_gate_string(&gates);
+    //                 let d = diamond_distance_float(&m_recon, &m_orig);
+    //                 eprintln!("{label}: lde={} decomposed to {} chars, dist={d:.3e}",
+    //                         u_ring.k, gates.len());
+    //             }
+    //             Err(_) => {
+    //                 eprintln!("{label}: lde={} PANICKED (overflow)", u_ring.k);
+    //             }
+    //         }
+    //     }
+    // }
+
+    // #[test]
+    // fn decompose_actual_solutions_at_k10() {
+    //     // Find real solutions via direct_search_n6 and decompose each.
+    //     // These satisfy the unitarity constraints, so they should not blow up.
+    //     let theta = -0.0699_f64;
+    //     let target = rz(theta);
+        
+    //     // Try different k values
+    //     for k in [8u32, 10, 12] {
+    //         let target_k = 1_i64 << k;
+    //         let v = unitary_to_uv_n6(&target);
+            
+    //         // Also try a Clifford-rotated v to mimic what direct_search does
+    //         let h_u2t = CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="H").unwrap().1;
+    //         let v_h = apply_u2t_dag_to_uv(&h_u2t, v);
+            
+    //         for (label, vv) in [("direct", v), ("H-rotated", v_h)] {
+    //             let y = compute_y(vv[0], vv[1], vv[2], vv[3]);
+    //             // Try increasing solution counts. Need a generous timeout-equivalent.
+    //             let sols = direct_search_n6(target_k, &y, 0.05, 1);  // looser eps
+    //             eprintln!("k={k} {label}: {} solutions found", sols.len());
+                
+    //             for sol in sols.iter().take(3) {
+    //                 // Try to decompose. If overflow, the test will panic — that's a finding.
+    //                 let u_ring = solution_to_u2_omicron(sol, k);
+    //                 eprintln!("  x={sol:?}, attempting decompose_pi6...");
+    //                 let gates = decompose_pi6(&u_ring);
+    //                 let m_recon = eval_gate_string(&gates);
+    //                 let m_orig = u_ring.to_float();
+    //                 let d = diamond_distance_float(&m_recon, &m_orig);
+    //                 eprintln!("  -> gates_len={}, round-trip dist={d:.3e}", gates.len());
+    //             }
+    //         }
+    //     }
+    // }
+    // #[test]
+    // fn decompose_rz_branch_nontrivial() {
+    //     // Use a non-identity inner ring element (so order matters).
+    //     // Take u from a known small solution: e.g., x = [1, 0, 0, 0, 1, 0, 0, 0] at k=1
+    //     // gives some non-identity unitary M.
+    //     let x: [i64; 8] = [1, 0, 0, 0, 1, 0, 0, 0];
+    //     let inner_ring = solution_to_u2_omicron(&x, 1);
+    //     let inner_float = inner_ring.to_float();
+        
+    //     let inner_gates = decompose_pi6(&inner_ring);
+    //     eprintln!("inner gates: {inner_gates:?}");
+        
+    //     // What does each assembly direction give?
+    //     let assembled_suffix = simplify_n6(&format!("{inner_gates}R"));  // (inner)·R
+    //     let assembled_prefix = simplify_n6(&format!("R{inner_gates}"));  // R·(inner)
+        
+    //     let r_mat = rz_pi6_mat();
+    //     let inner_times_r = mat_mul(inner_float, r_mat);   // M·R
+    //     let r_times_inner = mat_mul(r_mat, inner_float);   // R·M
+        
+    //     let m_suffix = eval_gate_string(&assembled_suffix);
+    //     let m_prefix = eval_gate_string(&assembled_prefix);
+        
+    //     let d_suffix_vs_MR = diamond_distance_float(&m_suffix, &inner_times_r);
+    //     let d_suffix_vs_RM = diamond_distance_float(&m_suffix, &r_times_inner);
+    //     let d_prefix_vs_MR = diamond_distance_float(&m_prefix, &inner_times_r);
+    //     let d_prefix_vs_RM = diamond_distance_float(&m_prefix, &r_times_inner);
+        
+    //     eprintln!("inner_gates+R reconstructs to: vs M·R: {d_suffix_vs_MR:.3e}, vs R·M: {d_suffix_vs_RM:.3e}");
+    //     eprintln!("R+inner_gates reconstructs to: vs M·R: {d_prefix_vs_MR:.3e}, vs R·M: {d_prefix_vs_RM:.3e}");
+        
+    //     // Whichever assembly direction gives ~0 against M·R is the convention
+    //     // that says "search found M, suffix R appended".
+    //     // Whichever gives ~0 against R·M is the convention that says
+    //     // "search found M, R should be applied first to get the target".
+    // }
+
+    #[test]
+    fn diagnose_small_angle() {
+        let theta = -0.0699;
+        let target = rz(theta);
+        let synth = SynthesizerPi6::new(0.01).with_min_lde(0).with_max_lde(15);
+        let result = synth.synthesize(target).expect("should synthesize");
+        
+        eprintln!("θ = {theta}");
+        eprintln!("result.distance = {:.6e}", result.distance);
+        eprintln!("result.lde = {}", result.lde);
+        eprintln!("result.gates = {:?}", result.gates);
+        
+        if let Some(ref gates) = result.gates {
+            let r_count = gates.chars().filter(|&c| c == 'R').count();
+            eprintln!("R-count = {r_count}");
+            eprintln!("gate-string length = {}", gates.len());
+            
+            let m = eval_gate_string(gates);
+            let d = diamond_distance_float(&m, &target);
+            eprintln!("round-trip dist = {:.6e}", d);
+            
+            // Per-gate-prefix breakdown: see where the decomposer goes wrong
+            let mut prefix_mat = eye_mat();
+            eprintln!("--- per-prefix matrices ---");
+            for (i, ch) in gates.chars().enumerate() {
+                let g: Mat2 = match ch {
+                    'H' => CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="H").unwrap().1.to_float(),
+                    'S' => CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="S").unwrap().1.to_float(),
+                    'X' => CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="X").unwrap().1.to_float(),
+                    'Y' => CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="Y").unwrap().1.to_float(),
+                    'Z' => CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="Z").unwrap().1.to_float(),
+                    'R' => rz_pi6_mat(),
+                    'I' => eye_mat(),
+                    other => panic!("unknown gate '{other}'"),
+                };
+                prefix_mat = mat_mul(prefix_mat, g);
+                let dist_to_target = diamond_distance_float(&prefix_mat, &target);
+                eprintln!("after gate {i:2} '{ch}': dist_to_target={dist_to_target:.4e}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore]  // slow; run with `cargo test -- --ignored`
+    fn stress_random_angles_n6() {
+        use std::f64::consts::PI;
+        let synth = SynthesizerPi6::new(1e-2).with_min_lde(0).with_max_lde(15);
+        
+        let mut state: u64 = 0xDEADBEEF;
+        let mut next = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 32) as f64 / (1u64 << 32) as f64
+        };
+        
+        let mut max_dist: f64 = 0.0;
+        let mut max_r = 0;
+        let mut total_r = 0;
+        let n = 20;
+        
+        for i in 0..n {
+            let theta = (next() - 0.5) * PI;
+            let target = rz(theta);
+            let result = synth.synthesize(target)
+                .unwrap_or_else(|| panic!("[{i}] failed: θ={theta}"));
+            
+            if let Some(ref gates) = result.gates {
+                let m = eval_gate_string(gates);
+                let d = diamond_distance_float(&m, &target);
+                let r_count = gates.chars().filter(|&c| c == 'R').count();
+                assert!(d < 1e-2, "[{i}] θ={theta:.4} dist={d:.3e}");
+                max_dist = max_dist.max(d);
+                max_r = max_r.max(r_count);
+                total_r += r_count;
+                eprintln!("[{i:2}] θ={theta:+.4} r={r_count} d={d:.3e}");
+            }
+        }
+        eprintln!("max_dist={max_dist:.3e} max_r={max_r} mean_r={:.1}", total_r as f64 / n as f64);
+    }
+
+    #[test]
+    #[ignore]  // specific angles; run with `cargo test -- --ignored`
+    fn synthesize_at_various_small_angles() {
+        // Test a range of angles. Each angle should synthesize correctly.
+        let eps = 0.01;
+        let synth = SynthesizerPi6::new(eps).with_min_lde(0).with_max_lde(20);
+        
+        // Angles spanning from "near identity" to "near R" to general.
+        let angles = [
+            0.001,       // basically identity
+            0.01,        // at-the-edge of "Clifford suffices"
+            0.05,        // forces real synthesis
+            0.0699,      // the original failing case
+            -0.0699,     // also a known failure
+            0.1,         
+            0.3,         // the original "small" test
+            0.5,         
+            PI / 6.0 - 0.001,  // just shy of R
+            PI / 6.0 + 0.001,  // just past R
+            PI / 4.0,    
+            1.0,
+            2.0,
+        ];
+        
+        for &theta in &angles {
+            let target = rz(theta);
+            let result = match synth.synthesize(target) {
+                Some(r) => r,
+                None => { eprintln!("θ={theta:+.4}: NO RESULT"); continue; }
+            };
+            
+            if let Some(ref gates) = result.gates {
+                let m = eval_gate_string(gates);
+                let d = diamond_distance_float(&m, &target);
+                let r_count = gates.chars().filter(|&c| c == 'R').count();
+                let status = if d < eps { "ok " } else { "BAD" };
+                eprintln!(
+                    "{status} θ={theta:+.4} lde={} r={r_count} claim={:.3e} actual={:.3e} gates={}",
+                    result.lde, result.distance, d,
+                    if gates.len() > 30 { format!("{}...", &gates[..30]) } else { gates.clone() }
+                );
+            }
         }
     }
 }
