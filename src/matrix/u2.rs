@@ -13,6 +13,7 @@ use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
 use crate::rings::zomega::ZOmega;
 use crate::rings::zzeta::ZZeta;
+use crate::rings::zomicron::ZOmicron;
 #[cfg(feature = "python")]
 use crate::rings::zomega::PyZOmega;
 #[cfg(feature = "python")]
@@ -49,6 +50,17 @@ impl RingElem for ZZeta {
     fn i() -> Self { Self::I }
     fn omega() -> Self { Self::OMEGA }
     fn root_of_unity() -> Self { Self::ZETA }
+}
+
+impl RingElem for ZOmicron {
+    fn conj(self) -> Self { self.conj() }
+    fn to_complex(self) -> Complex64 { self.to_complex() }
+    fn zero() -> Self { Self::ZERO }
+    fn one() -> Self { Self::ONE }
+    fn i() -> Self { Self::I }
+    /// ξ = e^{iπ/6}: used so U2::<ZOmicron>::t() gives the R gate diag(1, ξ).
+    fn omega() -> Self { Self::XI }
+    fn root_of_unity() -> Self { Self::XI }
 }
 
 // ─── U2<R> ────────────────────────────────────────────────────────────────────

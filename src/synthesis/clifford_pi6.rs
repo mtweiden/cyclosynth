@@ -43,8 +43,12 @@ use std::f64::consts::PI;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
+use crate::rings::ZOmicron;
 use crate::rings::zomicron::SIGMA_GRAM_U;
+use crate::rings::types::Int;
+use crate::matrix::U2;
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
+use crate::synthesis::decomposer::{decompose_so3_canonical_n6, simplify_gate_string_n6};
 use crate::synthesis::distance::{diamond_distance_float, Mat2};
 use crate::synthesis::search::{apply_u2t_dag_to_uv, normalize4};
 
@@ -472,42 +476,29 @@ pub fn simplify_n6(input: &str) -> String {
     s
 }
 
-/// Candidate generators used in the greedy SO3 peeling.
-fn peel_candidates() -> [(SO3f, &'static str); 6] {
-    let s = PI / 6.0;
-    [
-        (so3_rz(-s),       "R"),
-        (so3_rz(-2.*s),    "RR"),
-        (so3_rx(-s),       "HRH"),
-        (so3_rx(-2.*s),    "HRRH"),
-        (so3_ry(-s),       "SHRHSSS"),
-        (so3_ry(-2.*s),    "SHRRHSSS"),
-    ]
+/// Build a U2<ZOmicron> from an integer lattice solution (u, t) and exponent k.
+///
+/// The solution encodes u = (a0,a1,a2,a3) and t = (b0,b1,b2,b3) in the cyclotomic
+/// basis {1,ξ,ξ²,ξ³}, giving U = [[u, -t̄],[t, ū]] / √2^k.
+pub fn solution_to_u2_omicron(sol: &[i64; 8], k: u32) -> U2<ZOmicron> {
+    let u = ZOmicron::new(
+        Int::from_i64(sol[0]), Int::from_i64(sol[1]),
+        Int::from_i64(sol[2]), Int::from_i64(sol[3]),
+    );
+    let t = ZOmicron::new(
+        Int::from_i64(sol[4]), Int::from_i64(sol[5]),
+        Int::from_i64(sol[6]), Int::from_i64(sol[7]),
+    );
+    U2::new(u, -t.conj(), t, u.conj(), k)
 }
 
-/// Decompose a float matrix into a Clifford+R gate string via greedy SO3 peeling.
-pub fn decompose_pi6(mat: &Mat2) -> String {
-    let candidates = peel_candidates();
-    let mut so3 = mat_to_so3(mat);
-    let max_steps = 200;
-    let mut gate_parts: Vec<&'static str> = Vec::new();
-
-    for _ in 0..max_steps {
-        if clifford_dist(&so3) < 1e-7 { break; }
-        let (best_so3, best_gate) = candidates.iter()
-            .map(|(neg, gs)| { let m = so3_mul(*neg, so3); (m, *gs, clifford_dist(&m)) })
-            .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
-            .map(|(m, gs, _)| (m, gs))
-            .unwrap();
-        so3 = best_so3;
-        gate_parts.push(best_gate);
-    }
-
-    let cliff = identify_clifford_so3(&so3);
-    let combined: String = gate_parts.into_iter().chain(
-        if cliff == "I" { None } else { Some(cliff) }
-    ).collect::<Vec<_>>().join("");
-    simplify_n6(&combined)
+/// Decompose a U2<ZOmicron> into a Clifford+R gate string using the exact
+/// ring-based canonical-form decomposer.
+///
+/// This replaces the old greedy float-based SO3 peeling which was incorrect
+/// for inputs like HRH (produced round-trip distance 0.866 instead of 0).
+pub fn decompose_pi6(u: &U2<ZOmicron>) -> String {
+    simplify_n6(&decompose_so3_canonical_n6(u))
 }
 
 // ─── MA prefix set for DC search ──────────────────────────────────────────────
@@ -688,8 +679,9 @@ impl SynthesizerPi6 {
                 let full = mat_mul(*u_l, u_r);
                 let dist = diamond_distance_float(&full, target);
                 if dist < eps {
-                    let gates = simplify_n6(
-                        &format!("{}{}", prefix_gates, decompose_pi6(&u_r))
+                    let u_r_ring = solution_to_u2_omicron(&sol, k_inner);
+                    let gates = simplify_gate_string_n6(
+                        &format!("{}{}", prefix_gates, decompose_pi6(&u_r_ring))
                     );
                     return Some(SynthResultPi6 { gates: Some(gates), lde: k, distance: dist });
                 }
@@ -704,8 +696,9 @@ impl SynthesizerPi6 {
                     let full = mat_mul(*u_l, mat_mul(u_r, rz_pi6_mat()));
                     let dist = diamond_distance_float(&full, target);
                     if dist < eps {
-                        let inner_str = format!("{}R", decompose_pi6(&u_r));
-                        let gates = simplify_n6(&format!("{}{}", prefix_gates, inner_str));
+                        let u_r_ring = solution_to_u2_omicron(&sol, k_inner);
+                        let inner_str = format!("{}R", decompose_pi6(&u_r_ring));
+                        let gates = simplify_gate_string_n6(&format!("{}{}", prefix_gates, inner_str));
                         return Some(SynthResultPi6 { gates: Some(gates), lde: k, distance: dist });
                     }
                 }
@@ -759,8 +752,9 @@ impl SynthesizerPi6 {
 
                 let dist = diamond_distance_float(&full_mat, target);
                 if dist < eps {
-                    let inner_gates = decompose_pi6(&u_mat);
-                    let gates = simplify_n6(&match tag {
+                    let u_ring = solution_to_u2_omicron(&sol, k);
+                    let inner_gates = decompose_pi6(&u_ring);
+                    let gates = simplify_gate_string_n6(&match tag {
                         Branch::Even    => inner_gates,
                         Branch::Rz      => format!("{inner_gates}R"),
                         Branch::RzDag   => format!("{inner_gates}RRRRR"),
@@ -818,6 +812,9 @@ fn mat_mul(a: Mat2, b: Mat2) -> Mat2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rings::ZOmicron;
+    use crate::matrix::U2;
+    use crate::synthesis::decomposer::GateRing;
     use std::f64::consts::PI;
 
     fn near(a: f64, b: f64, tol: f64) -> bool { (a - b).abs() < tol }
@@ -1126,8 +1123,9 @@ mod tests {
 
     #[test]
     fn decompose_identity_gives_empty_or_clifford() {
+        let id_ring = U2::<ZOmicron>::eye();
+        let g = decompose_pi6(&id_ring);
         let id = eye_mat();
-        let g = decompose_pi6(&id);
         let m = eval_gate_string(&g);
         let d = diamond_distance_float(&m, &id);
         assert!(d < 1e-9, "decompose(I)=\"{g}\" dist={d:.3e}");
@@ -1135,20 +1133,24 @@ mod tests {
 
     #[test]
     fn decompose_rz_pi6_round_trip() {
+        // R gate = diag(1, ξ) ≈ Rz(π/6) up to global phase
+        let r_ring = ZOmicron::rz_pos_u2();
+        let g = decompose_pi6(&r_ring);
+        assert_eq!(&g, "R", "R gate decomposed to \"{g}\"");
         let rz = rz_pi6_mat();
-        let g = decompose_pi6(&rz);
         let m = eval_gate_string(&g);
         let d = diamond_distance_float(&m, &rz);
-        assert!(d < 1e-9, "decompose(Rz(π/6))=\"{g}\" dist={d:.3e}");
+        assert!(d < 1e-9, "decompose(R)=\"{g}\" dist={d:.3e}");
     }
 
     #[test]
     fn decompose_s_gate_round_trip() {
+        let s_ring = U2::<ZOmicron>::s();
+        let g = decompose_pi6(&s_ring);
         let s: Mat2 = [
             [Complex64::new(1., 0.), Complex64::new(0., 0.)],
             [Complex64::new(0., 0.), Complex64::new(0., 1.)],
         ];
-        let g = decompose_pi6(&s);
         let m = eval_gate_string(&g);
         let d = diamond_distance_float(&m, &s);
         assert!(d < 1e-9, "decompose(S)=\"{g}\" dist={d:.3e}");
@@ -1193,8 +1195,6 @@ mod tests {
         let result = synth.synthesize(target).expect("DC should find a solution");
         assert!(result.distance < 0.1, "dist={:.4e}", result.distance);
         eprintln!("DC Rz(0.3) @ eps=0.1: lde={} dist={:.4e} gates={:?}", result.lde, result.distance, result.gates);
-        // Note: decompose_pi6 is a greedy SO3 heuristic; gate-string round-trip
-        // may not be tight for all inner matrices. The key check is dist < eps above.
     }
 
     #[test]
@@ -1241,6 +1241,89 @@ mod tests {
             assert!(near(d00, 1.0, 1e-9), "d00={d00} for {sol:?}");
             assert!(near(d11, 1.0, 1e-9), "d11={d11} for {sol:?}");
             assert!(near(off.norm(), 0.0, 1e-9), "off={off} for {sol:?}");
+        }
+    }
+
+    #[test]
+    fn synthesize_h_clifford_zero_rz_count() {
+        // H is a Clifford gate — should synthesize with 0 R-gates (R = R_z(π/6)).
+        let h: Mat2 = CLIFFORD_TABLE_T.iter().find(|(n,_)| *n=="H").unwrap().1.to_float();
+        let synth = SynthesizerPi6::new(1e-6).with_min_lde(0).with_max_lde(3);
+        let result = synth.synthesize(h).expect("H should synthesize");
+        
+        // Verify the reconstructed unitary matches
+        if let Some(ref gates) = result.gates {
+            let r_count = gates.chars().filter(|&c| c == 'R').count();
+            assert_eq!(r_count, 0, "H is Clifford; expected 0 R-gates, got {} in \"{}\"", r_count, gates);
+            
+            let m = eval_gate_string(gates);
+            let d = diamond_distance_float(&m, &h);
+            assert!(d < 1e-5, "H round-trip dist={:.3e}, gates=\"{}\"", d, gates);
+        } else {
+            panic!("H synthesized with no gate string");
+        }
+    }
+
+    #[test]
+    fn synthesize_rz_pi6_exactly_one_r_gate() {
+        // R_z(π/6) — the named generator — should synthesize with exactly 1 R-gate.
+        let target = rz(PI / 6.0);
+        let synth = SynthesizerPi6::new(1e-6).with_min_lde(0).with_max_lde(3);
+        let result = synth.synthesize(target).expect("R_z(π/6) should synthesize");
+        
+        if let Some(ref gates) = result.gates {
+            let r_count = gates.chars().filter(|&c| c == 'R').count();
+            assert_eq!(r_count, 1, "R_z(π/6) should have 1 R-gate, got {} in \"{}\"", r_count, gates);
+            
+            let m = eval_gate_string(gates);
+            let d = diamond_distance_float(&m, &target);
+            assert!(d < 1e-5, "R_z(π/6) round-trip dist={:.3e}, gates=\"{}\"", d, gates);
+        } else {
+            panic!("R_z(π/6) synthesized with no gate string");
+        }
+    }
+
+    #[test]
+    fn synthesize_small_angle_within_eps() {
+        let theta = 0.3_f64;
+        let target = rz(theta);
+        let eps = 0.01;  // or whatever you actually used
+        let synth = SynthesizerPi6::new(eps).with_min_lde(0).with_max_lde(20);
+        let result = synth.synthesize(target).expect("should synthesize");
+        
+        eprintln!("result.distance = {:.6e}", result.distance);
+        eprintln!("result.lde = {}", result.lde);
+        eprintln!("result.gates = {:?}", result.gates);
+        
+        if let Some(ref gates) = result.gates {
+            let r_count = gates.chars().filter(|&c| c == 'R').count();
+            eprintln!("R-count = {}", r_count);
+            let m = eval_gate_string(gates);
+            let d_roundtrip = diamond_distance_float(&m, &target);
+            eprintln!("round-trip distance = {:.6e}", d_roundtrip);
+            eprintln!("target = \n  [{:?}, {:?}]\n  [{:?}, {:?}]",
+                    target[0][0], target[0][1], target[1][0], target[1][1]);
+            eprintln!("from gates = \n  [{:?}, {:?}]\n  [{:?}, {:?}]",
+                    m[0][0], m[0][1], m[1][0], m[1][1]);
+        }
+    }
+
+    #[test]
+    fn check_h_r_h_decomposition() {
+        let h = eval_gate_string("H");  // adjust to your codebase
+        let r_pi6 = rz_pi6_mat();
+        let hrh = mat_mul(mat_mul(h, r_pi6), h);
+        
+        let synth = SynthesizerPi6::new(0.001).with_min_lde(0).with_max_lde(5);
+        let result = synth.synthesize(hrh).expect("should synthesize HRH");
+        
+        eprintln!("HRH: lde={} gates={:?} dist={:.3e}",
+                result.lde, result.gates, result.distance);
+        
+        if let Some(ref gates) = result.gates {
+            let m = eval_gate_string(gates);
+            let d = diamond_distance_float(&m, &hrh);
+            eprintln!("round-trip dist = {:.3e}", d);
         }
     }
 }

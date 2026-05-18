@@ -49,8 +49,9 @@ use std::f64::consts::SQRT_2;
 #[cfg(test)]
 use std::f64::consts::FRAC_1_SQRT_2;
 use crate::matrix::{U2T, U2Q};
-use crate::rings::{ZOmega, ZZeta, Int};
-use crate::rings::types::{INT_ZERO, INT_ONE, INT_TWO, int_to_f64};
+use crate::matrix::u2::U2;
+use crate::rings::{ZOmega, ZZeta, ZOmicron, Int};
+use crate::rings::types::{INT_ZERO, INT_ONE, INT_TWO, INT_THREE, int_to_f64};
 
 
 // ─── R2 ───────────────────────────────────────────────────────────────────────
@@ -946,6 +947,336 @@ pub fn ry_neg_q() -> SO3<R4> {
     m
 }
 
+// ─── R3 ───────────────────────────────────────────────────────────────────────
+
+const SQRT_3: f64 = 1.7320508075688772935_f64;
+
+/// An element of Z[√3]: `a + b·√3`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct R3(pub Int, pub Int);
+
+impl R3 {
+    pub const ZERO: Self = R3(INT_ZERO, INT_ZERO);
+    pub const ONE:  Self = R3(INT_ONE,  INT_ZERO);
+
+    #[inline]
+    pub const fn from_i32(a: i32, b: i32) -> Self {
+        R3(Int::from_i32(a), Int::from_i32(b))
+    }
+
+    pub fn to_f64(self) -> f64 {
+        int_to_f64(self.0) + int_to_f64(self.1) * SQRT_3
+    }
+
+    /// Number of times 2 divides both coefficients simultaneously.
+    pub fn two_valuation(self) -> u32 {
+        if self.0 == INT_ZERO && self.1 == INT_ZERO {
+            return u32::MAX;
+        }
+        let mut v = 0u32;
+        let mut p = self.0;
+        let mut q = self.1;
+        while p % INT_TWO == INT_ZERO && q % INT_TWO == INT_ZERO {
+            p /= INT_TWO;
+            q /= INT_TWO;
+            v += 1;
+        }
+        v
+    }
+}
+
+impl Add for R3 {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self { R3(self.0 + rhs.0, self.1 + rhs.1) }
+}
+impl Sub for R3 {
+    type Output = Self;
+    fn sub(self, rhs: Self) -> Self { R3(self.0 - rhs.0, self.1 - rhs.1) }
+}
+impl Neg for R3 {
+    type Output = Self;
+    fn neg(self) -> Self { R3(-self.0, -self.1) }
+}
+/// (a + b√3)(c + d√3) = (ac + 3bd) + (ad + bc)√3.
+impl Mul for R3 {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        R3(
+            self.0 * rhs.0 + INT_THREE * self.1 * rhs.1,
+            self.0 * rhs.1 + self.1 * rhs.0,
+        )
+    }
+}
+
+impl fmt::Display for R3 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.1 == INT_ZERO {
+            write!(f, "{}", self.0)
+        } else if self.0 == INT_ZERO {
+            write!(f, "{}√3", self.1)
+        } else {
+            write!(f, "{} + {}√3", self.0, self.1)
+        }
+    }
+}
+
+// ─── Ratio3 ──────────────────────────────────────────────────────────────────
+
+/// A Z[√3] element divided by 2^exp.
+///
+/// Denominator convention: 2^exp (integer powers of 2).
+/// All SO(3) entries for Clifford+R_z(π/6) unitaries have denominators
+/// that are powers of 2 since cos/sin(mπ/6) ∈ Z[√3]/2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ratio3 {
+    pub num: R3,
+    pub exp: u32,
+}
+
+impl Ratio3 {
+    pub const ZERO: Self = Ratio3 { num: R3::ZERO, exp: 0 };
+    pub const ONE:  Self = Ratio3 { num: R3::ONE,  exp: 0 };
+
+    /// Cancel common factors of 2 between numerator and denominator.
+    pub fn simplify(&mut self) {
+        if self.num == R3::ZERO { self.exp = 0; return; }
+        let v = self.num.two_valuation().min(self.exp);
+        let mut p = self.num.0;
+        let mut q = self.num.1;
+        for _ in 0..v { p /= INT_TWO; q /= INT_TWO; }
+        self.num = R3(p, q);
+        self.exp -= v;
+    }
+
+    /// Lift numerator by multiplying by 2^n (for exponent alignment in Add).
+    fn lift_num(self, n: u32) -> R3 {
+        let mut x = self.num;
+        for _ in 0..n { x = R3(x.0 * INT_TWO, x.1 * INT_TWO); }
+        x
+    }
+
+    pub fn to_f64(self) -> f64 {
+        self.num.to_f64() / (1u64 << self.exp.min(63)) as f64
+    }
+}
+
+impl Neg for Ratio3 {
+    type Output = Self;
+    fn neg(self) -> Self { Ratio3 { num: -self.num, exp: self.exp } }
+}
+
+impl Add for Ratio3 {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        let max_e = self.exp.max(rhs.exp);
+        let lhs_num = self.lift_num(max_e - self.exp);
+        let rhs_num = rhs.lift_num(max_e - rhs.exp);
+        let mut r = Ratio3 { num: lhs_num + rhs_num, exp: max_e };
+        r.simplify();
+        r
+    }
+}
+
+impl Mul for Ratio3 {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        let mut r = Ratio3 { num: self.num * rhs.num, exp: self.exp + rhs.exp };
+        r.simplify();
+        r
+    }
+}
+
+// ─── SO3Omicron ───────────────────────────────────────────────────────────────
+
+/// A 3×3 SO(3) matrix with entries in Z[√3]/2^exp, for Clifford+R_z(π/6).
+///
+/// Entries stored row-major: e[3*row + col] = Ratio3 { num, exp }
+/// where the actual value is num / 2^exp.
+///
+/// SO(3) entries for Clifford+R_z(π/6) unitaries live in Z[√3] with
+/// denominators that are powers of 2 (since cos(mπ/6), sin(mπ/6) ∈ Z[√3]/2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SO3Omicron {
+    pub e: [Ratio3; 9],
+}
+
+/// Type alias for SO3 over Z[√3] (used for Clifford+R_z(π/6)).
+pub type SO3O = SO3Omicron;
+
+impl SO3Omicron {
+    pub fn identity() -> Self {
+        let mut e = [Ratio3::ZERO; 9];
+        e[0] = Ratio3::ONE;
+        e[4] = Ratio3::ONE;
+        e[8] = Ratio3::ONE;
+        SO3Omicron { e }
+    }
+
+    #[inline]
+    pub fn get(&self, r: usize, c: usize) -> Ratio3 { self.e[3*r+c] }
+
+    /// Maximum denominator exponent across all non-zero entries.
+    pub fn maximum_denominator_exponent(&self) -> u32 {
+        self.e
+            .iter()
+            .filter(|r| r.num != R3::ZERO)
+            .map(|r| r.exp)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Convert to 3×3 float matrix for debugging.
+    pub fn to_float(&self) -> [[f64; 3]; 3] {
+        let mut out = [[0.0f64; 3]; 3];
+        for r in 0..3 {
+            for c in 0..3 {
+                out[r][c] = self.e[3*r+c].to_f64();
+            }
+        }
+        out
+    }
+
+    /// Build SO3Omicron from a U2<ZOmicron> matrix using exact ring arithmetic.
+    ///
+    /// For U = [[u11,u12],[u21,u22]] / √2^k with entries in ZOmicron:
+    ///   Re(z) = (2a+c)/2 + b√3/2 = R3(2a+c, b)/2  (for z = ZOmicron(a,b,c,d))
+    ///   Im(z) = (b+2d)/2 + c√3/2 = R3(b+2d, c)/2
+    ///
+    /// All entries use init_exp = k+1 (denominator = 2^{k+1}), representing
+    /// the SO(3) entry values Re(·)/2^k or Im(·)/2^k. The cz entry uses
+    /// R3(n.a, n.b/2) where n = u11·ū11 - u12·ū12 - u21·ū21 + u22·ū22.
+    pub fn from_u2(u: &U2<ZOmicron>) -> Self {
+        let a = u.u11; let b = u.u12;
+        let c = u.u21; let d = u.u22;
+        let k = u.k;
+
+        let ad = a * d.conj();
+        let bc = b * c.conj();
+        let p  = ad + bc;
+        let q  = ad - bc;
+        let r  = a * b.conj() - c * d.conj();
+        let s  = a * c.conj() - b * d.conj();
+        let n  = a * a.conj() - b * b.conj() - c * c.conj() + d * d.conj();
+
+        // re(z) = R3(2*z.a + z.c, z.b) represents 2·Re(z) as R3
+        let re = |z: ZOmicron| R3(INT_TWO * z.a + z.c, z.b);
+        // im(z) = R3(z.b + 2*z.d, z.c) represents 2·Im(z) as R3
+        let im = |z: ZOmicron| R3(z.b + INT_TWO * z.d, z.c);
+
+        // n is real: n.c == 0 and n.b is even (proven from unitarity constraints).
+        // cz raw = R3(n.a, n.b/2) represents Re(n)/2^{k+1}.
+        let cz_num = R3(n.a, n.b / INT_TWO);
+
+        let init_exp = k + 1;
+        let raw: [R3; 9] = [
+            re(p),   im(q),   re(s),
+           -im(p),   re(q),  -im(s),
+            re(r),   im(r),   cz_num,
+        ];
+        let e: [Ratio3; 9] = std::array::from_fn(|i| {
+            let mut entry = Ratio3 { num: raw[i], exp: init_exp };
+            entry.simplify();
+            entry
+        });
+        SO3Omicron { e }
+    }
+}
+
+impl Mul for SO3Omicron {
+    type Output = Self;
+    fn mul(self, rhs: Self) -> Self {
+        let mut e = [Ratio3::ZERO; 9];
+        for r in 0..3 {
+            for c in 0..3 {
+                let products: [Ratio3; 3] = std::array::from_fn(|k| {
+                    self.e[3*r+k] * rhs.e[3*k+c]
+                });
+                let max_e = products.iter().map(|p| p.exp).max().unwrap_or(0);
+                let sum = products.iter().fold(R3::ZERO, |acc, p| {
+                    acc + p.lift_num(max_e - p.exp)
+                });
+                let mut entry = Ratio3 { num: sum, exp: max_e };
+                entry.simplify();
+                e[3*r+c] = entry;
+            }
+        }
+        SO3Omicron { e }
+    }
+}
+
+impl SO3Ops for SO3Omicron {
+    fn max_exp(&self) -> u32 { self.maximum_denominator_exponent() }
+    fn left_mul(&mut self, rhs: &Self) { *self = rhs.clone() * self.clone(); }
+}
+
+// ─── Rotation factories for SO3Omicron (π/6 steps) ───────────────────────────
+//
+// SO3Omicron entries in 2-denominator convention:
+//   cos(π/6) = √3/2  → R3(0,1) / 2^1
+//   sin(π/6) = 1/2   → R3(1,0) / 2^1
+//   1                → R3(1,0) / 2^0
+//
+// Rz(π/6):  [[cos,-sin,0],[sin,cos,0],[0,0,1]]
+// Rx(π/6):  [[1,0,0],[0,cos,-sin],[0,sin,cos]]
+// Ry(π/6):  [[cos,0,sin],[0,1,0],[-sin,0,cos]]
+
+/// Rz(+π/6) as SO3Omicron.
+pub fn rz_pos_o() -> SO3Omicron {
+    let cos = Ratio3 { num: R3::from_i32(0, 1), exp: 1 };
+    let sin = Ratio3 { num: R3::from_i32(1, 0), exp: 1 };
+    let one = Ratio3::ONE;
+    let mut e = [Ratio3::ZERO; 9];
+    e[0] =  cos; e[1] = -sin;
+    e[3] =  sin; e[4] =  cos;
+                 e[8] =  one;
+    SO3Omicron { e }
+}
+
+/// Rz(-π/6) = Rz(+π/6)ᵀ.
+pub fn rz_neg_o() -> SO3Omicron {
+    let mut m = rz_pos_o();
+    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m
+}
+
+/// Rx(+π/6) as SO3Omicron.
+pub fn rx_pos_o() -> SO3Omicron {
+    let cos = Ratio3 { num: R3::from_i32(0, 1), exp: 1 };
+    let sin = Ratio3 { num: R3::from_i32(1, 0), exp: 1 };
+    let one = Ratio3::ONE;
+    let mut e = [Ratio3::ZERO; 9];
+    e[0] =  one;
+    e[4] =  cos; e[5] = -sin;
+    e[7] =  sin; e[8] =  cos;
+    SO3Omicron { e }
+}
+
+/// Rx(-π/6) = Rx(+π/6)ᵀ.
+pub fn rx_neg_o() -> SO3Omicron {
+    let mut m = rx_pos_o();
+    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m
+}
+
+/// Ry(+π/6) as SO3Omicron.
+pub fn ry_pos_o() -> SO3Omicron {
+    let cos = Ratio3 { num: R3::from_i32(0, 1), exp: 1 };
+    let sin = Ratio3 { num: R3::from_i32(1, 0), exp: 1 };
+    let one = Ratio3::ONE;
+    let mut e = [Ratio3::ZERO; 9];
+    e[0] =  cos; e[2] =  sin;
+    e[4] =  one;
+    e[6] = -sin; e[8] =  cos;
+    SO3Omicron { e }
+}
+
+/// Ry(-π/6) = Ry(+π/6)ᵀ.
+pub fn ry_neg_o() -> SO3Omicron {
+    let mut m = ry_pos_o();
+    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1242,5 +1573,118 @@ mod tests {
         let m = SO3::<R4> { e };
         assert_eq!(m.maximum_denominator_exponent(), 0);
         assert_eq!(m.max_exp(), 0);
+    }
+
+    // ── SO3Omicron (n=6) tests ────────────────────────────────────────────────
+
+    fn near_f64(a: f64, b: f64) -> bool { (a - b).abs() < 1e-10 }
+
+    fn near3_f64(a: [[f64;3];3], b: [[f64;3];3]) -> bool {
+        for r in 0..3 { for c in 0..3 {
+            if (a[r][c] - b[r][c]).abs() > 1e-10 { return false; }
+        }}
+        true
+    }
+
+    #[test]
+    fn test_so3o_identity_max_exp_zero() {
+        assert_eq!(SO3Omicron::identity().max_exp(), 0);
+    }
+
+    #[test]
+    fn test_rz_pos_o_float() {
+        let m = rz_pos_o().to_float();
+        let c = (std::f64::consts::PI / 6.0).cos();
+        let s = (std::f64::consts::PI / 6.0).sin();
+        let expected = [[c,-s,0.0],[s,c,0.0],[0.0,0.0,1.0]];
+        assert!(near3_f64(m, expected), "rz_pos_o: {:?}", m);
+    }
+
+    #[test]
+    fn test_rx_pos_o_float() {
+        let m = rx_pos_o().to_float();
+        let c = (std::f64::consts::PI / 6.0).cos();
+        let s = (std::f64::consts::PI / 6.0).sin();
+        let expected = [[1.0,0.0,0.0],[0.0,c,-s],[0.0,s,c]];
+        assert!(near3_f64(m, expected), "rx_pos_o: {:?}", m);
+    }
+
+    #[test]
+    fn test_ry_pos_o_float() {
+        let m = ry_pos_o().to_float();
+        let c = (std::f64::consts::PI / 6.0).cos();
+        let s = (std::f64::consts::PI / 6.0).sin();
+        let expected = [[c,0.0,s],[0.0,1.0,0.0],[-s,0.0,c]];
+        assert!(near3_f64(m, expected), "ry_pos_o: {:?}", m);
+    }
+
+    #[test]
+    fn test_rz_o_neg_is_transpose() {
+        let pos = rz_pos_o();
+        let neg = rz_neg_o();
+        let prod = pos.clone() * neg.clone();
+        assert_eq!(prod, SO3Omicron::identity(), "Rz_pos * Rz_neg ≠ I");
+        let prod2 = neg * pos;
+        assert_eq!(prod2, SO3Omicron::identity(), "Rz_neg * Rz_pos ≠ I");
+    }
+
+    #[test]
+    fn test_rx_o_neg_is_transpose() {
+        let prod = rx_pos_o() * rx_neg_o();
+        assert_eq!(prod, SO3Omicron::identity(), "Rx_pos * Rx_neg ≠ I");
+    }
+
+    #[test]
+    fn test_ry_o_neg_is_transpose() {
+        let prod = ry_pos_o() * ry_neg_o();
+        assert_eq!(prod, SO3Omicron::identity(), "Ry_pos * Ry_neg ≠ I");
+    }
+
+    #[test]
+    fn test_so3o_from_u2_identity() {
+        let id = U2::<ZOmicron>::eye();
+        assert_eq!(SO3Omicron::from_u2(&id), SO3Omicron::identity());
+    }
+
+    #[test]
+    fn test_so3o_from_u2_rz_pi6() {
+        // R gate = diag(1, ξ), SO3 = Rz(π/6)
+        let r = U2::<ZOmicron>::t();   // t() returns diag(1, omega()=ξ)
+        let m = SO3Omicron::from_u2(&r).to_float();
+        let expected = rz_pos_o().to_float();
+        assert!(near3_f64(m, expected), "SO3O(R) ≠ Rz(π/6): {:?}", m);
+    }
+
+    #[test]
+    fn test_so3o_from_u2_h_gate() {
+        // H gate SO3 maps x→z, y→-y, z→x
+        let h = U2::<ZOmicron>::h();
+        let m = SO3Omicron::from_u2(&h).to_float();
+        let expected = [[0.0,0.0,1.0],[0.0,-1.0,0.0],[1.0,0.0,0.0]];
+        assert!(near3_f64(m, expected), "SO3O(H): {:?}", m);
+    }
+
+    #[test]
+    fn test_so3o_from_u2_rz12_equals_identity() {
+        // R^12 = Rz(2π) = identity in SO3
+        let r = U2::<ZOmicron>::t();
+        let mut prod = U2::<ZOmicron>::eye();
+        for _ in 0..12 { prod = prod * r; }
+        let m = SO3Omicron::from_u2(&prod);
+        assert_eq!(m.max_exp(), 0, "R^12 SO3 max_exp should be 0");
+        assert!(near3_f64(m.to_float(), SO3Omicron::identity().to_float()),
+            "R^12 ≠ identity in SO3: {:?}", m.to_float());
+    }
+
+    #[test]
+    fn test_so3o_product_consistency() {
+        // SO3(U·V) == SO3(U) · SO3(V)
+        let r = U2::<ZOmicron>::t();
+        let h = U2::<ZOmicron>::h();
+        let uv = r * h;
+        let so3_uv = SO3Omicron::from_u2(&uv).to_float();
+        let so3_u_so3_v = (SO3Omicron::from_u2(&r) * SO3Omicron::from_u2(&h)).to_float();
+        assert!(near3_f64(so3_uv, so3_u_so3_v),
+            "SO3(RH) ≠ SO3(R)·SO3(H):\n{:?}\nvs\n{:?}", so3_uv, so3_u_so3_v);
     }
 }

@@ -24,14 +24,15 @@
 
 use std::fmt::Debug;
 use std::ops::{Mul, Sub};
-use crate::rings::{ZOmega, ZZeta};
+use crate::rings::{ZOmega, ZZeta, ZOmicron};
 use crate::rings::types::INT_ZERO;
-use crate::matrix::so3::{SO3, SO3T, SO3Q, SO3Ops, R2, R4, Ratio};
+use crate::matrix::so3::{SO3, SO3T, SO3Q, SO3Omicron, SO3Ops, R2, R4, Ratio};
 use crate::matrix::u2::{U2, U2T, U2Q, RingElem};
 #[cfg(feature = "python")]
 use crate::matrix::u2::{PyU2, U2Variant};
 use crate::matrix::{rz_pos, rx_pos, ry_pos, rz_pos_q, rx_pos_q, ry_pos_q};
 use crate::matrix::{rz_neg, rx_neg, ry_neg, rz_neg_q, rx_neg_q, ry_neg_q};
+use crate::matrix::{rz_pos_o, rx_pos_o, ry_pos_o, rz_neg_o, rx_neg_o, ry_neg_o};
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 
 // ─── GateRing trait ───────────────────────────────────────────────────────────
@@ -213,6 +214,122 @@ impl GateRing for ZZeta {
     }
 }
 
+// ─── GateRing for ZOmicron (Clifford+R_z(π/6)) ───────────────────────────────
+
+impl GateRing for ZOmicron {
+    type SO3 = SO3Omicron;
+
+    fn so3_from_u2(u: &U2<Self>) -> SO3Omicron { SO3Omicron::from_u2(u) }
+    fn rz_pos() -> SO3Omicron { rz_pos_o() }
+    fn rx_pos() -> SO3Omicron { rx_pos_o() }
+    fn ry_pos() -> SO3Omicron { ry_pos_o() }
+    fn rz_neg() -> SO3Omicron { rz_neg_o() }
+    fn rx_neg() -> SO3Omicron { rx_neg_o() }
+    fn ry_neg() -> SO3Omicron { ry_neg_o() }
+
+    /// R gate = diag(1, ξ) = [[1,0],[0,ξ]], the Rz(π/6) magic gate.
+    fn rz_pos_u2() -> U2<ZOmicron> {
+        U2::new(ZOmicron::ONE, ZOmicron::ZERO, ZOmicron::ZERO, ZOmicron::XI, 0)
+    }
+    fn rx_pos_u2() -> U2<ZOmicron> {
+        U2::<ZOmicron>::h() * Self::rz_pos_u2() * U2::<ZOmicron>::h()
+    }
+    fn ry_pos_u2() -> U2<ZOmicron> {
+        let s = U2::<ZOmicron>::s();
+        let h = U2::<ZOmicron>::h();
+        let r = Self::rz_pos_u2();
+        s * h * r * h * s.dagger()
+    }
+
+    fn identify_clifford(residual: &SO3Omicron) -> Option<&'static str> {
+        // Compare SO3Omicron against all 24 Clifford SO3 matrices (computed via SO3T → SO3O).
+        // A match exists iff all 9 entries are equal (exact ring comparison).
+        CLIFFORD_TABLE_T
+            .iter()
+            .find(|(_, u)| {
+                let u_o = clifford_u2t_to_u2_omicron(u);
+                SO3Omicron::from_u2(&u_o) == *residual
+            })
+            .map(|(name, _)| *name)
+    }
+
+    fn identify_clifford_from_u2(u: &U2<ZOmicron>) -> Option<&'static str> {
+        CLIFFORD_TABLE_T
+            .iter()
+            .map(|(name, _)| {
+                let gate_u: U2<ZOmicron> = name.chars().fold(U2::eye(), |acc, ch| {
+                    acc * match ch {
+                        'H' => U2::<ZOmicron>::h(),
+                        'S' => U2::<ZOmicron>::s(),
+                        'X' => U2::<ZOmicron>::x(),
+                        'Y' => U2::<ZOmicron>::y(),
+                        'Z' => U2::<ZOmicron>::z(),
+                        _   => U2::eye(),
+                    }
+                });
+                (*name, gate_u.diamond_distance(u))
+            })
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .filter(|(_, d)| *d < 1e-3)
+            .map(|(name, _)| name)
+    }
+
+    fn magic_gate_name() -> &'static str { "R" }
+
+    fn decompose_target(target: &U2<Self>) -> String {
+        decompose_so3_canonical_n6(target)
+    }
+}
+
+/// Convert a Clifford U2T (ZOmega, k≤1) to an equivalent U2<ZOmicron>.
+///
+/// All 24 Cliffords have k ∈ {0, 1}. For k=0: entries map directly.
+/// For k=1: embed ZOmega entries into ZOmicron (ω = e^{iπ/4} not in ZOmicron,
+/// so we can't convert arbitrary U2T). Fortunately, Clifford k=1 entries are
+/// in {0, ±1, ±ω², ±ω³, ±ω⁶} ⊂ Z[i] ⊂ ZOmicron (since ω² = i).
+///
+/// Mapping: ZOmega(a,b,c,d) → a + b·e^{iπ/4} + c·e^{iπ/2} + d·e^{i3π/4}
+///   = a + b·(1+i)/√2 + c·i + d·(-1+i)/√2    [not exact in ZOmicron in general]
+///
+/// But for Clifford entries ∈ {0, ±1} (k=1 matrices scaled by √2): the
+/// raw ZOmega integer coords map to ZOmicron via ω^k → ZOmicron form.
+/// We handle this by evaluating to complex float and matching to ZOmicron
+/// 12th roots (which are all possible k=1 Clifford entry magnitudes).
+fn clifford_u2t_to_u2_omicron(u: &U2T) -> U2<ZOmicron> {
+    // Float conversion then scale by √2^k and round to ZOmicron integers.
+    // Clifford entries are small (coefficients ≤ 2), so this is exact.
+    let scale = (1u64 << u.k) as f64;  // 2^k (not √2^k — we want integer coords)
+    let entries = [u.u11, u.u12, u.u21, u.u22];
+    let convert = |z: crate::rings::ZOmega| -> ZOmicron {
+        let c = z.to_complex() * scale.sqrt();  // this is the integer numerator as complex
+        // Represent c as ZOmicron by matching to a 12th-root-of-unity linear combination.
+        // c = a + b*xi + c2*xi^2 + d*xi^3, solve via:
+        //   Re(c) = a + b*(√3/2) + c2*(1/2)
+        //   Im(c) = b*(1/2) + c2*(√3/2) + d
+        // with a,b,c2,d ∈ Z. For Clifford entries, all coords are small integers.
+        let re = c.re;
+        let im = c.im;
+        // Try all combinations of (a,b,c2,d) ∈ {-2..=2}^4
+        for a in -2i32..=2 {
+            for b in -2i32..=2 {
+                for c2 in -2i32..=2 {
+                    let d_f = im - (b as f64) * 0.5 - (c2 as f64) * (3.0f64.sqrt()/2.0);
+                    let d = d_f.round() as i32;
+                    if (d_f - d as f64).abs() > 0.01 { continue; }
+                    let z_test = ZOmicron::from_i32(a, b, c2, d);
+                    let re_test = z_test.to_complex().re;
+                    let im_test = z_test.to_complex().im;
+                    if (re_test - re).abs() < 0.01 && (im_test - im).abs() < 0.01 {
+                        return z_test;
+                    }
+                }
+            }
+        }
+        ZOmicron::ZERO  // should never happen for valid Clifford entries
+    };
+    U2::new(convert(entries[0]), convert(entries[1]), convert(entries[2]), convert(entries[3]), u.k)
+}
+
 // ─── BlochDecomposer ─────────────────────────────────────────────────────────
 
 /// Generic Bloch-sphere decomposer.
@@ -364,6 +481,138 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
         .unwrap_or("");
     let full_raw = format!("{raw}{clifford_suffix}");
     translate(&full_raw, R::magic_gate_name())
+}
+
+// ─── Canonical-form decomposition for ZOmicron (Clifford+R_z(π/6)) ──────────
+//
+// Analogous to the Forest–Gosset–Kliuchnikov–McKinnon (arXiv:1501.04944) algorithm
+// for n=8, adapted for n=6. The same "try all candidates, pick argmin of max_exp"
+// strategy is used with 15 candidates instead of 9:
+//   axes ∈ {x, y, z}  ×  multiplicities ∈ {1, 2, 3, 4, 5}  = 15 candidates.
+//
+// The SO3 entries for Clifford+R_z(π/6) live in Z[√3] with denominator 2^exp.
+// max_exp() counts the 2-adic denominator level; max_exp()==0 means a Clifford.
+
+struct CanonicalCandidateO {
+    axis: u8,
+    a: u8,
+    so3_neg: SO3Omicron,
+    u2_pos: U2<ZOmicron>,
+}
+
+fn canonical_candidates_o() -> Vec<CanonicalCandidateO> {
+    let mut out = Vec::with_capacity(15);
+    let so3_axis_neg = [rx_neg_o(), ry_neg_o(), rz_neg_o()];
+    let u2_axis_pos: [U2<ZOmicron>; 3] = [
+        ZOmicron::rx_pos_u2(),
+        ZOmicron::ry_pos_u2(),
+        ZOmicron::rz_pos_u2(),
+    ];
+    for (axis_idx, (so3_step_neg, u2_step_pos)) in
+        so3_axis_neg.iter().zip(u2_axis_pos.iter()).enumerate()
+    {
+        let mut cur_so3 = SO3Omicron::identity();
+        let mut cur_u2  = U2::<ZOmicron>::eye();
+        for a in 1..=5u8 {
+            cur_so3 = so3_step_neg.clone() * cur_so3;
+            cur_u2  = cur_u2 * *u2_step_pos;
+            out.push(CanonicalCandidateO {
+                axis: axis_idx as u8,
+                a,
+                so3_neg: cur_so3.clone(),
+                u2_pos:  cur_u2,
+            });
+        }
+    }
+    out
+}
+
+/// Translate a single (axis, a) peel for n=6 into a literal gate-string fragment.
+///
+///   axis 0 (x): R_x(a·π/6) = H · R^a · H
+///   axis 1 (y): R_y(a·π/6) = S · H · R^a · H · S†  (S† = S³ = ZS or SSS)
+///   axis 2 (z): R_z(a·π/6) = R^a
+///
+/// The fragment is in the {H, S, R, Z} alphabet; simplify_n6 reduces further.
+fn canonical_segment_string_n6(axis: u8, a: u8) -> String {
+    let r_run: String = "R".repeat(a as usize);
+    match axis {
+        0 => format!("H{r_run}H"),
+        1 => format!("SH{r_run}HSSS"),
+        2 => r_run,
+        _ => unreachable!(),
+    }
+}
+
+/// Apply the n=6 gate-string simplification loop to a string in {H,S,R,X,Y,Z,I}.
+pub fn simplify_gate_string_n6(input: &str) -> String {
+    let mut s = input.to_string();
+    let mut prev = String::new();
+    while s != prev {
+        prev = s.clone();
+        s = s.replace("RRRRRR", "Z");
+        s = s.replace("RRR", "S");
+        s = s.replace("SS", "Z");
+        s = s.replace("ZZ", "");
+        s = s.replace("HH", "");
+        s = s.replace("XX", "");
+        s = s.replace("YY", "");
+        s = s.replace("SZ", "ZS");
+        s = s.replace("RZ", "ZR");
+        s = s.replace('I', "");
+    }
+    s
+}
+
+/// Canonical-form decomposer for U2<ZOmicron> (Clifford+R_z(π/6)).
+///
+/// At each step, tries all 15 candidate peels (3 axes × multiplicities {1..5})
+/// and picks the argmin of max_exp(). When max_exp()==0 the residual is a
+/// Clifford; it's identified via diamond distance and appended as a suffix.
+pub fn decompose_so3_canonical_n6(target: &U2<ZOmicron>) -> String {
+    let candidates = canonical_candidates_o();
+
+    let mut so3 = SO3Omicron::from_u2(target);
+    let mut p_output_u2 = U2::<ZOmicron>::eye();
+    let max_steps = (so3.max_exp() as usize) * 8 + 32;
+
+    let mut raw_segments: Vec<String> = Vec::new();
+
+    for _ in 0..max_steps {
+        if so3.max_exp() == 0 { break; }
+
+        let mut best_idx: usize = 0;
+        let mut best_so3 = so3.clone();
+        best_so3.left_mul(&candidates[0].so3_neg);
+        let mut best_exp = best_so3.max_exp();
+
+        for (idx, cand) in candidates.iter().enumerate().skip(1) {
+            let mut trial = so3.clone();
+            trial.left_mul(&cand.so3_neg);
+            let trial_exp = trial.max_exp();
+            if trial_exp < best_exp {
+                best_exp = trial_exp;
+                best_idx = idx;
+                best_so3 = trial;
+            }
+        }
+
+        let cand = &candidates[best_idx];
+        so3 = best_so3;
+        p_output_u2 = p_output_u2 * cand.u2_pos;
+        raw_segments.push(canonical_segment_string_n6(cand.axis, cand.a));
+
+        if best_exp == 0 { break; }
+    }
+
+    let gate_c = p_output_u2.dagger() * *target;
+    let clifford_suffix = ZOmicron::identify_clifford_from_u2(&gate_c)
+        .filter(|&name| name != "I")
+        .unwrap_or("");
+
+    let combined: String = raw_segments.join("");
+    let full = format!("{combined}{clifford_suffix}");
+    simplify_gate_string_n6(&full)
 }
 
 // ─── Canonical-form decomposition for ZZeta (Clifford+√T) ────────────────────
@@ -1118,6 +1367,90 @@ mod tests {
             let dist = target.diamond_distance(&recovered);
             assert!(dist < 1e-6,
                 "{{H,S,T,Q}} roundtrip: input=\"{gates}\" → \"{decomp}\", dist={dist:.3e}");
+        }
+    }
+
+    // ── ZOmicron / Clifford+R_z(π/6) decomposer tests ────────────────────────
+
+    type U2O = U2<ZOmicron>;
+
+    fn gate_to_u2o(ch: char) -> U2O {
+        match ch {
+            'H' => U2O::h(),
+            'S' => U2O::s(),
+            'R' => ZOmicron::rz_pos_u2(),
+            'Z' => U2O::z(),
+            'X' => U2O::x(),
+            'Y' => U2O::y(),
+            _ => panic!("Invalid gate: {ch}"),
+        }
+    }
+
+    fn gates_to_u2o(s: &str) -> U2O {
+        s.chars().fold(U2O::eye(), |acc, ch| acc * gate_to_u2o(ch))
+    }
+
+    #[test]
+    fn test_zomicron_identity_decomposes_to_empty() {
+        let eye = U2O::eye();
+        let decomp = BlochDecomposer.decompose(&eye);
+        assert_eq!(decomp, "", "identity → \"{decomp}\"");
+    }
+
+    #[test]
+    fn test_zomicron_r_alone_decomposes_to_r() {
+        let r = ZOmicron::rz_pos_u2();
+        let decomp = BlochDecomposer.decompose(&r);
+        assert_eq!(decomp, "R", "R gate → \"{decomp}\"");
+    }
+
+    #[test]
+    fn test_zomicron_rr_decomposes_correctly() {
+        // RR = Rz(π/3); should round-trip
+        let rr = ZOmicron::rz_pos_u2() * ZOmicron::rz_pos_u2();
+        let decomp = BlochDecomposer.decompose(&rr);
+        let recovered = gates_to_u2o(&decomp);
+        let dist = rr.diamond_distance(&recovered);
+        assert!(dist < 1e-7, "RR round-trip: \"{decomp}\", dist={dist:.3e}");
+    }
+
+    #[test]
+    fn test_zomicron_hrh_decomposes_correctly() {
+        // H·R·H = Rx(π/6); should produce a gate string that round-trips
+        let hrh = U2O::h() * ZOmicron::rz_pos_u2() * U2O::h();
+        let decomp = BlochDecomposer.decompose(&hrh);
+        let recovered = gates_to_u2o(&decomp);
+        let dist = hrh.diamond_distance(&recovered);
+        assert!(dist < 1e-7, "HRH round-trip: \"{decomp}\", dist={dist:.3e}");
+    }
+
+    #[test]
+    fn test_zomicron_clifford_only_inputs() {
+        for input in ["H", "S", "X", "Y", "Z", "HH", "SH", "HS"] {
+            let u = gates_to_u2o(input);
+            let decomp = BlochDecomposer.decompose(&u);
+            assert!(!decomp.contains('R'),
+                "Clifford input \"{input}\" produced R-gate in \"{decomp}\"");
+            let recovered = gates_to_u2o(&decomp);
+            let dist = u.diamond_distance(&recovered);
+            assert!(dist < 1e-9,
+                "Clifford round-trip \"{input}\" → \"{decomp}\", dist={dist:.3e}");
+        }
+    }
+
+    #[test]
+    fn test_zomicron_roundtrip_random_hsr() {
+        let mut rng = rand::rng();
+        for _ in 0..30 {
+            let gates: String = (0..rng.random_range(10..=60))
+                .map(|_| ['H', 'S', 'R'][rng.random_range(0..3)])
+                .collect();
+            let target = gates_to_u2o(&gates);
+            let decomp = BlochDecomposer.decompose(&target);
+            let recovered = gates_to_u2o(&decomp);
+            let dist = target.diamond_distance(&recovered);
+            assert!(dist < 1e-6,
+                "{{H,S,R}} roundtrip: \"{gates}\" → \"{decomp}\", dist={dist:.3e}");
         }
     }
 }
