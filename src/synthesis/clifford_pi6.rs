@@ -330,17 +330,19 @@ fn search_inner(
     out
 }
 
-/// Full Phase-1 search: enumerate all x with norm_eq=true, bilinear=true, alignment ok.
+/// Brute-force Phase-1 search: enumerate all x satisfying norm_eq, bilinear,
+/// and alignment. Parallelised over (b₀, b₂) pairs via rayon.
 ///
-/// target_k = 2^k.  Parallelised over (b₀, b₂) pairs via rayon.
-pub fn direct_search_n6(
+/// Used for small k (≤ LATTICE_K_MIN) where the LLL Q-metric ellipsoid is too
+/// tight to contain valid lattice points.
+fn brute_force_direct_search_n6(
     target_k: i64,
     y: &[f64; 8],
     eps: f64,
     max_sol: usize,
 ) -> Vec<[i64; 8]> {
     if max_sol == 0 { return Vec::new(); }
-    let norm2k = target_k;   // 2^k
+    let norm2k = target_k;
     let thresh_sq = if eps > 0.0 {
         target_k as f64 * (1.0 - eps * eps)
     } else {
@@ -349,7 +351,6 @@ pub fn direct_search_n6(
     let do_prune = eps > 0.0;
     let thresh = thresh_sq.max(0.0).sqrt();
 
-    // Outermost bound: |b0|, |b2| ≤ isqrt(norm2k)
     let max_outer = isqrt(norm2k);
     let pairs: Vec<(i64, i64, i64)> = (-max_outer..=max_outer).flat_map(|b0| {
         let b0_sq = b0 * b0;
@@ -363,7 +364,6 @@ pub fn direct_search_n6(
         .into_par_iter()
         .filter_map(|(b0, b2, rem_b02)| {
             let mut local: Vec<[i64; 8]> = Vec::new();
-            // b1, b3 bounds: b1²+b3²+b1*b3 ≤ rem_b02 → each |b| ≤ √(2*rem_b02)
             let max_b13 = isqrt(2 * rem_b02 + 1);
             for b1 in -max_b13..=max_b13 {
                 if b1 * b1 > 2 * rem_b02 { continue; }
@@ -392,6 +392,42 @@ pub fn direct_search_n6(
         }
     }
     out
+}
+
+/// Threshold k below which brute-force is used instead of the lattice pipeline.
+pub const LATTICE_K_MIN: u32 = 7;
+
+/// Phase-1 search: enumerate x with norm_eq=true, bilinear=true, alignment ok.
+///
+/// target_k = 2^k.  Uses brute-force for small k (where the LLL ellipsoid is
+/// too tight) and the lattice LLL+SE pipeline for large k (where brute-force
+/// is exponentially slow). The lattice requires y scaled so ‖y‖² = 2^(k-1).
+pub fn direct_search_n6(
+    target_k: i64,
+    y: &[f64; 8],
+    eps: f64,
+    max_sol: usize,
+) -> Vec<[i64; 8]> {
+    use crate::synthesis::lattice_omicron;
+    use std::sync::atomic::AtomicBool;
+
+    if max_sol == 0 { return Vec::new(); }
+
+    let k = (target_k as u64).trailing_zeros();
+
+    // For small k the LLL Q-metric ellipsoid is too tight; use brute force.
+    if k < LATTICE_K_MIN {
+        return brute_force_direct_search_n6(target_k, y, eps, max_sol);
+    }
+
+    // Scale y so ‖y_scaled‖² = 2^(k-1), matching the lattice convention.
+    let scale = 2.0_f64.powf(k as f64 / 2.0 - 1.0);
+    let y_scaled: [f64; 8] = std::array::from_fn(|i| y[i] * scale);
+
+    let mut scratch = lattice_omicron::LatticeScratch::new(eps);
+    let budget_hit = AtomicBool::new(false);
+    let budget: u64 = 100_000;
+    lattice_omicron::phase1(&mut scratch, &y_scaled, k, eps, budget, &budget_hit)
 }
 
 // ─── SO3 float utilities ──────────────────────────────────────────────────────
@@ -642,13 +678,17 @@ impl SynthesizerPi6 {
         let raw = unitary_to_uv_n6(&target);
         let v = normalize4(raw).unwrap_or([1.0, 0.0, 0.0, 0.0]);
 
+        let start = std::time::Instant::now();
         for k in self.min_lde..=self.max_lde {
+            let path = if k < LATTICE_K_MIN { "brute" } else { "lattice" };
             let result = if k <= self.direct_limit {
                 self.direct_search(&target, v, k)
             } else {
                 let k_prefix = k - self.direct_limit;
                 self.dc_search(&target, v, k, k_prefix)
             };
+            eprintln!("attempting k={k} via {path} ({} ms elapsed)",
+                      start.elapsed().as_millis());
             if result.is_some() { return result; }
         }
         None
@@ -1452,6 +1492,85 @@ mod tests {
                     result.lde, result.distance, d,
                     if gates.len() > 30 { format!("{}...", &gates[..30]) } else { gates.clone() }
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn lattice_omicron_at_k0() {
+        use crate::synthesis::lattice_omicron;
+        use std::sync::atomic::AtomicBool;
+        
+        // Identity target: y = compute_y(1, 0, 0, 0).
+        let y = compute_y(1.0, 0.0, 0.0, 0.0);
+        eprintln!("y for identity: {y:?}");
+        
+        let mut scratch = lattice_omicron::LatticeScratch::new(0.01);
+        let budget_hit = AtomicBool::new(false);
+        let sols = lattice_omicron::phase1(&mut scratch, &y, 0, 0.01, 1000, &budget_hit);
+        eprintln!("k=0 returned {} solutions", sols.len());
+        for x in &sols {
+            eprintln!("  x = {x:?}");
+        }
+        
+        // Now try with scaled y (factor 2^(0/2) = 1, so no actual change at k=0).
+        let scale = 1.0;
+        let y_scaled: [f64; 8] = std::array::from_fn(|i| y[i] * scale);
+        let mut scratch2 = lattice_omicron::LatticeScratch::new(0.01);
+        let sols2 = lattice_omicron::phase1(&mut scratch2, &y_scaled, 0, 0.01, 1000, &budget_hit);
+        eprintln!("k=0 with scaled y: {} solutions", sols2.len());
+        
+        // Try k=1
+        let mut scratch3 = lattice_omicron::LatticeScratch::new(0.01);
+        let sols3 = lattice_omicron::phase1(&mut scratch3, &y, 1, 0.01, 1000, &budget_hit);
+        eprintln!("k=1 returned {} solutions", sols3.len());
+        for x in &sols3 {
+            eprintln!("  x = {x:?}");
+        }
+        
+        // Try k=1 with scaled y (factor √2 ≈ 1.414)
+        let scale = 2.0_f64.sqrt();
+        let y_scaled: [f64; 8] = std::array::from_fn(|i| y[i] * scale);
+        let mut scratch4 = lattice_omicron::LatticeScratch::new(0.01);
+        let sols4 = lattice_omicron::phase1(&mut scratch4, &y_scaled, 1, 0.01, 1000, &budget_hit);
+        eprintln!("k=1 with scaled y: {} solutions", sols4.len());
+    }
+
+    #[test]
+    #[ignore]
+    fn lattice_omicron_with_scaling_at_various_k() {
+        use crate::synthesis::lattice_omicron;
+        use std::sync::atomic::AtomicBool;
+        
+        // R_z(0.3) — a non-trivial target with known good synthesis at moderate k.
+        let target = rz(0.3_f64);
+        let v = unitary_to_uv_n6(&target);
+        let y_unit = compute_y(v[0], v[1], v[2], v[3]);
+        
+        for k in [5u32, 8, 10, 12, 15, 18, 20] {
+            let target_k = 1_i64 << k;
+            let scale = (target_k as f64).sqrt();
+            let y_scaled: [f64; 8] = std::array::from_fn(|i| y_unit[i] * scale);
+            
+            // Try with both unit-magnitude and scaled y.
+            let mut s1 = lattice_omicron::LatticeScratch::new(0.01);
+            let bh1 = AtomicBool::new(false);
+            let sols_unit = lattice_omicron::phase1(&mut s1, &y_unit, k, 0.01, 100_000, &bh1);
+            
+            let mut s2 = lattice_omicron::LatticeScratch::new(0.01);
+            let bh2 = AtomicBool::new(false);
+            let sols_scaled = lattice_omicron::phase1(&mut s2, &y_scaled, k, 0.01, 100_000, &bh2);
+            
+            eprintln!("k={k}: |y_unit|={:.2} → {} sols ;  |y_scaled|={:.2} → {} sols",
+                (y_unit.iter().map(|v| v*v).sum::<f64>()).sqrt(),
+                sols_unit.len(),
+                (y_scaled.iter().map(|v| v*v).sum::<f64>()).sqrt(),
+                sols_scaled.len(),
+            );
+            
+            for x in sols_unit.iter().chain(sols_scaled.iter()).take(2) {
+                let valid = check_norm_eq(x, k) && check_bilinear(x);
+                eprintln!("  x={x:?} valid={valid}");
             }
         }
     }

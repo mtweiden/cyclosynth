@@ -7,6 +7,7 @@ pub mod diag;
 pub mod distance;
 pub mod lattice;
 pub mod lattice_common;
+pub mod lattice_omicron;
 pub mod lattice_zeta;
 pub mod search;
 pub mod search_zeta;

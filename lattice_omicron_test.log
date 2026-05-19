@@ -1,0 +1,113 @@
+warning: the usage of Script Group `Greek` in this crate consists solely of mixed script confusables
+   --> src/synthesis/lattice_zeta/bkz.rs:583:8
+    |
+583 |     fn svp_identity_β4_returns_unit_vector() {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: the usage includes 'β' (U+03B2)
+    = note: please recheck to make sure their usages are indeed what you want
+    = note: `#[warn(mixed_script_confusables)]` on by default
+
+warning: unused import: `compute_y`
+  --> src/synthesis/lattice_omicron/mod.rs:60:73
+   |
+60 | ...heck_bilinear, check_norm_eq, compute_y};
+   |                                  ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `rayon::prelude`
+  --> src/synthesis/clifford_sqrt_t.rs:41:5
+   |
+41 | use rayon::prelude::*;
+   |     ^^^^^^^^^^^^^^
+
+warning: function `near_f64` is never used
+    --> src/matrix/so3.rs:1580:8
+     |
+1580 |     fn near_f64(a: f64, b: f64) -> bool { (a - b).abs() < 1e-10 }
+     |        ^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` on by default
+
+warning: function `isqrt` is never used
+   --> src/synthesis/clifford_pi6.rs:113:4
+    |
+113 | fn isqrt(n: i64) -> i64 {
+    |    ^^^^^
+
+warning: function `solve_bd` is never used
+   --> src/synthesis/clifford_pi6.rs:235:4
+    |
+235 | fn solve_bd(rem: i64, a0: i64, a2: i64, t_bil: i64) -> Vec<(i64, i64)> {
+    |    ^^^^^^^^
+
+warning: function `record_if_aligned` is never used
+   --> src/synthesis/clifford_pi6.rs:266:4
+    |
+266 | fn record_if_aligned(
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `search_inner` is never used
+   --> src/synthesis/clifford_pi6.rs:285:4
+    |
+285 | fn search_inner(
+    |    ^^^^^^^^^^^^
+
+warning: function `so3_mul` is never used
+   --> src/synthesis/clifford_pi6.rs:388:4
+    |
+388 | fn so3_mul(a: SO3f, b: SO3f) -> SO3f {
+    |    ^^^^^^^
+
+warning: function `so3_rz` is never used
+   --> src/synthesis/clifford_pi6.rs:394:14
+    |
+394 | #[inline] fn so3_rz(t: f64) -> SO3f { let (c,s)=(t.cos(),t.sin()); [[c,...
+    |              ^^^^^^
+
+warning: function `so3_rx` is never used
+   --> src/synthesis/clifford_pi6.rs:395:14
+    |
+395 | #[inline] fn so3_rx(t: f64) -> SO3f { let (c,s)=(t.cos(),t.sin()); [[1....
+    |              ^^^^^^
+
+warning: function `so3_ry` is never used
+   --> src/synthesis/clifford_pi6.rs:396:14
+    |
+396 | #[inline] fn so3_ry(t: f64) -> SO3f { let (c,s)=(t.cos(),t.sin()); [[c,...
+    |              ^^^^^^
+
+warning: function `clifford_dist` is never used
+   --> src/synthesis/clifford_pi6.rs:400:4
+    |
+400 | fn clifford_dist(m: &SO3f) -> f64 {
+    |    ^^^^^^^^^^^^^
+
+warning: static `CLIFFORD_SO3` is never used
+   --> src/synthesis/clifford_pi6.rs:407:8
+    |
+407 | static CLIFFORD_SO3: LazyLock<Vec<(SO3f, &'static str)>> =
+    |        ^^^^^^^^^^^^
+
+warning: function `identify_clifford_so3` is never used
+   --> src/synthesis/clifford_pi6.rs:413:4
+    |
+413 | fn identify_clifford_so3(m: &SO3f) -> &'static str {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `cyclosynth` (lib test) generated 15 warnings (run `cargo fix --lib -p cyclosynth --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (target/debug/deps/cyclosynth-78e921f9faadd53d)
+
+running 7 tests
+test synthesis::lattice_omicron::tests::norm_check_matches_check_norm_eq ... ok
+test synthesis::lattice_omicron::tests::bilinear_b_correct_formula ... ok
+test synthesis::lattice_omicron::tests::sigma_gram_matches_sigma_gram_u ... ok
+test synthesis::lattice_omicron::tests::solutions_satisfy_constraints ... ok
+test synthesis::lattice_omicron::tests::phase1_runs_at_eps_1e3 ... ok
+test synthesis::lattice_omicron::tests::phase1_runs_at_eps_1e5 ... ok
+test synthesis::lattice_omicron::tests::trivial_shell_k1_found ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 320 filtered out; finished in 0.00s
+
