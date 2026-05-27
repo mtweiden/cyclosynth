@@ -1,5 +1,5 @@
-pub mod rings;
 pub mod matrix;
+pub mod rings;
 pub mod synthesis;
 
 #[cfg(feature = "python")]

@@ -12,31 +12,58 @@ type C64 = Complex<f64>;
 type Mat2 = [[C64; 2]; 2];
 
 fn mat_mul(a: Mat2, b: Mat2) -> Mat2 {
-    [[a[0][0] * b[0][0] + a[0][1] * b[1][0], a[0][0] * b[0][1] + a[0][1] * b[1][1]],
-     [a[1][0] * b[0][0] + a[1][1] * b[1][0], a[1][0] * b[0][1] + a[1][1] * b[1][1]]]
+    [
+        [
+            a[0][0] * b[0][0] + a[0][1] * b[1][0],
+            a[0][0] * b[0][1] + a[0][1] * b[1][1],
+        ],
+        [
+            a[1][0] * b[0][0] + a[1][1] * b[1][0],
+            a[1][0] * b[0][1] + a[1][1] * b[1][1],
+        ],
+    ]
 }
 fn rz(t: f64) -> Mat2 {
-    [[C64::from_polar(1.0, -t / 2.0), C64::new(0.0, 0.0)],
-     [C64::new(0.0, 0.0), C64::from_polar(1.0, t / 2.0)]]
+    [
+        [C64::from_polar(1.0, -t / 2.0), C64::new(0.0, 0.0)],
+        [C64::new(0.0, 0.0), C64::from_polar(1.0, t / 2.0)],
+    ]
 }
 fn ry(t: f64) -> Mat2 {
-    let c = (t / 2.0).cos(); let s = (t / 2.0).sin();
-    [[C64::new(c, 0.0), C64::new(-s, 0.0)],
-     [C64::new(s, 0.0), C64::new(c, 0.0)]]
+    let c = (t / 2.0).cos();
+    let s = (t / 2.0).sin();
+    [
+        [C64::new(c, 0.0), C64::new(-s, 0.0)],
+        [C64::new(s, 0.0), C64::new(c, 0.0)],
+    ]
 }
-fn u3(a: f64, b: f64, c: f64) -> Mat2 { mat_mul(mat_mul(rz(a), ry(b)), rz(c)) }
-fn xorshift64(s: &mut u64) -> u64 { *s ^= *s << 13; *s ^= *s >> 7; *s ^= *s << 17; *s }
+fn u3(a: f64, b: f64, c: f64) -> Mat2 {
+    mat_mul(mat_mul(rz(a), ry(b)), rz(c))
+}
+fn xorshift64(s: &mut u64) -> u64 {
+    *s ^= *s << 13;
+    *s ^= *s >> 7;
+    *s ^= *s << 17;
+    *s
+}
 fn rand_angle(s: &mut u64) -> f64 {
-    let b = xorshift64(s) >> 11; (b as f64) / ((1u64 << 53) as f64) * 2.0 * PI
+    let b = xorshift64(s) >> 11;
+    (b as f64) / ((1u64 << 53) as f64) * 2.0 * PI
 }
 
 fn main() {
     std::env::set_var("CYCLOSYNTH_TRACE", "1");
     let mut state: u64 = 0xC0FFEEBAADD0E;
     let n = 4;
-    let targets: Vec<Mat2> = (0..n).map(|_| {
-        u3(rand_angle(&mut state), rand_angle(&mut state), rand_angle(&mut state))
-    }).collect();
+    let targets: Vec<Mat2> = (0..n)
+        .map(|_| {
+            u3(
+                rand_angle(&mut state),
+                rand_angle(&mut state),
+                rand_angle(&mut state),
+            )
+        })
+        .collect();
 
     for &eps in &[1e-4, 1e-5, 1e-6, 1e-7, 1e-8_f64] {
         diag::reset_all();

@@ -31,9 +31,9 @@
 //!   8-tuples. (Direct `Re(u)` may have half-integer η-coords; doubling
 //!   keeps everything integer.)
 
-use std::f64::consts::PI;
+use crate::rings::types::{int_to_f64, Int, INT_THREE, INT_TWO};
 use crate::rings::ZZeta;
-use crate::rings::types::{Int, INT_TWO, INT_THREE, int_to_f64};
+use std::f64::consts::PI;
 
 // ─── coset representatives ───────────────────────────────────────────────────
 
@@ -149,12 +149,7 @@ pub fn zzeta_to_double_re_im_eta_coords(u: &ZZeta) -> ([Int; 4], [Int; 4]) {
     let p1 = u.b - u.h;
     let p2 = u.c - u.g;
     let p3 = u.d - u.f;
-    let double_re = [
-        INT_TWO * u.a - INT_TWO * p2,
-        p1 - INT_THREE * p3,
-        p2,
-        p3,
-    ];
+    let double_re = [INT_TWO * u.a - INT_TWO * p2, p1 - INT_THREE * p3, p2, p3];
 
     //   Let s1 = u_1 + u_7, s2 = u_2 + u_6, s3 = u_3 + u_5.
     //   2·Im(u) = 2·u_4 + s1·(η³−3η) + s2·(η²−2) + s3·η
@@ -162,12 +157,7 @@ pub fn zzeta_to_double_re_im_eta_coords(u: &ZZeta) -> ([Int; 4], [Int; 4]) {
     let s1 = u.b + u.h;
     let s2 = u.c + u.g;
     let s3 = u.d + u.f;
-    let double_im = [
-        INT_TWO * u.e - INT_TWO * s2,
-        s3 - INT_THREE * s1,
-        s2,
-        s1,
-    ];
+    let double_im = [INT_TWO * u.e - INT_TWO * s2, s3 - INT_THREE * s1, s2, s1];
 
     (double_re, double_im)
 }
@@ -252,11 +242,7 @@ pub fn build_y_vector(target: &[[Complex64; 2]; 2], k: u32) -> [f64; 16] {
 ///   - 1 eigenvalue `1/Δ_y²` (along ŷ) — strongest penalty (cap radial)
 ///   - 3 eigenvalues `1/Δ_⊥²` (σ_1 block ⊥ ŷ) — moderate (cap tangential)
 ///   - 12 eigenvalues `1/R²` (σ_5/9/13 blocks) — weakest (bullet balls)
-pub fn build_q_zzeta_real(
-    target: &[[Complex64; 2]; 2],
-    k: u32,
-    eps: f64,
-) -> [[f64; 16]; 16] {
+pub fn build_q_zzeta_real(target: &[[Complex64; 2]; 2], k: u32, eps: f64) -> [[f64; 16]; 16] {
     let r_sq = 2.0f64.powi(k as i32);
     let r = r_sq.sqrt();
     let delta_y = r * eps * eps / (2.0 * (1.0 + (1.0 - eps * eps).sqrt()));
@@ -331,12 +317,19 @@ mod tests {
         let zeta = ZZeta::ZETA;
         let r = embed_one(&zeta);
         let expected: [f64; 8] = [
-            (PI / 8.0).cos(),  (PI / 8.0).sin(),     // σ_1
-            (5.0 * PI / 8.0).cos(), (5.0 * PI / 8.0).sin(),  // σ_5
-            (9.0 * PI / 8.0).cos(), (9.0 * PI / 8.0).sin(),  // σ_9
-            (13.0 * PI / 8.0).cos(), (13.0 * PI / 8.0).sin(),  // σ_13
+            (PI / 8.0).cos(),
+            (PI / 8.0).sin(), // σ_1
+            (5.0 * PI / 8.0).cos(),
+            (5.0 * PI / 8.0).sin(), // σ_5
+            (9.0 * PI / 8.0).cos(),
+            (9.0 * PI / 8.0).sin(), // σ_9
+            (13.0 * PI / 8.0).cos(),
+            (13.0 * PI / 8.0).sin(), // σ_13
         ];
-        assert!(approx_eq_arr(&r, &expected, 1e-12), "embed(ζ) = {r:?}, expected {expected:?}");
+        assert!(
+            approx_eq_arr(&r, &expected, 1e-12),
+            "embed(ζ) = {r:?}, expected {expected:?}"
+        );
     }
 
     #[test]
@@ -355,10 +348,18 @@ mod tests {
         for u in &test_elems {
             let r = embed_one(u);
             let c = u.to_complex();
-            assert!(approx_eq(r[0], c.re, 1e-10),
-                "Re σ_1({u:?}) = {} but to_complex.re = {}", r[0], c.re);
-            assert!(approx_eq(r[1], c.im, 1e-10),
-                "Im σ_1({u:?}) = {} but to_complex.im = {}", r[1], c.im);
+            assert!(
+                approx_eq(r[0], c.re, 1e-10),
+                "Re σ_1({u:?}) = {} but to_complex.re = {}",
+                r[0],
+                c.re
+            );
+            assert!(
+                approx_eq(r[1], c.im, 1e-10),
+                "Im σ_1({u:?}) = {} but to_complex.im = {}",
+                r[1],
+                c.im
+            );
         }
     }
 
@@ -384,7 +385,8 @@ mod tests {
             assert!(
                 approx_eq(m[i][1], expected_col_1[i], 1e-12),
                 "Σ_η[{i}][1] = {} but expected {}",
-                m[i][1], expected_col_1[i]
+                m[i][1],
+                expected_col_1[i]
             );
         }
         // Column 2: η² should be (γ², η_c², γ², η_c²) = (2+√2, 2-√2, 2+√2, 2-√2).
@@ -395,7 +397,8 @@ mod tests {
             assert!(
                 approx_eq(m[i][2], expected_col_2[i], 1e-12),
                 "Σ_η[{i}][2] = {} but expected {}",
-                m[i][2], expected_col_2[i]
+                m[i][2],
+                expected_col_2[i]
             );
         }
     }
@@ -405,7 +408,15 @@ mod tests {
         // u = 1 → 2·Re(u) = 2, 2·Im(u) = 0.
         let one = ZZeta::ONE;
         let (re2, im2) = zzeta_to_double_re_im_eta_coords(&one);
-        assert_eq!(re2, [INT_TWO, Int::from_i32(0), Int::from_i32(0), Int::from_i32(0)]);
+        assert_eq!(
+            re2,
+            [
+                INT_TWO,
+                Int::from_i32(0),
+                Int::from_i32(0),
+                Int::from_i32(0)
+            ]
+        );
         assert_eq!(im2, [Int::from_i32(0); 4]);
     }
 
@@ -415,7 +426,15 @@ mod tests {
         let i_elem = ZZeta::I;
         let (re2, im2) = zzeta_to_double_re_im_eta_coords(&i_elem);
         assert_eq!(re2, [Int::from_i32(0); 4]);
-        assert_eq!(im2, [INT_TWO, Int::from_i32(0), Int::from_i32(0), Int::from_i32(0)]);
+        assert_eq!(
+            im2,
+            [
+                INT_TWO,
+                Int::from_i32(0),
+                Int::from_i32(0),
+                Int::from_i32(0)
+            ]
+        );
     }
 
     #[test]
@@ -425,8 +444,24 @@ mod tests {
         //    2·Im(u) = η_c = -3·η + η³ = (0, -3, 0, 1)·η-basis.
         let zeta = ZZeta::ZETA;
         let (re2, im2) = zzeta_to_double_re_im_eta_coords(&zeta);
-        assert_eq!(re2, [Int::from_i32(0), INT_ONE, Int::from_i32(0), Int::from_i32(0)]);
-        assert_eq!(im2, [Int::from_i32(0), Int::from_i32(-3), Int::from_i32(0), INT_ONE]);
+        assert_eq!(
+            re2,
+            [
+                Int::from_i32(0),
+                INT_ONE,
+                Int::from_i32(0),
+                Int::from_i32(0)
+            ]
+        );
+        assert_eq!(
+            im2,
+            [
+                Int::from_i32(0),
+                Int::from_i32(-3),
+                Int::from_i32(0),
+                INT_ONE
+            ]
+        );
     }
 
     #[test]
@@ -458,12 +493,16 @@ mod tests {
                 }
                 let actual_2_re = 2.0 * r[2 * k];
                 let actual_2_im = 2.0 * r[2 * k + 1];
-                assert!(approx_eq(actual_2_re, expected_2_re_sigma_a, 1e-9),
+                assert!(
+                    approx_eq(actual_2_re, expected_2_re_sigma_a, 1e-9),
                     "block-decomp Re mismatch at k={k} for u={u:?}: \
-                    direct={actual_2_re}, via Σ_η={expected_2_re_sigma_a}");
-                assert!(approx_eq(actual_2_im, expected_2_im_sigma_a, 1e-9),
+                    direct={actual_2_re}, via Σ_η={expected_2_re_sigma_a}"
+                );
+                assert!(
+                    approx_eq(actual_2_im, expected_2_im_sigma_a, 1e-9),
                     "block-decomp Im mismatch at k={k} for u={u:?}: \
-                    direct={actual_2_im}, via Σ_η={expected_2_im_sigma_a}");
+                    direct={actual_2_im}, via Σ_η={expected_2_im_sigma_a}"
+                );
             }
         }
     }
@@ -477,9 +516,14 @@ mod tests {
         ];
         let y = build_y_vector(&id, 0);
         let mut expected = [0.0f64; 16];
-        expected[0] = 1.0;  // Re V_{11} · 1
+        expected[0] = 1.0; // Re V_{11} · 1
         for i in 0..16 {
-            assert!(approx_eq(y[i], expected[i], 1e-12), "y[{i}] = {}, expected {}", y[i], expected[i]);
+            assert!(
+                approx_eq(y[i], expected[i], 1e-12),
+                "y[{i}] = {}, expected {}",
+                y[i],
+                expected[i]
+            );
         }
     }
 
@@ -488,8 +532,14 @@ mod tests {
         // Hadamard's first column: V_{11} = V_{21} = 1/√2. Scale = √(2^5) = √32.
         let inv_sqrt2 = 1.0 / 2.0f64.sqrt();
         let h = [
-            [Complex64::new(inv_sqrt2, 0.0), Complex64::new(inv_sqrt2, 0.0)],
-            [Complex64::new(inv_sqrt2, 0.0), Complex64::new(-inv_sqrt2, 0.0)],
+            [
+                Complex64::new(inv_sqrt2, 0.0),
+                Complex64::new(inv_sqrt2, 0.0),
+            ],
+            [
+                Complex64::new(inv_sqrt2, 0.0),
+                Complex64::new(-inv_sqrt2, 0.0),
+            ],
         ];
         let y = build_y_vector(&h, 5);
         let scale = (2.0f64).powi(5).sqrt();
@@ -525,8 +575,14 @@ mod tests {
         // Hadamard column for u_1 = u_2 = 1/√2 keeps things symmetric.
         let _ = k;
         [
-            [Complex64::new(inv_sqrt2, 0.0), Complex64::new(inv_sqrt2, 0.0)],
-            [Complex64::new(inv_sqrt2, 0.0), Complex64::new(-inv_sqrt2, 0.0)],
+            [
+                Complex64::new(inv_sqrt2, 0.0),
+                Complex64::new(inv_sqrt2, 0.0),
+            ],
+            [
+                Complex64::new(inv_sqrt2, 0.0),
+                Complex64::new(-inv_sqrt2, 0.0),
+            ],
         ]
     }
 
@@ -536,8 +592,12 @@ mod tests {
         let q = build_q_zzeta_real(&target, 8, 1e-3);
         for i in 0..16 {
             for j in 0..16 {
-                assert!(approx_eq(q[i][j], q[j][i], 1e-12),
-                    "Q non-symmetric at ({i},{j}): {} vs {}", q[i][j], q[j][i]);
+                assert!(
+                    approx_eq(q[i][j], q[j][i], 1e-12),
+                    "Q non-symmetric at ({i},{j}): {} vs {}",
+                    q[i][j],
+                    q[j][i]
+                );
             }
         }
     }
@@ -558,8 +618,12 @@ mod tests {
         let lambda_y = 1.0 / (delta_y * delta_y);
         for i in 0..16 {
             let expected = lambda_y * yhat[i];
-            assert!(approx_eq(qy[i], expected, 1e-3 * lambda_y.abs().max(1.0)),
-                "Q·ŷ != (1/Δ_y²)·ŷ at i={i}: got {}, expected {}", qy[i], expected);
+            assert!(
+                approx_eq(qy[i], expected, 1e-3 * lambda_y.abs().max(1.0)),
+                "Q·ŷ != (1/Δ_y²)·ŷ at i={i}: got {}, expected {}",
+                qy[i],
+                expected
+            );
         }
     }
 
@@ -572,13 +636,17 @@ mod tests {
         let eps = 1e-3;
         let q = build_q_zzeta_real(&target, k, eps);
         let mut v = [0.0; 16];
-        v[2] = 1.0;  // pure Re σ_5(u_1) direction
+        v[2] = 1.0; // pure Re σ_5(u_1) direction
         let qv = matvec_16(&q, &v);
         let lambda_r = 1.0 / (1u64 << k) as f64;
         for i in 0..16 {
             let expected = if i == 2 { lambda_r } else { 0.0 };
-            assert!(approx_eq(qv[i], expected, 1e-12),
-                "Q·v in σ_5 block: at i={i}, got {}, expected {}", qv[i], expected);
+            assert!(
+                approx_eq(qv[i], expected, 1e-12),
+                "Q·v in σ_5 block: at i={i}, got {}, expected {}",
+                qv[i],
+                expected
+            );
         }
     }
 
@@ -595,8 +663,12 @@ mod tests {
             let qv = matvec_16(&q, &v);
             for i in 0..16 {
                 let expected = if i == block_idx { lambda_r } else { 0.0 };
-                assert!(approx_eq(qv[i], expected, 1e-12),
-                    "Q·v at idx={block_idx}, i={i}: got {}, expected {}", qv[i], expected);
+                assert!(
+                    approx_eq(qv[i], expected, 1e-12),
+                    "Q·v at idx={block_idx}, i={i}: got {}, expected {}",
+                    qv[i],
+                    expected
+                );
             }
         }
     }
@@ -624,8 +696,10 @@ mod tests {
         let expected_trace = lambda_y + 3.0 * lambda_perp + 12.0 * lambda_r;
         let actual_trace: f64 = (0..16).map(|i| q[i][i]).sum();
         let rel_err = (actual_trace - expected_trace).abs() / expected_trace.abs();
-        assert!(rel_err < 1e-6,
-            "trace(Q) = {actual_trace}, expected {expected_trace}, rel err {rel_err:.3e}");
+        assert!(
+            rel_err < 1e-6,
+            "trace(Q) = {actual_trace}, expected {expected_trace}, rel err {rel_err:.3e}"
+        );
     }
 
     #[test]
@@ -636,12 +710,16 @@ mod tests {
         let m = sigma_8();
         for r in 0..8 {
             let norm_sq: f64 = (0..8).map(|j| m[r][j] * m[r][j]).sum();
-            assert!(approx_eq(norm_sq, 4.0, 1e-12),
-                "row {r} norm² = {norm_sq}, expected 4");
-            for r2 in (r+1)..8 {
+            assert!(
+                approx_eq(norm_sq, 4.0, 1e-12),
+                "row {r} norm² = {norm_sq}, expected 4"
+            );
+            for r2 in (r + 1)..8 {
                 let dot: f64 = (0..8).map(|j| m[r][j] * m[r2][j]).sum();
-                assert!(dot.abs() < 1e-12,
-                    "rows {r}, {r2} dot product = {dot}, expected 0");
+                assert!(
+                    dot.abs() < 1e-12,
+                    "rows {r}, {r2} dot product = {dot}, expected 0"
+                );
             }
         }
     }
@@ -669,7 +747,10 @@ mod tests {
         v[8] = -inv_sqrt2;
         // Sanity: v ⊥ ŷ.
         let dot: f64 = (0..16).map(|i| v[i] * yhat[i]).sum();
-        assert!(dot.abs() < 1e-12, "test vector not perpendicular to ŷ: {dot}");
+        assert!(
+            dot.abs() < 1e-12,
+            "test vector not perpendicular to ŷ: {dot}"
+        );
         // Q · v should equal (1/Δ_⊥²) · v.
         let qv = matvec_16(&q, &v);
         let r = (k as f64).exp2().sqrt();
@@ -679,9 +760,13 @@ mod tests {
             let expected = lambda_perp * v[i];
             // tolerance scales with the eigenvalue magnitude
             let tol = 1e-6 * lambda_perp.abs().max(1.0);
-            assert!(approx_eq(qv[i], expected, tol),
+            assert!(
+                approx_eq(qv[i], expected, tol),
                 "Q·v cap-tangential at i={i}: got {}, expected {}, diff {}",
-                qv[i], expected, qv[i] - expected);
+                qv[i],
+                expected,
+                qv[i] - expected
+            );
         }
     }
 
@@ -710,8 +795,10 @@ mod tests {
         // Symmetry
         for i in 0..16 {
             for j in 0..16 {
-                assert!(approx_eq(q[i][j], q[j][i], 1e-12),
-                    "Q non-symmetric for random target at ({i},{j})");
+                assert!(
+                    approx_eq(q[i][j], q[j][i], 1e-12),
+                    "Q non-symmetric for random target at ({i},{j})"
+                );
             }
         }
         // ŷ-direction eigenvector check
@@ -724,8 +811,12 @@ mod tests {
         let lambda_y = 1.0 / (delta_y * delta_y);
         for i in 0..16 {
             let expected = lambda_y * yhat[i];
-            assert!(approx_eq(qy[i], expected, 1e-3 * lambda_y.abs().max(1.0)),
-                "random target Q·ŷ at i={i}: got {}, expected {}", qy[i], expected);
+            assert!(
+                approx_eq(qy[i], expected, 1e-3 * lambda_y.abs().max(1.0)),
+                "random target Q·ŷ at i={i}: got {}, expected {}",
+                qy[i],
+                expected
+            );
         }
     }
 
@@ -735,9 +826,16 @@ mod tests {
         let target = unit_target(8);
         let q = build_q_zzeta_real(&target, 8, 1e-4);
         let test_vecs = [
-            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-            [1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0, 0.5, -0.5, 0.25, -0.25, 0.1, 0.0, 0.7, -0.3],
+            [
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            [
+                1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+            ],
+            [
+                1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0, 0.5, -0.5, 0.25, -0.25, 0.1, 0.0, 0.7,
+                -0.3,
+            ],
         ];
         for v in &test_vecs {
             let qv = matvec_16(&q, v);
@@ -755,7 +853,11 @@ mod tests {
         let r2 = embed_one(&u2);
         for i in 0..8 {
             assert!(approx_eq(pair[i], r1[i], 1e-12), "pair[{i}] mismatch");
-            assert!(approx_eq(pair[i + 8], r2[i], 1e-12), "pair[{}] mismatch", i + 8);
+            assert!(
+                approx_eq(pair[i + 8], r2[i], 1e-12),
+                "pair[{}] mismatch",
+                i + 8
+            );
         }
     }
 }

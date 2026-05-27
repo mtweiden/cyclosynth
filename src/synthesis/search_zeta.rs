@@ -92,12 +92,7 @@ pub fn uv_to_xy_zeta_mpfr(v: &[rug::Float; 4], k: u32, prec: u32) -> [rug::Float
 
 /// Recursive enumerator: walks integer 16-vectors with `‖x‖² = remaining`
 /// at the current recursion depth.
-fn enumerate<F: FnMut(&[i64; 16])>(
-    x: &mut [i64; 16],
-    pos: usize,
-    remaining: i64,
-    cb: &mut F,
-) {
+fn enumerate<F: FnMut(&[i64; 16])>(x: &mut [i64; 16], pos: usize, remaining: i64, cb: &mut F) {
     if pos == 16 {
         if remaining == 0 {
             cb(x);

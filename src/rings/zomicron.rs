@@ -6,10 +6,10 @@
 //! Useful facts: ξ³ = i, ξ⁶ = −1, √3 = 2ξ − ξ³.
 //! The Gaussian integers Z[i] embed via i ↦ ξ³.
 
+use super::types::{int_to_f64, Float, Int, INT_NEG_ONE, INT_ONE, INT_ZERO};
 use num_complex::Complex64;
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
-use super::types::{Int, Float, INT_ZERO, INT_ONE, INT_NEG_ONE, int_to_f64};
 
 // ─── Constants for σ-matrix and Gram construction ──────────────────────────────
 
@@ -23,11 +23,95 @@ use super::types::{Int, Float, INT_ZERO, INT_ONE, INT_NEG_ONE, int_to_f64};
 ///
 /// Concretely, for x = (a, b, c, d):
 ///   xᵀ G x = 2(a² + b² + c² + d²) + 2(ac + bd).
-pub const SIGMA_GRAM_U: [[i64; 4]; 4] = [
-    [2, 0, 1, 0],
-    [0, 2, 0, 1],
-    [1, 0, 2, 0],
-    [0, 1, 0, 2],
+pub const SIGMA_GRAM_U: [[i64; 4]; 4] = [[2, 0, 1, 0], [0, 2, 0, 1], [1, 0, 2, 0], [0, 1, 0, 2]];
+
+/// Inverse of the n=6 8×8 real embedding matrix used by
+/// `synthesis::clifford_pi6::sigma_matrix`.
+///
+/// Row/column order is the crate order:
+/// (Re u, Im u, Re u•, Im u•, Re t, Im t, Re t•, Im t•).
+/// This was computed once by inverting that block-diagonal Σ matrix.
+pub const SIGMA_INV_U: [[f64; 8]; 8] = [
+    [
+        0.5,
+        -0.28867513459481287,
+        0.5,
+        0.28867513459481287,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ],
+    [
+        0.5773502691896257,
+        0.0,
+        -0.5773502691896257,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ],
+    [
+        0.0,
+        0.5773502691896257,
+        0.0,
+        -0.5773502691896257,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ],
+    [
+        -0.28867513459481287,
+        0.5,
+        0.28867513459481287,
+        0.5,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    ],
+    [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.5,
+        -0.28867513459481287,
+        0.5,
+        0.28867513459481287,
+    ],
+    [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.5773502691896257,
+        0.0,
+        -0.5773502691896257,
+        0.0,
+    ],
+    [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.5773502691896257,
+        0.0,
+        -0.5773502691896257,
+    ],
+    [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.28867513459481287,
+        0.5,
+        0.28867513459481287,
+        0.5,
+    ],
 ];
 
 /// 4×4 integer matrix representation of the bullet map on cyclotomic
@@ -35,12 +119,7 @@ pub const SIGMA_GRAM_U: [[i64; 4]; 4] = [
 ///
 /// Provided for callers that need an explicit matrix form for batch operations.
 /// For single elements, [`ZOmicron::bullet`] is faster.
-pub const BULLET_MATRIX: [[i64; 4]; 4] = [
-    [ 1,  0,  1,  0],
-    [ 0, -1,  0,  0],
-    [ 0,  0, -1,  0],
-    [ 0,  1,  0,  1],
-];
+pub const BULLET_MATRIX: [[i64; 4]; 4] = [[1, 0, 1, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 1, 0, 1]];
 
 /// An element of Z[ξ], ξ = e^{iπ/6}, ξ⁴ = ξ² − 1.
 ///
@@ -54,16 +133,46 @@ pub struct ZOmicron {
 }
 
 impl ZOmicron {
-    pub const ZERO: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO };
-    pub const ONE:  Self = Self { a: INT_ONE,  b: INT_ZERO, c: INT_ZERO, d: INT_ZERO };
+    pub const ZERO: Self = Self {
+        a: INT_ZERO,
+        b: INT_ZERO,
+        c: INT_ZERO,
+        d: INT_ZERO,
+    };
+    pub const ONE: Self = Self {
+        a: INT_ONE,
+        b: INT_ZERO,
+        c: INT_ZERO,
+        d: INT_ZERO,
+    };
     /// ξ itself
-    pub const XI: Self = Self { a: INT_ZERO, b: INT_ONE,  c: INT_ZERO, d: INT_ZERO };
+    pub const XI: Self = Self {
+        a: INT_ZERO,
+        b: INT_ONE,
+        c: INT_ZERO,
+        d: INT_ZERO,
+    };
     /// i = ξ³
-    pub const I: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ONE };
+    pub const I: Self = Self {
+        a: INT_ZERO,
+        b: INT_ZERO,
+        c: INT_ZERO,
+        d: INT_ONE,
+    };
     /// −1
-    pub const NEG_ONE: Self = Self { a: INT_NEG_ONE, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO };
+    pub const NEG_ONE: Self = Self {
+        a: INT_NEG_ONE,
+        b: INT_ZERO,
+        c: INT_ZERO,
+        d: INT_ZERO,
+    };
     /// −i = −ξ³
-    pub const NEG_I: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_NEG_ONE };
+    pub const NEG_I: Self = Self {
+        a: INT_ZERO,
+        b: INT_ZERO,
+        c: INT_ZERO,
+        d: INT_NEG_ONE,
+    };
 
     #[inline]
     pub const fn new(a: Int, b: Int, c: Int, d: Int) -> Self {
@@ -74,7 +183,10 @@ impl ZOmicron {
     #[inline]
     pub const fn from_i32(a: i32, b: i32, c: i32, d: i32) -> Self {
         Self::new(
-            Int::from_i32(a), Int::from_i32(b), Int::from_i32(c), Int::from_i32(d),
+            Int::from_i32(a),
+            Int::from_i32(b),
+            Int::from_i32(c),
+            Int::from_i32(d),
         )
     }
 
@@ -88,7 +200,10 @@ impl ZOmicron {
     #[inline]
     pub fn coeff(self, k: usize) -> Int {
         match k {
-            0 => self.a, 1 => self.b, 2 => self.c, 3 => self.d,
+            0 => self.a,
+            1 => self.b,
+            2 => self.c,
+            3 => self.d,
             _ => panic!("ZOmicron::coeff: index {k} out of range"),
         }
     }
@@ -99,8 +214,8 @@ impl ZOmicron {
     /// conj(a + bξ + cξ² + dξ³) = (a+c) + bξ + (−c)ξ² + (−b−d)ξ³.
     pub fn conj(self) -> Self {
         Self {
-            a:  self.a + self.c,
-            b:  self.b,
+            a: self.a + self.c,
+            b: self.b,
             c: -self.c,
             d: -self.b - self.d,
         }
@@ -110,7 +225,10 @@ impl ZOmicron {
     #[inline]
     pub fn scale(self, s: Int) -> Self {
         Self {
-            a: self.a * s, b: self.b * s, c: self.c * s, d: self.d * s,
+            a: self.a * s,
+            b: self.b * s,
+            c: self.c * s,
+            d: self.d * s,
         }
     }
 
@@ -127,15 +245,21 @@ impl ZOmicron {
     /// Largest power of 2 dividing all coefficients (for normalization).
     pub fn gcd_power_of_2(self) -> u32 {
         let bits = self.a | self.b | self.c | self.d;
-        if bits == INT_ZERO { Int::BITS - 1 } else { bits.trailing_zeros() }
+        if bits == INT_ZERO {
+            Int::BITS - 1
+        } else {
+            bits.trailing_zeros()
+        }
     }
 
     /// Divide all coefficients by 2^shift.
     #[inline]
     pub fn div2(self, shift: u32) -> Self {
         Self {
-            a: self.a >> shift, b: self.b >> shift,
-            c: self.c >> shift, d: self.d >> shift,
+            a: self.a >> shift,
+            b: self.b >> shift,
+            c: self.c >> shift,
+            d: self.d >> shift,
         }
     }
 
@@ -166,10 +290,10 @@ impl ZOmicron {
     /// In coordinates: (a, b, c, d) ↦ (a + c, −b, −c, b + d).
     pub fn bullet(self) -> Self {
         Self {
-            a:  self.a + self.c,
+            a: self.a + self.c,
             b: -self.b,
             c: -self.c,
-            d:  self.b + self.d,
+            d: self.b + self.d,
         }
     }
 
@@ -184,8 +308,8 @@ impl ZOmicron {
     /// where the rational part equals 2^k and the √3 part must vanish.
     pub fn complex_norm_sqr(self) -> (Int, Int) {
         let (a, b, c, d) = (self.a, self.b, self.c, self.d);
-        let rational = a*a + b*b + c*c + d*d + a*c + b*d;
-        let sqrt3    = a*b + b*c + c*d;
+        let rational = a * a + b * b + c * c + d * d + a * c + b * d;
+        let sqrt3 = a * b + b * c + c * d;
         (rational, sqrt3)
     }
 
@@ -224,8 +348,10 @@ impl Add for ZOmicron {
     #[inline]
     fn add(self, rhs: Self) -> Self {
         Self {
-            a: self.a + rhs.a, b: self.b + rhs.b,
-            c: self.c + rhs.c, d: self.d + rhs.d,
+            a: self.a + rhs.a,
+            b: self.b + rhs.b,
+            c: self.c + rhs.c,
+            d: self.d + rhs.d,
         }
     }
 }
@@ -235,8 +361,10 @@ impl Sub for ZOmicron {
     #[inline]
     fn sub(self, rhs: Self) -> Self {
         Self {
-            a: self.a - rhs.a, b: self.b - rhs.b,
-            c: self.c - rhs.c, d: self.d - rhs.d,
+            a: self.a - rhs.a,
+            b: self.b - rhs.b,
+            c: self.c - rhs.c,
+            d: self.d - rhs.d,
         }
     }
 }
@@ -245,7 +373,12 @@ impl Neg for ZOmicron {
     type Output = Self;
     #[inline]
     fn neg(self) -> Self {
-        Self { a: -self.a, b: -self.b, c: -self.c, d: -self.d }
+        Self {
+            a: -self.a,
+            b: -self.b,
+            c: -self.c,
+            d: -self.d,
+        }
     }
 }
 
@@ -263,15 +396,15 @@ impl Mul for ZOmicron {
     #[inline]
     fn mul(self, q: Self) -> Self {
         let (p0, p1, p2, p3) = (self.a, self.b, self.c, self.d);
-        let (q0, q1, q2, q3) = (q.a,    q.b,    q.c,    q.d);
+        let (q0, q1, q2, q3) = (q.a, q.b, q.c, q.d);
         // Degree-4 wrap: p1q3 + p2q2 + p3q1  (ξ⁴ = ξ²−1 → subtracts from [1], adds to [ξ²])
         // Degree-5 wrap: p2q3 + p3q2          (ξ⁵ = ξ³−ξ → subtracts from [ξ],  adds to [ξ³])
         // Degree-6 wrap: p3q3                 (ξ⁶ = −1   → subtracts from [1])
         Self {
-            a: p0*q0 - p1*q3 - p2*q2 - p3*q1 - p3*q3,
-            b: p0*q1 + p1*q0 - p2*q3 - p3*q2,
-            c: p0*q2 + p1*q1 + p2*q0 + p1*q3 + p2*q2 + p3*q1,
-            d: p0*q3 + p1*q2 + p2*q1 + p3*q0 + p2*q3 + p3*q2,
+            a: p0 * q0 - p1 * q3 - p2 * q2 - p3 * q1 - p3 * q3,
+            b: p0 * q1 + p1 * q0 - p2 * q3 - p3 * q2,
+            c: p0 * q2 + p1 * q1 + p2 * q0 + p1 * q3 + p2 * q2 + p3 * q1,
+            d: p0 * q3 + p1 * q2 + p2 * q1 + p3 * q0 + p2 * q3 + p3 * q2,
         }
     }
 }
@@ -281,7 +414,9 @@ impl Mul for ZOmicron {
 fn fmt_poly(terms: &[(Int, &str)], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     let mut first = true;
     for &(coeff, sym) in terms {
-        if coeff == INT_ZERO { continue; }
+        if coeff == INT_ZERO {
+            continue;
+        }
         let neg = coeff < INT_ZERO;
         let abs = if neg { -coeff } else { coeff };
         if first {
@@ -304,18 +439,18 @@ fn fmt_poly(terms: &[(Int, &str)], f: &mut fmt::Formatter<'_>) -> fmt::Result {
             }
         }
     }
-    if first { write!(f, "0")?; }
+    if first {
+        write!(f, "0")?;
+    }
     Ok(())
 }
 
 impl fmt::Display for ZOmicron {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_poly(&[
-            (self.a, ""),
-            (self.b, "ξ"),
-            (self.c, "ξ²"),
-            (self.d, "ξ³"),
-        ], f)
+        fmt_poly(
+            &[(self.a, ""), (self.b, "ξ"), (self.c, "ξ²"), (self.d, "ξ³")],
+            f,
+        )
     }
 }
 
@@ -333,9 +468,13 @@ pub struct PyZOmicron {
 
 #[cfg(feature = "python")]
 impl PyZOmicron {
-    pub fn to_inner(&self) -> ZOmicron { self.inner }
+    pub fn to_inner(&self) -> ZOmicron {
+        self.inner
+    }
 
-    pub fn from_inner(inner: ZOmicron) -> Self { Self { inner } }
+    pub fn from_inner(inner: ZOmicron) -> Self {
+        Self { inner }
+    }
 }
 
 #[cfg(feature = "python")]
@@ -344,32 +483,85 @@ impl PyZOmicron {
     /// Python always passes 64-bit integers; cast to `Int` (may be wider than i64).
     #[new]
     fn new(a: i64, b: i64, c: i64, d: i64) -> Self {
-        Self { inner: ZOmicron::new(
-            Int::from_i64(a), Int::from_i64(b), Int::from_i64(c), Int::from_i64(d),
-        )}
+        Self {
+            inner: ZOmicron::new(
+                Int::from_i64(a),
+                Int::from_i64(b),
+                Int::from_i64(c),
+                Int::from_i64(d),
+            ),
+        }
     }
 
-    fn __add__(&self, other: &PyZOmicron) -> Self { Self { inner: self.inner + other.inner } }
-    fn __sub__(&self, other: &PyZOmicron) -> Self { Self { inner: self.inner - other.inner } }
-    fn __mul__(&self, other: &PyZOmicron) -> Self { Self { inner: self.inner * other.inner } }
-    fn __neg__(&self) -> Self { Self { inner: -self.inner } }
+    fn __add__(&self, other: &PyZOmicron) -> Self {
+        Self {
+            inner: self.inner + other.inner,
+        }
+    }
+    fn __sub__(&self, other: &PyZOmicron) -> Self {
+        Self {
+            inner: self.inner - other.inner,
+        }
+    }
+    fn __mul__(&self, other: &PyZOmicron) -> Self {
+        Self {
+            inner: self.inner * other.inner,
+        }
+    }
+    fn __neg__(&self) -> Self {
+        Self { inner: -self.inner }
+    }
 
-    fn to_complex(&self) -> (f64, f64) { let c = self.inner.to_complex(); (c.re, c.im) }
-    fn mul_sqrt3(&self) -> Self { Self { inner: self.inner.mul_sqrt3() } }
-    fn gcd_power_of_2(&self) -> u32 { self.inner.gcd_power_of_2() }
+    fn to_complex(&self) -> (f64, f64) {
+        let c = self.inner.to_complex();
+        (c.re, c.im)
+    }
+    fn mul_sqrt3(&self) -> Self {
+        Self {
+            inner: self.inner.mul_sqrt3(),
+        }
+    }
+    fn gcd_power_of_2(&self) -> u32 {
+        self.inner.gcd_power_of_2()
+    }
 
-    #[staticmethod] fn one()     -> Self { Self { inner: ZOmicron::ONE } }
-    #[staticmethod] fn xi()      -> Self { Self { inner: ZOmicron::XI } }
-    #[staticmethod] fn i()       -> Self { Self { inner: ZOmicron::I } }
-    #[staticmethod] fn zero()    -> Self { Self { inner: ZOmicron::ZERO } }
-    #[staticmethod] fn neg_one() -> Self { Self { inner: ZOmicron::NEG_ONE } }
+    #[staticmethod]
+    fn one() -> Self {
+        Self {
+            inner: ZOmicron::ONE,
+        }
+    }
+    #[staticmethod]
+    fn xi() -> Self {
+        Self {
+            inner: ZOmicron::XI,
+        }
+    }
+    #[staticmethod]
+    fn i() -> Self {
+        Self { inner: ZOmicron::I }
+    }
+    #[staticmethod]
+    fn zero() -> Self {
+        Self {
+            inner: ZOmicron::ZERO,
+        }
+    }
+    #[staticmethod]
+    fn neg_one() -> Self {
+        Self {
+            inner: ZOmicron::NEG_ONE,
+        }
+    }
 
     fn __repr__(&self) -> String {
         let z = &self.inner;
         format!("ZOmicron({},{},{},{})", z.a, z.b, z.c, z.d)
     }
     fn bullet(&self) -> Self {
-        Self { inner: self.inner.bullet() }
+        Self {
+            inner: self.inner.bullet(),
+        }
     }
 
     fn complex_norm_sqr(&self) -> (i64, i64) {
@@ -384,7 +576,9 @@ impl PyZOmicron {
 
     #[staticmethod]
     fn inv_xi() -> Self {
-        Self { inner: ZOmicron::INV_XI }
+        Self {
+            inner: ZOmicron::INV_XI,
+        }
     }
 }
 
@@ -405,13 +599,16 @@ mod tests {
         let expected_xi = Complex64::from_polar(1.0, PI / 6.0);
         assert!(near(ZOmicron::XI.to_complex(), expected_xi));
         assert!(near(ZOmicron::I.to_complex(), Complex64::new(0.0, 1.0)));
-        assert!(near(ZOmicron::NEG_ONE.to_complex(), Complex64::new(-1.0, 0.0)));
+        assert!(near(
+            ZOmicron::NEG_ONE.to_complex(),
+            Complex64::new(-1.0, 0.0)
+        ));
     }
 
     #[test]
     fn test_xi12_eq_1() {
         let x = ZOmicron::XI;
-        let x12 = x*x * x*x * x*x * x*x * x*x * x*x;
+        let x12 = x * x * x * x * x * x * x * x * x * x * x * x;
         assert_eq!(x12, ZOmicron::ONE, "ξ¹² should equal 1");
     }
 
@@ -433,13 +630,13 @@ mod tests {
     #[test]
     fn test_xi6_eq_neg1() {
         let x = ZOmicron::XI;
-        let x6 = x*x * x*x * x*x;
+        let x6 = x * x * x * x * x * x;
         assert_eq!(x6, ZOmicron::NEG_ONE, "ξ⁶ should equal −1");
     }
 
     #[test]
     fn test_conj() {
-        let c        = ZOmicron::XI.conj().to_complex();
+        let c = ZOmicron::XI.conj().to_complex();
         let expected = Complex64::from_polar(1.0, -PI / 6.0);
         assert!(near(c, expected), "conj(ξ) = {c}, expected {expected}");
     }
@@ -448,7 +645,7 @@ mod tests {
     fn test_conj_formula() {
         // conj(a + bξ + cξ² + dξ³) = (a+c) + bξ − cξ² + (−b−d)ξ³
         let z = ZOmicron::from_i32(1, 2, 3, 4);
-        let got      = z.conj().to_complex();
+        let got = z.conj().to_complex();
         let expected = z.to_complex().conj();
         assert!(near(got, expected), "conj: got {got}, expected {expected}");
     }
@@ -457,9 +654,12 @@ mod tests {
     fn test_mul_complex_consistent() {
         let x = ZOmicron::from_i32(1, 2, -1, 3);
         let y = ZOmicron::from_i32(-2, 1, 3, 0);
-        let prod_ring  = (x * y).to_complex();
+        let prod_ring = (x * y).to_complex();
         let prod_float = x.to_complex() * y.to_complex();
-        assert!(near(prod_ring, prod_float), "ring {prod_ring} vs float {prod_float}");
+        assert!(
+            near(prod_ring, prod_float),
+            "ring {prod_ring} vs float {prod_float}"
+        );
     }
 
     #[test]
@@ -489,7 +689,7 @@ mod tests {
     #[test]
     fn test_zi_embedding_consistent() {
         // Gaussian integer 3 + 2i embeds as (3, 0, 0, 2) in Z[ξ]
-        let z_zi  = Complex64::new(3.0, 2.0);
+        let z_zi = Complex64::new(3.0, 2.0);
         let z_omc = ZOmicron::from_zi(Int::from_i32(3), Int::from_i32(2));
         assert!(
             near(z_zi, z_omc.to_complex()),
@@ -544,7 +744,12 @@ mod tests {
         assert_eq!(z.bullet().bullet(), z);
 
         // Try a few more random ones
-        for &(a, b, c, d) in &[(0, 0, 0, 0), (1, 1, 1, 1), (-1, 2, -3, 4), (100, -50, 25, 13)] {
+        for &(a, b, c, d) in &[
+            (0, 0, 0, 0),
+            (1, 1, 1, 1),
+            (-1, 2, -3, 4),
+            (100, -50, 25, 13),
+        ] {
             let z = ZOmicron::from_i32(a, b, c, d);
             assert_eq!(z.bullet().bullet(), z, "bullet² != id on ({a},{b},{c},{d})");
         }
@@ -556,13 +761,19 @@ mod tests {
         // The cleanest check: bullet(ξ) = ξ⁵ has complex value e^{i·5π/6}.
         let bullet_xi = ZOmicron::XI.bullet().to_complex();
         let expected = Complex64::from_polar(1.0, 5.0 * PI / 6.0);
-        assert!(near(bullet_xi, expected), "bullet(ξ) = {bullet_xi}, expected {expected}");
+        assert!(
+            near(bullet_xi, expected),
+            "bullet(ξ) = {bullet_xi}, expected {expected}"
+        );
 
         // bullet(ξ²) = ξ¹⁰ has complex value e^{i·10π/6} = e^{-i·π/3}.
         let xi2 = ZOmicron::XI * ZOmicron::XI;
         let bullet_xi2 = xi2.bullet().to_complex();
         let expected = Complex64::from_polar(1.0, -PI / 3.0);
-        assert!(near(bullet_xi2, expected), "bullet(ξ²) = {bullet_xi2}, expected {expected}");
+        assert!(
+            near(bullet_xi2, expected),
+            "bullet(ξ²) = {bullet_xi2}, expected {expected}"
+        );
     }
 
     #[test]
@@ -575,7 +786,11 @@ mod tests {
         assert_ne!(bull_i, conj_i, "bullet and conj should differ on i");
 
         // Concrete check:
-        assert_eq!(bull_i, ZOmicron::I, "bullet should fix i (since √3 ↦ -√3 fixes i)");
+        assert_eq!(
+            bull_i,
+            ZOmicron::I,
+            "bullet should fix i (since √3 ↦ -√3 fixes i)"
+        );
         assert_eq!(conj_i, ZOmicron::NEG_I, "conj should send i ↦ -i");
     }
 
@@ -591,10 +806,7 @@ mod tests {
         );
 
         // bullet(x + y) = bullet(x) + bullet(y)
-        assert_eq!(
-            (x + y).bullet(),
-            x.bullet() + y.bullet(),
-        );
+        assert_eq!((x + y).bullet(), x.bullet() + y.bullet(),);
     }
 
     #[test]
@@ -605,8 +817,11 @@ mod tests {
 
         // |ξ|² = 1 (since |e^{iπ/6}| = 1)
         let (r, s) = ZOmicron::XI.complex_norm_sqr();
-        assert_eq!((r, s), (Int::from_i32(1), Int::from_i32(0)),
-            "|ξ|² should be 1, got {r} + {s}√3");
+        assert_eq!(
+            (r, s),
+            (Int::from_i32(1), Int::from_i32(0)),
+            "|ξ|² should be 1, got {r} + {s}√3"
+        );
 
         // |ξ²|² = 1
         let xi2 = ZOmicron::XI * ZOmicron::XI;
@@ -630,7 +845,7 @@ mod tests {
 
         // Cross-check numerically
         let c = z.to_complex();
-        let expected_norm_sq = c.norm_sqr();  // Complex64::norm_sqr
+        let expected_norm_sq = c.norm_sqr(); // Complex64::norm_sqr
         let computed_norm_sq = int_to_f64(r) + int_to_f64(s) * 3.0_f64.sqrt();
         assert!(
             (expected_norm_sq - computed_norm_sq).abs() < 1e-12,
@@ -641,12 +856,7 @@ mod tests {
     #[test]
     fn test_complex_norm_sqr_matches_to_complex_general() {
         // Random element: verify rational + sqrt3·√3 matches |to_complex()|².
-        let test_cases = [
-            ( 1,  2,  3,  4),
-            (-1,  0,  2, -3),
-            ( 5, -2, -7,  1),
-            ( 0,  1,  0,  1),
-        ];
+        let test_cases = [(1, 2, 3, 4), (-1, 0, 2, -3), (5, -2, -7, 1), (0, 1, 0, 1)];
         for &(a, b, c, d) in &test_cases {
             let z = ZOmicron::from_i32(a, b, c, d);
             let (r, s) = z.complex_norm_sqr();
@@ -683,17 +893,16 @@ mod tests {
     #[test]
     fn test_field_norm_consistency_with_complex_norm_sqr() {
         // N(z) = (r + s√3)(r - s√3) = r² - 3s² where |z|² = r + s√3.
-        let test_cases = [
-            ( 1,  2,  3,  4),
-            (-1,  0,  2, -3),
-            ( 5, -2, -7,  1),
-            ( 1,  1,  1,  1),
-        ];
+        let test_cases = [(1, 2, 3, 4), (-1, 0, 2, -3), (5, -2, -7, 1), (1, 1, 1, 1)];
         for &(a, b, c, d) in &test_cases {
             let z = ZOmicron::from_i32(a, b, c, d);
             let (r, s) = z.complex_norm_sqr();
             let expected = r * r - Int::from_i32(3) * s * s;
-            assert_eq!(z.field_norm(), expected, "field_norm inconsistency on ({a},{b},{c},{d})");
+            assert_eq!(
+                z.field_norm(),
+                expected,
+                "field_norm inconsistency on ({a},{b},{c},{d})"
+            );
         }
     }
 
@@ -714,9 +923,9 @@ mod tests {
         // because xᵀGx for n=6 = 2 · (a² + b² + c² + d² + ac + bd)
         //                     = 2 · (rational part of |u|²)
         let test_cases = [
-            ( 1,  2,  3,  4),
-            ( 0,  1,  0,  0),  // ξ
-            ( 1,  0,  0,  1),  // 1 + i
+            (1, 2, 3, 4),
+            (0, 1, 0, 0), // ξ
+            (1, 0, 0, 1), // 1 + i
         ];
         for &(a, b, c, d) in &test_cases {
             let z = ZOmicron::from_i32(a, b, c, d);

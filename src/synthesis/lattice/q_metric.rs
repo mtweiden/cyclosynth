@@ -6,9 +6,7 @@
 use i256::i256;
 use rug::{Assign, Float as RFloat};
 
-use super::scratch::{
-    compute_scale_bits, imat_zero, rfv, IntScratch, TARGET_BITS,
-};
+use super::scratch::{compute_scale_bits, imat_zero, rfv, IntScratch, TARGET_BITS};
 use super::scratch::{r_add, r_div, r_mul, r_sub};
 use crate::rings::Float;
 
@@ -59,7 +57,11 @@ pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
     for i in 0..8 {
         for j in 0..8 {
             r_mul!(scratch.tmp, scratch.y_rf[i], scratch.y_rf[j]);
-            r_mul!(scratch.yhat_yhat_t[i][j], scratch.tmp, scratch.inv_y_norm_sq);
+            r_mul!(
+                scratch.yhat_yhat_t[i][j],
+                scratch.tmp,
+                scratch.inv_y_norm_sq
+            );
         }
     }
 
@@ -173,5 +175,9 @@ fn rfloat_to_i256(x: &RFloat) -> i256 {
         bytes[idx * 8..(idx + 1) * 8].copy_from_slice(&limb.to_le_bytes());
     }
     let val = i256::from_le_bytes(bytes);
-    if sign_neg { -val } else { val }
+    if sign_neg {
+        -val
+    } else {
+        val
+    }
 }

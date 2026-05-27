@@ -29,8 +29,14 @@ fn rz_f64(t: f64) -> Mat2 {
 
 fn main() {
     std::env::set_var("CYCLOSYNTH_TRACE", "1");
-    let theta: f64 = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(1.1);
-    let eps: f64 = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(1.5e-8);
+    let theta: f64 = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1.1);
+    let eps: f64 = std::env::args()
+        .nth(2)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1.5e-8);
 
     diag::reset_all();
     let target = rz_f64(theta);
@@ -47,19 +53,37 @@ fn main() {
 
     println!("=== depth-1 Q-filter: theta={} eps={:e} ===", theta, eps);
     match r {
-        Some(r) => println!("  FOUND lde={} dist={:.2e} time={:.2}s", r.lde, r.distance, dt),
+        Some(r) => println!(
+            "  FOUND lde={} dist={:.2e} time={:.2}s",
+            r.lde, r.distance, dt
+        ),
         None => println!("  NOT FOUND time={:.2}s", dt),
     }
     println!("  z[1] candidates measured (= depth-1 recurses to depth 0):");
     println!("    total                              {total:>12}");
     if total > 0 {
         let pct = |x: u64| 100.0 * x as f64 / total as f64;
-        println!("    [reject] D < 0                     {d_neg:>12} ({:>5.1}%)", pct(d_neg));
-        println!("    [reject] D ≥ 0, mod-16 BAD         {mod16_bad:>12} ({:>5.1}%)", pct(mod16_bad));
-        println!("    [reject] D ≥ 0, isqrt²≠D           {not_sq:>12} ({:>5.1}%)", pct(not_sq));
-        println!("    [PASS]   D is a perfect square     {perfect:>12} ({:>5.1}%)", pct(perfect));
+        println!(
+            "    [reject] D < 0                     {d_neg:>12} ({:>5.1}%)",
+            pct(d_neg)
+        );
+        println!(
+            "    [reject] D ≥ 0, mod-16 BAD         {mod16_bad:>12} ({:>5.1}%)",
+            pct(mod16_bad)
+        );
+        println!(
+            "    [reject] D ≥ 0, isqrt²≠D           {not_sq:>12} ({:>5.1}%)",
+            pct(not_sq)
+        );
+        println!(
+            "    [PASS]   D is a perfect square     {perfect:>12} ({:>5.1}%)",
+            pct(perfect)
+        );
         let reject = d_neg + mod16_bad + not_sq;
-        println!("    -- total filter rejections        {reject:>12} ({:>5.1}%)", pct(reject));
+        println!(
+            "    -- total filter rejections        {reject:>12} ({:>5.1}%)",
+            pct(reject)
+        );
     }
 
     // Per-depth profile: enter, prune-fires (f64 check), prune-actual (post
@@ -71,15 +95,24 @@ fn main() {
         let n_e = diag::N_RECURSE_ENTER_AT_DEPTH[d].load(Ordering::Relaxed);
         let n_p = diag::N_PRUNE_FIRES_AT_DEPTH[d].load(Ordering::Relaxed);
         let n_a = diag::N_PRUNE_ACTUAL_AT_DEPTH[d].load(Ordering::Relaxed);
-        if n_e == 0 && n_p == 0 && n_a == 0 { continue; }
-        let rate = if n_e > 0 { 100.0 * n_a as f64 / n_e as f64 } else { 0.0 };
+        if n_e == 0 && n_p == 0 && n_a == 0 {
+            continue;
+        }
+        let rate = if n_e > 0 {
+            100.0 * n_a as f64 / n_e as f64
+        } else {
+            0.0
+        };
         println!("    {d:>5} | {n_e:>14} | {n_p:>15} | {n_a:>15} | {rate:>6.1}%");
     }
 
     let n_vf = diag::N_VERIFY_PRUNE_FIRES.load(Ordering::Relaxed);
     let n_vc = diag::N_VERIFY_PRUNE_CORRECTED.load(Ordering::Relaxed);
     if n_vf > 0 {
-        println!("    verify rescue rate: {n_vc}/{n_vf} = {:.1}%", 100.0 * n_vc as f64 / n_vf as f64);
+        println!(
+            "    verify rescue rate: {n_vc}/{n_vf} = {:.1}%",
+            100.0 * n_vc as f64 / n_vf as f64
+        );
     }
 
     // Leaf-check ratio + mean per-leaf cost (A1)
@@ -95,16 +128,25 @@ fn main() {
     println!("    depth-0 entries:           {n_d0:>14}");
     println!("    leaf_filter calls:         {n_cb:>14}");
     if n_d0 > 0 {
-        println!("    leaves per depth-0 entry:  {:>14.2}", n_cb as f64 / n_d0 as f64);
+        println!(
+            "    leaves per depth-0 entry:  {:>14.2}",
+            n_cb as f64 / n_d0 as f64
+        );
     }
     println!("    leaf norm-rejected:        {n_norm:>14}");
     println!("    leaf bilinear-rejected:    {n_bil:>14}");
     println!("    solutions returned:        {n_sols:>14}");
     if n_cb > 0 {
-        println!("    mean leaf_filter time:   {:>14.1} ns", t_leaf_ns as f64 / n_cb as f64);
+        println!(
+            "    mean leaf_filter time:   {:>14.1} ns",
+            t_leaf_ns as f64 / n_cb as f64
+        );
     }
     if n_vf > 0 {
-        println!("    mean dd verify time:     {:>14.1} ns", t_dd_ns as f64 / n_vf as f64);
+        println!(
+            "    mean dd verify time:     {:>14.1} ns",
+            t_dd_ns as f64 / n_vf as f64
+        );
     }
 
     // A3: production filter cost
@@ -115,9 +157,15 @@ fn main() {
     if n_qpre > 0 {
         println!();
         println!("  qfilter production timing (A3):");
-        println!("    mean precompute time:    {:>14.1} ns (n={n_qpre})", t_qpre as f64 / n_qpre as f64);
+        println!(
+            "    mean precompute time:    {:>14.1} ns (n={n_qpre})",
+            t_qpre as f64 / n_qpre as f64
+        );
         if n_qcls > 0 {
-            println!("    mean classify time:      {:>14.1} ns (n={n_qcls})", t_qcls as f64 / n_qcls as f64);
+            println!(
+                "    mean classify time:      {:>14.1} ns (n={n_qcls})",
+                t_qcls as f64 / n_qcls as f64
+            );
         }
     }
 

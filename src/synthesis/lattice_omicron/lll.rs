@@ -15,7 +15,7 @@ use super::scratch::{IntScratch, GRAM_OVERFLOW_THRESHOLD_BITS};
 // ─── L²-LLL parameters & result type — moved to lattice_common ───────────────
 
 pub use crate::synthesis::lattice_common::{
-    L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
+    LllResult, L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, MAX_LAZY_PASSES,
 };
 
 // ─── i256 → f64 conversion (used by CFA on the exact Gram) ───────────────────
@@ -40,7 +40,11 @@ pub fn i256_to_f64(v: i256) -> f64 {
         + (limbs[1] as f64) * SCALE_64
         + (limbs[2] as f64) * SCALE_128
         + (limbs[3] as f64) * SCALE_192;
-    if neg { -r } else { r }
+    if neg {
+        -r
+    } else {
+        r
+    }
 }
 
 // ─── Cholesky Factorization Algorithm (Figure 4) ─────────────────────────────

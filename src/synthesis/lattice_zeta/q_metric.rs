@@ -10,9 +10,7 @@ use i256::i256;
 use rug::{Assign, Float as RFloat};
 use std::f64::consts::PI;
 
-use super::scratch::{
-    compute_scale_bits, imat_zero_16, rfv, rfz, IntScratch16, TARGET_BITS,
-};
+use super::scratch::{compute_scale_bits, imat_zero_16, rfv, rfz, IntScratch16, TARGET_BITS};
 use crate::rings::Float;
 
 // ─── build_q_mpfr_zeta: 16D Q-metric construction in MPFR ────────────────────
@@ -282,7 +280,11 @@ fn rfloat_to_i256(x: &RFloat) -> i256 {
         bytes[idx * 8..(idx + 1) * 8].copy_from_slice(&limb.to_le_bytes());
     }
     let val = i256::from_le_bytes(bytes);
-    if sign_neg { -val } else { val }
+    if sign_neg {
+        -val
+    } else {
+        val
+    }
 }
 
 /// Set an MPFR variable to the value of an i256 limb-by-limb. Used by tests

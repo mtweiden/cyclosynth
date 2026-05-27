@@ -13,25 +13,32 @@ type C64 = Complex<f64>;
 type Mat2 = [[C64; 2]; 2];
 
 fn mat_mul(a: Mat2, b: Mat2) -> Mat2 {
-    [[
-        a[0][0]*b[0][0] + a[0][1]*b[1][0],
-        a[0][0]*b[0][1] + a[0][1]*b[1][1],
-    ],[
-        a[1][0]*b[0][0] + a[1][1]*b[1][0],
-        a[1][0]*b[0][1] + a[1][1]*b[1][1],
-    ]]
+    [
+        [
+            a[0][0] * b[0][0] + a[0][1] * b[1][0],
+            a[0][0] * b[0][1] + a[0][1] * b[1][1],
+        ],
+        [
+            a[1][0] * b[0][0] + a[1][1] * b[1][0],
+            a[1][0] * b[0][1] + a[1][1] * b[1][1],
+        ],
+    ]
 }
 
 fn rz(theta: f64) -> Mat2 {
-    [[C64::from_polar(1.0, -theta / 2.0), C64::new(0.0, 0.0)],
-     [C64::new(0.0, 0.0),                 C64::from_polar(1.0, theta / 2.0)]]
+    [
+        [C64::from_polar(1.0, -theta / 2.0), C64::new(0.0, 0.0)],
+        [C64::new(0.0, 0.0), C64::from_polar(1.0, theta / 2.0)],
+    ]
 }
 
 fn ry(theta: f64) -> Mat2 {
     let c = (theta / 2.0).cos();
     let s = (theta / 2.0).sin();
-    [[C64::new(c, 0.0), C64::new(-s, 0.0)],
-     [C64::new(s, 0.0), C64::new(c, 0.0)]]
+    [
+        [C64::new(c, 0.0), C64::new(-s, 0.0)],
+        [C64::new(s, 0.0), C64::new(c, 0.0)],
+    ]
 }
 
 fn u3(a: f64, b: f64, c: f64) -> Mat2 {
@@ -59,10 +66,10 @@ fn rebuild_f64(gates: &str) -> Mat2 {
     ];
     let y: Mat2 = [
         [C64::new(0.0, 0.0), C64::new(0.0, -1.0)],
-        [C64::new(0.0, 1.0), C64::new(0.0,  0.0)],
+        [C64::new(0.0, 1.0), C64::new(0.0, 0.0)],
     ];
     let z: Mat2 = [
-        [C64::new(1.0, 0.0), C64::new( 0.0, 0.0)],
+        [C64::new(1.0, 0.0), C64::new(0.0, 0.0)],
         [C64::new(0.0, 0.0), C64::new(-1.0, 0.0)],
     ];
     let mut u: Mat2 = [
@@ -71,7 +78,12 @@ fn rebuild_f64(gates: &str) -> Mat2 {
     ];
     for c in gates.chars() {
         let g = match c {
-            'H' => h, 'S' => s, 'T' => t, 'X' => x, 'Y' => y, 'Z' => z,
+            'H' => h,
+            'S' => s,
+            'T' => t,
+            'X' => x,
+            'Y' => y,
+            'Z' => z,
             'I' => continue,
             _ => panic!("unknown gate {c}"),
         };
@@ -157,8 +169,11 @@ fn main() {
         sink += diamond_distance_float(a, b);
     }
     let dt_f64 = t0.elapsed();
-    println!("  diamond_distance_float           : {:>9.2?}  ({:.1} ns/call)",
-             dt_f64, dt_f64.as_nanos() as f64 / n_iters as f64);
+    println!(
+        "  diamond_distance_float           : {:>9.2?}  ({:.1} ns/call)",
+        dt_f64,
+        dt_f64.as_nanos() as f64 / n_iters as f64
+    );
 
     let n_iters_mpfr = 100_000; // MPFR is much slower per call
     let t0 = Instant::now();
@@ -167,8 +182,11 @@ fn main() {
         sink += diamond_distance_float_mpfr(a, b, 128);
     }
     let dt_mpfr_128 = t0.elapsed();
-    println!("  diamond_distance_float_mpfr(128) : {:>9.2?}  ({:.1} ns/call)",
-             dt_mpfr_128, dt_mpfr_128.as_nanos() as f64 / n_iters_mpfr as f64);
+    println!(
+        "  diamond_distance_float_mpfr(128) : {:>9.2?}  ({:.1} ns/call)",
+        dt_mpfr_128,
+        dt_mpfr_128.as_nanos() as f64 / n_iters_mpfr as f64
+    );
 
     let t0 = Instant::now();
     for i in 0..n_iters_mpfr {
@@ -176,12 +194,20 @@ fn main() {
         sink += diamond_distance_float_mpfr(a, b, 256);
     }
     let dt_mpfr_256 = t0.elapsed();
-    println!("  diamond_distance_float_mpfr(256) : {:>9.2?}  ({:.1} ns/call)",
-             dt_mpfr_256, dt_mpfr_256.as_nanos() as f64 / n_iters_mpfr as f64);
+    println!(
+        "  diamond_distance_float_mpfr(256) : {:>9.2?}  ({:.1} ns/call)",
+        dt_mpfr_256,
+        dt_mpfr_256.as_nanos() as f64 / n_iters_mpfr as f64
+    );
 
-    println!("\nRatio (MPFR-128 / f64): {:.1}×",
-             (dt_mpfr_128.as_nanos() as f64 / n_iters_mpfr as f64) /
-             (dt_f64.as_nanos() as f64 / n_iters as f64));
+    println!(
+        "\nRatio (MPFR-128 / f64): {:.1}×",
+        (dt_mpfr_128.as_nanos() as f64 / n_iters_mpfr as f64)
+            / (dt_f64.as_nanos() as f64 / n_iters as f64)
+    );
 
-    println!("\n(sink={:.3e} — printed to prevent dead-code elimination)", sink);
+    println!(
+        "\n(sink={:.3e} — printed to prevent dead-code elimination)",
+        sink
+    );
 }

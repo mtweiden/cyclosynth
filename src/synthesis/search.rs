@@ -15,9 +15,9 @@
 // site without simplifying the underlying interface.
 #![allow(clippy::too_many_arguments)]
 
+use crate::matrix::U2T;
 use num_complex::Complex64;
 use std::f64::consts::FRAC_1_SQRT_2;
-use crate::matrix::U2T;
 
 // ─── Alignment vector ─────────────────────────────────────────────────────────
 
@@ -60,8 +60,16 @@ pub fn compute_align_vec(v: [f64; 4]) -> [f64; 8] {
 /// After det normalization in unitary_to_uv (dividing first column by √det),
 /// both u1 and u2 rotate by e^{iπ/8}: uv(V·T†) = e^{iπ/8} · uv(V).
 pub fn apply_t_dag_to_uv(v: [f64; 4]) -> [f64; 4] {
-    let (c, s) = (std::f64::consts::FRAC_PI_8.cos(), std::f64::consts::FRAC_PI_8.sin());
-    [v[0]*c - v[1]*s, v[0]*s + v[1]*c, v[2]*c - v[3]*s, v[2]*s + v[3]*c]
+    let (c, s) = (
+        std::f64::consts::FRAC_PI_8.cos(),
+        std::f64::consts::FRAC_PI_8.sin(),
+    );
+    [
+        v[0] * c - v[1] * s,
+        v[0] * s + v[1] * c,
+        v[2] * c - v[3] * s,
+        v[2] * s + v[3] * c,
+    ]
 }
 
 /// Apply T to uv: maps uv(V) → uv(V·T).
@@ -70,8 +78,16 @@ pub fn apply_t_dag_to_uv(v: [f64; 4]) -> [f64; 4] {
 /// After det normalization in unitary_to_uv (dividing first column by √det),
 /// both u1 and u2 rotate by e^{-iπ/8}: uv(V·T) = e^{-iπ/8} · uv(V).
 pub fn apply_t_to_uv(v: [f64; 4]) -> [f64; 4] {
-    let (c, s) = (std::f64::consts::FRAC_PI_8.cos(), std::f64::consts::FRAC_PI_8.sin());
-    [v[0]*c + v[1]*s, -v[0]*s + v[1]*c, v[2]*c + v[3]*s, -v[2]*s + v[3]*c]
+    let (c, s) = (
+        std::f64::consts::FRAC_PI_8.cos(),
+        std::f64::consts::FRAC_PI_8.sin(),
+    );
+    [
+        v[0] * c + v[1] * s,
+        -v[0] * s + v[1] * c,
+        v[2] * c + v[3] * s,
+        -v[2] * s + v[3] * c,
+    ]
 }
 
 /// Apply an exact U2T unitary's dagger to a uv direction vector.
@@ -90,8 +106,9 @@ pub fn apply_u2t_dag_to_uv(c: &U2T, v: [f64; 4]) -> [f64; 4] {
     let w1 = (c.u11.to_complex().conj() * v1 + c.u21.to_complex().conj() * v2) * scale;
     let w2 = (c.u12.to_complex().conj() * v1 + c.u22.to_complex().conj() * v2) * scale;
     // Correct for det(C) ≠ 1: divide by √conj(det(C)).
-    let det = (c.u11.to_complex() * c.u22.to_complex()
-              - c.u12.to_complex() * c.u21.to_complex()) * scale * scale;
+    let det = (c.u11.to_complex() * c.u22.to_complex() - c.u12.to_complex() * c.u21.to_complex())
+        * scale
+        * scale;
     let sqrt_conj_det = det.conj().sqrt();
     if sqrt_conj_det.norm() > 1e-12 {
         let inv = Complex64::new(1.0, 0.0) / sqrt_conj_det;
@@ -142,8 +159,14 @@ pub fn integer_sqrt(n: i64) -> i64 {
 /// threshold_sq = 2^k · (1 − ε²). A solution passes if (x · av)² ≥ threshold_sq.
 #[inline]
 fn record_if_aligned(
-    a1: i64, b1: i64, c1: i64, d1: i64,
-    a2: i64, b2: i64, c2: i64, d2: i64,
+    a1: i64,
+    b1: i64,
+    c1: i64,
+    d1: i64,
+    a2: i64,
+    b2: i64,
+    c2: i64,
+    d2: i64,
     av: &[f64; 8],
     thresh_sq: f64,
     out: &mut Vec<[i64; 8]>,
@@ -151,13 +174,13 @@ fn record_if_aligned(
 ) {
     if thresh_sq > 0.0 {
         let dot = a1 as f64 * av[0]
-                + b1 as f64 * av[1]
-                + c1 as f64 * av[2]
-                + d1 as f64 * av[3]
-                + a2 as f64 * av[4]
-                + b2 as f64 * av[5]
-                + c2 as f64 * av[6]
-                + d2 as f64 * av[7];
+            + b1 as f64 * av[1]
+            + c1 as f64 * av[2]
+            + d1 as f64 * av[3]
+            + a2 as f64 * av[4]
+            + b2 as f64 * av[5]
+            + c2 as f64 * av[6]
+            + d2 as f64 * av[7];
         if dot * dot < thresh_sq {
             return;
         }
@@ -176,8 +199,12 @@ fn record_if_aligned(
 /// Records valid solutions directly into `out`.
 #[inline]
 fn solve_b1d1(
-    a1: i64, c1: i64,
-    a2: i64, b2: i64, c2: i64, d2: i64,
+    a1: i64,
+    c1: i64,
+    a2: i64,
+    b2: i64,
+    c2: i64,
+    d2: i64,
     r: i64,
     rhs: i64,
     av: &[f64; 8],
@@ -315,8 +342,12 @@ fn solve_b1d1(
 ///   b2·A + d2·B = rhs,   where A = a2+c2, B = c2−a2.
 #[inline]
 fn solve_b2d2(
-    a1: i64, b1: i64, c1: i64, d1: i64,
-    a2: i64, c2: i64,
+    a1: i64,
+    b1: i64,
+    c1: i64,
+    d1: i64,
+    a2: i64,
+    c2: i64,
     r: i64,
     rhs: i64,
     av: &[f64; 8],
@@ -471,34 +502,54 @@ fn fast_search_inner(
     let max_a2 = integer_sqrt(rem2);
     for a2 in -max_a2..=max_a2 {
         let rem3 = rem2 - a2 * a2;
-        if rem3 < 0 { continue; }
+        if rem3 < 0 {
+            continue;
+        }
         let pdot3 = pdot2 + a2 as f64 * av[4];
-        if do_prune && pdot3.abs() + (rem3 as f64 * av_sq_3).sqrt() < thresh { continue; }
+        if do_prune && pdot3.abs() + (rem3 as f64 * av_sq_3).sqrt() < thresh {
+            continue;
+        }
 
         let max_c2 = integer_sqrt(rem3);
         for c2 in -max_c2..=max_c2 {
             let rem4 = rem3 - c2 * c2;
-            if rem4 < 0 { continue; }
+            if rem4 < 0 {
+                continue;
+            }
             let pdot4 = pdot3 + c2 as f64 * av[6];
-            if do_prune && pdot4.abs() + (rem4 as f64 * av_sq_4).sqrt() < thresh { continue; }
+            if do_prune && pdot4.abs() + (rem4 as f64 * av_sq_4).sqrt() < thresh {
+                continue;
+            }
 
             let max_b2 = integer_sqrt(rem4);
             for b2 in -max_b2..=max_b2 {
                 let rem5 = rem4 - b2 * b2;
-                if rem5 < 0 { continue; }
+                if rem5 < 0 {
+                    continue;
+                }
                 let pdot5 = pdot4 + b2 as f64 * av[5];
-                if do_prune && pdot5.abs() + (rem5 as f64 * av_sq_5).sqrt() < thresh { continue; }
+                if do_prune && pdot5.abs() + (rem5 as f64 * av_sq_5).sqrt() < thresh {
+                    continue;
+                }
 
                 let max_d2 = integer_sqrt(rem5);
                 for d2 in -max_d2..=max_d2 {
                     let r = rem5 - d2 * d2;
-                    if r < 0 { continue; }
+                    if r < 0 {
+                        continue;
+                    }
                     let pdot6 = pdot5 + d2 as f64 * av[7];
-                    if do_prune && pdot6.abs() + (r as f64 * av_sq_6).sqrt() < thresh { continue; }
+                    if do_prune && pdot6.abs() + (r as f64 * av_sq_6).sqrt() < thresh {
+                        continue;
+                    }
 
                     let rhs = -(b2 * (a2 + c2) + d2 * (c2 - a2));
-                    solve_b1d1(a1, c1, a2, b2, c2, d2, r, rhs, av, thresh_sq, &mut out, max_sol);
-                    if out.len() >= max_sol { return out; }
+                    solve_b1d1(
+                        a1, c1, a2, b2, c2, d2, r, rhs, av, thresh_sq, &mut out, max_sol,
+                    );
+                    if out.len() >= max_sol {
+                        return out;
+                    }
                 }
             }
         }
@@ -522,32 +573,38 @@ fn fast_search(
 
     let av_sq_all: f64 = av.iter().map(|x| x * x).sum();
     let av_sq_1 = av_sq_all - av[0] * av[0]; // after a1
-    let av_sq_2 = av_sq_1  - av[2] * av[2]; // after c1
-    let av_sq_3 = av_sq_2  - av[4] * av[4]; // after a2
-    let av_sq_4 = av_sq_3  - av[6] * av[6]; // after c2
-    let av_sq_5 = av_sq_4  - av[5] * av[5]; // after b2
-    let av_sq_6 = av_sq_5  - av[7] * av[7]; // after d2 (remaining: b1, d1)
+    let av_sq_2 = av_sq_1 - av[2] * av[2]; // after c1
+    let av_sq_3 = av_sq_2 - av[4] * av[4]; // after a2
+    let av_sq_4 = av_sq_3 - av[6] * av[6]; // after c2
+    let av_sq_5 = av_sq_4 - av[5] * av[5]; // after b2
+    let av_sq_6 = av_sq_5 - av[7] * av[7]; // after d2 (remaining: b1, d1)
 
     let max_a1 = integer_sqrt(target_norm);
 
     let pairs: Vec<(i64, i64, i64, f64)> = (-max_a1..=max_a1)
         .flat_map(|a1| {
             let rem1 = target_norm - a1 * a1;
-            if rem1 < 0 { return vec![]; }
+            if rem1 < 0 {
+                return vec![];
+            }
             let pdot1 = a1 as f64 * av[0];
             if do_prune && pdot1.abs() + (rem1 as f64 * av_sq_1).sqrt() < thresh {
                 return vec![];
             }
             let max_c1 = integer_sqrt(rem1);
-            (-max_c1..=max_c1).filter_map(|c1| {
-                let rem2 = rem1 - c1 * c1;
-                if rem2 < 0 { return None; }
-                let pdot2 = pdot1 + c1 as f64 * av[2];
-                if do_prune && pdot2.abs() + (rem2 as f64 * av_sq_2).sqrt() < thresh {
-                    return None;
-                }
-                Some((a1, c1, rem2, pdot2))
-            }).collect::<Vec<_>>()
+            (-max_c1..=max_c1)
+                .filter_map(|c1| {
+                    let rem2 = rem1 - c1 * c1;
+                    if rem2 < 0 {
+                        return None;
+                    }
+                    let pdot2 = pdot1 + c1 as f64 * av[2];
+                    if do_prune && pdot2.abs() + (rem2 as f64 * av_sq_2).sqrt() < thresh {
+                        return None;
+                    }
+                    Some((a1, c1, rem2, pdot2))
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
 
@@ -555,17 +612,22 @@ fn fast_search(
         .into_par_iter()
         .filter_map(|(a1, c1, rem2, pdot2)| {
             let local = fast_search_inner(
-                a1, c1, rem2, pdot2, av, thresh_sq,
-                av_sq_3, av_sq_4, av_sq_5, av_sq_6,
-                do_prune, thresh, max_sol,
+                a1, c1, rem2, pdot2, av, thresh_sq, av_sq_3, av_sq_4, av_sq_5, av_sq_6, do_prune,
+                thresh, max_sol,
             );
-            if local.is_empty() { None } else { Some(local) }
+            if local.is_empty() {
+                None
+            } else {
+                Some(local)
+            }
         })
         .collect();
 
     for batch in batches {
         for sol in batch {
-            if out.len() >= max_sol { return; }
+            if out.len() >= max_sol {
+                return;
+            }
             out.push(sol);
         }
     }
@@ -595,36 +657,56 @@ fn fast_search_u1_inner(
     let max_c1 = integer_sqrt(rem2);
     for c1 in -max_c1..=max_c1 {
         let rem3 = rem2 - c1 * c1;
-        if rem3 < 0 { continue; }
+        if rem3 < 0 {
+            continue;
+        }
         let pdot3 = pdot2 + c1 as f64 * av[2];
-        if do_prune && pdot3.abs() + (rem3 as f64 * av_sq_3).sqrt() < thresh { continue; }
+        if do_prune && pdot3.abs() + (rem3 as f64 * av_sq_3).sqrt() < thresh {
+            continue;
+        }
 
         let max_d1 = integer_sqrt(rem3);
         for d1 in -max_d1..=max_d1 {
             let rem4 = rem3 - d1 * d1;
-            if rem4 < 0 { continue; }
+            if rem4 < 0 {
+                continue;
+            }
             let pdot4 = pdot3 + d1 as f64 * av[3];
-            if do_prune && pdot4.abs() + (rem4 as f64 * av_sq_4).sqrt() < thresh { continue; }
+            if do_prune && pdot4.abs() + (rem4 as f64 * av_sq_4).sqrt() < thresh {
+                continue;
+            }
 
             let cross1 = b1 * (a1 + c1) + d1 * (c1 - a1);
 
             let max_a2 = integer_sqrt(rem4);
             for a2 in -max_a2..=max_a2 {
                 let rem5 = rem4 - a2 * a2;
-                if rem5 < 0 { continue; }
+                if rem5 < 0 {
+                    continue;
+                }
                 let pdot5 = pdot4 + a2 as f64 * av[4];
-                if do_prune && pdot5.abs() + (rem5 as f64 * av_sq_5).sqrt() < thresh { continue; }
+                if do_prune && pdot5.abs() + (rem5 as f64 * av_sq_5).sqrt() < thresh {
+                    continue;
+                }
 
                 let max_c2 = integer_sqrt(rem5);
                 for c2 in -max_c2..=max_c2 {
                     let r = rem5 - c2 * c2;
-                    if r < 0 { continue; }
+                    if r < 0 {
+                        continue;
+                    }
                     let pdot6 = pdot5 + c2 as f64 * av[6];
-                    if do_prune && pdot6.abs() + (r as f64 * av_sq_6).sqrt() < thresh { continue; }
+                    if do_prune && pdot6.abs() + (r as f64 * av_sq_6).sqrt() < thresh {
+                        continue;
+                    }
 
                     let rhs = -cross1;
-                    solve_b2d2(a1, b1, c1, d1, a2, c2, r, rhs, av, thresh_sq, &mut out, max_sol);
-                    if out.len() >= max_sol { return out; }
+                    solve_b2d2(
+                        a1, b1, c1, d1, a2, c2, r, rhs, av, thresh_sq, &mut out, max_sol,
+                    );
+                    if out.len() >= max_sol {
+                        return out;
+                    }
                 }
             }
         }
@@ -649,32 +731,38 @@ fn fast_search_u1(
 
     let av_sq_all: f64 = av.iter().map(|x| x * x).sum();
     let av_sq_1 = av_sq_all - av[0] * av[0]; // after a1
-    let av_sq_2 = av_sq_1  - av[1] * av[1]; // after b1
-    let av_sq_3 = av_sq_2  - av[2] * av[2]; // after c1
-    let av_sq_4 = av_sq_3  - av[3] * av[3]; // after d1
-    let av_sq_5 = av_sq_4  - av[4] * av[4]; // after a2
-    let av_sq_6 = av_sq_5  - av[6] * av[6]; // after c2 (remaining: b2, d2)
+    let av_sq_2 = av_sq_1 - av[1] * av[1]; // after b1
+    let av_sq_3 = av_sq_2 - av[2] * av[2]; // after c1
+    let av_sq_4 = av_sq_3 - av[3] * av[3]; // after d1
+    let av_sq_5 = av_sq_4 - av[4] * av[4]; // after a2
+    let av_sq_6 = av_sq_5 - av[6] * av[6]; // after c2 (remaining: b2, d2)
 
     let max_a1 = integer_sqrt(target_norm);
 
     let pairs: Vec<(i64, i64, i64, f64)> = (-max_a1..=max_a1)
         .flat_map(|a1| {
             let rem1 = target_norm - a1 * a1;
-            if rem1 < 0 { return vec![]; }
+            if rem1 < 0 {
+                return vec![];
+            }
             let pdot1 = a1 as f64 * av[0];
             if do_prune && pdot1.abs() + (rem1 as f64 * av_sq_1).sqrt() < thresh {
                 return vec![];
             }
             let max_b1 = integer_sqrt(rem1);
-            (-max_b1..=max_b1).filter_map(|b1| {
-                let rem2 = rem1 - b1 * b1;
-                if rem2 < 0 { return None; }
-                let pdot2 = pdot1 + b1 as f64 * av[1];
-                if do_prune && pdot2.abs() + (rem2 as f64 * av_sq_2).sqrt() < thresh {
-                    return None;
-                }
-                Some((a1, b1, rem2, pdot2))
-            }).collect::<Vec<_>>()
+            (-max_b1..=max_b1)
+                .filter_map(|b1| {
+                    let rem2 = rem1 - b1 * b1;
+                    if rem2 < 0 {
+                        return None;
+                    }
+                    let pdot2 = pdot1 + b1 as f64 * av[1];
+                    if do_prune && pdot2.abs() + (rem2 as f64 * av_sq_2).sqrt() < thresh {
+                        return None;
+                    }
+                    Some((a1, b1, rem2, pdot2))
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
 
@@ -682,17 +770,22 @@ fn fast_search_u1(
         .into_par_iter()
         .filter_map(|(a1, b1, rem2, pdot2)| {
             let local = fast_search_u1_inner(
-                a1, b1, rem2, pdot2, av, thresh_sq,
-                av_sq_3, av_sq_4, av_sq_5, av_sq_6,
-                do_prune, thresh, max_sol,
+                a1, b1, rem2, pdot2, av, thresh_sq, av_sq_3, av_sq_4, av_sq_5, av_sq_6, do_prune,
+                thresh, max_sol,
             );
-            if local.is_empty() { None } else { Some(local) }
+            if local.is_empty() {
+                None
+            } else {
+                Some(local)
+            }
         })
         .collect();
 
     for batch in batches {
         for sol in batch {
-            if out.len() >= max_sol { return; }
+            if out.len() >= max_sol {
+                return;
+            }
             out.push(sol);
         }
     }
@@ -710,12 +803,7 @@ fn fast_search_u1(
 ///
 /// # Returns
 /// Vector of `[a1, b1, c1, d1, a2, b2, c2, d2]` satisfying all constraints.
-pub fn aligned_search(
-    v: [f64; 4],
-    k: u32,
-    epsilon: f64,
-    max_solutions: usize,
-) -> Vec<[i64; 8]> {
+pub fn aligned_search(v: [f64; 4], k: u32, epsilon: f64, max_solutions: usize) -> Vec<[i64; 8]> {
     if max_solutions == 0 {
         return Vec::new();
     }
@@ -730,8 +818,8 @@ pub fn aligned_search(
     };
 
     // Choose search strategy based on where alignment energy is concentrated.
-    let u1_energy: f64 = av[0]*av[0] + av[1]*av[1] + av[2]*av[2] + av[3]*av[3];
-    let u2_energy: f64 = av[4]*av[4] + av[5]*av[5] + av[6]*av[6] + av[7]*av[7];
+    let u1_energy: f64 = av[0] * av[0] + av[1] * av[1] + av[2] * av[2] + av[3] * av[3];
+    let u2_energy: f64 = av[4] * av[4] + av[5] * av[5] + av[6] * av[6] + av[7] * av[7];
 
     let mut out = Vec::new();
     if u1_energy >= u2_energy {
@@ -793,9 +881,13 @@ mod tests {
         let target_norm = 1i64 << k;
         for sol in sols {
             let [a1, b1, c1, d1, a2, b2, c2, d2] = *sol;
-            let norm_sq = a1*a1 + b1*b1 + c1*c1 + d1*d1 + a2*a2 + b2*b2 + c2*c2 + d2*d2;
-            assert_eq!(norm_sq, target_norm, "norm_sq={norm_sq} target={target_norm} sol={sol:?}");
-            let unit = b1*(a1+c1) + d1*(c1-a1) + b2*(a2+c2) + d2*(c2-a2);
+            let norm_sq =
+                a1 * a1 + b1 * b1 + c1 * c1 + d1 * d1 + a2 * a2 + b2 * b2 + c2 * c2 + d2 * d2;
+            assert_eq!(
+                norm_sq, target_norm,
+                "norm_sq={norm_sq} target={target_norm} sol={sol:?}"
+            );
+            let unit = b1 * (a1 + c1) + d1 * (c1 - a1) + b2 * (a2 + c2) + d2 * (c2 - a2);
             assert_eq!(unit, 0, "unitarity violated: {unit} for sol={sol:?}");
         }
     }
@@ -828,7 +920,10 @@ mod tests {
         let thresh_sq = 4.0f64 * (1.0 - 0.25);
         for sol in &sols {
             let dot: f64 = sol.iter().zip(av.iter()).map(|(&x, &a)| x as f64 * a).sum();
-            assert!(dot * dot >= thresh_sq - 1e-9, "alignment failed for {sol:?}");
+            assert!(
+                dot * dot >= thresh_sq - 1e-9,
+                "alignment failed for {sol:?}"
+            );
         }
     }
 
@@ -837,7 +932,9 @@ mod tests {
         // At k=0, v=[1,0,0,0], should find [±1,0,0,0,0,0,0,0].
         let v = [1.0f64, 0.0, 0.0, 0.0];
         let sols = aligned_search(v, 0, 0.0, 100);
-        let found = sols.iter().any(|s| *s == [1,0,0,0,0,0,0,0] || *s == [-1,0,0,0,0,0,0,0]);
+        let found = sols
+            .iter()
+            .any(|s| *s == [1, 0, 0, 0, 0, 0, 0, 0] || *s == [-1, 0, 0, 0, 0, 0, 0, 0]);
         assert!(found, "Should find identity solution");
     }
 }

@@ -99,16 +99,18 @@ pub fn phase1(
     let prec = super::se::SE_PREC;
     let two_to_2k = RFloat::with_val(prec, 1.0) << (2 * k);
     let eps_rf = RFloat::with_val(prec, eps);
-    let one_minus_eps_sq =
-        RFloat::with_val(prec, 1.0) - eps_rf.clone() * &eps_rf;
-    let threshold_xy_mpfr =
-        RFloat::with_val(prec, &two_to_2k * &one_minus_eps_sq) / 4u32;
+    let one_minus_eps_sq = RFloat::with_val(prec, 1.0) - eps_rf.clone() * &eps_rf;
+    let threshold_xy_mpfr = RFloat::with_val(prec, &two_to_2k * &one_minus_eps_sq) / 4u32;
     let y_mpfr: [RFloat; 8] = std::array::from_fn(|i| RFloat::with_val(prec, y[i]));
 
     let trace = crate::synthesis::diag::trace_enabled();
 
     // Step 1: build Q in MPFR + integer snapshot.
-    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+    let t_phase = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     build_q_mpfr(scratch, y, k, eps);
     build_q_int(scratch);
     if let Some(t0) = t_phase {
@@ -117,14 +119,21 @@ pub fn phase1(
     }
 
     // Step 2: L²-LLL (f64 GS over exact i256 Gram + INSERT semantics).
-    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+    let t_phase = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let lll_result = lll_l2_8(scratch);
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_LLL_NS
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     if let LllResult::GramOverflow = lll_result {
-        return PhaseOneOutcome { solutions: Vec::new(), should_escalate: true };
+        return PhaseOneOutcome {
+            solutions: Vec::new(),
+            should_escalate: true,
+        };
     }
 
     // Step 3: assert det(B) = ±1 (unimodular basis output).
@@ -136,20 +145,30 @@ pub fn phase1(
                 "[lattice] LLL non-unimodular (det={}) at eps={:e}, k={}; bailing.",
                 d, eps, k
             );
-            return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
+            return PhaseOneOutcome {
+                solutions: Vec::new(),
+                should_escalate: false,
+            };
         }
         None => {
             eprintln!(
                 "[lattice] det8_exact overflow at eps={:e}, k={}; bailing.",
                 eps, k
             );
-            return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
+            return PhaseOneOutcome {
+                solutions: Vec::new(),
+                should_escalate: false,
+            };
         }
     }
 
     // Step 4: f64 Cholesky on the i256 Gram (natural-scale via 2^-scale_bits
     // exponent shift). Justified by the post-LLL κ ≤ 16 LLL invariant.
-    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+    let t_phase = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let chol_ok = cholesky_f64_8(scratch);
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_CHOLESKY_NS
@@ -160,7 +179,10 @@ pub fn phase1(
             "[lattice] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
             eps, k
         );
-        return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
+        return PhaseOneOutcome {
+            solutions: Vec::new(),
+            should_escalate: false,
+        };
     }
 
     // Build R = Lᵀ at SE working precision (128-bit MPFR).
@@ -170,7 +192,11 @@ pub fn phase1(
 
     // Step 5: solve B_LLLᵀ · z_c = c for the cap-center in lattice coords,
     // in MPFR at lu_prec (≈ 6·log₂(1/ε) bits).
-    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+    let t_phase = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     for i in 0..8 {
         for j in 0..8 {
             scratch.lu_a[i][j].assign(rfv(scratch.prec_q, basis[j][i] as f64));
@@ -183,12 +209,16 @@ pub fn phase1(
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     if !lu_ok {
-        eprintln!("[lattice] LU solve failed at eps={:e}, k={}; bailing.", eps, k);
-        return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
+        eprintln!(
+            "[lattice] LU solve failed at eps={:e}, k={}; bailing.",
+            eps, k
+        );
+        return PhaseOneOutcome {
+            solutions: Vec::new(),
+            should_escalate: false,
+        };
     }
-    let z_c_se: [RFloat; 8] = std::array::from_fn(|i| {
-        super::se::rfloat_to_se(&scratch.lu_x[i])
-    });
+    let z_c_se: [RFloat; 8] = std::array::from_fn(|i| super::se::rfloat_to_se(&scratch.lu_x[i]));
 
     // Step 6: Schnorr-Euchner walk at MPFR-128.
     let r_eucl = super::se::euclidean_cholesky(&basis);
@@ -196,7 +226,11 @@ pub fn phase1(
     let count = AtomicU64::new(0);
     let abort = AtomicBool::new(false);
     let bound_se = RFloat::with_val(super::se::SE_PREC, 1.51_f64);
-    let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+    let t_phase = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     let result = super::se::schnorr_euchner_8d(
         &r_chol_se,
@@ -258,8 +292,14 @@ pub fn phase1(
         .fetch_add(count.load(Ordering::Relaxed), Ordering::Relaxed);
 
     match result {
-        Some(x) => PhaseOneOutcome { solutions: vec![x], should_escalate: false },
-        None => PhaseOneOutcome { solutions: Vec::new(), should_escalate: false },
+        Some(x) => PhaseOneOutcome {
+            solutions: vec![x],
+            should_escalate: false,
+        },
+        None => PhaseOneOutcome {
+            solutions: Vec::new(),
+            should_escalate: false,
+        },
     }
 }
 
@@ -267,17 +307,15 @@ pub fn phase1(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::super::cholesky_lu::{
-        cholesky_f64_8, cholesky_int_8, snapshot_gram_to_mpfr,
-    };
+    use super::super::cholesky_lu::{cholesky_f64_8, cholesky_int_8, snapshot_gram_to_mpfr};
     use super::super::lll::{
-        cfa_full, compute_gram_full, gram_update_size_reduce, gram_update_swap,
-        i256_to_f64, lll_l2_8, LllResult, L2_DELTA, L2_ETA,
+        cfa_full, compute_gram_full, gram_update_size_reduce, gram_update_swap, i256_to_f64,
+        lll_l2_8, LllResult, L2_DELTA, L2_ETA,
     };
     use super::super::q_metric::{build_q_int, build_q_mpfr};
     use super::super::scratch::IntScratch;
     use super::super::se;
+    use super::*;
     use i256::i256;
 
     fn realistic_y(k: u32) -> [Float; 8] {
@@ -325,7 +363,12 @@ mod tests {
         assert!(
             rel_err < 1e-25,
             "eps={:e}, k={}: rel_err={:e}, max_q={:e}, max_err={:e}, scale_bits={}",
-            eps, k, rel_err, max_abs_q, max_err, s.scale_bits
+            eps,
+            k,
+            rel_err,
+            max_abs_q,
+            max_err,
+            s.scale_bits
         );
     }
 
@@ -352,7 +395,11 @@ mod tests {
             f <<= (-shift_bits) as u32;
         }
         let r = f.to_f64();
-        if neg { -r } else { r }
+        if neg {
+            -r
+        } else {
+            r
+        }
     }
 
     #[test]
@@ -385,10 +432,10 @@ mod tests {
         // Should be in a sensible range — neither saturated nor zeroed
         assert!(
             s.scale_bits > 30 && s.scale_bits < 200,
-            "unexpected scale_bits={}", s.scale_bits
+            "unexpected scale_bits={}",
+            s.scale_bits
         );
     }
-
 
     /// Verify cfa_full maintains the algorithmic invariant
     /// `r_bar[i][i] == s_bar[i][i]` for any input.
@@ -414,16 +461,23 @@ mod tests {
         cfa_full(&mut s);
 
         for i in 0..8 {
-            assert_eq!(s.r_bar[i][i], s.s_bar[i][i],
-                "r_bar[{}][{}] != s_bar[{}][{}]: structural invariant violated", i, i, i, i);
+            assert_eq!(
+                s.r_bar[i][i], s.s_bar[i][i],
+                "r_bar[{}][{}] != s_bar[{}][{}]: structural invariant violated",
+                i, i, i, i
+            );
         }
         // At ε=1e-3 with d=8 and κ ≈ 2^40, f64 (53-bit mantissa) has 13+
         // bits of margin even on unreduced identity. Diagonals should be
         // positive at this benign ε.
         for i in 0..8 {
-            assert!(s.r_bar[i][i] > 0.0,
+            assert!(
+                s.r_bar[i][i] > 0.0,
                 "r_bar[{}][{}] = {} unexpectedly non-positive at ε=1e-3 (κ ≈ 2^40)",
-                i, i, s.r_bar[i][i]);
+                i,
+                i,
+                s.r_bar[i][i]
+            );
         }
     }
 
@@ -438,15 +492,23 @@ mod tests {
         // Powers of 2
         let mut v = i256::from_i64(1);
         for shift in [10, 30, 60, 100, 200] {
-            for _ in 0..shift { v = v + v; }  // v = 2^shift
+            for _ in 0..shift {
+                v = v + v;
+            } // v = 2^shift
             let expected = 2f64.powi(shift);
             let actual = i256_to_f64(v);
-            assert_eq!(actual, expected, "2^{} got {} expected {}", shift, actual, expected);
+            assert_eq!(
+                actual, expected,
+                "2^{} got {} expected {}",
+                shift, actual, expected
+            );
             v = i256::from_i64(1);
         }
         // Negative large
         let mut v = i256::from_i64(1);
-        for _ in 0..100 { v = v + v; }
+        for _ in 0..100 {
+            v = v + v;
+        }
         let neg_v = -v;
         assert_eq!(i256_to_f64(neg_v), -2f64.powi(100));
     }
@@ -465,12 +527,14 @@ mod tests {
             return result;
         }
         // Unimodular check
-        let det = se::det8_exact(&s.basis)
-            .expect("det8_exact overflow");
+        let det = se::det8_exact(&s.basis).expect("det8_exact overflow");
         assert!(
             det == 1 || det == -1,
             "L²-LLL output non-unimodular: det={}, eps={:e}, k={}, result={:?}",
-            det, eps, k, result
+            det,
+            eps,
+            k,
+            result
         );
         // Size-reduction invariant: |μ̄_{i,j}| ≤ η for all i > j.
         // Compute final GS state via CFA (algorithm doesn't promise final
@@ -481,7 +545,12 @@ mod tests {
                 assert!(
                     s.mu_bar[i][j].abs() <= L2_ETA + 1e-10,
                     "size-reduction violated: |μ̄[{}][{}]|={} > η={}, eps={:e}, k={}",
-                    i, j, s.mu_bar[i][j].abs(), L2_ETA, eps, k
+                    i,
+                    j,
+                    s.mu_bar[i][j].abs(),
+                    L2_ETA,
+                    eps,
+                    k
                 );
             }
         }
@@ -493,7 +562,14 @@ mod tests {
             assert!(
                 lhs <= rhs + 1e-10 * rhs.abs().max(1.0),
                 "Lovász violated at κ={}: δ·r̄_{}={} > s̄_{}^{}_={}, eps={:e}, k={}",
-                kappa, kappa - 1, lhs, kappa - 1, kappa, rhs, eps, k
+                kappa,
+                kappa - 1,
+                lhs,
+                kappa - 1,
+                kappa,
+                rhs,
+                eps,
+                k
             );
         }
         result
@@ -520,8 +596,11 @@ mod tests {
     #[test]
     fn l2_lll_eps_1e_8() {
         let r = check_l2_lll(1e-8, 70);
-        assert!(matches!(r, LllResult::Converged | LllResult::IterCap),
-            "unexpected at ε=1e-8: {:?}", r);
+        assert!(
+            matches!(r, LllResult::Converged | LllResult::IterCap),
+            "unexpected at ε=1e-8: {:?}",
+            r
+        );
     }
 
     /// Run the integer LLL for given (eps, k) and assert det = ±1
@@ -538,12 +617,14 @@ mod tests {
         if let LllResult::GramOverflow = result {
             return result;
         }
-        let det = se::det8_exact(&s.basis)
-            .expect("det8_exact overflow");
+        let det = se::det8_exact(&s.basis).expect("det8_exact overflow");
         assert!(
             det == 1 || det == -1,
             "lll output non-unimodular: det={}, eps={:e}, k={}, result={:?}",
-            det, eps, k, result
+            det,
+            eps,
+            k,
+            result
         );
         result
     }
@@ -581,7 +662,8 @@ mod tests {
         let r = check_lll_unimodular(1e-8, 70);
         assert!(
             matches!(r, LllResult::Converged | LllResult::IterCap),
-            "unexpected result at eps=1e-8: {:?}", r
+            "unexpected result at eps=1e-8: {:?}",
+            r
         );
     }
 
@@ -620,7 +702,9 @@ mod tests {
         let k = 2usize;
         let j = 0usize;
         let r = 5i64;
-        for c in 0..8 { s.basis[k][c] -= r * s.basis[j][c]; }
+        for c in 0..8 {
+            s.basis[k][c] -= r * s.basis[j][c];
+        }
         gram_update_size_reduce(&mut s, k, j, r);
         let g_inc = s.gram;
         // Full recompute on the new basis
@@ -663,7 +747,11 @@ mod tests {
         let g_full = s.gram;
         for i in 0..8 {
             for jj in 0..8 {
-                assert_eq!(g_inc[i][jj], g_full[i][jj], "swap mismatch at [{}][{}]", i, jj);
+                assert_eq!(
+                    g_inc[i][jj], g_full[i][jj],
+                    "swap mismatch at [{}][{}]",
+                    i, jj
+                );
             }
         }
     }
@@ -684,15 +772,18 @@ mod tests {
         snapshot_gram_to_mpfr(&mut s);
         assert!(
             cholesky_int_8(&mut s),
-            "MPFR Cholesky failed at eps={:e}, k={}", eps, k
+            "MPFR Cholesky failed at eps={:e}, k={}",
+            eps,
+            k
         );
-        let l_mpfr: [[f64; 8]; 8] = std::array::from_fn(|i|
-            std::array::from_fn(|j| s.l[i][j].to_f64())
-        );
+        let l_mpfr: [[f64; 8]; 8] =
+            std::array::from_fn(|i| std::array::from_fn(|j| s.l[i][j].to_f64()));
         // f64 production path
         assert!(
             cholesky_f64_8(&mut s),
-            "f64 Cholesky failed at eps={:e}, k={}", eps, k
+            "f64 Cholesky failed at eps={:e}, k={}",
+            eps,
+            k
         );
         // Compare lower triangles in relative error.
         let mut max_rel: f64 = 0.0;
@@ -701,16 +792,27 @@ mod tests {
                 let diff = (l_mpfr[i][j] - s.l_f64[i][j]).abs();
                 let mag = l_mpfr[i][j].abs().max(s.l_f64[i][j].abs()).max(1e-300);
                 let rel = diff / mag;
-                if rel > max_rel { max_rel = rel; }
+                if rel > max_rel {
+                    max_rel = rel;
+                }
                 assert!(
                     rel < 1e-10,
                     "Cholesky[{}][{}] mismatch at eps={:e}, k={}: \
                      rel={:e}, mpfr={}, f64={}",
-                    i, j, eps, k, rel, l_mpfr[i][j], s.l_f64[i][j]
+                    i,
+                    j,
+                    eps,
+                    k,
+                    rel,
+                    l_mpfr[i][j],
+                    s.l_f64[i][j]
                 );
             }
         }
-        eprintln!("cholesky_f64_matches_mpfr eps={:e} k={}: max_rel={:e}", eps, k, max_rel);
+        eprintln!(
+            "cholesky_f64_matches_mpfr eps={:e} k={}: max_rel={:e}",
+            eps, k, max_rel
+        );
     }
 
     #[test]
@@ -732,5 +834,4 @@ mod tests {
     fn cholesky_f64_matches_mpfr_at_eps_1e_8() {
         cholesky_f64_matches_mpfr(1e-8, 70);
     }
-
 }

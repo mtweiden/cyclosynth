@@ -23,10 +23,22 @@ fn main() {
         basis[i][i] += 100_000_000_000;
     }
     let z: [i64; 16] = [
-        12, 7, 3_000_000_000, -1_500_000_000, 4_200_000_000, -800_000_000,
-        2_100_000_000, -3_500_000_000, 1_900_000_000, -2_700_000_000,
-        4_800_000_000, -1_100_000_000, 3_300_000_000, -2_500_000_000,
-        1_700_000_000, -3_900_000_000,
+        12,
+        7,
+        3_000_000_000,
+        -1_500_000_000,
+        4_200_000_000,
+        -800_000_000,
+        2_100_000_000,
+        -3_500_000_000,
+        1_900_000_000,
+        -2_700_000_000,
+        4_800_000_000,
+        -1_100_000_000,
+        3_300_000_000,
+        -2_500_000_000,
+        1_700_000_000,
+        -3_900_000_000,
     ];
     let mut x = [0_i64; 16];
     for i in 0..16 {
@@ -38,28 +50,38 @@ fn main() {
     // are way off-shell and immediately D<0. We want some mix of D<0, mod-16
     // reject, and isqrt paths to match production distribution.
     let mut x_norm_sq: i128 = 0;
-    for i in 0..16 { x_norm_sq += (x[i] as i128) * (x[i] as i128); }
+    for i in 0..16 {
+        x_norm_sq += (x[i] as i128) * (x[i] as i128);
+    }
     let target_norm_sq_i64: i64 = (x_norm_sq / 100) as i64;
-    println!("calibration: ‖x‖² ≈ {}, T = {} (target_norm_sq_i64)", x_norm_sq, target_norm_sq_i64);
+    println!(
+        "calibration: ‖x‖² ≈ {}, T = {} (target_norm_sq_i64)",
+        x_norm_sq, target_norm_sq_i64
+    );
 
     // === Precompute timing ===
     let n_pre = 1_000_000;
     let t0 = Instant::now();
     let mut acc = i256::from_i64(0);
     for _ in 0..n_pre {
-        let (g00, g01, g11, a, v0, v1) =
-            qfilter_depth1_state(&basis, &x, z[0], z[1]);
+        let (g00, g01, g11, a, v0, v1) = qfilter_depth1_state(&basis, &x, z[0], z[1]);
         acc = acc
-            .wrapping_add(g00).wrapping_add(g01).wrapping_add(g11)
-            .wrapping_add(a).wrapping_add(v0).wrapping_add(v1);
+            .wrapping_add(g00)
+            .wrapping_add(g01)
+            .wrapping_add(g11)
+            .wrapping_add(a)
+            .wrapping_add(v0)
+            .wrapping_add(v1);
     }
     let dt_pre = t0.elapsed();
     let ns_pre = dt_pre.as_nanos() as f64 / n_pre as f64;
-    println!("precompute (qfilter_depth1_state):  {ns_pre:>7.0} ns/call   ({n_pre} iters, acc={})", acc != i256::from_i64(0));
+    println!(
+        "precompute (qfilter_depth1_state):  {ns_pre:>7.0} ns/call   ({n_pre} iters, acc={})",
+        acc != i256::from_i64(0)
+    );
 
     // Need a state for per-candidate test.
-    let (g00, g01, g11, a, v0, v1) =
-        qfilter_depth1_state(&basis, &x, z[0], z[1]);
+    let (g00, g01, g11, a, v0, v1) = qfilter_depth1_state(&basis, &x, z[0], z[1]);
 
     // === Per-candidate timing across a sweep of zd values ===
     let n_per = 10_000_000;
@@ -67,24 +89,40 @@ fn main() {
     let mut bin = [0u64; 4];
     for i in 0..n_per {
         let zd = (i as i64).wrapping_mul(1_009_937);
-        let c = qfilter_discriminant_class(
-            g00, g01, g11, a, v0, v1, target_norm_sq_i64, zd,
-        );
+        let c = qfilter_discriminant_class(g00, g01, g11, a, v0, v1, target_norm_sq_i64, zd);
         bin[c as usize % 4] += 1;
     }
     let dt_per = t0.elapsed();
     let ns_per = dt_per.as_nanos() as f64 / n_per as f64;
     println!("per-candidate (full filter):        {ns_per:>7.0} ns/call   ({n_per} iters)");
-    println!("  class 0 (D<0):       {} ({:.1}%)", bin[0], 100.0 * bin[0] as f64 / n_per as f64);
-    println!("  class 1 (mod-16 bad): {} ({:.1}%)", bin[1], 100.0 * bin[1] as f64 / n_per as f64);
-    println!("  class 2 (isqrt≠):    {} ({:.1}%)", bin[2], 100.0 * bin[2] as f64 / n_per as f64);
-    println!("  class 3 (perfect):   {} ({:.4}%)", bin[3], 100.0 * bin[3] as f64 / n_per as f64);
+    println!(
+        "  class 0 (D<0):       {} ({:.1}%)",
+        bin[0],
+        100.0 * bin[0] as f64 / n_per as f64
+    );
+    println!(
+        "  class 1 (mod-16 bad): {} ({:.1}%)",
+        bin[1],
+        100.0 * bin[1] as f64 / n_per as f64
+    );
+    println!(
+        "  class 2 (isqrt≠):    {} ({:.1}%)",
+        bin[2],
+        100.0 * bin[2] as f64 / n_per as f64
+    );
+    println!(
+        "  class 3 (perfect):   {} ({:.4}%)",
+        bin[3],
+        100.0 * bin[3] as f64 / n_per as f64
+    );
 
     // === isqrt_i256 timing in isolation ===
-    let test_vals: Vec<i256> = (0..1000).map(|i| {
-        let v = i256::from_i128((i as i128) * 100_000_000_000_000_000);
-        v.wrapping_mul(v).wrapping_add(i256::from_i64(12345))
-    }).collect();
+    let test_vals: Vec<i256> = (0..1000)
+        .map(|i| {
+            let v = i256::from_i128((i as i128) * 100_000_000_000_000_000);
+            v.wrapping_mul(v).wrapping_add(i256::from_i64(12345))
+        })
+        .collect();
     let n_sqrt = 1_000_000;
     let t0 = Instant::now();
     let mut sum_sqrt = i256::from_i64(0);

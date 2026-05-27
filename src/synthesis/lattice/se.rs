@@ -244,8 +244,18 @@ fn recurse<F>(
     if tmp.to_f64() < 1e-30 {
         z[d] = z_c[d].to_f64().round() as i64;
         recurse(
-            depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
-            partial_eucl, z, partial, abort, callback, result,
+            depth - 1,
+            r_chol,
+            z_c,
+            bound,
+            r_chol_eucl,
+            target_norm_eucl,
+            partial_eucl,
+            z,
+            partial,
+            abort,
+            callback,
+            result,
         );
         return;
     }
@@ -329,8 +339,18 @@ fn recurse<F>(
 
         z[d] = zd;
         recurse(
-            depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
-            new_partial_eucl, z, &new_partial, abort, callback, result,
+            depth - 1,
+            r_chol,
+            z_c,
+            bound,
+            r_chol_eucl,
+            target_norm_eucl,
+            new_partial_eucl,
+            z,
+            &new_partial,
+            abort,
+            callback,
+            result,
         );
     }
 }

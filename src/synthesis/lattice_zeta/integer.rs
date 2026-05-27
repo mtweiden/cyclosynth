@@ -51,8 +51,8 @@ use super::lll::{run_lll_16, LllResult};
 use super::q_metric::build_q_int_zeta;
 use super::scratch::{rfv, IntScratch16};
 use super::se::{
-    bilinear_forms, euclidean_cholesky_16_mpfr_dual,
-    schnorr_euchner_16d_par_norm_pruned, LeafAction,
+    bilinear_forms, euclidean_cholesky_16_mpfr_dual, schnorr_euchner_16d_par_norm_pruned,
+    LeafAction,
 };
 use crate::rings::Float;
 use crate::synthesis::diag;
@@ -79,7 +79,17 @@ pub fn phase1(
     max_phase2_calls: u64,
     budget_hit: &AtomicBool,
 ) -> Vec<[i64; 16]> {
-    phase1_with_stop(scratch, y, k, eps, max_phase2_calls, budget_hit, |_| false, None, None)
+    phase1_with_stop(
+        scratch,
+        y,
+        k,
+        eps,
+        max_phase2_calls,
+        budget_hit,
+        |_| false,
+        None,
+        None,
+    )
 }
 
 /// Phase 1 with an early-exit predicate and optional speculation signals.
@@ -124,8 +134,16 @@ where
     ];
     let y_mpfr: [RFloat; 16] = std::array::from_fn(|i| rfv(prec, y[i]));
     phase1_with_stop_mpfr(
-        scratch, &y_mpfr, &v_mpfr, k, eps, max_phase2_calls, budget_hit, should_stop,
-        external_abort, consumed,
+        scratch,
+        &y_mpfr,
+        &v_mpfr,
+        k,
+        eps,
+        max_phase2_calls,
+        budget_hit,
+        should_stop,
+        external_abort,
+        consumed,
     )
 }
 
@@ -158,7 +176,11 @@ where
 
     // Step 1: build Q in MPFR + i256 snapshot. Reset basis unless caller
     // requested warm_lll (Z1 D&C path).
-    let t_build = if trace { Some(std::time::Instant::now()) } else { None };
+    let t_build = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     if !scratch.warm_lll {
         scratch.reset_basis();
     }
@@ -224,7 +246,11 @@ where
     // Diag counter `N_LLL_F64_ESCALATIONS` tracks how often this fires.
     // Should be 0 at moderate ε; non-zero only at ε ≤ 1e-8.
 
-    let t_lll = if trace { Some(std::time::Instant::now()) } else { None };
+    let t_lll = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let initial_use_f64 = scratch.use_f64_gs;
 
     // Helper: closes over scratch via &mut, returns (LllResult, det).
@@ -243,7 +269,10 @@ where
             return false;
         }
         // None = i128 overflow in Bareiss; treat as inconclusive-success.
-        match det { Some(d) => d == 1 || d == -1, None => true }
+        match det {
+            Some(d) => d == 1 || d == -1,
+            None => true,
+        }
     };
 
     let (mut lll_result, mut det_check) = run_and_check(scratch);
@@ -320,7 +349,11 @@ where
 
     // Step 3: f64 Cholesky on the post-LLL Gram. Lower-triangular L in
     // `scratch.l_f64`.
-    let t_chol = if trace { Some(std::time::Instant::now()) } else { None };
+    let t_chol = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let chol_ok = cholesky_f64_16(scratch);
     if let Some(t) = t_chol {
         diag::T_CHOLESKY_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -334,7 +367,11 @@ where
     }
 
     // Step 4: solve Bᵀ · z_c = c in MPFR. Result lands in `scratch.lu_x`.
-    let t_lu = if trace { Some(std::time::Instant::now()) } else { None };
+    let t_lu = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
     let lu_ok = lu_solve_int_inplace_16(scratch);
     if let Some(t) = t_lu {
         diag::T_LU_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -434,12 +471,9 @@ where
     // checks zero out the σ_5/σ_9/σ_13 components.)
     let two_to_2k = RFloat::with_val(ALIGN_PREC, 1.0) << (2 * k);
     let eps_align = RFloat::with_val(ALIGN_PREC, eps);
-    let one_minus_eps_sq_align = RFloat::with_val(ALIGN_PREC, 1.0)
-        - eps_align.clone() * &eps_align;
-    let threshold_xy = RFloat::with_val(ALIGN_PREC, &two_to_2k * &one_minus_eps_sq_align)
-        / 32u32;
-    let y_mpfr: [RFloat; 16] =
-        std::array::from_fn(|i| RFloat::with_val(ALIGN_PREC, &y[i]));
+    let one_minus_eps_sq_align = RFloat::with_val(ALIGN_PREC, 1.0) - eps_align.clone() * &eps_align;
+    let threshold_xy = RFloat::with_val(ALIGN_PREC, &two_to_2k * &one_minus_eps_sq_align) / 32u32;
+    let y_mpfr: [RFloat; 16] = std::array::from_fn(|i| RFloat::with_val(ALIGN_PREC, &y[i]));
 
     // Norm-shell target. Use i128 so k ≤ 126 stays exact (the moderate-ε
     // regime targets k ≲ 30 but the deep-ε regime can reach k > 60).
@@ -466,13 +500,21 @@ where
     };
     let target_norm_sq_f64 = 2.0_f64.powi(k as i32);
 
-    let t_se = if trace { Some(std::time::Instant::now()) } else { None };
+    let t_se = if trace {
+        Some(std::time::Instant::now())
+    } else {
+        None
+    };
 
     // Leaf filter: Fn + Sync. Captures only immutable references / Copy
     // values. Trace counters use the global `diag::*` atomics — zero
     // overhead when tracing is off (the `if trace` branch is predictable).
     let leaf_filter = |x: &[i64; 16]| -> LeafAction {
-        let t_leaf = if trace { Some(std::time::Instant::now()) } else { None };
+        let t_leaf = if trace {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
         if trace {
             diag::N_SE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
         }
@@ -548,10 +590,13 @@ where
             // walker). Only the first writer wins via compare_exchange.
             // Used for filter-on vs filter-off comparison.
             if trace {
-                let consumed = max_phase2_calls
-                    .saturating_sub(budget.load(Ordering::Relaxed));
-                let _ = diag::N_NODES_AT_FIRST_SOLUTION
-                    .compare_exchange(0, consumed, Ordering::Relaxed, Ordering::Relaxed);
+                let consumed = max_phase2_calls.saturating_sub(budget.load(Ordering::Relaxed));
+                let _ = diag::N_NODES_AT_FIRST_SOLUTION.compare_exchange(
+                    0,
+                    consumed,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
             }
             LeafAction::TakeAndStop
         } else {
@@ -560,9 +605,17 @@ where
     };
 
     let (solutions, budget_was_hit) = schnorr_euchner_16d_par_norm_pruned(
-        &l_upper, &z_c, bound_sq, &r_eucl, &r_eucl_dd, target_norm_sq_f64, &basis,
-        leaf_filter, &budget,
-        external_abort, consumed,
+        &l_upper,
+        &z_c,
+        bound_sq,
+        &r_eucl,
+        &r_eucl_dd,
+        target_norm_sq_f64,
+        &basis,
+        leaf_filter,
+        &budget,
+        external_abort,
+        consumed,
     );
     if budget_was_hit {
         budget_hit.store(true, Ordering::Relaxed);
@@ -580,10 +633,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthesis::clifford_sqrt_t::{det_phase_of, solution_to_u2q_d, unitary_to_uv_zeta};
     use crate::synthesis::search_zeta::{phase1_brute, uv_to_xy_zeta};
-    use crate::synthesis::clifford_sqrt_t::{
-        det_phase_of, solution_to_u2q_d, unitary_to_uv_zeta,
-    };
 
     fn realistic_v() -> [f64; 4] {
         let v = [0.5, 0.3, 0.7, -0.4];
@@ -607,8 +658,7 @@ mod tests {
         let abort = AtomicBool::new(false);
         let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
 
-        let brute_set: std::collections::HashSet<[i64; 16]> =
-            phase1_brute(k).into_iter().collect();
+        let brute_set: std::collections::HashSet<[i64; 16]> = phase1_brute(k).into_iter().collect();
         for sol in &sols {
             assert!(
                 brute_set.contains(sol),
@@ -644,10 +694,13 @@ mod tests {
         let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
 
         assert!(!sols.is_empty(), "phase1 found no solutions for T at k=0");
-        let min_dist = sols.iter().map(|sol| {
-            let cand = solution_to_u2q_d(sol, k, d);
-            diamond_distance_float(&cand.to_float(), &target)
-        }).fold(f64::INFINITY, f64::min);
+        let min_dist = sols
+            .iter()
+            .map(|sol| {
+                let cand = solution_to_u2q_d(sol, k, d);
+                diamond_distance_float(&cand.to_float(), &target)
+            })
+            .fold(f64::INFINITY, f64::min);
         assert!(min_dist < 1e-9, "min dist to T at k=0: {min_dist:.3e}");
     }
 
@@ -672,10 +725,13 @@ mod tests {
         let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
 
         assert!(!sols.is_empty(), "phase1 found no solutions for QHQ at k=1");
-        let min_dist = sols.iter().map(|sol| {
-            let cand = solution_to_u2q_d(sol, k, d);
-            diamond_distance_float(&cand.to_float(), &target)
-        }).fold(f64::INFINITY, f64::min);
+        let min_dist = sols
+            .iter()
+            .map(|sol| {
+                let cand = solution_to_u2q_d(sol, k, d);
+                diamond_distance_float(&cand.to_float(), &target)
+            })
+            .fold(f64::INFINITY, f64::min);
         assert!(min_dist < 1e-9, "min dist to QHQ at k=1: {min_dist:.3e}");
     }
 
@@ -685,8 +741,8 @@ mod tests {
     /// returned candidates.
     #[test]
     fn phase1_finds_hqhqh_at_moderate_k() {
-        use crate::synthesis::search_zeta::phase1_brute;
         use crate::synthesis::distance::diamond_distance_float;
+        use crate::synthesis::search_zeta::phase1_brute;
 
         let k = 2u32;
         let brute_sols = phase1_brute(k);
@@ -723,10 +779,13 @@ mod tests {
             "phase1 found no solutions for k={} round-trip",
             k
         );
-        let min_dist = sols.iter().map(|sol| {
-            let cand = solution_to_u2q_d(sol, k, d);
-            diamond_distance_float(&cand.to_float(), &target)
-        }).fold(f64::INFINITY, f64::min);
+        let min_dist = sols
+            .iter()
+            .map(|sol| {
+                let cand = solution_to_u2q_d(sol, k, d);
+                diamond_distance_float(&cand.to_float(), &target)
+            })
+            .fold(f64::INFINITY, f64::min);
         assert!(
             min_dist < 1e-9,
             "min dist for k={} round-trip: {min_dist:.3e}",
@@ -738,7 +797,8 @@ mod tests {
         assert!(
             elapsed.as_secs_f64() < 30.0,
             "phase1 at k={} took {:?} (budget 30s)",
-            k, elapsed
+            k,
+            elapsed
         );
     }
 
@@ -783,7 +843,8 @@ mod tests {
         assert!(
             elapsed.as_secs() < 60,
             "phase1 at k={} took {:?} (budget 60s)",
-            k, elapsed
+            k,
+            elapsed
         );
     }
 
@@ -825,10 +886,14 @@ mod tests {
         use crate::synthesis::distance::diamond_distance_float;
         let theta = 0.3_f64;
         let target: crate::synthesis::distance::Mat2 = [
-            [num_complex::Complex64::from_polar(1.0, -theta / 2.0),
-             num_complex::Complex64::new(0.0, 0.0)],
-            [num_complex::Complex64::new(0.0, 0.0),
-             num_complex::Complex64::from_polar(1.0, theta / 2.0)],
+            [
+                num_complex::Complex64::from_polar(1.0, -theta / 2.0),
+                num_complex::Complex64::new(0.0, 0.0),
+            ],
+            [
+                num_complex::Complex64::new(0.0, 0.0),
+                num_complex::Complex64::from_polar(1.0, theta / 2.0),
+            ],
         ];
         let v = unitary_to_uv_zeta(&target);
         let d = det_phase_of(&target);
@@ -841,13 +906,18 @@ mod tests {
             let t0 = std::time::Instant::now();
             let sols = phase1(&mut s, &y, k, eps, budget, &abort);
             let dt = t0.elapsed();
-            let min_dist = sols.iter().map(|sol| {
-                let cand = solution_to_u2q_d(sol, k, d);
-                diamond_distance_float(&cand.to_float(), &target)
-            }).fold(f64::INFINITY, f64::min);
+            let min_dist = sols
+                .iter()
+                .map(|sol| {
+                    let cand = solution_to_u2q_d(sol, k, d);
+                    diamond_distance_float(&cand.to_float(), &target)
+                })
+                .fold(f64::INFINITY, f64::min);
             eprintln!(
                 "k={k:>2}  sols={:>3}  min_dist={min_dist:.3e}  t={:>10.3?}  budget_hit={}",
-                sols.len(), dt, abort.load(Ordering::Relaxed)
+                sols.len(),
+                dt,
+                abort.load(Ordering::Relaxed)
             );
         }
     }
@@ -861,24 +931,32 @@ mod tests {
     #[test]
     #[ignore]
     fn diag_eps_1e_3() {
-        use crate::synthesis::distance::diamond_distance_float;
         use crate::synthesis::clifford_t::SynthesizerT;
+        use crate::synthesis::distance::diamond_distance_float;
         let theta = 0.3_f64;
         let target: crate::synthesis::distance::Mat2 = [
-            [num_complex::Complex64::from_polar(1.0, -theta / 2.0),
-             num_complex::Complex64::new(0.0, 0.0)],
-            [num_complex::Complex64::new(0.0, 0.0),
-             num_complex::Complex64::from_polar(1.0, theta / 2.0)],
+            [
+                num_complex::Complex64::from_polar(1.0, -theta / 2.0),
+                num_complex::Complex64::new(0.0, 0.0),
+            ],
+            [
+                num_complex::Complex64::new(0.0, 0.0),
+                num_complex::Complex64::from_polar(1.0, theta / 2.0),
+            ],
         ];
         let eps = 1e-3_f64;
 
         // 1. Upper bound from 8D Clifford+T.
         let synth_t = SynthesizerT::new(eps);
         let t0 = std::time::Instant::now();
-        let r_t = synth_t.synthesize(target).expect("8D should land Rz(0.3) at ε=1e-3");
+        let r_t = synth_t
+            .synthesize(target)
+            .expect("8D should land Rz(0.3) at ε=1e-3");
         eprintln!(
             "8D Clifford+T:  lde={}  dist={:.3e}  t={:?}",
-            r_t.lde, r_t.distance, t0.elapsed()
+            r_t.lde,
+            r_t.distance,
+            t0.elapsed()
         );
         let upper_bound = r_t.lde;
 
@@ -895,17 +973,23 @@ mod tests {
             let sols = phase1(&mut s, &y, k, eps, budget, &abort);
             let dt = t0.elapsed();
             let abort_v = abort.load(Ordering::Relaxed);
-            let min_dist = sols.iter().map(|sol| {
-                let cand = solution_to_u2q_d(sol, k, d);
-                diamond_distance_float(&cand.to_float(), &target)
-            }).fold(f64::INFINITY, f64::min);
+            let min_dist = sols
+                .iter()
+                .map(|sol| {
+                    let cand = solution_to_u2q_d(sol, k, d);
+                    diamond_distance_float(&cand.to_float(), &target)
+                })
+                .fold(f64::INFINITY, f64::min);
             let hit = min_dist < eps;
             eprintln!(
                 "k={k:>2}  sols={:>4}  budget_hit={abort_v:>5}  \
                  min_dist={min_dist:.3e}  hit_eps={hit:>5}  t={:?}",
-                sols.len(), dt
+                sols.len(),
+                dt
             );
-            if hit { break; }
+            if hit {
+                break;
+            }
         }
     }
 }

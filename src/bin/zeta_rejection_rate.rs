@@ -27,22 +27,23 @@ use std::time::Instant;
 /// in the standard ζ-basis.
 #[inline]
 fn beta_1(u: &[i64; 8]) -> i64 {
-    u[0]*u[1] + u[1]*u[2] + u[2]*u[3] + u[3]*u[4]
-        + u[4]*u[5] + u[5]*u[6] + u[6]*u[7]
-        - u[0]*u[7]
+    u[0] * u[1] + u[1] * u[2] + u[2] * u[3] + u[3] * u[4] + u[4] * u[5] + u[5] * u[6] + u[6] * u[7]
+        - u[0] * u[7]
 }
 
 #[inline]
 fn beta_2(u: &[i64; 8]) -> i64 {
-    u[0]*u[2] + u[1]*u[3] + u[2]*u[4] + u[3]*u[5]
-        + u[4]*u[6] + u[5]*u[7]
-        - u[0]*u[6] - u[1]*u[7]
+    u[0] * u[2] + u[1] * u[3] + u[2] * u[4] + u[3] * u[5] + u[4] * u[6] + u[5] * u[7]
+        - u[0] * u[6]
+        - u[1] * u[7]
 }
 
 #[inline]
 fn beta_3(u: &[i64; 8]) -> i64 {
-    u[0]*u[3] + u[1]*u[4] + u[2]*u[5] + u[3]*u[6] + u[4]*u[7]
-        - u[0]*u[5] - u[1]*u[6] - u[2]*u[7]
+    u[0] * u[3] + u[1] * u[4] + u[2] * u[5] + u[3] * u[6] + u[4] * u[7]
+        - u[0] * u[5]
+        - u[1] * u[6]
+        - u[2] * u[7]
 }
 
 /// Joint forms on the 16D pair x = (u_1's 8 coords, u_2's 8 coords).
@@ -63,8 +64,9 @@ fn forms(x: &[i64; 16]) -> (i64, i64, i64) {
 ///        + a_2·b_2 − a_2·d_2 + b_2·c_2 + c_2·d_2
 #[inline]
 fn b_zomega(x: &[i64; 8]) -> i64 {
-    x[0]*x[1] - x[0]*x[3] + x[1]*x[2] + x[2]*x[3]
-        + x[4]*x[5] - x[4]*x[7] + x[5]*x[6] + x[6]*x[7]
+    x[0] * x[1] - x[0] * x[3] + x[1] * x[2] + x[2] * x[3] + x[4] * x[5] - x[4] * x[7]
+        + x[5] * x[6]
+        + x[6] * x[7]
 }
 
 /// Recursively enumerate D-dim integer points x with ‖x‖² = target.
@@ -139,10 +141,7 @@ fn main() {
 
     println!(
         "{:>3} {:>5}  {:>14} {:>14}  {:>14} {:>14}  {:>10}",
-        "k", "2^k",
-        "ω-shell", "ω-valid",
-        "ζ-shell", "ζ-valid",
-        "ζ:ω ratio",
+        "k", "2^k", "ω-shell", "ω-valid", "ζ-shell", "ζ-valid", "ζ:ω ratio",
     );
     println!("{}", "-".repeat(98));
 
@@ -164,10 +163,15 @@ fn main() {
 
         println!(
             "{:>3} {:>5}  {:>14} {:>14}  {:>14} {:>14}  {:>10.3e}    [ω: {:.2}s, ζ: {:.2}s]",
-            k, 1u64 << k,
-            omega.shell, omega.pass_b,
-            zeta.shell, zeta.pass_b123,
-            ratio, elapsed_o, elapsed_z,
+            k,
+            1u64 << k,
+            omega.shell,
+            omega.pass_b,
+            zeta.shell,
+            zeta.pass_b123,
+            ratio,
+            elapsed_o,
+            elapsed_z,
         );
     }
 }

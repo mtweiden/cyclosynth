@@ -59,34 +59,28 @@ pub mod scratch;
 pub mod se;
 
 pub use cholesky_lu::{
-    cholesky_f64_16, cholesky_int_16, lu_solve_int_inplace_16,
-    snapshot_gram_to_mpfr_16,
+    cholesky_f64_16, cholesky_int_16, lu_solve_int_inplace_16, snapshot_gram_to_mpfr_16,
 };
 pub use integer::{phase1, phase1_with_stop, phase1_with_stop_mpfr};
 pub use lll::{lll_l2_16, run_lll_16, LllResult};
 pub use q_metric::{build_q_int_zeta, build_q_mpfr_zeta, build_q_mpfr_zeta_from_mpfr_v};
 pub use scratch::IntScratch16;
 pub use se::{
-    beta_1, beta_2, beta_3, bilinear_forms, det16_exact, euclidean_cholesky_16,
-    reconstruct_x, schnorr_euchner_16d, set_bypass_norm_prune, set_verify_prune_mpfr,
-    verify_prune_mpfr,
+    beta_1, beta_2, beta_3, bilinear_forms, det16_exact, euclidean_cholesky_16, reconstruct_x,
+    schnorr_euchner_16d, set_bypass_norm_prune, set_verify_prune_mpfr, verify_prune_mpfr,
 };
 
 // ─── Tests preserving the previous flat-module test suite ────────────────────
 
 #[cfg(test)]
 mod tests {
+    use super::q_metric::build_q_zzeta_lattice;
     use super::*;
+    use crate::rings::ZZeta;
+    use crate::synthesis::clifford_sqrt_t::{det_phase_of, solution_to_u2q, solution_to_u2q_d};
     use crate::synthesis::decomposer::BlochDecomposer;
     use crate::synthesis::distance::Mat2;
-    use crate::synthesis::search_zeta::{
-        compute_align_vec_zeta, phase1_brute, uv_to_xy_zeta,
-    };
-    use crate::synthesis::clifford_sqrt_t::{
-        det_phase_of, solution_to_u2q, solution_to_u2q_d,
-    };
-    use super::q_metric::build_q_zzeta_lattice;
-    use crate::rings::ZZeta;
+    use crate::synthesis::search_zeta::{compute_align_vec_zeta, phase1_brute, uv_to_xy_zeta};
     use num_complex::Complex64;
     use std::f64::consts::PI;
 
@@ -105,8 +99,10 @@ mod tests {
 
     #[test]
     fn solution_to_u2q_well_formed() {
-        let sol = [1, 0, 0, 0, 0, 0, 0, 0,    // u_1 = 1
-                   0, 1, 0, 0, 0, 0, 0, 0];   // u_2 = ζ
+        let sol = [
+            1, 0, 0, 0, 0, 0, 0, 0, // u_1 = 1
+            0, 1, 0, 0, 0, 0, 0, 0,
+        ]; // u_2 = ζ
         let u = solution_to_u2q(&sol, 1);
         assert_eq!(u.u11, ZZeta::ONE);
         assert_eq!(u.u21, ZZeta::ZETA);
@@ -129,7 +125,9 @@ mod tests {
             let u = solution_to_u2q(sol, 0);
             let mat = u.to_float();
             let d = diamond_distance_float(&mat, &target);
-            if d < min_dist { min_dist = d; }
+            if d < min_dist {
+                min_dist = d;
+            }
         }
         assert!(min_dist < 1e-9, "min distance to T at k=0: {min_dist}");
     }
@@ -161,24 +159,28 @@ mod tests {
         for sol in &sols {
             let u = solution_to_u2q(sol, 1);
             let d = diamond_distance_float(&u.to_float(), &target);
-            if d < min_dist { min_dist = d; }
+            if d < min_dist {
+                min_dist = d;
+            }
         }
         assert!(min_dist < 1e-9, "min dist to QHQ at k=1: {min_dist:.3e}");
     }
 
     #[test]
     fn brute_finds_random_circuits_with_even_q_count() {
-        use rand::Rng;
         use crate::matrix::u2::U2Q;
         use crate::synthesis::distance::diamond_distance_float;
+        use rand::Rng;
         let mut rng = rand::rng();
         let mut tested = 0;
         for _ in 0..20 {
             let n = rng.random_range(2..=5);
-            let circuit: String = (0..n).map(|_| {
-                ['H', 'S', 'Q'][rng.random_range(0..3)]
-            }).collect();
-            if det_phase_of_circuit(&circuit) % 2 != 0 { continue; }
+            let circuit: String = (0..n)
+                .map(|_| ['H', 'S', 'Q'][rng.random_range(0..3)])
+                .collect();
+            if det_phase_of_circuit(&circuit) % 2 != 0 {
+                continue;
+            }
             let mut u = U2Q::eye();
             for c in circuit.chars() {
                 u = u * match c {
@@ -189,18 +191,28 @@ mod tests {
                 };
             }
             let k = u.k;
-            if k > 3 { continue; }
+            if k > 3 {
+                continue;
+            }
             let target = u.to_float();
             let sols = phase1_brute(k);
-            let min_dist = sols.iter().map(|sol| {
-                let cand = solution_to_u2q(sol, k);
-                diamond_distance_float(&cand.to_float(), &target)
-            }).fold(f64::INFINITY, f64::min);
-            assert!(min_dist < 1e-9,
-                "circuit \"{circuit}\" k={k}: min dist = {min_dist:.3e}");
+            let min_dist = sols
+                .iter()
+                .map(|sol| {
+                    let cand = solution_to_u2q(sol, k);
+                    diamond_distance_float(&cand.to_float(), &target)
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                min_dist < 1e-9,
+                "circuit \"{circuit}\" k={k}: min dist = {min_dist:.3e}"
+            );
             tested += 1;
         }
-        assert!(tested > 0, "test sampled zero circuits — increase loop range");
+        assert!(
+            tested > 0,
+            "test sampled zero circuits — increase loop range"
+        );
     }
 
     // ── Phase 5a regression tests ─────────────────────────────────────────────
@@ -212,18 +224,29 @@ mod tests {
             let mut x = [0i64; 8];
             let mut sols = Vec::new();
             fn enum8<F: FnMut(&[i64; 8])>(x: &mut [i64; 8], pos: usize, rem: i64, cb: &mut F) {
-                if pos == 8 { if rem == 0 { cb(x); } return; }
+                if pos == 8 {
+                    if rem == 0 {
+                        cb(x);
+                    }
+                    return;
+                }
                 let bound = (rem as f64).sqrt().floor() as i64;
                 for v in -bound..=bound {
-                    if v * v > rem { continue; }
+                    if v * v > rem {
+                        continue;
+                    }
                     x[pos] = v;
                     enum8(x, pos + 1, rem - v * v, cb);
                 }
             }
             enum8(&mut x, 0, target, &mut |x| {
-                let b = x[0]*x[1] - x[0]*x[3] + x[1]*x[2] + x[2]*x[3]
-                      + x[4]*x[5] - x[4]*x[7] + x[5]*x[6] + x[6]*x[7];
-                if b == 0 { sols.push(*x); }
+                let b = x[0] * x[1] - x[0] * x[3] + x[1] * x[2] + x[2] * x[3] + x[4] * x[5]
+                    - x[4] * x[7]
+                    + x[5] * x[6]
+                    + x[6] * x[7];
+                if b == 0 {
+                    sols.push(*x);
+                }
             });
             sols
         };
@@ -243,7 +266,7 @@ mod tests {
 
     #[test]
     fn negative_bilinear_cases_excluded() {
-        let bad_x = [1i64, 1, 0, 0, 0, 0, 0, 0,    0, 0, 0, 0, 0, 0, 0, 0];
+        let bad_x = [1i64, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let norm_sq: i64 = bad_x.iter().map(|v| v * v).sum();
         assert_eq!(norm_sq, 2);
         let (b1, _, _) = bilinear_forms(&bad_x);
@@ -278,21 +301,31 @@ mod tests {
             let mut u = U2Q::eye();
             for c in circuit.chars() {
                 u = u * match c {
-                    'H' => U2Q::h(), 'S' => U2Q::s(), 'Q' => U2Q::q(),
-                    'T' => U2Q::t(), _ => unreachable!(),
+                    'H' => U2Q::h(),
+                    'S' => U2Q::s(),
+                    'Q' => U2Q::q(),
+                    'T' => U2Q::t(),
+                    _ => unreachable!(),
                 };
             }
             let k = u.k;
-            if k > 3 { continue; }
+            if k > 3 {
+                continue;
+            }
             let target = u.to_float();
             let d_target = det_phase_of(&target);
             let sols = phase1_brute(k);
-            let min_dist = sols.iter().map(|sol| {
-                let cand = solution_to_u2q_d(sol, k, d_target);
-                diamond_distance_float(&cand.to_float(), &target)
-            }).fold(f64::INFINITY, f64::min);
-            assert!(min_dist < 1e-9,
-                "circuit \"{circuit}\" k={k} d={d_target}: min dist = {min_dist:.3e}");
+            let min_dist = sols
+                .iter()
+                .map(|sol| {
+                    let cand = solution_to_u2q_d(sol, k, d_target);
+                    diamond_distance_float(&cand.to_float(), &target)
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                min_dist < 1e-9,
+                "circuit \"{circuit}\" k={k} d={d_target}: min dist = {min_dist:.3e}"
+            );
         }
     }
 
@@ -316,9 +349,12 @@ mod tests {
             }
         }
         for i in 0..16 {
-            assert!((y_real_from_lattice[i] - y_real[i]).abs() < 1e-10,
+            assert!(
+                (y_real_from_lattice[i] - y_real[i]).abs() < 1e-10,
                 "mismatch at i={i}: lattice→real = {}, build_y_vector = {}",
-                y_real_from_lattice[i], y_real[i]);
+                y_real_from_lattice[i],
+                y_real[i]
+            );
         }
     }
 
@@ -333,14 +369,16 @@ mod tests {
         for sol in &sols {
             let cand = solution_to_u2q_d(sol, 2, 1);
             let d = diamond_distance_float(&cand.to_float(), &target);
-            if d < min_dist { min_dist = d; }
+            if d < min_dist {
+                min_dist = d;
+            }
         }
         assert!(min_dist < 1e-9, "min dist to HQH at k=2, d=1: {min_dist}");
     }
 
     #[test]
     fn solution_to_u2q_d_0_matches_su2() {
-        let sol = [1, 2, -1, 0, 0, 1, 0, -1,    -2, 1, 0, 1, 1, 0, -1, 0];
+        let sol = [1, 2, -1, 0, 0, 1, 0, -1, -2, 1, 0, 1, 1, 0, -1, 0];
         let u_default = solution_to_u2q(&sol, 4);
         let u_d0 = solution_to_u2q_d(&sol, 4, 0);
         assert_eq!(u_default.u11, u_d0.u11);
@@ -362,31 +400,41 @@ mod tests {
             for d in 0..16 {
                 let cand = solution_to_u2q_d(sol, 0, d);
                 let dd = diamond_distance_float(&cand.to_float(), &target);
-                if dd < min_dist { min_dist = dd; }
+                if dd < min_dist {
+                    min_dist = dd;
+                }
             }
         }
-        assert!(min_dist < 1e-9, "extended reconstruction should find Q exactly: {min_dist}");
+        assert!(
+            min_dist < 1e-9,
+            "extended reconstruction should find Q exactly: {min_dist}"
+        );
     }
 
     #[test]
     fn extended_reconstruction_finds_random_clifford_sqrt_t() {
-        use rand::Rng;
         use crate::matrix::u2::U2Q;
         use crate::synthesis::distance::diamond_distance_float;
+        use rand::Rng;
         let mut rng = rand::rng();
         for _ in 0..30 {
             let n = rng.random_range(1..=5);
-            let circuit: String = (0..n).map(|_|
-                ['H', 'S', 'Q'][rng.random_range(0..3)]
-            ).collect();
+            let circuit: String = (0..n)
+                .map(|_| ['H', 'S', 'Q'][rng.random_range(0..3)])
+                .collect();
             let mut u = U2Q::eye();
             for c in circuit.chars() {
                 u = u * match c {
-                    'H' => U2Q::h(), 'S' => U2Q::s(), 'Q' => U2Q::q(), _ => unreachable!(),
+                    'H' => U2Q::h(),
+                    'S' => U2Q::s(),
+                    'Q' => U2Q::q(),
+                    _ => unreachable!(),
                 };
             }
             let k = u.k;
-            if k > 3 { continue; }
+            if k > 3 {
+                continue;
+            }
             let target = u.to_float();
             let sols = phase1_brute(k);
             let mut min_dist = f64::INFINITY;
@@ -394,11 +442,15 @@ mod tests {
                 for d in 0..16 {
                     let cand = solution_to_u2q_d(sol, k, d);
                     let dd = diamond_distance_float(&cand.to_float(), &target);
-                    if dd < min_dist { min_dist = dd; }
+                    if dd < min_dist {
+                        min_dist = dd;
+                    }
                 }
             }
-            assert!(min_dist < 1e-9,
-                "circuit \"{circuit}\" k={k}: extended-recon min dist = {min_dist:.3e}");
+            assert!(
+                min_dist < 1e-9,
+                "circuit \"{circuit}\" k={k}: extended-recon min dist = {min_dist:.3e}"
+            );
         }
     }
 
@@ -409,14 +461,19 @@ mod tests {
         let hqh: U2Q = U2Q::h() * U2Q::q() * U2Q::h();
         let target = hqh.to_float();
         let sols = phase1_brute(2);
-        let min_dist = sols.iter().map(|sol| {
-            let cand = solution_to_u2q(sol, 2);
-            diamond_distance_float(&cand.to_float(), &target)
-        }).fold(f64::INFINITY, f64::min);
+        let min_dist = sols
+            .iter()
+            .map(|sol| {
+                let cand = solution_to_u2q(sol, 2);
+                diamond_distance_float(&cand.to_float(), &target)
+            })
+            .fold(f64::INFINITY, f64::min);
         let expected = (PI / 16.0).sin();
         let rel_err = (min_dist - expected).abs() / expected;
-        assert!(rel_err < 0.01,
-            "HQH SU(2) limitation: min dist = {min_dist:.6}, expected ≈ {expected:.6} (sin(π/16))");
+        assert!(
+            rel_err < 0.01,
+            "HQH SU(2) limitation: min dist = {min_dist:.6}, expected ≈ {expected:.6} (sin(π/16))"
+        );
     }
 
     // ── M1 (lattice-coord Q-metric) tests ─────────────────────────────────────
@@ -439,9 +496,13 @@ mod tests {
             for j in 0..16 {
                 let diff = (q[i][j] - q[j][i]).abs();
                 let scale = q[i][j].abs().max(q[j][i].abs()).max(1.0);
-                assert!(diff < 1e-12 * scale,
+                assert!(
+                    diff < 1e-12 * scale,
                     "Q_lat non-symmetric at ({i},{j}): {} vs {} (diff {})",
-                    q[i][j], q[j][i], diff);
+                    q[i][j],
+                    q[j][i],
+                    diff
+                );
             }
         }
     }
@@ -462,8 +523,12 @@ mod tests {
         for i in 0..16 {
             let expected = lambda_y * yhat[i];
             let tol = 1e-5 * lambda_y.abs().max(1.0);
-            assert!((qy[i] - expected).abs() < tol,
-                "Q_lat·ŷ at i={i}: got {}, expected {}", qy[i], expected);
+            assert!(
+                (qy[i] - expected).abs() < tol,
+                "Q_lat·ŷ at i={i}: got {}, expected {}",
+                qy[i],
+                expected
+            );
         }
     }
 
@@ -483,8 +548,10 @@ mod tests {
         let expected_trace = lambda_y + 3.0 * lambda_perp + 12.0 * lambda_r;
         let actual_trace: f64 = (0..16).map(|i| q[i][i]).sum();
         let rel_err = (actual_trace - expected_trace).abs() / expected_trace.abs();
-        assert!(rel_err < 1e-6,
-            "trace(Q_lat) = {actual_trace}, expected {expected_trace}, rel err {rel_err:.3e}");
+        assert!(
+            rel_err < 1e-6,
+            "trace(Q_lat) = {actual_trace}, expected {expected_trace}, rel err {rel_err:.3e}"
+        );
     }
 
     #[test]
@@ -492,9 +559,16 @@ mod tests {
         let v = [0.5, 0.5, 0.5, 0.5];
         let q = build_q_zzeta_lattice(v, 6, 1e-3);
         let test_vecs = [
-            [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            [1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0, 0.5, -0.5, 0.25, -0.25, 0.1, 0.0, 0.7, -0.3],
-            [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            [
+                1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            [
+                1.0, -1.0, 2.0, -2.0, 3.0, -3.0, 4.0, -4.0, 0.5, -0.5, 0.25, -0.25, 0.1, 0.0, 0.7,
+                -0.3,
+            ],
+            [
+                0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+            ],
         ];
         for w in &test_vecs {
             let qw = matvec_16(&q, w);
@@ -561,10 +635,17 @@ mod tests {
         for i in 0..16 {
             for j in 0..16 {
                 let diff = (q_f64[i][j] - s.q_mpfr[i][j].to_f64()).abs();
-                let scale = q_f64[i][j].abs().max(s.q_mpfr[i][j].to_f64().abs()).max(1.0);
-                assert!(diff < 1e-9 * scale,
+                let scale = q_f64[i][j]
+                    .abs()
+                    .max(s.q_mpfr[i][j].to_f64().abs())
+                    .max(1.0);
+                assert!(
+                    diff < 1e-9 * scale,
                     "q_mpfr vs q_f64 mismatch at ({i},{j}): {} vs {} (diff {})",
-                    q_f64[i][j], s.q_mpfr[i][j].to_f64(), diff);
+                    q_f64[i][j],
+                    s.q_mpfr[i][j].to_f64(),
+                    diff
+                );
             }
         }
     }

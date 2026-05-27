@@ -43,7 +43,9 @@ fn dd_add(a: DD, b: DD) -> DD {
 }
 
 #[inline]
-fn dd_sub(a: DD, b: DD) -> DD { dd_add(a, (-b.0, -b.1)) }
+fn dd_sub(a: DD, b: DD) -> DD {
+    dd_add(a, (-b.0, -b.1))
+}
 
 #[inline]
 fn dd_mul(a: DD, b: DD) -> DD {
@@ -53,10 +55,14 @@ fn dd_mul(a: DD, b: DD) -> DD {
 }
 
 #[inline]
-fn dd_from_f64(a: f64) -> DD { (a, 0.0) }
+fn dd_from_f64(a: f64) -> DD {
+    (a, 0.0)
+}
 
 #[inline]
-fn dd_to_f64(a: DD) -> f64 { a.0 + a.1 }
+fn dd_to_f64(a: DD) -> f64 {
+    a.0 + a.1
+}
 
 #[inline]
 fn dd_recip(b: DD) -> DD {
@@ -69,11 +75,15 @@ fn dd_recip(b: DD) -> DD {
 }
 
 #[inline]
-fn dd_div(a: DD, b: DD) -> DD { dd_mul(a, dd_recip(b)) }
+fn dd_div(a: DD, b: DD) -> DD {
+    dd_mul(a, dd_recip(b))
+}
 
 #[inline]
 fn dd_sqrt(s: DD) -> DD {
-    if s.0 <= 0.0 { return (0.0, 0.0); }
+    if s.0 <= 0.0 {
+        return (0.0, 0.0);
+    }
     let x = s.0.sqrt();
     let x_dd = dd_from_f64(x);
     let x_sq = dd_mul(x_dd, x_dd);

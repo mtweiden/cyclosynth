@@ -69,8 +69,7 @@ pub fn cholesky_int_16(
     g_post: &[[RFloat; 16]; 16],
 ) -> Option<[[RFloat; 16]; 16]> {
     let prec = scratch.prec_q;
-    let mut l: [[RFloat; 16]; 16] =
-        std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)));
+    let mut l: [[RFloat; 16]; 16] = std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)));
     let zero = rfz(prec);
     let mut acc = rfz(prec);
     let mut tmp = rfz(prec);
@@ -230,11 +229,7 @@ mod tests {
 
     /// Helper: install a rational integer Gram on the scratch from an f64
     /// matrix `g_nat` at `scale_bits = B`, i.e. `gram[i][j] = round(2^B · g_nat[i][j])`.
-    fn install_gram_from_f64(
-        scratch: &mut IntScratch16,
-        g_nat: &[[f64; 16]; 16],
-        scale_bits: i32,
-    ) {
+    fn install_gram_from_f64(scratch: &mut IntScratch16, g_nat: &[[f64; 16]; 16], scale_bits: i32) {
         let scale = 2.0_f64.powi(scale_bits);
         for i in 0..16 {
             for j in 0..16 {

@@ -60,9 +60,9 @@ use crate::synthesis::lattice_common::{LllResult, L2_DELTA_BAR, L2_ETA_BAR, MAX_
 /// take abs() in i256 first to keep mantissa precision.
 #[inline]
 pub fn i256_to_f64(v: i256) -> f64 {
-    const SCALE_64: f64 = 18446744073709551616.0;     // 2^64
-    const SCALE_128: f64 = SCALE_64 * SCALE_64;       // 2^128
-    const SCALE_192: f64 = SCALE_128 * SCALE_64;      // 2^192
+    const SCALE_64: f64 = 18446744073709551616.0; // 2^64
+    const SCALE_128: f64 = SCALE_64 * SCALE_64; // 2^128
+    const SCALE_192: f64 = SCALE_128 * SCALE_64; // 2^192
     let neg = v.is_negative();
     let abs = if neg { -v } else { v };
     let limbs = abs.to_ne_limbs();
@@ -70,7 +70,11 @@ pub fn i256_to_f64(v: i256) -> f64 {
         + (limbs[1] as f64) * SCALE_64
         + (limbs[2] as f64) * SCALE_128
         + (limbs[3] as f64) * SCALE_192;
-    if neg { -r } else { r }
+    if neg {
+        -r
+    } else {
+        r
+    }
 }
 
 /// f64 CFA: same algorithm as `super::lll::cfa_row` but operates on the

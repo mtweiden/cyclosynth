@@ -6,7 +6,7 @@
 //! Convention for gate strings: leftmost character = first gate applied
 //! (rightmost factor in matrix product).
 
-use crate::matrix::{U2T, U2Q};
+use crate::matrix::{U2Q, U2T};
 use crate::rings::{ZOmega, ZZeta};
 
 /// All 24 single-qubit Clifford gates as (gate_string, U2T) pairs.
@@ -17,30 +17,246 @@ use crate::rings::{ZOmega, ZZeta};
 // For ZOmega: conj(a,b,c,d)=(a,-d,-c,-b), so -conj(a,b,c,d)=(-a,d,c,b).
 pub static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
     //         u11                     u12                     u21                     u22                     k
-    ("I",    U2T::new(ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), 0)),
-    ("H",    U2T::new(ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0, 1, 0), 1)),
-    ("S",    U2T::new(ZOmega::from_i32( 0, 0, 0,-1), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 1, 0, 0), 0)),
-    ("X",    U2T::new(ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0, 0, 0), 0)),
-    ("Y",    U2T::new(ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32(-1, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), 0)),
-    ("Z",    U2T::new(ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 0, 1, 0), 0)),
-    ("XH",   U2T::new(ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32(-1, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), 1)),
-    ("YH",   U2T::new(ZOmega::from_i32( 0, 0, 1, 0), ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0,-1, 0), 1)),
-    ("ZH",   U2T::new(ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32(-1, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), 1)),
-    ("XS",   U2T::new(ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 1, 0, 0), ZOmega::from_i32( 0, 0, 0, 1), ZOmega::from_i32( 0, 0, 0, 0), 0)),
-    ("YS",   U2T::new(ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 0, 0,-1), ZOmega::from_i32( 0,-1, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), 0)),
-    ("ZS",   U2T::new(ZOmega::from_i32( 0, 1, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 0, 0,-1), 0)),
-    ("SH",   U2T::new(ZOmega::from_i32( 0, 1, 0, 0), ZOmega::from_i32( 0, 0, 0, 1), ZOmega::from_i32( 0, 1, 0, 0), ZOmega::from_i32( 0, 0, 0,-1), 1)),
-    ("XSH",  U2T::new(ZOmega::from_i32( 0, 1, 0, 0), ZOmega::from_i32( 0, 0, 0,-1), ZOmega::from_i32( 0,-1, 0, 0), ZOmega::from_i32( 0, 0, 0,-1), 1)),
-    ("YSH",  U2T::new(ZOmega::from_i32( 0, 0, 0, 1), ZOmega::from_i32( 0,-1, 0, 0), ZOmega::from_i32( 0, 0, 0,-1), ZOmega::from_i32( 0,-1, 0, 0), 1)),
-    ("ZSH",  U2T::new(ZOmega::from_i32( 0, 0, 0,-1), ZOmega::from_i32( 0,-1, 0, 0), ZOmega::from_i32( 0, 0, 0,-1), ZOmega::from_i32( 0, 1, 0, 0), 1)),
-    ("HS",   U2T::new(ZOmega::from_i32( 0, 1, 0, 0), ZOmega::from_i32( 0, 1, 0, 0), ZOmega::from_i32( 0, 0, 0, 1), ZOmega::from_i32( 0, 0, 0,-1), 1)),
-    ("XHS",  U2T::new(ZOmega::from_i32( 0, 0, 0,-1), ZOmega::from_i32( 0, 0, 0,-1), ZOmega::from_i32( 0,-1, 0, 0), ZOmega::from_i32( 0, 1, 0, 0), 1)),
-    ("YHS",  U2T::new(ZOmega::from_i32( 0, 1, 0, 0), ZOmega::from_i32( 0,-1, 0, 0), ZOmega::from_i32( 0, 0, 0,-1), ZOmega::from_i32( 0, 0, 0,-1), 1)),
-    ("ZHS",  U2T::new(ZOmega::from_i32( 0, 0, 0,-1), ZOmega::from_i32( 0, 0, 0, 1), ZOmega::from_i32( 0, 1, 0, 0), ZOmega::from_i32( 0, 1, 0, 0), 1)),
-    ("HSH",  U2T::new(ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 1, 0, 0, 0), 1)),
-    ("XHSH", U2T::new(ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0, 1, 0), ZOmega::from_i32( 0, 0, 1, 0), ZOmega::from_i32( 1, 0, 0, 0), 1)),
-    ("YHSH", U2T::new(ZOmega::from_i32( 0, 0, 1, 0), ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32(-1, 0, 0, 0), ZOmega::from_i32( 0, 0,-1, 0), 1)),
-    ("ZHSH", U2T::new(ZOmega::from_i32( 0, 0, 1, 0), ZOmega::from_i32(-1, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0,-1, 0), 1)),
+    (
+        "I",
+        U2T::new(
+            ZOmega::from_i32(1, 0, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(1, 0, 0, 0),
+            0,
+        ),
+    ),
+    (
+        "H",
+        U2T::new(
+            ZOmega::from_i32(0, 0, -1, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            ZOmega::from_i32(0, 0, 1, 0),
+            1,
+        ),
+    ),
+    (
+        "S",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 0, -1),
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(0, 1, 0, 0),
+            0,
+        ),
+    ),
+    (
+        "X",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            ZOmega::from_i32(0, 0, 0, 0),
+            0,
+        ),
+    ),
+    (
+        "Y",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(-1, 0, 0, 0),
+            ZOmega::from_i32(1, 0, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 0),
+            0,
+        ),
+    ),
+    (
+        "Z",
+        U2T::new(
+            ZOmega::from_i32(0, 0, -1, 0),
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(0, 0, 1, 0),
+            0,
+        ),
+    ),
+    (
+        "XH",
+        U2T::new(
+            ZOmega::from_i32(1, 0, 0, 0),
+            ZOmega::from_i32(1, 0, 0, 0),
+            ZOmega::from_i32(-1, 0, 0, 0),
+            ZOmega::from_i32(1, 0, 0, 0),
+            1,
+        ),
+    ),
+    (
+        "YH",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 1, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            1,
+        ),
+    ),
+    (
+        "ZH",
+        U2T::new(
+            ZOmega::from_i32(1, 0, 0, 0),
+            ZOmega::from_i32(-1, 0, 0, 0),
+            ZOmega::from_i32(1, 0, 0, 0),
+            ZOmega::from_i32(1, 0, 0, 0),
+            1,
+        ),
+    ),
+    (
+        "XS",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(0, 1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 1),
+            ZOmega::from_i32(0, 0, 0, 0),
+            0,
+        ),
+    ),
+    (
+        "YS",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(0, 0, 0, -1),
+            ZOmega::from_i32(0, -1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 0),
+            0,
+        ),
+    ),
+    (
+        "ZS",
+        U2T::new(
+            ZOmega::from_i32(0, 1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 0),
+            ZOmega::from_i32(0, 0, 0, -1),
+            0,
+        ),
+    ),
+    (
+        "SH",
+        U2T::new(
+            ZOmega::from_i32(0, 1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 1),
+            ZOmega::from_i32(0, 1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, -1),
+            1,
+        ),
+    ),
+    (
+        "XSH",
+        U2T::new(
+            ZOmega::from_i32(0, 1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, -1),
+            ZOmega::from_i32(0, -1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, -1),
+            1,
+        ),
+    ),
+    (
+        "YSH",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 0, 1),
+            ZOmega::from_i32(0, -1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, -1),
+            ZOmega::from_i32(0, -1, 0, 0),
+            1,
+        ),
+    ),
+    (
+        "ZSH",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 0, -1),
+            ZOmega::from_i32(0, -1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, -1),
+            ZOmega::from_i32(0, 1, 0, 0),
+            1,
+        ),
+    ),
+    (
+        "HS",
+        U2T::new(
+            ZOmega::from_i32(0, 1, 0, 0),
+            ZOmega::from_i32(0, 1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, 1),
+            ZOmega::from_i32(0, 0, 0, -1),
+            1,
+        ),
+    ),
+    (
+        "XHS",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 0, -1),
+            ZOmega::from_i32(0, 0, 0, -1),
+            ZOmega::from_i32(0, -1, 0, 0),
+            ZOmega::from_i32(0, 1, 0, 0),
+            1,
+        ),
+    ),
+    (
+        "YHS",
+        U2T::new(
+            ZOmega::from_i32(0, 1, 0, 0),
+            ZOmega::from_i32(0, -1, 0, 0),
+            ZOmega::from_i32(0, 0, 0, -1),
+            ZOmega::from_i32(0, 0, 0, -1),
+            1,
+        ),
+    ),
+    (
+        "ZHS",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 0, -1),
+            ZOmega::from_i32(0, 0, 0, 1),
+            ZOmega::from_i32(0, 1, 0, 0),
+            ZOmega::from_i32(0, 1, 0, 0),
+            1,
+        ),
+    ),
+    (
+        "HSH",
+        U2T::new(
+            ZOmega::from_i32(1, 0, 0, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            ZOmega::from_i32(1, 0, 0, 0),
+            1,
+        ),
+    ),
+    (
+        "XHSH",
+        U2T::new(
+            ZOmega::from_i32(1, 0, 0, 0),
+            ZOmega::from_i32(0, 0, 1, 0),
+            ZOmega::from_i32(0, 0, 1, 0),
+            ZOmega::from_i32(1, 0, 0, 0),
+            1,
+        ),
+    ),
+    (
+        "YHSH",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 1, 0),
+            ZOmega::from_i32(1, 0, 0, 0),
+            ZOmega::from_i32(-1, 0, 0, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            1,
+        ),
+    ),
+    (
+        "ZHSH",
+        U2T::new(
+            ZOmega::from_i32(0, 0, 1, 0),
+            ZOmega::from_i32(-1, 0, 0, 0),
+            ZOmega::from_i32(1, 0, 0, 0),
+            ZOmega::from_i32(0, 0, -1, 0),
+            1,
+        ),
+    ),
 ];
 
 // Note on the T gate: T = Rz(π/4) = diag(e^{−iπ/8}, e^{iπ/8}). The phase

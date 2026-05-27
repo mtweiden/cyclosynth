@@ -43,16 +43,15 @@
 // iterator combinators threading multiple arrays in lockstep.
 #![allow(clippy::needless_range_loop)]
 
-use std::fmt;
-use std::ops::{Add, Mul, Neg, Sub};
-use std::f64::consts::SQRT_2;
+use crate::matrix::u2::U2;
+use crate::matrix::{U2Q, U2T};
+use crate::rings::types::{int_to_f64, INT_ONE, INT_THREE, INT_TWO, INT_ZERO};
+use crate::rings::{Int, ZOmega, ZOmicron, ZZeta};
 #[cfg(test)]
 use std::f64::consts::FRAC_1_SQRT_2;
-use crate::matrix::{U2T, U2Q};
-use crate::matrix::u2::U2;
-use crate::rings::{ZOmega, ZZeta, ZOmicron, Int};
-use crate::rings::types::{INT_ZERO, INT_ONE, INT_TWO, INT_THREE, int_to_f64};
-
+use std::f64::consts::SQRT_2;
+use std::fmt;
+use std::ops::{Add, Mul, Neg, Sub};
 
 // ─── R2 ───────────────────────────────────────────────────────────────────────
 
@@ -62,7 +61,7 @@ pub struct R2(pub Int, pub Int);
 
 impl R2 {
     pub const ZERO: Self = R2(INT_ZERO, INT_ZERO);
-    pub const ONE:  Self = R2(INT_ONE,  INT_ZERO);
+    pub const ONE: Self = R2(INT_ONE, INT_ZERO);
 
     /// Construct from small integer coefficients.
     #[inline]
@@ -116,15 +115,21 @@ impl R2 {
 
 impl Add for R2 {
     type Output = Self;
-    fn add(self, rhs: Self) -> Self { R2(self.0 + rhs.0, self.1 + rhs.1) }
+    fn add(self, rhs: Self) -> Self {
+        R2(self.0 + rhs.0, self.1 + rhs.1)
+    }
 }
 impl Sub for R2 {
     type Output = Self;
-    fn sub(self, rhs: Self) -> Self { R2(self.0 - rhs.0, self.1 - rhs.1) }
+    fn sub(self, rhs: Self) -> Self {
+        R2(self.0 - rhs.0, self.1 - rhs.1)
+    }
 }
 impl Neg for R2 {
     type Output = Self;
-    fn neg(self) -> Self { R2(-self.0, -self.1) }
+    fn neg(self) -> Self {
+        R2(-self.0, -self.1)
+    }
 }
 impl Mul for R2 {
     type Output = Self;
@@ -151,19 +156,24 @@ pub struct R4(pub Int, pub Int, pub Int, pub Int);
 
 impl R4 {
     pub const ZERO: Self = R4(INT_ZERO, INT_ZERO, INT_ZERO, INT_ZERO);
-    pub const ONE:  Self = R4(INT_ONE,  INT_ZERO, INT_ZERO, INT_ZERO);
+    pub const ONE: Self = R4(INT_ONE, INT_ZERO, INT_ZERO, INT_ZERO);
 
     /// Construct from small integer coefficients.
     #[inline]
     pub const fn from_i32(a: i32, b: i32, c: i32, d: i32) -> Self {
-        R4(Int::from_i32(a), Int::from_i32(b), Int::from_i32(c), Int::from_i32(d))
+        R4(
+            Int::from_i32(a),
+            Int::from_i32(b),
+            Int::from_i32(c),
+            Int::from_i32(d),
+        )
     }
 
     /// Convert to f64.
     pub fn to_f64(self) -> f64 {
-        let sqrt2   = SQRT_2;
-        let gamma   = (2.0f64 + sqrt2).sqrt(); // √(2+√2)
-        let gamma_s = gamma * sqrt2;           // γ·√2
+        let sqrt2 = SQRT_2;
+        let gamma = (2.0f64 + sqrt2).sqrt(); // √(2+√2)
+        let gamma_s = gamma * sqrt2; // γ·√2
         int_to_f64(self.0)
             + int_to_f64(self.1) * sqrt2
             + int_to_f64(self.2) * gamma
@@ -183,8 +193,10 @@ impl R4 {
         let mut x = self;
         loop {
             let t = x * divisor;
-            if t.0 % INT_TWO != INT_ZERO || t.1 % INT_TWO != INT_ZERO
-                || t.2 % INT_TWO != INT_ZERO || t.3 % INT_TWO != INT_ZERO
+            if t.0 % INT_TWO != INT_ZERO
+                || t.1 % INT_TWO != INT_ZERO
+                || t.2 % INT_TWO != INT_ZERO
+                || t.3 % INT_TWO != INT_ZERO
             {
                 break;
             }
@@ -198,10 +210,15 @@ impl R4 {
     pub fn div_gamma(self) -> Self {
         let t = self * R4::from_i32(0, 0, 2, -1);
         debug_assert!(
-            t.0 % INT_TWO == INT_ZERO && t.1 % INT_TWO == INT_ZERO
-                && t.2 % INT_TWO == INT_ZERO && t.3 % INT_TWO == INT_ZERO,
+            t.0 % INT_TWO == INT_ZERO
+                && t.1 % INT_TWO == INT_ZERO
+                && t.2 % INT_TWO == INT_ZERO
+                && t.3 % INT_TWO == INT_ZERO,
             "R4::div_gamma: not divisible by γ, got R4({},{},{},{})",
-            self.0, self.1, self.2, self.3
+            self.0,
+            self.1,
+            self.2,
+            self.3
         );
         R4(t.0 / INT_TWO, t.1 / INT_TWO, t.2 / INT_TWO, t.3 / INT_TWO)
     }
@@ -213,7 +230,12 @@ impl R4 {
     ///   = aγ + bγ√2 + c(2+√2) + d(2+√2)√2
     ///   = (2c+2d) + (c+2d)√2 + aγ + bγ√2
     pub fn mul_gamma(self) -> Self {
-        R4(INT_TWO*self.2 + INT_TWO*self.3, self.2 + INT_TWO*self.3, self.0, self.1)
+        R4(
+            INT_TWO * self.2 + INT_TWO * self.3,
+            self.2 + INT_TWO * self.3,
+            self.0,
+            self.1,
+        )
     }
 
     /// √2-adic valuation: largest n such that √2^n divides self.
@@ -242,32 +264,47 @@ impl R4 {
         debug_assert!(
             self.0 % INT_TWO == INT_ZERO && self.2 % INT_TWO == INT_ZERO,
             "R4::div_sqrt2: not divisible by √2, got R4({},{},{},{})",
-            self.0, self.1, self.2, self.3
+            self.0,
+            self.1,
+            self.2,
+            self.3
         );
         R4(self.1, self.0 / INT_TWO, self.3, self.2 / INT_TWO)
     }
 
     /// Multiply by √2: (a + b√2 + cγ + dγ√2)·√2 = 2b + a√2 + 2dγ + cγ√2.
     pub fn mul_sqrt2(self) -> Self {
-        R4(INT_TWO*self.1, self.0, INT_TWO*self.3, self.2)
+        R4(INT_TWO * self.1, self.0, INT_TWO * self.3, self.2)
     }
 }
 
 impl Add for R4 {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
-        R4(self.0+rhs.0, self.1+rhs.1, self.2+rhs.2, self.3+rhs.3)
+        R4(
+            self.0 + rhs.0,
+            self.1 + rhs.1,
+            self.2 + rhs.2,
+            self.3 + rhs.3,
+        )
     }
 }
 impl Sub for R4 {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {
-        R4(self.0-rhs.0, self.1-rhs.1, self.2-rhs.2, self.3-rhs.3)
+        R4(
+            self.0 - rhs.0,
+            self.1 - rhs.1,
+            self.2 - rhs.2,
+            self.3 - rhs.3,
+        )
     }
 }
 impl Neg for R4 {
     type Output = Self;
-    fn neg(self) -> Self { R4(-self.0, -self.1, -self.2, -self.3) }
+    fn neg(self) -> Self {
+        R4(-self.0, -self.1, -self.2, -self.3)
+    }
 }
 
 /// Multiplication in Z[γ].
@@ -285,10 +322,10 @@ impl Mul for R4 {
         let t2 = INT_TWO;
         let t4 = crate::rings::types::INT_FOUR;
         R4(
-            a*w + t2*b*x + t2*c*y + t2*c*z + t2*d*y + t4*d*z,
-            a*x + b*w    + c*y    + t2*c*z  + t2*d*y + t2*d*z,
-            a*y + t2*b*z + c*w   + t2*d*x,
-            a*z + b*y    + c*x   + d*w,
+            a * w + t2 * b * x + t2 * c * y + t2 * c * z + t2 * d * y + t4 * d * z,
+            a * x + b * w + c * y + t2 * c * z + t2 * d * y + t2 * d * z,
+            a * y + t2 * b * z + c * w + t2 * d * x,
+            a * z + b * y + c * x + d * w,
         )
     }
 }
@@ -298,7 +335,9 @@ impl Mul for R4 {
 fn fmt_poly(terms: &[(Int, &str)], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     let mut first = true;
     for &(coeff, sym) in terms {
-        if coeff == INT_ZERO { continue; }
+        if coeff == INT_ZERO {
+            continue;
+        }
         let neg = coeff < INT_ZERO;
         let abs = if neg { -coeff } else { coeff };
         if first {
@@ -321,7 +360,9 @@ fn fmt_poly(terms: &[(Int, &str)], f: &mut fmt::Formatter<'_>) -> fmt::Result {
             }
         }
     }
-    if first { write!(f, "0")?; }
+    if first {
+        write!(f, "0")?;
+    }
     Ok(())
 }
 
@@ -335,12 +376,10 @@ impl fmt::Display for R2 {
 impl fmt::Display for R4 {
     /// Formats as a polynomial in {1, √2, γ, γ√2}, e.g. `1 + 2γ - γ√2`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_poly(&[
-            (self.0, ""),
-            (self.1, "√2"),
-            (self.2, "γ"),
-            (self.3, "γ√2"),
-        ], f)
+        fmt_poly(
+            &[(self.0, ""), (self.1, "√2"), (self.2, "γ"), (self.3, "γ√2")],
+            f,
+        )
     }
 }
 
@@ -365,21 +404,34 @@ pub struct Ratio<R> {
 // ─── Ratio<R2> ───────────────────────────────────────────────────────────────
 
 impl Ratio<R2> {
-    pub const ZERO: Self = Ratio { num: R2::ZERO, exp: 0 };
-    pub const ONE:  Self = Ratio { num: R2::ONE,  exp: 0 };
+    pub const ZERO: Self = Ratio {
+        num: R2::ZERO,
+        exp: 0,
+    };
+    pub const ONE: Self = Ratio {
+        num: R2::ONE,
+        exp: 0,
+    };
 
     /// Cancel common √2 factors between numerator and denominator.
     pub fn simplify(&mut self) {
-        if self.num == R2::ZERO { self.exp = 0; return; }
+        if self.num == R2::ZERO {
+            self.exp = 0;
+            return;
+        }
         let v = self.num.sqrt2_valuation().min(self.exp);
-        for _ in 0..v { self.num = self.num.div_sqrt2(); }
+        for _ in 0..v {
+            self.num = self.num.div_sqrt2();
+        }
         self.exp -= v;
     }
 
     /// Multiply numerator by √2^n (used to align exponents before addition).
     fn lift_num(self, n: u32) -> R2 {
         let mut x = self.num;
-        for _ in 0..n { x = x.mul_sqrt2(); }
+        for _ in 0..n {
+            x = x.mul_sqrt2();
+        }
         x
     }
 
@@ -390,13 +442,21 @@ impl Ratio<R2> {
 
 impl Neg for Ratio<R2> {
     type Output = Self;
-    fn neg(self) -> Self { Ratio { num: -self.num, exp: self.exp } }
+    fn neg(self) -> Self {
+        Ratio {
+            num: -self.num,
+            exp: self.exp,
+        }
+    }
 }
 
 impl Mul for Ratio<R2> {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
-        let mut r = Ratio { num: self.num * rhs.num, exp: self.exp + rhs.exp };
+        let mut r = Ratio {
+            num: self.num * rhs.num,
+            exp: self.exp + rhs.exp,
+        };
         r.simplify();
         r
     }
@@ -408,7 +468,10 @@ impl Add for Ratio<R2> {
         let max_e = self.exp.max(rhs.exp);
         let lhs_num = self.lift_num(max_e - self.exp);
         let rhs_num = rhs.lift_num(max_e - rhs.exp);
-        let mut r = Ratio { num: lhs_num + rhs_num, exp: max_e };
+        let mut r = Ratio {
+            num: lhs_num + rhs_num,
+            exp: max_e,
+        };
         r.simplify();
         r
     }
@@ -417,21 +480,34 @@ impl Add for Ratio<R2> {
 // ─── Ratio<R4> ───────────────────────────────────────────────────────────────
 
 impl Ratio<R4> {
-    pub const ZERO: Self = Ratio { num: R4::ZERO, exp: 0 };
-    pub const ONE:  Self = Ratio { num: R4::ONE,  exp: 0 };
+    pub const ZERO: Self = Ratio {
+        num: R4::ZERO,
+        exp: 0,
+    };
+    pub const ONE: Self = Ratio {
+        num: R4::ONE,
+        exp: 0,
+    };
 
     /// Cancel common √2 factors between numerator and denominator.
     pub fn simplify(&mut self) {
-        if self.num == R4::ZERO { self.exp = 0; return; }
+        if self.num == R4::ZERO {
+            self.exp = 0;
+            return;
+        }
         let v = self.num.sqrt2_valuation().min(self.exp);
-        for _ in 0..v { self.num = self.num.div_sqrt2(); }
+        for _ in 0..v {
+            self.num = self.num.div_sqrt2();
+        }
         self.exp -= v;
     }
 
     /// Multiply numerator by √2^n (used to align exponents before addition).
     fn lift_num(self, n: u32) -> R4 {
         let mut x = self.num;
-        for _ in 0..n { x = x.mul_sqrt2(); }
+        for _ in 0..n {
+            x = x.mul_sqrt2();
+        }
         x
     }
 
@@ -442,13 +518,21 @@ impl Ratio<R4> {
 
 impl Neg for Ratio<R4> {
     type Output = Self;
-    fn neg(self) -> Self { Ratio { num: -self.num, exp: self.exp } }
+    fn neg(self) -> Self {
+        Ratio {
+            num: -self.num,
+            exp: self.exp,
+        }
+    }
 }
 
 impl Mul for Ratio<R4> {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
-        let mut r = Ratio { num: self.num * rhs.num, exp: self.exp + rhs.exp };
+        let mut r = Ratio {
+            num: self.num * rhs.num,
+            exp: self.exp + rhs.exp,
+        };
         r.simplify();
         r
     }
@@ -460,7 +544,10 @@ impl Add for Ratio<R4> {
         let max_e = self.exp.max(rhs.exp);
         let lhs_num = self.lift_num(max_e - self.exp);
         let rhs_num = rhs.lift_num(max_e - rhs.exp);
-        let mut r = Ratio { num: lhs_num + rhs_num, exp: max_e };
+        let mut r = Ratio {
+            num: lhs_num + rhs_num,
+            exp: max_e,
+        };
         r.simplify();
         r
     }
@@ -496,7 +583,9 @@ impl SO3<R2> {
     }
 
     #[inline]
-    pub fn get(&self, r: usize, c: usize) -> Ratio<R2> { self.e[3*r+c] }
+    pub fn get(&self, r: usize, c: usize) -> Ratio<R2> {
+        self.e[3 * r + c]
+    }
 
     /// Maximum denominator exponent across all non-zero entries.
     pub fn maximum_denominator_exponent(&self) -> u32 {
@@ -510,7 +599,9 @@ impl SO3<R2> {
 
     /// Simplify each entry individually (cancel √2 from numerator and denominator).
     pub fn reduce(&mut self) {
-        for entry in self.e.iter_mut() { entry.simplify(); }
+        for entry in self.e.iter_mut() {
+            entry.simplify();
+        }
     }
 
     /// Convert to 3×3 float matrix.
@@ -518,7 +609,7 @@ impl SO3<R2> {
         let mut out = [[0.0f64; 3]; 3];
         for r in 0..3 {
             for c in 0..3 {
-                out[r][c] = self.e[3*r+c].to_f64();
+                out[r][c] = self.e[3 * r + c].to_f64();
             }
         }
         out
@@ -538,31 +629,42 @@ impl SO3<R2> {
     ///   ay = Im(Q),  by =  Re(Q),  cy = Im(R)
     ///   az = Re(S),  bz = −Im(S),  cz = N/2
     pub fn from_u2(u: &U2T) -> Self {
-        let a = u.u11; let b = u.u12;
-        let c = u.u21; let d = u.u22;
+        let a = u.u11;
+        let b = u.u12;
+        let c = u.u21;
+        let d = u.u22;
         let k = u.k;
 
         let ad = a * d.conj();
         let bc = b * c.conj();
-        let p  = ad + bc;                      // → ax, bx
-        let q  = ad - bc;                      // → by, ay
-        let r  = a * b.conj() - c * d.conj(); // → cx, cy
-        let s  = a * c.conj() - b * d.conj(); // → az, bz
-        // N is a real ZOmega element ZOmega(n, 0, 0, 0) with n always even.
-        let n  = a * a.conj() - b * b.conj() - c * c.conj() + d * d.conj();
+        let p = ad + bc; // → ax, bx
+        let q = ad - bc; // → by, ay
+        let r = a * b.conj() - c * d.conj(); // → cx, cy
+        let s = a * c.conj() - b * d.conj(); // → az, bz
+                                             // N is a real ZOmega element ZOmega(n, 0, 0, 0) with n always even.
+        let n = a * a.conj() - b * b.conj() - c * c.conj() + d * d.conj();
 
         // Re(z)·√2 = R2(z.b − z.d, z.a),  Im(z)·√2 = R2(z.b + z.d, z.c).
-        let re = |z: ZOmega| R2(z.b - z.d,  z.a);
-        let im = |z: ZOmega| R2(z.b + z.d,  z.c);
+        let re = |z: ZOmega| R2(z.b - z.d, z.a);
+        let im = |z: ZOmega| R2(z.b + z.d, z.c);
 
         let init_exp = 2 * k + 1;
         let raw = [
-            re(p),  im(q),  re(s),
-           -im(p),  re(q), -im(s),
-            re(r),  im(r),  R2((n.b - n.d) / INT_TWO, n.a / INT_TWO),
+            re(p),
+            im(q),
+            re(s),
+            -im(p),
+            re(q),
+            -im(s),
+            re(r),
+            im(r),
+            R2((n.b - n.d) / INT_TWO, n.a / INT_TWO),
         ];
         let e: [Ratio<R2>; 9] = std::array::from_fn(|i| {
-            let mut entry = Ratio { num: raw[i], exp: init_exp };
+            let mut entry = Ratio {
+                num: raw[i],
+                exp: init_exp,
+            };
             entry.simplify();
             entry
         });
@@ -577,17 +679,19 @@ impl Mul for SO3<R2> {
         for r in 0..3 {
             for c in 0..3 {
                 // Compute three products a_rk * b_kc
-                let products: [Ratio<R2>; 3] = std::array::from_fn(|k| {
-                    self.e[3*r+k] * rhs.e[3*k+c]
-                });
+                let products: [Ratio<R2>; 3] =
+                    std::array::from_fn(|k| self.e[3 * r + k] * rhs.e[3 * k + c]);
                 // Find max exponent to align before summing
                 let max_e = products.iter().map(|p| p.exp).max().unwrap();
-                let sum = products.iter().fold(R2::ZERO, |acc, p| {
-                    acc + p.lift_num(max_e - p.exp)
-                });
-                let mut entry = Ratio { num: sum, exp: max_e };
+                let sum = products
+                    .iter()
+                    .fold(R2::ZERO, |acc, p| acc + p.lift_num(max_e - p.exp));
+                let mut entry = Ratio {
+                    num: sum,
+                    exp: max_e,
+                };
                 entry.simplify();
-                e[3*r+c] = entry;
+                e[3 * r + c] = entry;
             }
         }
         SO3 { e }
@@ -607,7 +711,9 @@ impl SO3<R4> {
     }
 
     #[inline]
-    pub fn get(&self, r: usize, c: usize) -> Ratio<R4> { self.e[3*r+c] }
+    pub fn get(&self, r: usize, c: usize) -> Ratio<R4> {
+        self.e[3 * r + c]
+    }
 
     /// Maximum denominator exponent across all non-zero entries.
     pub fn maximum_denominator_exponent(&self) -> u32 {
@@ -621,7 +727,9 @@ impl SO3<R4> {
 
     /// Simplify each entry individually (cancel γ from numerator and denominator).
     pub fn reduce(&mut self) {
-        for entry in self.e.iter_mut() { entry.simplify(); }
+        for entry in self.e.iter_mut() {
+            entry.simplify();
+        }
     }
 
     /// Convert to 3×3 float matrix.
@@ -629,7 +737,7 @@ impl SO3<R4> {
         let mut out = [[0.0f64; 3]; 3];
         for r in 0..3 {
             for c in 0..3 {
-                out[r][c] = self.e[3*r+c].to_f64();
+                out[r][c] = self.e[3 * r + c].to_f64();
             }
         }
         out
@@ -656,29 +764,25 @@ impl SO3<R4> {
     ///   cz: N is real Z[ζ_16] (N.e=0, N.f=−N.d, N.g=−N.c, N.h=−N.b). In
     ///     Z[γ] basis {1, √2, γ, γ√2}, N = R4(N.a, N.c, N.b−N.d, N.d).
     pub fn from_u2(u: &U2Q) -> Self {
-        let a = u.u11; let b = u.u12;
-        let c = u.u21; let d = u.u22;
+        let a = u.u11;
+        let b = u.u12;
+        let c = u.u21;
+        let d = u.u22;
         let k = u.k;
 
         let ad = a * d.conj();
         let bc = b * c.conj();
-        let p  = ad + bc;
-        let q  = ad - bc;
-        let r  = a * b.conj() - c * d.conj();
-        let s  = a * c.conj() - b * d.conj();
-        let n  = a * a.conj() - b * b.conj() - c * c.conj() + d * d.conj();
+        let p = ad + bc;
+        let q = ad - bc;
+        let r = a * b.conj() - c * d.conj();
+        let s = a * c.conj() - b * d.conj();
+        let n = a * a.conj() - b * b.conj() - c * c.conj() + d * d.conj();
 
         // 2·Re(z) for z = a + bζ + cζ² + dζ³ + eζ⁴ + fζ⁵ + gζ⁶ + hζ⁷.
         // Re(z) = a + (b−h)·γ/2 + (c−g)·√2/2 + (d−f)·(γ√2−γ)/2,
         // so 2·Re(z) = 2a + (c−g)·√2 + (b−h−d+f)·γ + (d−f)·γ√2.
-        let re3 = |z: ZZeta| -> R4 {
-            R4(
-                INT_TWO * z.a,
-                z.c - z.g,
-                z.b - z.h - z.d + z.f,
-                z.d - z.f,
-            )
-        };
+        let re3 =
+            |z: ZZeta| -> R4 { R4(INT_TWO * z.a, z.c - z.g, z.b - z.h - z.d + z.f, z.d - z.f) };
         // 2·Im(z) for z's coefficients (z.e is the imaginary-axis component).
         // Im(z) = e + (c+g)·√2/2 + (d+f−b−h)·γ/2... wait, Im of cos terms is 0,
         // and Im of i·ζ^k = sin terms. Recompute:
@@ -686,14 +790,8 @@ impl SO3<R4> {
         //         + f·sin(5π/8) + g·sin(3π/4) + h·sin(7π/8)
         //         = e + (c+g)·√2/2 + (d+f)·γ/2 + (b+h)·(γ√2−γ)/2
         // So 2·Im(z) = 2e + (c+g)·√2 + (d+f−b−h)·γ + (b+h)·γ√2.
-        let im3 = |z: ZZeta| -> R4 {
-            R4(
-                INT_TWO * z.e,
-                z.c + z.g,
-                z.d + z.f - z.b - z.h,
-                z.b + z.h,
-            )
-        };
+        let im3 =
+            |z: ZZeta| -> R4 { R4(INT_TWO * z.e, z.c + z.g, z.d + z.f - z.b - z.h, z.b + z.h) };
 
         // N is a real Z[ζ_16] element: N.e = 0, N.f = -N.d, N.g = -N.c,
         // N.h = -N.b. In R4 basis it's R4(N.a, N.c, N.b−N.d, N.d).
@@ -701,12 +799,21 @@ impl SO3<R4> {
 
         let init_exp = 2 * k + 2;
         let raw: [R4; 9] = [
-            re3(p),  im3(q),  re3(s),
-           -im3(p),  re3(q), -im3(s),
-            re3(r),  im3(r),  cz,
+            re3(p),
+            im3(q),
+            re3(s),
+            -im3(p),
+            re3(q),
+            -im3(s),
+            re3(r),
+            im3(r),
+            cz,
         ];
         let e: [Ratio<R4>; 9] = std::array::from_fn(|i| {
-            let mut entry = Ratio { num: raw[i], exp: init_exp };
+            let mut entry = Ratio {
+                num: raw[i],
+                exp: init_exp,
+            };
             entry.simplify();
             entry
         });
@@ -720,16 +827,18 @@ impl Mul for SO3<R4> {
         let mut e = [Ratio::<R4>::ZERO; 9];
         for r in 0..3 {
             for c in 0..3 {
-                let products: [Ratio<R4>; 3] = std::array::from_fn(|k| {
-                    self.e[3*r+k] * rhs.e[3*k+c]
-                });
+                let products: [Ratio<R4>; 3] =
+                    std::array::from_fn(|k| self.e[3 * r + k] * rhs.e[3 * k + c]);
                 let max_e = products.iter().map(|p| p.exp).max().unwrap();
-                let sum = products.iter().fold(R4::ZERO, |acc, p| {
-                    acc + p.lift_num(max_e - p.exp)
-                });
-                let mut entry = Ratio { num: sum, exp: max_e };
+                let sum = products
+                    .iter()
+                    .fold(R4::ZERO, |acc, p| acc + p.lift_num(max_e - p.exp));
+                let mut entry = Ratio {
+                    num: sum,
+                    exp: max_e,
+                };
                 entry.simplify();
-                e[3*r+c] = entry;
+                e[3 * r + c] = entry;
             }
         }
         SO3 { e }
@@ -752,32 +861,44 @@ pub type SO3Q = SO3<R4>;
 /// maximum entry exponent in that row. Numerators are lifted to `row_exp` for display.
 fn fmt_so3_rows_r2(e: &[Ratio<R2>; 9], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     for row in 0..3 {
-        let row_exp = (0..3).map(|c| e[3*row+c].exp).max().unwrap_or(0);
+        let row_exp = (0..3).map(|c| e[3 * row + c].exp).max().unwrap_or(0);
         write!(f, "[")?;
         for col in 0..3 {
-            if col > 0 { write!(f, ", ")?; }
-            let lifted = e[3*row+col].lift_num(row_exp - e[3*row+col].exp);
+            if col > 0 {
+                write!(f, ", ")?;
+            }
+            let lifted = e[3 * row + col].lift_num(row_exp - e[3 * row + col].exp);
             write!(f, "{lifted}")?;
         }
         write!(f, "]")?;
-        if row_exp > 0 { write!(f, " / √2^{row_exp}")?; }
-        if row < 2 { writeln!(f)?; }
+        if row_exp > 0 {
+            write!(f, " / √2^{row_exp}")?;
+        }
+        if row < 2 {
+            writeln!(f)?;
+        }
     }
     Ok(())
 }
 
 fn fmt_so3_rows_r4(e: &[Ratio<R4>; 9], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     for row in 0..3 {
-        let row_exp = (0..3).map(|c| e[3*row+c].exp).max().unwrap_or(0);
+        let row_exp = (0..3).map(|c| e[3 * row + c].exp).max().unwrap_or(0);
         write!(f, "[")?;
         for col in 0..3 {
-            if col > 0 { write!(f, ", ")?; }
-            let lifted = e[3*row+col].lift_num(row_exp - e[3*row+col].exp);
+            if col > 0 {
+                write!(f, ", ")?;
+            }
+            let lifted = e[3 * row + col].lift_num(row_exp - e[3 * row + col].exp);
             write!(f, "{lifted}")?;
         }
         write!(f, "]")?;
-        if row_exp > 0 { write!(f, " / γ^{row_exp}")?; }
-        if row < 2 { writeln!(f)?; }
+        if row_exp > 0 {
+            write!(f, " / γ^{row_exp}")?;
+        }
+        if row < 2 {
+            writeln!(f)?;
+        }
     }
     Ok(())
 }
@@ -810,13 +931,21 @@ pub trait SO3Ops: Clone + Sized + Mul<Output = Self> {
 }
 
 impl SO3Ops for SO3<R2> {
-    fn max_exp(&self) -> u32 { self.maximum_denominator_exponent() }
-    fn left_mul(&mut self, rhs: &Self) { *self = rhs.clone() * self.clone(); }
+    fn max_exp(&self) -> u32 {
+        self.maximum_denominator_exponent()
+    }
+    fn left_mul(&mut self, rhs: &Self) {
+        *self = rhs.clone() * self.clone();
+    }
 }
 
 impl SO3Ops for SO3<R4> {
-    fn max_exp(&self) -> u32 { self.maximum_denominator_exponent() }
-    fn left_mul(&mut self, rhs: &Self) { *self = rhs.clone() * self.clone(); }
+    fn max_exp(&self) -> u32 {
+        self.maximum_denominator_exponent()
+    }
+    fn left_mul(&mut self, rhs: &Self) {
+        *self = rhs.clone() * self.clone();
+    }
 }
 
 // ─── Rotation factories for SO3<R2> (π/4 steps) ──────────────────────────────
@@ -828,54 +957,105 @@ impl SO3Ops for SO3<R4> {
 /// Rz(+π/4) as SO3<R2>.
 pub fn rz_pos() -> SO3<R2> {
     let mut e = [Ratio::<R2>::ZERO; 9];
-    e[0] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };  // cos(π/4) = 1/√2
-    e[1] = Ratio { num: R2::from_i32(-1, 0), exp: 1 };  // -sin(π/4) = -1/√2
-    e[3] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };  // sin(π/4) = 1/√2
-    e[4] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };  // cos(π/4) = 1/√2
-    e[8] = Ratio { num: R2::from_i32( 0, 1), exp: 1 };  // 1 = √2/√2
+    e[0] = Ratio {
+        num: R2::from_i32(1, 0),
+        exp: 1,
+    }; // cos(π/4) = 1/√2
+    e[1] = Ratio {
+        num: R2::from_i32(-1, 0),
+        exp: 1,
+    }; // -sin(π/4) = -1/√2
+    e[3] = Ratio {
+        num: R2::from_i32(1, 0),
+        exp: 1,
+    }; // sin(π/4) = 1/√2
+    e[4] = Ratio {
+        num: R2::from_i32(1, 0),
+        exp: 1,
+    }; // cos(π/4) = 1/√2
+    e[8] = Ratio {
+        num: R2::from_i32(0, 1),
+        exp: 1,
+    }; // 1 = √2/√2
     SO3 { e }
 }
 
 /// Rz(-π/4) = Rz(+π/4)ᵀ.
 pub fn rz_neg() -> SO3<R2> {
     let mut m = rz_pos();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m.e.swap(1, 3);
+    m.e.swap(2, 6);
+    m.e.swap(5, 7);
     m
 }
 
 /// Rx(+π/4) as SO3<R2>.
 pub fn rx_pos() -> SO3<R2> {
     let mut e = [Ratio::<R2>::ZERO; 9];
-    e[0] = Ratio { num: R2::from_i32( 0, 1), exp: 1 };
-    e[4] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };
-    e[5] = Ratio { num: R2::from_i32(-1, 0), exp: 1 };
-    e[7] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };
-    e[8] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };
+    e[0] = Ratio {
+        num: R2::from_i32(0, 1),
+        exp: 1,
+    };
+    e[4] = Ratio {
+        num: R2::from_i32(1, 0),
+        exp: 1,
+    };
+    e[5] = Ratio {
+        num: R2::from_i32(-1, 0),
+        exp: 1,
+    };
+    e[7] = Ratio {
+        num: R2::from_i32(1, 0),
+        exp: 1,
+    };
+    e[8] = Ratio {
+        num: R2::from_i32(1, 0),
+        exp: 1,
+    };
     SO3 { e }
 }
 
 /// Rx(-π/4) = Rx(+π/4)ᵀ.
 pub fn rx_neg() -> SO3<R2> {
     let mut m = rx_pos();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m.e.swap(1, 3);
+    m.e.swap(2, 6);
+    m.e.swap(5, 7);
     m
 }
 
 /// Ry(+π/4) as SO3<R2>.
 pub fn ry_pos() -> SO3<R2> {
     let mut e = [Ratio::<R2>::ZERO; 9];
-    e[0] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };
-    e[2] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };
-    e[4] = Ratio { num: R2::from_i32( 0, 1), exp: 1 };
-    e[6] = Ratio { num: R2::from_i32(-1, 0), exp: 1 };
-    e[8] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };
+    e[0] = Ratio {
+        num: R2::from_i32(1, 0),
+        exp: 1,
+    };
+    e[2] = Ratio {
+        num: R2::from_i32(1, 0),
+        exp: 1,
+    };
+    e[4] = Ratio {
+        num: R2::from_i32(0, 1),
+        exp: 1,
+    };
+    e[6] = Ratio {
+        num: R2::from_i32(-1, 0),
+        exp: 1,
+    };
+    e[8] = Ratio {
+        num: R2::from_i32(1, 0),
+        exp: 1,
+    };
     SO3 { e }
 }
 
 /// Ry(-π/4) = Ry(+π/4)ᵀ.
 pub fn ry_neg() -> SO3<R2> {
     let mut m = ry_pos();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m.e.swap(1, 3);
+    m.e.swap(2, 6);
+    m.e.swap(5, 7);
     m
 }
 
@@ -893,57 +1073,114 @@ pub fn ry_neg() -> SO3<R2> {
 /// Rz(+π/8) as SO3<R4>.
 pub fn rz_pos_q() -> SO3<R4> {
     let mut e = [Ratio::<R4>::ZERO; 9];
-    e[0] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
-    e[1] = Ratio { num: R4::from_i32(0, 0,  1, -1), exp: 2 };  // -sin(π/8)
-    e[3] = Ratio { num: R4::from_i32(0, 0, -1,  1), exp: 2 };  // sin(π/8)
-    e[4] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
-    e[8] = Ratio { num: R4::from_i32(2, 0,  0,  0), exp: 2 };  // 1
-    for entry in e.iter_mut() { entry.simplify(); }
+    e[0] = Ratio {
+        num: R4::from_i32(0, 0, 1, 0),
+        exp: 2,
+    }; // cos(π/8)
+    e[1] = Ratio {
+        num: R4::from_i32(0, 0, 1, -1),
+        exp: 2,
+    }; // -sin(π/8)
+    e[3] = Ratio {
+        num: R4::from_i32(0, 0, -1, 1),
+        exp: 2,
+    }; // sin(π/8)
+    e[4] = Ratio {
+        num: R4::from_i32(0, 0, 1, 0),
+        exp: 2,
+    }; // cos(π/8)
+    e[8] = Ratio {
+        num: R4::from_i32(2, 0, 0, 0),
+        exp: 2,
+    }; // 1
+    for entry in e.iter_mut() {
+        entry.simplify();
+    }
     SO3 { e }
 }
 
 /// Rz(-π/8) = Rz(+π/8)ᵀ.
 pub fn rz_neg_q() -> SO3<R4> {
     let mut m = rz_pos_q();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m.e.swap(1, 3);
+    m.e.swap(2, 6);
+    m.e.swap(5, 7);
     m
 }
 
 /// Rx(+π/8) as SO3<R4>.
 pub fn rx_pos_q() -> SO3<R4> {
     let mut e = [Ratio::<R4>::ZERO; 9];
-    e[0] = Ratio { num: R4::from_i32(2, 0,  0,  0), exp: 2 };  // 1
-    e[4] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
-    e[5] = Ratio { num: R4::from_i32(0, 0,  1, -1), exp: 2 };  // -sin(π/8)
-    e[7] = Ratio { num: R4::from_i32(0, 0, -1,  1), exp: 2 };  // sin(π/8)
-    e[8] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
-    for entry in e.iter_mut() { entry.simplify(); }
+    e[0] = Ratio {
+        num: R4::from_i32(2, 0, 0, 0),
+        exp: 2,
+    }; // 1
+    e[4] = Ratio {
+        num: R4::from_i32(0, 0, 1, 0),
+        exp: 2,
+    }; // cos(π/8)
+    e[5] = Ratio {
+        num: R4::from_i32(0, 0, 1, -1),
+        exp: 2,
+    }; // -sin(π/8)
+    e[7] = Ratio {
+        num: R4::from_i32(0, 0, -1, 1),
+        exp: 2,
+    }; // sin(π/8)
+    e[8] = Ratio {
+        num: R4::from_i32(0, 0, 1, 0),
+        exp: 2,
+    }; // cos(π/8)
+    for entry in e.iter_mut() {
+        entry.simplify();
+    }
     SO3 { e }
 }
 
 /// Rx(-π/8) = Rx(+π/8)ᵀ.
 pub fn rx_neg_q() -> SO3<R4> {
     let mut m = rx_pos_q();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m.e.swap(1, 3);
+    m.e.swap(2, 6);
+    m.e.swap(5, 7);
     m
 }
 
 /// Ry(+π/8) as SO3<R4>.
 pub fn ry_pos_q() -> SO3<R4> {
     let mut e = [Ratio::<R4>::ZERO; 9];
-    e[0] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
-    e[2] = Ratio { num: R4::from_i32(0, 0, -1,  1), exp: 2 };  // sin(π/8)
-    e[4] = Ratio { num: R4::from_i32(2, 0,  0,  0), exp: 2 };  // 1
-    e[6] = Ratio { num: R4::from_i32(0, 0,  1, -1), exp: 2 };  // -sin(π/8)
-    e[8] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
-    for entry in e.iter_mut() { entry.simplify(); }
+    e[0] = Ratio {
+        num: R4::from_i32(0, 0, 1, 0),
+        exp: 2,
+    }; // cos(π/8)
+    e[2] = Ratio {
+        num: R4::from_i32(0, 0, -1, 1),
+        exp: 2,
+    }; // sin(π/8)
+    e[4] = Ratio {
+        num: R4::from_i32(2, 0, 0, 0),
+        exp: 2,
+    }; // 1
+    e[6] = Ratio {
+        num: R4::from_i32(0, 0, 1, -1),
+        exp: 2,
+    }; // -sin(π/8)
+    e[8] = Ratio {
+        num: R4::from_i32(0, 0, 1, 0),
+        exp: 2,
+    }; // cos(π/8)
+    for entry in e.iter_mut() {
+        entry.simplify();
+    }
     SO3 { e }
 }
 
 /// Ry(-π/8) = Ry(+π/8)ᵀ.
 pub fn ry_neg_q() -> SO3<R4> {
     let mut m = ry_pos_q();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m.e.swap(1, 3);
+    m.e.swap(2, 6);
+    m.e.swap(5, 7);
     m
 }
 
@@ -957,7 +1194,7 @@ pub struct R3(pub Int, pub Int);
 
 impl R3 {
     pub const ZERO: Self = R3(INT_ZERO, INT_ZERO);
-    pub const ONE:  Self = R3(INT_ONE,  INT_ZERO);
+    pub const ONE: Self = R3(INT_ONE, INT_ZERO);
 
     #[inline]
     pub const fn from_i32(a: i32, b: i32) -> Self {
@@ -987,15 +1224,21 @@ impl R3 {
 
 impl Add for R3 {
     type Output = Self;
-    fn add(self, rhs: Self) -> Self { R3(self.0 + rhs.0, self.1 + rhs.1) }
+    fn add(self, rhs: Self) -> Self {
+        R3(self.0 + rhs.0, self.1 + rhs.1)
+    }
 }
 impl Sub for R3 {
     type Output = Self;
-    fn sub(self, rhs: Self) -> Self { R3(self.0 - rhs.0, self.1 - rhs.1) }
+    fn sub(self, rhs: Self) -> Self {
+        R3(self.0 - rhs.0, self.1 - rhs.1)
+    }
 }
 impl Neg for R3 {
     type Output = Self;
-    fn neg(self) -> Self { R3(-self.0, -self.1) }
+    fn neg(self) -> Self {
+        R3(-self.0, -self.1)
+    }
 }
 /// (a + b√3)(c + d√3) = (ac + 3bd) + (ad + bc)√3.
 impl Mul for R3 {
@@ -1034,16 +1277,28 @@ pub struct Ratio3 {
 }
 
 impl Ratio3 {
-    pub const ZERO: Self = Ratio3 { num: R3::ZERO, exp: 0 };
-    pub const ONE:  Self = Ratio3 { num: R3::ONE,  exp: 0 };
+    pub const ZERO: Self = Ratio3 {
+        num: R3::ZERO,
+        exp: 0,
+    };
+    pub const ONE: Self = Ratio3 {
+        num: R3::ONE,
+        exp: 0,
+    };
 
     /// Cancel common factors of 2 between numerator and denominator.
     pub fn simplify(&mut self) {
-        if self.num == R3::ZERO { self.exp = 0; return; }
+        if self.num == R3::ZERO {
+            self.exp = 0;
+            return;
+        }
         let v = self.num.two_valuation().min(self.exp);
         let mut p = self.num.0;
         let mut q = self.num.1;
-        for _ in 0..v { p /= INT_TWO; q /= INT_TWO; }
+        for _ in 0..v {
+            p /= INT_TWO;
+            q /= INT_TWO;
+        }
         self.num = R3(p, q);
         self.exp -= v;
     }
@@ -1051,7 +1306,9 @@ impl Ratio3 {
     /// Lift numerator by multiplying by 2^n (for exponent alignment in Add).
     fn lift_num(self, n: u32) -> R3 {
         let mut x = self.num;
-        for _ in 0..n { x = R3(x.0 * INT_TWO, x.1 * INT_TWO); }
+        for _ in 0..n {
+            x = R3(x.0 * INT_TWO, x.1 * INT_TWO);
+        }
         x
     }
 
@@ -1062,7 +1319,12 @@ impl Ratio3 {
 
 impl Neg for Ratio3 {
     type Output = Self;
-    fn neg(self) -> Self { Ratio3 { num: -self.num, exp: self.exp } }
+    fn neg(self) -> Self {
+        Ratio3 {
+            num: -self.num,
+            exp: self.exp,
+        }
+    }
 }
 
 impl Add for Ratio3 {
@@ -1071,7 +1333,10 @@ impl Add for Ratio3 {
         let max_e = self.exp.max(rhs.exp);
         let lhs_num = self.lift_num(max_e - self.exp);
         let rhs_num = rhs.lift_num(max_e - rhs.exp);
-        let mut r = Ratio3 { num: lhs_num + rhs_num, exp: max_e };
+        let mut r = Ratio3 {
+            num: lhs_num + rhs_num,
+            exp: max_e,
+        };
         r.simplify();
         r
     }
@@ -1080,7 +1345,10 @@ impl Add for Ratio3 {
 impl Mul for Ratio3 {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
-        let mut r = Ratio3 { num: self.num * rhs.num, exp: self.exp + rhs.exp };
+        let mut r = Ratio3 {
+            num: self.num * rhs.num,
+            exp: self.exp + rhs.exp,
+        };
         r.simplify();
         r
     }
@@ -1113,7 +1381,9 @@ impl SO3Omicron {
     }
 
     #[inline]
-    pub fn get(&self, r: usize, c: usize) -> Ratio3 { self.e[3*r+c] }
+    pub fn get(&self, r: usize, c: usize) -> Ratio3 {
+        self.e[3 * r + c]
+    }
 
     /// Maximum denominator exponent across all non-zero entries.
     pub fn maximum_denominator_exponent(&self) -> u32 {
@@ -1130,7 +1400,7 @@ impl SO3Omicron {
         let mut out = [[0.0f64; 3]; 3];
         for r in 0..3 {
             for c in 0..3 {
-                out[r][c] = self.e[3*r+c].to_f64();
+                out[r][c] = self.e[3 * r + c].to_f64();
             }
         }
         out
@@ -1146,17 +1416,19 @@ impl SO3Omicron {
     /// the SO(3) entry values Re(·)/2^k or Im(·)/2^k. The cz entry uses
     /// R3(n.a, n.b/2) where n = u11·ū11 - u12·ū12 - u21·ū21 + u22·ū22.
     pub fn from_u2(u: &U2<ZOmicron>) -> Self {
-        let a = u.u11; let b = u.u12;
-        let c = u.u21; let d = u.u22;
+        let a = u.u11;
+        let b = u.u12;
+        let c = u.u21;
+        let d = u.u22;
         let k = u.k;
 
         let ad = a * d.conj();
         let bc = b * c.conj();
-        let p  = ad + bc;
-        let q  = ad - bc;
-        let r  = a * b.conj() - c * d.conj();
-        let s  = a * c.conj() - b * d.conj();
-        let n  = a * a.conj() - b * b.conj() - c * c.conj() + d * d.conj();
+        let p = ad + bc;
+        let q = ad - bc;
+        let r = a * b.conj() - c * d.conj();
+        let s = a * c.conj() - b * d.conj();
+        let n = a * a.conj() - b * b.conj() - c * c.conj() + d * d.conj();
 
         // re(z) = R3(2*z.a + z.c, z.b) represents 2·Re(z) as R3
         let re = |z: ZOmicron| R3(INT_TWO * z.a + z.c, z.b);
@@ -1169,12 +1441,21 @@ impl SO3Omicron {
 
         let init_exp = k + 1;
         let raw: [R3; 9] = [
-            re(p),   im(q),   re(s),
-           -im(p),   re(q),  -im(s),
-            re(r),   im(r),   cz_num,
+            re(p),
+            im(q),
+            re(s),
+            -im(p),
+            re(q),
+            -im(s),
+            re(r),
+            im(r),
+            cz_num,
         ];
         let e: [Ratio3; 9] = std::array::from_fn(|i| {
-            let mut entry = Ratio3 { num: raw[i], exp: init_exp };
+            let mut entry = Ratio3 {
+                num: raw[i],
+                exp: init_exp,
+            };
             entry.simplify();
             entry
         });
@@ -1188,16 +1469,18 @@ impl Mul for SO3Omicron {
         let mut e = [Ratio3::ZERO; 9];
         for r in 0..3 {
             for c in 0..3 {
-                let products: [Ratio3; 3] = std::array::from_fn(|k| {
-                    self.e[3*r+k] * rhs.e[3*k+c]
-                });
+                let products: [Ratio3; 3] =
+                    std::array::from_fn(|k| self.e[3 * r + k] * rhs.e[3 * k + c]);
                 let max_e = products.iter().map(|p| p.exp).max().unwrap_or(0);
-                let sum = products.iter().fold(R3::ZERO, |acc, p| {
-                    acc + p.lift_num(max_e - p.exp)
-                });
-                let mut entry = Ratio3 { num: sum, exp: max_e };
+                let sum = products
+                    .iter()
+                    .fold(R3::ZERO, |acc, p| acc + p.lift_num(max_e - p.exp));
+                let mut entry = Ratio3 {
+                    num: sum,
+                    exp: max_e,
+                };
                 entry.simplify();
-                e[3*r+c] = entry;
+                e[3 * r + c] = entry;
             }
         }
         SO3Omicron { e }
@@ -1205,8 +1488,12 @@ impl Mul for SO3Omicron {
 }
 
 impl SO3Ops for SO3Omicron {
-    fn max_exp(&self) -> u32 { self.maximum_denominator_exponent() }
-    fn left_mul(&mut self, rhs: &Self) { *self = rhs.clone() * self.clone(); }
+    fn max_exp(&self) -> u32 {
+        self.maximum_denominator_exponent()
+    }
+    fn left_mul(&mut self, rhs: &Self) {
+        *self = rhs.clone() * self.clone();
+    }
 }
 
 // ─── Rotation factories for SO3Omicron (π/6 steps) ───────────────────────────
@@ -1222,58 +1509,88 @@ impl SO3Ops for SO3Omicron {
 
 /// Rz(+π/6) as SO3Omicron.
 pub fn rz_pos_o() -> SO3Omicron {
-    let cos = Ratio3 { num: R3::from_i32(0, 1), exp: 1 };
-    let sin = Ratio3 { num: R3::from_i32(1, 0), exp: 1 };
+    let cos = Ratio3 {
+        num: R3::from_i32(0, 1),
+        exp: 1,
+    };
+    let sin = Ratio3 {
+        num: R3::from_i32(1, 0),
+        exp: 1,
+    };
     let one = Ratio3::ONE;
     let mut e = [Ratio3::ZERO; 9];
-    e[0] =  cos; e[1] = -sin;
-    e[3] =  sin; e[4] =  cos;
-                 e[8] =  one;
+    e[0] = cos;
+    e[1] = -sin;
+    e[3] = sin;
+    e[4] = cos;
+    e[8] = one;
     SO3Omicron { e }
 }
 
 /// Rz(-π/6) = Rz(+π/6)ᵀ.
 pub fn rz_neg_o() -> SO3Omicron {
     let mut m = rz_pos_o();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m.e.swap(1, 3);
+    m.e.swap(2, 6);
+    m.e.swap(5, 7);
     m
 }
 
 /// Rx(+π/6) as SO3Omicron.
 pub fn rx_pos_o() -> SO3Omicron {
-    let cos = Ratio3 { num: R3::from_i32(0, 1), exp: 1 };
-    let sin = Ratio3 { num: R3::from_i32(1, 0), exp: 1 };
+    let cos = Ratio3 {
+        num: R3::from_i32(0, 1),
+        exp: 1,
+    };
+    let sin = Ratio3 {
+        num: R3::from_i32(1, 0),
+        exp: 1,
+    };
     let one = Ratio3::ONE;
     let mut e = [Ratio3::ZERO; 9];
-    e[0] =  one;
-    e[4] =  cos; e[5] = -sin;
-    e[7] =  sin; e[8] =  cos;
+    e[0] = one;
+    e[4] = cos;
+    e[5] = -sin;
+    e[7] = sin;
+    e[8] = cos;
     SO3Omicron { e }
 }
 
 /// Rx(-π/6) = Rx(+π/6)ᵀ.
 pub fn rx_neg_o() -> SO3Omicron {
     let mut m = rx_pos_o();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m.e.swap(1, 3);
+    m.e.swap(2, 6);
+    m.e.swap(5, 7);
     m
 }
 
 /// Ry(+π/6) as SO3Omicron.
 pub fn ry_pos_o() -> SO3Omicron {
-    let cos = Ratio3 { num: R3::from_i32(0, 1), exp: 1 };
-    let sin = Ratio3 { num: R3::from_i32(1, 0), exp: 1 };
+    let cos = Ratio3 {
+        num: R3::from_i32(0, 1),
+        exp: 1,
+    };
+    let sin = Ratio3 {
+        num: R3::from_i32(1, 0),
+        exp: 1,
+    };
     let one = Ratio3::ONE;
     let mut e = [Ratio3::ZERO; 9];
-    e[0] =  cos; e[2] =  sin;
-    e[4] =  one;
-    e[6] = -sin; e[8] =  cos;
+    e[0] = cos;
+    e[2] = sin;
+    e[4] = one;
+    e[6] = -sin;
+    e[8] = cos;
     SO3Omicron { e }
 }
 
 /// Ry(-π/6) = Ry(+π/6)ᵀ.
 pub fn ry_neg_o() -> SO3Omicron {
     let mut m = ry_pos_o();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
+    m.e.swap(1, 3);
+    m.e.swap(2, 6);
+    m.e.swap(5, 7);
     m
 }
 
@@ -1284,10 +1601,14 @@ mod tests {
     use super::*;
     use crate::rings::ZOmega;
 
-    fn near3(a: [[f64;3];3], b: [[f64;3];3]) -> bool {
-        for r in 0..3 { for c in 0..3 {
-            if (a[r][c] - b[r][c]).abs() > 1e-10 { return false; }
-        }}
+    fn near3(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> bool {
+        for r in 0..3 {
+            for c in 0..3 {
+                if (a[r][c] - b[r][c]).abs() > 1e-10 {
+                    return false;
+                }
+            }
+        }
         true
     }
 
@@ -1297,7 +1618,7 @@ mod tests {
     fn test_rz_pos_float() {
         let c = FRAC_1_SQRT_2;
         let m = rz_pos().to_float();
-        let expected = [[c,-c,0.0],[c,c,0.0],[0.0,0.0,1.0]];
+        let expected = [[c, -c, 0.0], [c, c, 0.0], [0.0, 0.0, 1.0]];
         assert!(near3(m, expected), "rz_pos: {:?}", m);
     }
 
@@ -1305,7 +1626,7 @@ mod tests {
     fn test_rx_pos_float() {
         let c = FRAC_1_SQRT_2;
         let m = rx_pos().to_float();
-        let expected = [[1.0,0.0,0.0],[0.0,c,-c],[0.0,c,c]];
+        let expected = [[1.0, 0.0, 0.0], [0.0, c, -c], [0.0, c, c]];
         assert!(near3(m, expected), "rx_pos: {:?}", m);
     }
 
@@ -1313,7 +1634,7 @@ mod tests {
     fn test_ry_pos_float() {
         let c = FRAC_1_SQRT_2;
         let m = ry_pos().to_float();
-        let expected = [[c,0.0,c],[0.0,1.0,0.0],[-c,0.0,c]];
+        let expected = [[c, 0.0, c], [0.0, 1.0, 0.0], [-c, 0.0, c]];
         assert!(near3(m, expected), "ry_pos: {:?}", m);
     }
 
@@ -1337,7 +1658,7 @@ mod tests {
         let a = rz_pos();
         let b = rx_pos();
         let c = ry_pos();
-        assert_eq!((a.clone()*b.clone())*c.clone(), a*(b*c));
+        assert_eq!((a.clone() * b.clone()) * c.clone(), a * (b * c));
     }
 
     // ── from_u2 tests ────────────────────────────────────────────────────────
@@ -1353,19 +1674,30 @@ mod tests {
         // S gate SU(2): u1 = -ω³ = e^{-iπ/4}, u2=0, k=0.
         // SO3 = Rz(π/2) = [[0,-1,0],[1,0,0],[0,0,1]] (standard convention).
         let u1 = ZOmega::from_i32(0, 0, 0, -1);
-        let id = U2T::new(u1, ZOmega::ZERO, ZOmega::ZERO, ZOmega::from_i32(0, 1, 0, 0), 0);
+        let id = U2T::new(
+            u1,
+            ZOmega::ZERO,
+            ZOmega::ZERO,
+            ZOmega::from_i32(0, 1, 0, 0),
+            0,
+        );
         let so3 = SO3T::from_u2(&id);
         let m = so3.to_float();
-        let expected = [[0.0,-1.0,0.0],[1.0,0.0,0.0],[0.0,0.0,1.0]];
-        assert!(near3(m, expected),
-            "S gate SO3 mismatch: {:?}", m);
+        let expected = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        assert!(near3(m, expected), "S gate SO3 mismatch: {:?}", m);
     }
 
     #[test]
     fn test_s_gate_matches_rz2() {
         // rz_pos() * rz_pos() should equal from_u2(S gate).
         let u1 = ZOmega::from_i32(0, 0, 0, -1);
-        let s_u2t = U2T::new(u1, ZOmega::ZERO, ZOmega::ZERO, ZOmega::from_i32(0, 1, 0, 0), 0);
+        let s_u2t = U2T::new(
+            u1,
+            ZOmega::ZERO,
+            ZOmega::ZERO,
+            ZOmega::from_i32(0, 1, 0, 0),
+            0,
+        );
         let rz2 = rz_pos() * rz_pos();
         let from_s = SO3T::from_u2(&s_u2t);
         assert_eq!(rz2, from_s, "rz_pos()² ≠ from_u2(S)");
@@ -1381,9 +1713,8 @@ mod tests {
         let h_u2t = U2T::new(u1, u2, u2, ZOmega::from_i32(0, 0, -1, 0), 1);
         let so3 = SO3T::from_u2(&h_u2t);
         let m = so3.to_float();
-        let expected = [[0.0,0.0,1.0],[0.0,-1.0,0.0],[1.0,0.0,0.0]];
-        assert!(near3(m, expected),
-            "H gate SO3 mismatch: {:?}", m);
+        let expected = [[0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]];
+        assert!(near3(m, expected), "H gate SO3 mismatch: {:?}", m);
     }
 
     #[test]
@@ -1396,22 +1727,22 @@ mod tests {
     #[test]
     fn test_r4_gamma_squared() {
         // γ² = 2+√2 = R4(2,1,0,0)
-        let gamma    = R4::from_i32(0, 0, 1, 0);  // γ
-        let expected = R4::from_i32(2, 1, 0, 0);  // 2+√2
+        let gamma = R4::from_i32(0, 0, 1, 0); // γ
+        let expected = R4::from_i32(2, 1, 0, 0); // 2+√2
         assert_eq!(gamma * gamma, expected, "γ² ≠ 2+√2");
     }
 
     #[test]
     fn test_r4_gamma_sqrt2_squared() {
         // (γ√2)² = 4+2√2 = R4(4,2,0,0)
-        let gs       = R4::from_i32(0, 0, 0, 1);  // γ√2
+        let gs = R4::from_i32(0, 0, 0, 1); // γ√2
         let expected = R4::from_i32(4, 2, 0, 0);
         assert_eq!(gs * gs, expected, "(γ√2)² ≠ 4+2√2");
     }
 
     #[test]
     fn test_r4_gamma_valuation() {
-        let gamma  = R4::from_i32(0, 0, 1, 0);
+        let gamma = R4::from_i32(0, 0, 1, 0);
         let gamma2 = gamma * gamma;
         let gamma3 = gamma2 * gamma;
         assert_eq!(R4::ONE.gamma_valuation(), 0);
@@ -1425,9 +1756,15 @@ mod tests {
     fn test_r4_div_gamma() {
         // R4(0,0,2,1) = γ³ = 2γ+γ√2; div_gamma should give γ²=R4(2,1,0,0)
         let gamma3 = R4::from_i32(0, 0, 2, 1);
-        assert_eq!(gamma3.div_gamma(),              R4::from_i32(2, 1, 0, 0));
-        assert_eq!(R4::from_i32(2, 1, 0, 0).div_gamma(), R4::from_i32(0, 0, 1, 0));
-        assert_eq!(R4::from_i32(0, 0, 1, 0).div_gamma(), R4::from_i32(1, 0, 0, 0));
+        assert_eq!(gamma3.div_gamma(), R4::from_i32(2, 1, 0, 0));
+        assert_eq!(
+            R4::from_i32(2, 1, 0, 0).div_gamma(),
+            R4::from_i32(0, 0, 1, 0)
+        );
+        assert_eq!(
+            R4::from_i32(0, 0, 1, 0).div_gamma(),
+            R4::from_i32(1, 0, 0, 0)
+        );
     }
 
     #[test]
@@ -1448,11 +1785,17 @@ mod tests {
         // cos(π/8) = R4(3,2,0,0)/γ³
         let cos_pi8 = R4::from_i32(3, 2, 0, 0).to_f64() / gamma.powi(3);
         let expected = (std::f64::consts::PI / 8.0).cos();
-        assert!((cos_pi8 - expected).abs() < 1e-12, "cos(π/8) mismatch: {cos_pi8}");
+        assert!(
+            (cos_pi8 - expected).abs() < 1e-12,
+            "cos(π/8) mismatch: {cos_pi8}"
+        );
         // sin(π/8) = R4(1,1,0,0)/γ³
         let sin_pi8 = R4::from_i32(1, 1, 0, 0).to_f64() / gamma.powi(3);
         let expected = (std::f64::consts::PI / 8.0).sin();
-        assert!((sin_pi8 - expected).abs() < 1e-12, "sin(π/8) mismatch: {sin_pi8}");
+        assert!(
+            (sin_pi8 - expected).abs() < 1e-12,
+            "sin(π/8) mismatch: {sin_pi8}"
+        );
     }
 
     // ── SO3<R4> rotation tests ────────────────────────────────────────────────
@@ -1462,7 +1805,7 @@ mod tests {
         let m = rz_pos_q().to_float();
         let c = (std::f64::consts::PI / 8.0).cos();
         let s = (std::f64::consts::PI / 8.0).sin();
-        let expected = [[c,-s,0.0],[s,c,0.0],[0.0,0.0,1.0]];
+        let expected = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
         assert!(near3(m, expected), "rz_pos_q: {:?}", m);
     }
 
@@ -1471,7 +1814,7 @@ mod tests {
         let m = rx_pos_q().to_float();
         let c = (std::f64::consts::PI / 8.0).cos();
         let s = (std::f64::consts::PI / 8.0).sin();
-        let expected = [[1.0,0.0,0.0],[0.0,c,-s],[0.0,s,c]];
+        let expected = [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]];
         assert!(near3(m, expected), "rx_pos_q: {:?}", m);
     }
 
@@ -1480,7 +1823,7 @@ mod tests {
         let m = ry_pos_q().to_float();
         let c = (std::f64::consts::PI / 8.0).cos();
         let s = (std::f64::consts::PI / 8.0).sin();
-        let expected = [[c,0.0,s],[0.0,1.0,0.0],[-s,0.0,c]];
+        let expected = [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]];
         assert!(near3(m, expected), "ry_pos_q: {:?}", m);
     }
 
@@ -1503,7 +1846,9 @@ mod tests {
     fn test_rz_q_8_is_identity() {
         // Rz(π/8)^16 = Rz(2π) = identity (SO3 period is 2π, so 16 steps of π/8)
         let mut m = SO3::<R4>::identity();
-        for _ in 0..16 { m = rz_pos_q() * m; }
+        for _ in 0..16 {
+            m = rz_pos_q() * m;
+        }
         assert_eq!(m, SO3::<R4>::identity(), "Rz(π/8)^16 ≠ I");
     }
 
@@ -1513,7 +1858,7 @@ mod tests {
         // Verify numerically.
         let m = (rz_pos_q() * rz_pos_q()).to_float();
         let c = FRAC_1_SQRT_2;
-        let expected = [[c,-c,0.0],[c,c,0.0],[0.0,0.0,1.0]];
+        let expected = [[c, -c, 0.0], [c, c, 0.0], [0.0, 0.0, 1.0]];
         assert!(near3(m, expected), "Rz(π/8)^2 ≠ Rz(π/4): {:?}", m);
     }
 
@@ -1522,7 +1867,7 @@ mod tests {
         let a = rz_pos_q();
         let b = rx_pos_q();
         let c = ry_pos_q();
-        assert_eq!((a.clone()*b.clone())*c.clone(), a*(b*c));
+        assert_eq!((a.clone() * b.clone()) * c.clone(), a * (b * c));
     }
 
     #[test]
@@ -1530,12 +1875,24 @@ mod tests {
         let mut e = [Ratio::<R2>::ZERO; 9];
 
         // non-zero entries
-        e[0] = Ratio { num: R2::from_i32(1, 0),  exp: 1 };
-        e[4] = Ratio { num: R2::from_i32(3, 1),  exp: 3 };
-        e[8] = Ratio { num: R2::from_i32(-2, 5), exp: 2 };
+        e[0] = Ratio {
+            num: R2::from_i32(1, 0),
+            exp: 1,
+        };
+        e[4] = Ratio {
+            num: R2::from_i32(3, 1),
+            exp: 3,
+        };
+        e[8] = Ratio {
+            num: R2::from_i32(-2, 5),
+            exp: 2,
+        };
 
         // zero entry with large exponent should be ignored
-        e[1] = Ratio { num: R2::ZERO, exp: 99 };
+        e[1] = Ratio {
+            num: R2::ZERO,
+            exp: 99,
+        };
 
         let m = SO3::<R2> { e };
         assert_eq!(m.maximum_denominator_exponent(), 3);
@@ -1544,7 +1901,10 @@ mod tests {
 
     #[test]
     fn test_maximum_denominator_exponent_r2_all_zero_entries() {
-        let e = [Ratio { num: R2::ZERO, exp: 7 }; 9];
+        let e = [Ratio {
+            num: R2::ZERO,
+            exp: 7,
+        }; 9];
         let m = SO3::<R2> { e };
         assert_eq!(m.maximum_denominator_exponent(), 0);
         assert_eq!(m.max_exp(), 0);
@@ -1555,12 +1915,24 @@ mod tests {
         let mut e = [Ratio::<R4>::ZERO; 9];
 
         // non-zero entries
-        e[0] = Ratio { num: R4::from_i32(1, 0, 0, 0), exp: 2 };
-        e[4] = Ratio { num: R4::from_i32(0, 0, 1, 0), exp: 5 };
-        e[8] = Ratio { num: R4::from_i32(3, 2, 1, 1), exp: 4 };
+        e[0] = Ratio {
+            num: R4::from_i32(1, 0, 0, 0),
+            exp: 2,
+        };
+        e[4] = Ratio {
+            num: R4::from_i32(0, 0, 1, 0),
+            exp: 5,
+        };
+        e[8] = Ratio {
+            num: R4::from_i32(3, 2, 1, 1),
+            exp: 4,
+        };
 
         // zero entry with large exponent should be ignored
-        e[2] = Ratio { num: R4::ZERO, exp: 77 };
+        e[2] = Ratio {
+            num: R4::ZERO,
+            exp: 77,
+        };
 
         let m = SO3::<R4> { e };
         assert_eq!(m.maximum_denominator_exponent(), 5);
@@ -1569,7 +1941,10 @@ mod tests {
 
     #[test]
     fn test_maximum_denominator_exponent_r4_all_zero_entries() {
-        let e = [Ratio { num: R4::ZERO, exp: 11 }; 9];
+        let e = [Ratio {
+            num: R4::ZERO,
+            exp: 11,
+        }; 9];
         let m = SO3::<R4> { e };
         assert_eq!(m.maximum_denominator_exponent(), 0);
         assert_eq!(m.max_exp(), 0);
@@ -1577,12 +1952,18 @@ mod tests {
 
     // ── SO3Omicron (n=6) tests ────────────────────────────────────────────────
 
-    fn near_f64(a: f64, b: f64) -> bool { (a - b).abs() < 1e-10 }
+    fn near_f64(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-10
+    }
 
-    fn near3_f64(a: [[f64;3];3], b: [[f64;3];3]) -> bool {
-        for r in 0..3 { for c in 0..3 {
-            if (a[r][c] - b[r][c]).abs() > 1e-10 { return false; }
-        }}
+    fn near3_f64(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> bool {
+        for r in 0..3 {
+            for c in 0..3 {
+                if (a[r][c] - b[r][c]).abs() > 1e-10 {
+                    return false;
+                }
+            }
+        }
         true
     }
 
@@ -1596,7 +1977,7 @@ mod tests {
         let m = rz_pos_o().to_float();
         let c = (std::f64::consts::PI / 6.0).cos();
         let s = (std::f64::consts::PI / 6.0).sin();
-        let expected = [[c,-s,0.0],[s,c,0.0],[0.0,0.0,1.0]];
+        let expected = [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]];
         assert!(near3_f64(m, expected), "rz_pos_o: {:?}", m);
     }
 
@@ -1605,7 +1986,7 @@ mod tests {
         let m = rx_pos_o().to_float();
         let c = (std::f64::consts::PI / 6.0).cos();
         let s = (std::f64::consts::PI / 6.0).sin();
-        let expected = [[1.0,0.0,0.0],[0.0,c,-s],[0.0,s,c]];
+        let expected = [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]];
         assert!(near3_f64(m, expected), "rx_pos_o: {:?}", m);
     }
 
@@ -1614,7 +1995,7 @@ mod tests {
         let m = ry_pos_o().to_float();
         let c = (std::f64::consts::PI / 6.0).cos();
         let s = (std::f64::consts::PI / 6.0).sin();
-        let expected = [[c,0.0,s],[0.0,1.0,0.0],[-s,0.0,c]];
+        let expected = [[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]];
         assert!(near3_f64(m, expected), "ry_pos_o: {:?}", m);
     }
 
@@ -1649,7 +2030,7 @@ mod tests {
     #[test]
     fn test_so3o_from_u2_rz_pi6() {
         // R gate = diag(1, ξ), SO3 = Rz(π/6)
-        let r = U2::<ZOmicron>::t();   // t() returns diag(1, omega()=ξ)
+        let r = U2::<ZOmicron>::t(); // t() returns diag(1, omega()=ξ)
         let m = SO3Omicron::from_u2(&r).to_float();
         let expected = rz_pos_o().to_float();
         assert!(near3_f64(m, expected), "SO3O(R) ≠ Rz(π/6): {:?}", m);
@@ -1660,7 +2041,7 @@ mod tests {
         // H gate SO3 maps x→z, y→-y, z→x
         let h = U2::<ZOmicron>::h();
         let m = SO3Omicron::from_u2(&h).to_float();
-        let expected = [[0.0,0.0,1.0],[0.0,-1.0,0.0],[1.0,0.0,0.0]];
+        let expected = [[0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]];
         assert!(near3_f64(m, expected), "SO3O(H): {:?}", m);
     }
 
@@ -1669,11 +2050,16 @@ mod tests {
         // R^12 = Rz(2π) = identity in SO3
         let r = U2::<ZOmicron>::t();
         let mut prod = U2::<ZOmicron>::eye();
-        for _ in 0..12 { prod = prod * r; }
+        for _ in 0..12 {
+            prod = prod * r;
+        }
         let m = SO3Omicron::from_u2(&prod);
         assert_eq!(m.max_exp(), 0, "R^12 SO3 max_exp should be 0");
-        assert!(near3_f64(m.to_float(), SO3Omicron::identity().to_float()),
-            "R^12 ≠ identity in SO3: {:?}", m.to_float());
+        assert!(
+            near3_f64(m.to_float(), SO3Omicron::identity().to_float()),
+            "R^12 ≠ identity in SO3: {:?}",
+            m.to_float()
+        );
     }
 
     #[test]
@@ -1684,7 +2070,11 @@ mod tests {
         let uv = r * h;
         let so3_uv = SO3Omicron::from_u2(&uv).to_float();
         let so3_u_so3_v = (SO3Omicron::from_u2(&r) * SO3Omicron::from_u2(&h)).to_float();
-        assert!(near3_f64(so3_uv, so3_u_so3_v),
-            "SO3(RH) ≠ SO3(R)·SO3(H):\n{:?}\nvs\n{:?}", so3_uv, so3_u_so3_v);
+        assert!(
+            near3_f64(so3_uv, so3_u_so3_v),
+            "SO3(RH) ≠ SO3(R)·SO3(H):\n{:?}\nvs\n{:?}",
+            so3_uv,
+            so3_u_so3_v
+        );
     }
 }

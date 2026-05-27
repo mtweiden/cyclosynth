@@ -26,7 +26,7 @@
 use num_complex::Complex;
 use rug::{Assign, Float as RFloat};
 
-use crate::matrix::{U2T, U2Q};
+use crate::matrix::{U2Q, U2T};
 use crate::rings::types::{int_to_f64, Float};
 use crate::rings::{ZOmega, ZZeta};
 
@@ -174,10 +174,22 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
         zomega_to_mpfr_unit(&u.u22),
     ];
     let t_entries: [(RFloat, RFloat); 4] = [
-        (RFloat::with_val(prec, target[0][0].re), RFloat::with_val(prec, target[0][0].im)),
-        (RFloat::with_val(prec, target[0][1].re), RFloat::with_val(prec, target[0][1].im)),
-        (RFloat::with_val(prec, target[1][0].re), RFloat::with_val(prec, target[1][0].im)),
-        (RFloat::with_val(prec, target[1][1].re), RFloat::with_val(prec, target[1][1].im)),
+        (
+            RFloat::with_val(prec, target[0][0].re),
+            RFloat::with_val(prec, target[0][0].im),
+        ),
+        (
+            RFloat::with_val(prec, target[0][1].re),
+            RFloat::with_val(prec, target[0][1].im),
+        ),
+        (
+            RFloat::with_val(prec, target[1][0].re),
+            RFloat::with_val(prec, target[1][0].im),
+        ),
+        (
+            RFloat::with_val(prec, target[1][1].re),
+            RFloat::with_val(prec, target[1][1].im),
+        ),
     ];
 
     // tr = Σ u · conj(t) at unit scale, then optimal phase φ = tr/|tr|.
@@ -188,10 +200,14 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
     for ((u_re, u_im), (t_re, t_im)) in u_entries.iter().zip(t_entries.iter()) {
         // u · conj(t) = (u_re + i u_im)(t_re − i t_im)
         //             = (u_re·t_re + u_im·t_im) + i·(u_im·t_re − u_re·t_im)
-        tmp.assign(u_re * t_re); tr_re += &tmp;
-        tmp.assign(u_im * t_im); tr_re += &tmp;
-        tmp.assign(u_im * t_re); tr_im += &tmp;
-        tmp.assign(u_re * t_im); tr_im -= &tmp;
+        tmp.assign(u_re * t_re);
+        tr_re += &tmp;
+        tmp.assign(u_im * t_im);
+        tr_re += &tmp;
+        tmp.assign(u_im * t_re);
+        tr_im += &tmp;
+        tmp.assign(u_re * t_im);
+        tr_im -= &tmp;
     }
     tmp.assign(&tr_re * &tr_re);
     tmp2.assign(&tr_im * &tr_im);
@@ -271,8 +287,14 @@ pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
     // divided by √2^k). For random U(2) targets the entries are O(1).
     let zzeta_to_mpfr_unit = |z: &ZZeta| -> (RFloat, RFloat) {
         let coeffs: [Float; 8] = [
-            int_to_f64(z.a), int_to_f64(z.b), int_to_f64(z.c), int_to_f64(z.d),
-            int_to_f64(z.e), int_to_f64(z.f), int_to_f64(z.g), int_to_f64(z.h),
+            int_to_f64(z.a),
+            int_to_f64(z.b),
+            int_to_f64(z.c),
+            int_to_f64(z.d),
+            int_to_f64(z.e),
+            int_to_f64(z.f),
+            int_to_f64(z.g),
+            int_to_f64(z.h),
         ];
         let mut re = RFloat::with_val(prec, 0.0);
         let mut im = RFloat::with_val(prec, 0.0);
@@ -294,10 +316,22 @@ pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
         zzeta_to_mpfr_unit(&u.u22),
     ];
     let t_entries: [(RFloat, RFloat); 4] = [
-        (RFloat::with_val(prec, target[0][0].re), RFloat::with_val(prec, target[0][0].im)),
-        (RFloat::with_val(prec, target[0][1].re), RFloat::with_val(prec, target[0][1].im)),
-        (RFloat::with_val(prec, target[1][0].re), RFloat::with_val(prec, target[1][0].im)),
-        (RFloat::with_val(prec, target[1][1].re), RFloat::with_val(prec, target[1][1].im)),
+        (
+            RFloat::with_val(prec, target[0][0].re),
+            RFloat::with_val(prec, target[0][0].im),
+        ),
+        (
+            RFloat::with_val(prec, target[0][1].re),
+            RFloat::with_val(prec, target[0][1].im),
+        ),
+        (
+            RFloat::with_val(prec, target[1][0].re),
+            RFloat::with_val(prec, target[1][0].im),
+        ),
+        (
+            RFloat::with_val(prec, target[1][1].re),
+            RFloat::with_val(prec, target[1][1].im),
+        ),
     ];
 
     // tr = Σ u · conj(t), optimal phase φ = tr/|tr|.
@@ -306,10 +340,14 @@ pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
     let mut tmp = RFloat::with_val(prec, 0.0);
     let mut tmp2 = RFloat::with_val(prec, 0.0);
     for ((u_re, u_im), (t_re, t_im)) in u_entries.iter().zip(t_entries.iter()) {
-        tmp.assign(u_re * t_re); tr_re += &tmp;
-        tmp.assign(u_im * t_im); tr_re += &tmp;
-        tmp.assign(u_im * t_re); tr_im += &tmp;
-        tmp.assign(u_re * t_im); tr_im -= &tmp;
+        tmp.assign(u_re * t_re);
+        tr_re += &tmp;
+        tmp.assign(u_im * t_im);
+        tr_re += &tmp;
+        tmp.assign(u_im * t_re);
+        tr_im += &tmp;
+        tmp.assign(u_re * t_im);
+        tr_im -= &tmp;
     }
     tmp.assign(&tr_re * &tr_re);
     tmp2.assign(&tr_im * &tr_im);

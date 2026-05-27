@@ -15,29 +15,41 @@ type C64 = Complex<f64>;
 type Mat2 = [[C64; 2]; 2];
 
 fn mat_mul(a: Mat2, b: Mat2) -> Mat2 {
-    [[
-        a[0][0] * b[0][0] + a[0][1] * b[1][0],
-        a[0][0] * b[0][1] + a[0][1] * b[1][1],
-    ], [
-        a[1][0] * b[0][0] + a[1][1] * b[1][0],
-        a[1][0] * b[0][1] + a[1][1] * b[1][1],
-    ]]
+    [
+        [
+            a[0][0] * b[0][0] + a[0][1] * b[1][0],
+            a[0][0] * b[0][1] + a[0][1] * b[1][1],
+        ],
+        [
+            a[1][0] * b[0][0] + a[1][1] * b[1][0],
+            a[1][0] * b[0][1] + a[1][1] * b[1][1],
+        ],
+    ]
 }
 
 fn rz(t: f64) -> Mat2 {
-    [[C64::from_polar(1.0, -t / 2.0), C64::new(0.0, 0.0)],
-     [C64::new(0.0, 0.0), C64::from_polar(1.0, t / 2.0)]]
+    [
+        [C64::from_polar(1.0, -t / 2.0), C64::new(0.0, 0.0)],
+        [C64::new(0.0, 0.0), C64::from_polar(1.0, t / 2.0)],
+    ]
 }
 fn ry(t: f64) -> Mat2 {
     let c = (t / 2.0).cos();
     let s = (t / 2.0).sin();
-    [[C64::new(c, 0.0), C64::new(-s, 0.0)],
-     [C64::new(s, 0.0), C64::new(c, 0.0)]]
+    [
+        [C64::new(c, 0.0), C64::new(-s, 0.0)],
+        [C64::new(s, 0.0), C64::new(c, 0.0)],
+    ]
 }
-fn u3(a: f64, b: f64, c: f64) -> Mat2 { mat_mul(mat_mul(rz(a), ry(b)), rz(c)) }
+fn u3(a: f64, b: f64, c: f64) -> Mat2 {
+    mat_mul(mat_mul(rz(a), ry(b)), rz(c))
+}
 
 fn xorshift64(s: &mut u64) -> u64 {
-    *s ^= *s << 13; *s ^= *s >> 7; *s ^= *s << 17; *s
+    *s ^= *s << 13;
+    *s ^= *s >> 7;
+    *s ^= *s << 17;
+    *s
 }
 fn rand_angle(s: &mut u64) -> f64 {
     let b = xorshift64(s) >> 11;
@@ -53,20 +65,47 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--eps" => { eps = args[i+1].parse().unwrap(); i += 2; }
-            "--beta" => { beta = args[i+1].parse().unwrap(); i += 2; }
-            "--n" => { n = args[i+1].parse().unwrap(); i += 2; }
-            "--max-lde" => { max_lde = args[i+1].parse().unwrap(); i += 2; }
-            _ => { eprintln!("unknown arg: {}", args[i]); std::process::exit(2); }
+            "--eps" => {
+                eps = args[i + 1].parse().unwrap();
+                i += 2;
+            }
+            "--beta" => {
+                beta = args[i + 1].parse().unwrap();
+                i += 2;
+            }
+            "--n" => {
+                n = args[i + 1].parse().unwrap();
+                i += 2;
+            }
+            "--max-lde" => {
+                max_lde = args[i + 1].parse().unwrap();
+                i += 2;
+            }
+            _ => {
+                eprintln!("unknown arg: {}", args[i]);
+                std::process::exit(2);
+            }
         }
     }
     let mut state: u64 = 0xC0FFEEBAADD0E;
-    let targets: Vec<Mat2> = (0..n).map(|_| {
-        u3(rand_angle(&mut state), rand_angle(&mut state), rand_angle(&mut state))
-    }).collect();
+    let targets: Vec<Mat2> = (0..n)
+        .map(|_| {
+            u3(
+                rand_angle(&mut state),
+                rand_angle(&mut state),
+                rand_angle(&mut state),
+            )
+        })
+        .collect();
 
-    println!("# bench_bkz: ε={:e}, β={}, n={}, max_lde={}", eps, beta, n, max_lde);
-    println!("# legend: pure = no BKZ, bkz{} = BKZ-{} post-pass", beta, beta);
+    println!(
+        "# bench_bkz: ε={:e}, β={}, n={}, max_lde={}",
+        eps, beta, n, max_lde
+    );
+    println!(
+        "# legend: pure = no BKZ, bkz{} = BKZ-{} post-pass",
+        beta, beta
+    );
 
     let mut total_pure = 0.0_f64;
     let mut total_bkz = 0.0_f64;
@@ -87,11 +126,20 @@ fn main() {
         let lde_bkz = r_bkz.as_ref().map(|r| r.lde as i32).unwrap_or(-1);
         println!(
             "target_{:02}: pure {:7.3} s (lde {:>2}) | bkz{} {:7.3} s (lde {:>2}) | ratio {:.2}×",
-            idx, dt_pure, lde_pure, beta, dt_bkz, lde_bkz, dt_pure / dt_bkz.max(1e-9)
+            idx,
+            dt_pure,
+            lde_pure,
+            beta,
+            dt_bkz,
+            lde_bkz,
+            dt_pure / dt_bkz.max(1e-9)
         );
     }
     println!(
         "# total pure {:.3} s | total bkz{} {:.3} s | speedup {:.2}×",
-        total_pure, beta, total_bkz, total_pure / total_bkz.max(1e-9)
+        total_pure,
+        beta,
+        total_bkz,
+        total_pure / total_bkz.max(1e-9)
     );
 }

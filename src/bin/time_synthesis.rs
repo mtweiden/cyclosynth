@@ -24,25 +24,32 @@ type C64 = Complex<f64>;
 type Mat2 = [[C64; 2]; 2];
 
 fn mat_mul(a: Mat2, b: Mat2) -> Mat2 {
-    [[
-        a[0][0]*b[0][0] + a[0][1]*b[1][0],
-        a[0][0]*b[0][1] + a[0][1]*b[1][1],
-    ],[
-        a[1][0]*b[0][0] + a[1][1]*b[1][0],
-        a[1][0]*b[0][1] + a[1][1]*b[1][1],
-    ]]
+    [
+        [
+            a[0][0] * b[0][0] + a[0][1] * b[1][0],
+            a[0][0] * b[0][1] + a[0][1] * b[1][1],
+        ],
+        [
+            a[1][0] * b[0][0] + a[1][1] * b[1][0],
+            a[1][0] * b[0][1] + a[1][1] * b[1][1],
+        ],
+    ]
 }
 
 fn rz(theta: f64) -> Mat2 {
-    [[C64::from_polar(1.0, -theta / 2.0), C64::new(0.0, 0.0)],
-     [C64::new(0.0, 0.0),                 C64::from_polar(1.0, theta / 2.0)]]
+    [
+        [C64::from_polar(1.0, -theta / 2.0), C64::new(0.0, 0.0)],
+        [C64::new(0.0, 0.0), C64::from_polar(1.0, theta / 2.0)],
+    ]
 }
 
 fn ry(theta: f64) -> Mat2 {
     let c = (theta / 2.0).cos();
     let s = (theta / 2.0).sin();
-    [[C64::new(c, 0.0), C64::new(-s, 0.0)],
-     [C64::new(s, 0.0), C64::new(c, 0.0)]]
+    [
+        [C64::new(c, 0.0), C64::new(-s, 0.0)],
+        [C64::new(s, 0.0), C64::new(c, 0.0)],
+    ]
 }
 
 /// SU(2) via Euler decomposition: Rz(a) · Ry(b) · Rz(c).
@@ -87,13 +94,33 @@ fn main() {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--threads"    => { i += 1; num_threads = Some(args[i].parse().expect("--threads N")); }
-            "--max-lde"    => { i += 1; max_lde = Some(args[i].parse().expect("--max-lde N")); }
-            "--trials"     => { i += 1; n_trials = args[i].parse().expect("--trials N"); }
-            "--n-targets"  => { i += 1; n_targets = args[i].parse().expect("--n-targets N"); }
-            "--seed"       => { i += 1; seed = parse_seed(&args[i]); }
-            "--skip-tight" => { skip_tight = true; }
-            "--filter"     => { i += 1; filter = Some(args[i].clone()); }
+            "--threads" => {
+                i += 1;
+                num_threads = Some(args[i].parse().expect("--threads N"));
+            }
+            "--max-lde" => {
+                i += 1;
+                max_lde = Some(args[i].parse().expect("--max-lde N"));
+            }
+            "--trials" => {
+                i += 1;
+                n_trials = args[i].parse().expect("--trials N");
+            }
+            "--n-targets" => {
+                i += 1;
+                n_targets = args[i].parse().expect("--n-targets N");
+            }
+            "--seed" => {
+                i += 1;
+                seed = parse_seed(&args[i]);
+            }
+            "--skip-tight" => {
+                skip_tight = true;
+            }
+            "--filter" => {
+                i += 1;
+                filter = Some(args[i].clone());
+            }
             _ => {}
         }
         i += 1;
@@ -192,7 +219,9 @@ fn main() {
                 None => {
                     println!(
                         "{:<12}  {:>6.0e}    --      --   FAILED (no solution within max_lde={})",
-                        name, eps, synth.max_lde()
+                        name,
+                        eps,
+                        synth.max_lde()
                     );
                     eps_failures += 1;
                 }

@@ -39,7 +39,10 @@ static BYPASS_INIT: OnceLock<()> = OnceLock::new();
 
 fn bypass_norm_prune() -> bool {
     BYPASS_INIT.get_or_init(|| {
-        let v = std::env::var("CYCLOSYNTH_BYPASS_NORM_PRUNE").ok().as_deref() == Some("1");
+        let v = std::env::var("CYCLOSYNTH_BYPASS_NORM_PRUNE")
+            .ok()
+            .as_deref()
+            == Some("1");
         BYPASS_NORM_PRUNE.store(v, Ordering::Relaxed);
     });
     BYPASS_NORM_PRUNE.load(Ordering::Relaxed)
@@ -184,7 +187,9 @@ pub fn dd_div(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
 
 #[inline]
 pub fn dd_sqrt(s: (f64, f64)) -> (f64, f64) {
-    if s.0 <= 0.0 { return (0.0, 0.0); }
+    if s.0 <= 0.0 {
+        return (0.0, 0.0);
+    }
     let x = s.0.sqrt();
     let x_dd = (x, 0.0);
     let x_sq = dd_mul(x_dd, x_dd);
@@ -208,7 +213,11 @@ fn dd_from_i64(z: i64) -> (f64, f64) {
         let two32 = (1u64 << 32) as f64;
         let p = dd_mul((hi, 0.0), (two32, 0.0));
         let r = dd_add(p, (lo, 0.0));
-        if neg { (-r.0, -r.1) } else { r }
+        if neg {
+            (-r.0, -r.1)
+        } else {
+            r
+        }
     }
 }
 
@@ -237,8 +246,12 @@ fn dd_from_i64(z: i64) -> (f64, f64) {
 
 #[inline]
 fn isqrt_i128(n: i128) -> i128 {
-    if n < 0 { return -1; }
-    if n < 2 { return n; }
+    if n < 0 {
+        return -1;
+    }
+    if n < 2 {
+        return n;
+    }
     let mut x = n;
     let mut y = (n + 1) / 2;
     while y < x {
@@ -254,7 +267,11 @@ fn floor_div_i128(a: i128, b: i128) -> i128 {
     debug_assert!(b > 0);
     let q = a / b;
     let r = a % b;
-    if r < 0 { q - 1 } else { q }
+    if r < 0 {
+        q - 1
+    } else {
+        q
+    }
 }
 
 /// Find integer z[0] candidates that could yield `‖x_new‖² == target_norm`,
@@ -345,11 +362,19 @@ pub fn qfilter_depth1_state_pub(
 ) -> (i256, i256, i256, i256, i256, i256) {
     qfilter_depth1_state(basis, x, z0_curr, z1_curr)
 }
-pub fn isqrt_i256_pub(n: i256) -> i256 { isqrt_i256(n) }
+pub fn isqrt_i256_pub(n: i256) -> i256 {
+    isqrt_i256(n)
+}
 #[allow(clippy::too_many_arguments)]
 pub fn qfilter_discriminant_class_pub(
-    g_00: i256, g_01: i256, g_11: i256, a: i256, v_0: i256, v_1: i256,
-    target_norm_sq_i64: i64, zd: i64,
+    g_00: i256,
+    g_01: i256,
+    g_11: i256,
+    a: i256,
+    v_0: i256,
+    v_1: i256,
+    target_norm_sq_i64: i64,
+    zd: i64,
 ) -> u8 {
     qfilter_discriminant_class(g_00, g_01, g_11, a, v_0, v_1, target_norm_sq_i64, zd)
 }
@@ -446,9 +471,7 @@ fn qfilter_discriminant_class(
         .wrapping_mul(zd_i)
         .wrapping_add(two.wrapping_mul(v_1).wrapping_mul(zd_i))
         .wrapping_add(a.wrapping_sub(i256::from_i64(target_norm_sq_i64)));
-    let d_per_4 = b_lin
-        .wrapping_mul(b_lin)
-        .wrapping_sub(g_00.wrapping_mul(c));
+    let d_per_4 = b_lin.wrapping_mul(b_lin).wrapping_sub(g_00.wrapping_mul(c));
     if d_per_4 < i256::from_i64(0) {
         return 0;
     }
@@ -458,7 +481,11 @@ fn qfilter_discriminant_class(
         return 1;
     }
     let s = isqrt_i256(d_per_4);
-    if s.wrapping_mul(s) == d_per_4 { 3 } else { 2 }
+    if s.wrapping_mul(s) == d_per_4 {
+        3
+    } else {
+        2
+    }
 }
 
 /// Compute `Σ_{i ≥ depth} (R · z)[i]²` in inline double-double (~106 bits)
@@ -499,24 +526,25 @@ pub fn verify_partial_dd_exceeds(
 #[inline]
 pub fn beta_1(u: &[i64; 8]) -> i128 {
     let u: [i128; 8] = std::array::from_fn(|i| u[i] as i128);
-    u[0]*u[1] + u[1]*u[2] + u[2]*u[3] + u[3]*u[4]
-        + u[4]*u[5] + u[5]*u[6] + u[6]*u[7]
-        - u[0]*u[7]
+    u[0] * u[1] + u[1] * u[2] + u[2] * u[3] + u[3] * u[4] + u[4] * u[5] + u[5] * u[6] + u[6] * u[7]
+        - u[0] * u[7]
 }
 
 #[inline]
 pub fn beta_2(u: &[i64; 8]) -> i128 {
     let u: [i128; 8] = std::array::from_fn(|i| u[i] as i128);
-    u[0]*u[2] + u[1]*u[3] + u[2]*u[4] + u[3]*u[5]
-        + u[4]*u[6] + u[5]*u[7]
-        - u[0]*u[6] - u[1]*u[7]
+    u[0] * u[2] + u[1] * u[3] + u[2] * u[4] + u[3] * u[5] + u[4] * u[6] + u[5] * u[7]
+        - u[0] * u[6]
+        - u[1] * u[7]
 }
 
 #[inline]
 pub fn beta_3(u: &[i64; 8]) -> i128 {
     let u: [i128; 8] = std::array::from_fn(|i| u[i] as i128);
-    u[0]*u[3] + u[1]*u[4] + u[2]*u[5] + u[3]*u[6] + u[4]*u[7]
-        - u[0]*u[5] - u[1]*u[6] - u[2]*u[7]
+    u[0] * u[3] + u[1] * u[4] + u[2] * u[5] + u[3] * u[6] + u[4] * u[7]
+        - u[0] * u[5]
+        - u[1] * u[6]
+        - u[2] * u[7]
 }
 
 /// Joint bilinear forms on the 16-vector `x = (u_1's 8 coords, u_2's 8 coords)`.
@@ -570,8 +598,7 @@ pub fn reconstruct_x(b_lll: &[[i64; 16]; 16], z: &[i64; 16]) -> [i64; 16] {
 /// is no issue, but spurious overflow during elimination is possible at
 /// pathological inputs.
 pub fn det16_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
-    let mut a: [[i128; 16]; 16] =
-        std::array::from_fn(|i| std::array::from_fn(|j| m[i][j] as i128));
+    let mut a: [[i128; 16]; 16] = std::array::from_fn(|i| std::array::from_fn(|j| m[i][j] as i128));
     let mut sign: i128 = 1;
     let mut prev: i128 = 1;
 
@@ -648,17 +675,15 @@ pub fn euclidean_cholesky_16_mpfr_dual(
             gram[i][j] = s;
         }
     }
-    let mut g: [[Float; 16]; 16] = std::array::from_fn(|_| {
-        std::array::from_fn(|_| Float::with_val(PREC, 0.0))
-    });
+    let mut g: [[Float; 16]; 16] =
+        std::array::from_fn(|_| std::array::from_fn(|_| Float::with_val(PREC, 0.0)));
     for i in 0..16 {
         for j in 0..16 {
             g[i][j] = i128_to_mpfr(gram[i][j], PREC);
         }
     }
-    let mut l: [[Float; 16]; 16] = std::array::from_fn(|_| {
-        std::array::from_fn(|_| Float::with_val(PREC, 0.0))
-    });
+    let mut l: [[Float; 16]; 16] =
+        std::array::from_fn(|_| std::array::from_fn(|_| Float::with_val(PREC, 0.0)));
     for i in 0..16 {
         for j in 0..=i {
             let mut s = g[i][j].clone();
@@ -706,7 +731,11 @@ fn i128_to_mpfr(v: i128, prec: u32) -> rug::Float {
     let mut f = Float::with_val(prec, hi);
     f <<= 64u32;
     f += Float::with_val(prec, lo);
-    if neg { -f } else { f }
+    if neg {
+        -f
+    } else {
+        f
+    }
 }
 
 /// Compute the upper-triangular Cholesky factor R of `B·Bᵀ` (Euclidean Gram
@@ -845,7 +874,15 @@ fn recurse_16<F>(
     if l_dd.abs() < 1e-30 {
         z[d] = z_c[d];
         recurse_16(
-            depth - 1, l, z_c, bound_sq, partial, z, callback, budget, leaves,
+            depth - 1,
+            l,
+            z_c,
+            bound_sq,
+            partial,
+            z,
+            callback,
+            budget,
+            leaves,
             aborted,
         );
         return;
@@ -906,8 +943,16 @@ fn recurse_16<F>(
         }
         z[d] = zd;
         recurse_16(
-            depth - 1, l, z_c, bound_sq, new_partial, z, callback, budget,
-            leaves, aborted,
+            depth - 1,
+            l,
+            z_c,
+            bound_sq,
+            new_partial,
+            z,
+            callback,
+            budget,
+            leaves,
+            aborted,
         );
     }
 }
@@ -963,9 +1008,23 @@ where
     // 2^k exactly for k ≤ 1023 so no precision loss.
     let target_norm_sq_i64 = target_norm_sq as i64;
     recurse_16_norm_pruned(
-        15, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
-        0.0, 0.0, &mut z, &mut x, &mut w, basis, &mut callback, budget,
-        &mut leaves, &mut aborted,
+        15,
+        l,
+        z_c,
+        bound_sq,
+        r_eucl,
+        target_norm_sq,
+        target_norm_sq_i64,
+        0.0,
+        0.0,
+        &mut z,
+        &mut x,
+        &mut w,
+        basis,
+        &mut callback,
+        budget,
+        &mut leaves,
+        &mut aborted,
     );
     leaves
 }
@@ -1025,9 +1084,23 @@ fn recurse_16_norm_pruned<F>(
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
         if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_16_norm_pruned(
-                depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
-                partial_q, new_partial_eucl, z, x, w, basis, callback, budget,
-                leaves, aborted,
+                depth - 1,
+                l,
+                z_c,
+                bound_sq,
+                r_eucl,
+                target_norm_sq,
+                target_norm_sq_i64,
+                partial_q,
+                new_partial_eucl,
+                z,
+                x,
+                w,
+                basis,
+                callback,
+                budget,
+                leaves,
+                aborted,
             );
         }
         return;
@@ -1108,7 +1181,8 @@ fn recurse_16_norm_pruned<F>(
             crate::synthesis::diag::sample_prune_event(depth, z, new_partial_eucl, threshold);
             if crate::synthesis::diag::watch_path_match_at_depth(z, depth) {
                 crate::synthesis::diag::watch_record(crate::synthesis::diag::WatchHit {
-                    depth, z_at_prune: *z,
+                    depth,
+                    z_at_prune: *z,
                     partial_eucl_f64: new_partial_eucl,
                     threshold,
                     partial_q_f64: new_partial_q,
@@ -1121,9 +1195,23 @@ fn recurse_16_norm_pruned<F>(
             continue;
         }
         recurse_16_norm_pruned(
-            depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
-            new_partial_q, new_partial_eucl, z, x, w, basis, callback, budget,
-            leaves, aborted,
+            depth - 1,
+            l,
+            z_c,
+            bound_sq,
+            r_eucl,
+            target_norm_sq,
+            target_norm_sq_i64,
+            new_partial_q,
+            new_partial_eucl,
+            z,
+            x,
+            w,
+            basis,
+            callback,
+            budget,
+            leaves,
+            aborted,
         );
     }
 }
@@ -1131,12 +1219,7 @@ fn recurse_16_norm_pruned<F>(
 /// Apply `x[c] += delta · basis[d][c]` for c=0..16. Fast tight loop —
 /// LLVM auto-vectorizes this on Apple Silicon (4 i64s per NEON op).
 #[inline]
-fn update_x_for_z_change(
-    x: &mut [i64; 16],
-    basis: &[[i64; 16]; 16],
-    d: usize,
-    delta: i64,
-) {
+fn update_x_for_z_change(x: &mut [i64; 16], basis: &[[i64; 16]; 16], d: usize, delta: i64) {
     let row = &basis[d];
     for c in 0..16 {
         x[c] += delta * row[c];
@@ -1256,8 +1339,16 @@ fn recurse_collect<F>(
     if l_dd.abs() < 1e-30 {
         z[d] = z_c[d];
         recurse_collect(
-            depth - 1, l, z_c, bound_sq, partial, z, leaf_filter, budget,
-            aborted, results,
+            depth - 1,
+            l,
+            z_c,
+            bound_sq,
+            partial,
+            z,
+            leaf_filter,
+            budget,
+            aborted,
+            results,
         );
         return;
     }
@@ -1298,8 +1389,16 @@ fn recurse_collect<F>(
         }
         z[d] = zd;
         recurse_collect(
-            depth - 1, l, z_c, bound_sq, new_partial, z, leaf_filter, budget,
-            aborted, results,
+            depth - 1,
+            l,
+            z_c,
+            bound_sq,
+            new_partial,
+            z,
+            leaf_filter,
+            budget,
+            aborted,
+            results,
         );
     }
 }
@@ -1424,9 +1523,26 @@ where
             }
             let mut local: Vec<[i64; 16]> = Vec::new();
             recurse_collect_norm_pruned(
-                14, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
-                partial_q, partial_eucl, &mut z, &mut x, &mut w, basis,
-                &leaf_filter, budget, &aborted, external_abort, consumed, &mut local,
+                14,
+                l,
+                z_c,
+                bound_sq,
+                r_eucl,
+                r_eucl_dd,
+                target_norm_sq,
+                target_norm_sq_i64,
+                partial_q,
+                partial_eucl,
+                &mut z,
+                &mut x,
+                &mut w,
+                basis,
+                &leaf_filter,
+                budget,
+                &aborted,
+                external_abort,
+                consumed,
+                &mut local,
             );
             local.into_iter()
         })
@@ -1505,13 +1621,16 @@ fn recurse_collect_norm_pruned<F>(
     // for status. Default off; opt-in via `CYCLOSYNTH_QFILTER=1`.
     let qfilter_state: Option<(i256, i256, i256, i256, i256, i256)> =
         if depth == 1 && qfilter_enabled() {
-            let t_pre = if trace { Some(std::time::Instant::now()) } else { None };
+            let t_pre = if trace {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
             let s = qfilter_depth1_state(basis, x, z[0], z[1]);
             if let Some(t) = t_pre {
                 crate::synthesis::diag::T_QFILTER_PRECOMPUTE_NS
                     .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                crate::synthesis::diag::N_QFILTER_PRECOMPUTE_CALLS
-                    .fetch_add(1, Ordering::Relaxed);
+                crate::synthesis::diag::N_QFILTER_PRECOMPUTE_CALLS.fetch_add(1, Ordering::Relaxed);
             }
             Some(s)
         } else {
@@ -1552,9 +1671,26 @@ fn recurse_collect_norm_pruned<F>(
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
         if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_collect_norm_pruned(
-                depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
-                partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
-                budget, aborted, external_abort, consumed, results,
+                depth - 1,
+                l,
+                z_c,
+                bound_sq,
+                r_eucl,
+                r_eucl_dd,
+                target_norm_sq,
+                target_norm_sq_i64,
+                partial_q,
+                new_partial_eucl,
+                z,
+                x,
+                w,
+                basis,
+                leaf_filter,
+                budget,
+                aborted,
+                external_abort,
+                consumed,
+                results,
             );
         }
         return;
@@ -1643,7 +1779,8 @@ fn recurse_collect_norm_pruned<F>(
             crate::synthesis::diag::sample_prune_event(depth, z, new_partial_eucl, threshold);
             if crate::synthesis::diag::watch_path_match_at_depth(z, depth) {
                 crate::synthesis::diag::watch_record(crate::synthesis::diag::WatchHit {
-                    depth, z_at_prune: *z,
+                    depth,
+                    z_at_prune: *z,
                     partial_eucl_f64: new_partial_eucl,
                     threshold,
                     partial_q_f64: new_partial_q,
@@ -1671,15 +1808,20 @@ fn recurse_collect_norm_pruned<F>(
             // true keeps where prefix_d > ‖x‖² − T).
             let x_norm_sq: i64 = x.iter().map(|&v| v.wrapping_mul(v)).sum();
             if x_norm_sq <= target_norm_sq_i64 {
-                false  // confirmed keep, skip dd verify
+                false // confirmed keep, skip dd verify
             } else if verify_prune_mpfr() && new_partial_eucl <= threshold * VERIFY_RATIO_CAP {
-                let t_v = if trace { Some(std::time::Instant::now()) } else { None };
+                let t_v = if trace {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
                 let dd_prune = verify_partial_dd_exceeds(r_eucl_dd, z, depth as usize, threshold);
                 if let Some(t) = t_v {
                     crate::synthesis::diag::T_VERIFY_DD_NS
                         .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     if !dd_prune {
-                        crate::synthesis::diag::N_VERIFY_PRUNE_CORRECTED.fetch_add(1, Ordering::Relaxed);
+                        crate::synthesis::diag::N_VERIFY_PRUNE_CORRECTED
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                     crate::synthesis::diag::N_VERIFY_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1711,10 +1853,13 @@ fn recurse_collect_norm_pruned<F>(
         // exists. Sound: leaf_filter requires ‖x‖² == T strictly, so a
         // non-perfect-square discriminant guarantees no leaf survives.
         if let Some((g_00, g_01, g_11, a_q, v_0, v_1)) = qfilter_state {
-            let t_cls = if trace { Some(std::time::Instant::now()) } else { None };
-            let class = qfilter_discriminant_class(
-                g_00, g_01, g_11, a_q, v_0, v_1, target_norm_sq_i64, zd,
-            );
+            let t_cls = if trace {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
+            let class =
+                qfilter_discriminant_class(g_00, g_01, g_11, a_q, v_0, v_1, target_norm_sq_i64, zd);
             if let Some(t) = t_cls {
                 crate::synthesis::diag::T_QFILTER_CLASSIFY_NS
                     .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1742,9 +1887,7 @@ fn recurse_collect_norm_pruned<F>(
                 // making the filter ~10× slower at no-solution lde levels
                 // despite being correct.
                 const PHANTOM_PER_REJECT: u64 = 8;
-                if budget.fetch_sub(PHANTOM_PER_REJECT, Ordering::Relaxed)
-                    <= PHANTOM_PER_REJECT
-                {
+                if budget.fetch_sub(PHANTOM_PER_REJECT, Ordering::Relaxed) <= PHANTOM_PER_REJECT {
                     aborted.store(true, Ordering::Relaxed);
                     return;
                 }
@@ -1753,9 +1896,26 @@ fn recurse_collect_norm_pruned<F>(
         }
 
         recurse_collect_norm_pruned(
-            depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
-            new_partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
-            budget, aborted, external_abort, consumed, results,
+            depth - 1,
+            l,
+            z_c,
+            bound_sq,
+            r_eucl,
+            r_eucl_dd,
+            target_norm_sq,
+            target_norm_sq_i64,
+            new_partial_q,
+            new_partial_eucl,
+            z,
+            x,
+            w,
+            basis,
+            leaf_filter,
+            budget,
+            aborted,
+            external_abort,
+            consumed,
+            results,
         );
     }
 }
@@ -1800,9 +1960,13 @@ mod par_tests {
             partial_eucl += level * level;
         }
         let rel_err = (partial_eucl - xnorm_sq_f).abs() / xnorm_sq_f.max(1.0);
-        assert!(rel_err < 1e-10,
+        assert!(
+            rel_err < 1e-10,
             "‖R·z‖² ({}) != ‖B·z‖² ({}); rel_err {:.3e}",
-            partial_eucl, xnorm_sq_f, rel_err);
+            partial_eucl,
+            xnorm_sq_f,
+            rel_err
+        );
     }
 
     /// Sanity: parallel and serial SE walks on the same setup produce the
@@ -1823,32 +1987,38 @@ mod par_tests {
         let serial_budget = AtomicU64::new(1_000_000);
         let mut serial_set: HashSet<[i64; 16]> = HashSet::new();
         schnorr_euchner_16d(
-            &l, &z_c, bound_sq,
-            |z| { serial_set.insert(*z); true },
+            &l,
+            &z_c,
+            bound_sq,
+            |z| {
+                serial_set.insert(*z);
+                true
+            },
             &serial_budget,
         );
 
         // Parallel walk: collect all leaves passing a tautological filter.
         let par_budget = AtomicU64::new(1_000_000);
-        let (par_zs, _hit) = schnorr_euchner_16d_par(
-            &l, &z_c, bound_sq, |_z| true, &par_budget,
-        );
+        let (par_zs, _hit) = schnorr_euchner_16d_par(&l, &z_c, bound_sq, |_z| true, &par_budget);
         let par_set: HashSet<[i64; 16]> = par_zs.into_iter().collect();
 
-        assert_eq!(serial_set, par_set,
+        assert_eq!(
+            serial_set,
+            par_set,
             "serial leaves ({}) != parallel leaves ({})",
-            serial_set.len(), par_set.len());
+            serial_set.len(),
+            par_set.len()
+        );
     }
-
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::cholesky_lu::{cholesky_f64_16, lu_solve_int_inplace_16};
     use super::super::lll::run_lll_16;
     use super::super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
     use super::super::scratch::IntScratch16;
+    use super::*;
     use crate::synthesis::search_zeta::phase1_brute;
     use std::collections::HashSet;
 
@@ -1870,7 +2040,11 @@ mod tests {
         build_q_int_zeta(&mut s);
         let r = run_lll_16(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
-        let nz_count = s.basis.iter().filter(|row| row.iter().any(|&v| v != 0)).count();
+        let nz_count = s
+            .basis
+            .iter()
+            .filter(|row| row.iter().any(|&v| v != 0))
+            .count();
         assert_eq!(nz_count, 16, "basis should have 16 non-zero rows");
     }
 
@@ -1896,9 +2070,8 @@ mod tests {
 
         use rug::{Assign, Float as RFloat};
         let prec = 256_u32;
-        let mut a: [[RFloat; 17]; 16] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| RFloat::with_val(prec, 0.0))
-        });
+        let mut a: [[RFloat; 17]; 16] =
+            std::array::from_fn(|_| std::array::from_fn(|_| RFloat::with_val(prec, 0.0)));
         for i in 0..16 {
             for j in 0..16 {
                 a[i][j].assign(s.basis[j][i]);
@@ -1918,8 +2091,11 @@ mod tests {
             if piv != k {
                 a.swap(k, piv);
             }
-            assert!(a[k][k].to_f64().abs() > 1e-30,
-                "B is singular at column {} — not unimodular?", k);
+            assert!(
+                a[k][k].to_f64().abs() > 1e-30,
+                "B is singular at column {} — not unimodular?",
+                k
+            );
             for i in (k + 1)..16 {
                 let factor = RFloat::with_val(prec, &a[i][k] / &a[k][k]);
                 for j in k..17 {
@@ -1938,15 +2114,21 @@ mod tests {
             let zi = RFloat::with_val(prec, &s_acc / &a[i][i]);
             let zi_round = zi.to_f64().round() as i64;
             let residual = (zi.to_f64() - zi_round as f64).abs();
-            assert!(residual < 1e-6,
+            assert!(
+                residual < 1e-6,
                 "z[{}] = {} is not an integer (residual {}); basis non-unimodular?",
-                i, zi.to_f64(), residual);
+                i,
+                zi.to_f64(),
+                residual
+            );
             z[i] = zi_round;
         }
         let recovered = reconstruct_x(&s.basis, &z);
-        assert_eq!(recovered, target,
+        assert_eq!(
+            recovered, target,
             "round-trip failed: z = {:?} gives x = {:?}, want {:?}",
-            z, recovered, target);
+            z, recovered, target
+        );
     }
 
     // ── det16_exact tests ────────────────────────────────────────────────────
@@ -1984,8 +2166,11 @@ mod tests {
         let r = run_lll_16(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
         let det = det16_exact(&s.basis).expect("LLL basis det must fit in i64");
-        assert!(det == 1 || det == -1,
-            "LLL output basis must be unimodular; got det = {}", det);
+        assert!(
+            det == 1 || det == -1,
+            "LLL output basis must be unimodular; got det = {}",
+            det
+        );
     }
 
     // ── euclidean_cholesky_16 tests ──────────────────────────────────────────
@@ -2001,8 +2186,11 @@ mod tests {
         for i in 0..16 {
             for j in 0..16 {
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!((r[i][j] - expected).abs() < 1e-12,
-                    "R[{i}][{j}] = {}, expected {expected}", r[i][j]);
+                assert!(
+                    (r[i][j] - expected).abs() < 1e-12,
+                    "R[{i}][{j}] = {}, expected {expected}",
+                    r[i][j]
+                );
             }
         }
         // Diagonal basis with entries 2: B·Bᵀ = 4·I, R = 2·I.
@@ -2014,8 +2202,11 @@ mod tests {
         for i in 0..16 {
             for j in 0..16 {
                 let expected = if i == j { 2.0 } else { 0.0 };
-                assert!((r[i][j] - expected).abs() < 1e-12,
-                    "R[{i}][{j}] = {}, expected {expected}", r[i][j]);
+                assert!(
+                    (r[i][j] - expected).abs() < 1e-12,
+                    "R[{i}][{j}] = {}, expected {expected}",
+                    r[i][j]
+                );
             }
         }
         // Verify Rᵀ·R = B·Bᵀ for a slightly less trivial basis.
@@ -2043,8 +2234,12 @@ mod tests {
                 for k in 0..16 {
                     s += r[k][i] * r[k][j];
                 }
-                assert!((s - bbt[i][j]).abs() < 1e-9,
-                    "Rᵀ·R != B·Bᵀ at ({i},{j}): {} vs {}", s, bbt[i][j]);
+                assert!(
+                    (s - bbt[i][j]).abs() < 1e-9,
+                    "Rᵀ·R != B·Bᵀ at ({i},{j}): {} vs {}",
+                    s,
+                    bbt[i][j]
+                );
             }
         }
     }
@@ -2063,10 +2258,16 @@ mod tests {
         let z_c = [0_i64; 16];
         let budget = AtomicU64::new(10_000);
         let mut visited: HashSet<[i64; 16]> = HashSet::new();
-        let leaves = schnorr_euchner_16d(&l, &z_c, 1.0, |z| {
-            visited.insert(*z);
-            true
-        }, &budget);
+        let leaves = schnorr_euchner_16d(
+            &l,
+            &z_c,
+            1.0,
+            |z| {
+                visited.insert(*z);
+                true
+            },
+            &budget,
+        );
         assert_eq!(leaves, 33, "expected 33 leaves at bound_sq=1, got {leaves}");
         assert_eq!(visited.len(), 33);
         // Verify origin is present.
@@ -2133,26 +2334,39 @@ mod tests {
         let budget = AtomicU64::new(1_000_000);
         let bound_sq = 1.0e6_f64;
         let mut se_set: HashSet<[i64; 16]> = HashSet::new();
-        schnorr_euchner_16d(&l_upper, &z_c, bound_sq, |z| {
-            // Reconstruct x = B·z and apply leaf checks.
-            let x = reconstruct_x(&s.basis, z);
-            let norm_sq: i64 = x.iter().map(|v| v * v).sum();
-            if norm_sq != 4 {
-                return true;
-            }
-            let (b1, b2, b3) = bilinear_forms(&x);
-            if b1 == 0 && b2 == 0 && b3 == 0 {
-                se_set.insert(x);
-            }
-            true
-        }, &budget);
+        schnorr_euchner_16d(
+            &l_upper,
+            &z_c,
+            bound_sq,
+            |z| {
+                // Reconstruct x = B·z and apply leaf checks.
+                let x = reconstruct_x(&s.basis, z);
+                let norm_sq: i64 = x.iter().map(|v| v * v).sum();
+                if norm_sq != 4 {
+                    return true;
+                }
+                let (b1, b2, b3) = bilinear_forms(&x);
+                if b1 == 0 && b2 == 0 && b3 == 0 {
+                    se_set.insert(x);
+                }
+                true
+            },
+            &budget,
+        );
         // Every leaf-check-passing SE result must be in the brute set.
         for x in &se_set {
-            assert!(brute_set.contains(x),
-                "SE returned x={:?} not in brute set (lattice consistency bug)", x);
+            assert!(
+                brute_set.contains(x),
+                "SE returned x={:?} not in brute set (lattice consistency bug)",
+                x
+            );
         }
-        eprintln!("SE at k=2: found {}/{} brute solutions within bound_sq={}",
-                  se_set.len(), brute_set.len(), bound_sq);
+        eprintln!(
+            "SE at k=2: found {}/{} brute solutions within bound_sq={}",
+            se_set.len(),
+            brute_set.len(),
+            bound_sq
+        );
     }
 
     /// SE pruning: at a moderate bound the leaf count is finite and the walk
@@ -2197,12 +2411,16 @@ mod tests {
         let budget = AtomicU64::new(1_000_000);
         let leaves = schnorr_euchner_16d(&l_upper, &z_c, bound_sq, |_z| true, &budget);
         // Walk completes within budget (no abort).
-        assert!(leaves < 1_000_000,
-            "SE walk did not terminate within budget: visited {leaves} leaves");
+        assert!(
+            leaves < 1_000_000,
+            "SE walk did not terminate within budget: visited {leaves} leaves"
+        );
         // Pruning is real: leaf count is far below the unrestricted box of
         // even radius 1 in 16D (3^16 ≈ 4.3×10⁷).
-        assert!(leaves < 1_000_000,
-            "SE pruning failed: visited {leaves} leaves (budget = 1M)");
+        assert!(
+            leaves < 1_000_000,
+            "SE pruning failed: visited {leaves} leaves (budget = 1M)"
+        );
         eprintln!(
             "SE pruning at k=6, ε=1e-3: visited {leaves} leaves (bound_sq={bound_sq:.3e}, \
              min_diag_sq={min_diag_sq:.3e})"

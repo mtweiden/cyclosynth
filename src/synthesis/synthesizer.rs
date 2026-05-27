@@ -18,9 +18,9 @@
 //! be replaced with monomorphised generic instantiations and `sqrt_t`
 //! will keep working as a public-API parameter.
 
-use crate::synthesis::distance::Mat2;
-use crate::synthesis::clifford_t::SynthesizerT;
 use crate::synthesis::clifford_sqrt_t::SynthesizerQ;
+use crate::synthesis::clifford_t::SynthesizerT;
+use crate::synthesis::distance::Mat2;
 
 /// Result of a successful synthesis call. Same shape regardless of the
 /// underlying gate set.
@@ -199,12 +199,7 @@ pub struct PySynthesizer {
 impl PySynthesizer {
     #[new]
     #[pyo3(signature = (epsilon, *, sqrt_t=false, max_lde=None, min_lde=None))]
-    fn new(
-        epsilon: f64,
-        sqrt_t: bool,
-        max_lde: Option<u32>,
-        min_lde: Option<u32>,
-    ) -> Self {
+    fn new(epsilon: f64, sqrt_t: bool, max_lde: Option<u32>, min_lde: Option<u32>) -> Self {
         let mut s = Synthesizer::new(epsilon, sqrt_t);
         if let Some(v) = max_lde {
             s = s.with_max_lde(v);
@@ -216,10 +211,7 @@ impl PySynthesizer {
     }
 
     /// Synthesize `target` (a 2×2 `np.complex128` array).
-    fn synthesize(
-        &self,
-        target: PyReadonlyArray2<PyComplex64>,
-    ) -> PyResult<Option<PySynthResult>> {
+    fn synthesize(&self, target: PyReadonlyArray2<PyComplex64>) -> PyResult<Option<PySynthResult>> {
         let view = target.as_array();
         if view.shape() != [2, 2] {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(

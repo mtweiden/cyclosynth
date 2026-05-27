@@ -161,7 +161,9 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
     let flat = [m[0][0], m[0][1], m[1][0], m[1][1]];
 
     // Find element with largest magnitude
-    let (idx, _) = flat.iter().enumerate()
+    let (idx, _) = flat
+        .iter()
+        .enumerate()
         .max_by(|(_, a), (_, b)| a.norm_sqr().partial_cmp(&b.norm_sqr()).unwrap())
         .unwrap();
     let piv = flat[idx];
@@ -171,15 +173,20 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
         flat.iter().flat_map(|c| [c.re, c.im]).collect()
     } else {
         let phase = piv / piv.norm();
-        flat.iter().flat_map(|c| {
-            let r = c / phase;
-            [r.re, r.im]
-        }).collect()
+        flat.iter()
+            .flat_map(|c| {
+                let r = c / phase;
+                [r.re, r.im]
+            })
+            .collect()
     };
 
     // Round to 6 decimal places and encode as i64 (multiply by 1e6)
-    rot.iter().map(|x| (x * 1_000_000.0).round() as i64).collect::<Vec<_>>()
-        .try_into().unwrap()
+    rot.iter()
+        .map(|x| (x * 1_000_000.0).round() as i64)
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap()
 }
 
 /// Build L_{t'}: the Matsumoto–Amano prefix set with Clifford postmultiplication.
@@ -221,8 +228,8 @@ fn build_l_inner(t_prime: u32) -> Vec<U2T> {
     let h = U2T::h();
     let s = U2T::s();
     let t = U2T::t();
-    let hs0t = h * t;        // H·T
-    let hs1t = h * s * t;   // H·S·T
+    let hs0t = h * t; // H·T
+    let hs1t = h * s * t; // H·S·T
 
     let mut candidates: Vec<U2T> = Vec::new();
 
@@ -272,12 +279,16 @@ fn build_l_inner(t_prime: u32) -> Vec<U2T> {
 /// with U = [[u1, -ū2], [u2, ū1]] / √2^k (SU(2) convention).
 fn solution_to_u2t(sol: &[i64; 8], k: u32) -> U2T {
     let u1 = ZOmega::new(
-        Int::from_i64(sol[0]), Int::from_i64(sol[1]),
-        Int::from_i64(sol[2]), Int::from_i64(sol[3]),
+        Int::from_i64(sol[0]),
+        Int::from_i64(sol[1]),
+        Int::from_i64(sol[2]),
+        Int::from_i64(sol[3]),
     );
     let u2 = ZOmega::new(
-        Int::from_i64(sol[4]), Int::from_i64(sol[5]),
-        Int::from_i64(sol[6]), Int::from_i64(sol[7]),
+        Int::from_i64(sol[4]),
+        Int::from_i64(sol[5]),
+        Int::from_i64(sol[6]),
+        Int::from_i64(sol[7]),
     );
     U2T::new(u1, -u2.conj(), u2, u1.conj(), k)
 }
@@ -303,8 +314,15 @@ fn trace_dump_pass(
     eprintln!(
         "[trace] lde={:>2} pass{} t'={:>2} prefixes={:>6} mat_uv_rej={:>6} \
          se_cb={:>9} budget={} {:>9.1}ms result={}",
-        t, pass, t_prime, s.prefixes, s.mat_to_uv_rejected, s.se_callbacks,
-        budget_hit as u8, pass_ms, if found { "FOUND" } else { "none" }
+        t,
+        pass,
+        t_prime,
+        s.prefixes,
+        s.mat_to_uv_rejected,
+        s.se_callbacks,
+        budget_hit as u8,
+        pass_ms,
+        if found { "FOUND" } else { "none" }
     );
     let phase_total = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
     if phase_total > 0.0 {
@@ -386,9 +404,7 @@ fn lll_aligned_search(
     // MPFR (rug) at adaptive precision in the LLL+Cholesky setup phase. The
     // SE step downcasts to f64. Scratch is reused across all prefixes within
     // one rayon worker via map_init in dc_search.
-    let sols = crate::synthesis::lattice::phase1(
-        scratch, &y, k, eps, max_phase2_calls, budget_hit,
-    );
+    let sols = crate::synthesis::lattice::phase1(scratch, &y, k, eps, max_phase2_calls, budget_hit);
     if max_solutions >= sols.len() {
         sols
     } else {
@@ -409,7 +425,7 @@ fn lll_aligned_search(
 ///   ε = 0.001→ threshold ≈ 24.9,  DC kicks in at t ≥ 25
 ///
 /// When ε ≥ 1 the threshold is 0 and DC never helps, so t' = 0.
-fn optimal_t_prime(t: u32, eps: Float) -> u32 {
+pub(crate) fn optimal_t_prime(t: u32, eps: Float) -> u32 {
     if eps >= 1.0 {
         return 0;
     }
@@ -434,6 +450,8 @@ pub struct SynthResultT {
     pub lde: u32,
     /// Diamond distance to the target.
     pub distance: Float,
+    /// Raw 8D lattice vector `(u, t)` selected by the successful search.
+    pub x: Option<[i64; 8]>,
 }
 
 // ─── Direct search branch tags ────────────────────────────────────────────────
@@ -500,7 +518,7 @@ impl SynthesizerT {
     /// the right tool and direct_limit stays small.
     pub fn new(epsilon: Float) -> Self {
         let (min_lde, max_lde) = if epsilon > 0.0 && epsilon < 1.0 {
-            let log2_recip  = (1.0 / epsilon).log2();
+            let log2_recip = (1.0 / epsilon).log2();
             let log10_recip = (1.0 / epsilon).log10();
             let coef = if log10_recip <= 4.0 {
                 1.5
@@ -517,7 +535,12 @@ impl SynthesizerT {
             (0, 50)
         };
         let direct_limit = if epsilon >= 1e-4 { 8 } else { 6 };
-        Self { epsilon, max_lde, min_lde, direct_limit }
+        Self {
+            epsilon,
+            max_lde,
+            min_lde,
+            direct_limit,
+        }
     }
 
     pub fn with_max_lde(mut self, max_lde: u32) -> Self {
@@ -589,11 +612,17 @@ impl SynthesizerT {
                 (t_dc_start..=horizon)
                     .filter_map(|t| {
                         let tp = optimal_t_prime(t, self.epsilon);
-                        if tp > 0 && seen.insert(tp) { Some(tp) } else { None }
+                        if tp > 0 && seen.insert(tp) {
+                            Some(tp)
+                        } else {
+                            None
+                        }
                     })
                     .collect()
             };
-            needed.into_par_iter().for_each(|tp| { build_l(tp); });
+            needed.into_par_iter().for_each(|tp| {
+                build_l(tp);
+            });
         }
 
         for t in t_dc_start..=self.max_lde {
@@ -639,7 +668,15 @@ impl SynthesizerT {
             let pass1_ms = t_start.elapsed().as_secs_f64() * 1000.0;
             if trace {
                 let s = crate::synthesis::diag::snapshot();
-                trace_dump_pass(t, optimal_t_prime(t, self.epsilon), 1, &s, budget_hit, pass1_ms, result.is_some());
+                trace_dump_pass(
+                    t,
+                    optimal_t_prime(t, self.epsilon),
+                    1,
+                    &s,
+                    budget_hit,
+                    pass1_ms,
+                    result.is_some(),
+                );
             }
             if result.is_some() {
                 return result;
@@ -657,7 +694,11 @@ impl SynthesizerT {
             if trace {
                 let s = crate::synthesis::diag::snapshot();
                 trace_dump_pass(
-                    t, optimal_t_prime(t, self.epsilon), 2, &s, budget_hit2,
+                    t,
+                    optimal_t_prime(t, self.epsilon),
+                    2,
+                    &s,
+                    budget_hit2,
                     t_start2.elapsed().as_secs_f64() * 1000.0,
                     result2.is_some(),
                 );
@@ -685,7 +726,8 @@ impl SynthesizerT {
         let eps = self.epsilon;
 
         // Pre-compute search directions for all 24 Clifford left-prefixes.
-        let clif_vs: Vec<[Float; 4]> = CLIFFORD_TABLE_T.iter()
+        let clif_vs: Vec<[Float; 4]> = CLIFFORD_TABLE_T
+            .iter()
             .map(|(_, c_u2t)| apply_u2t_dag_to_uv(c_u2t, v))
             .collect();
 
@@ -705,10 +747,7 @@ impl SynthesizerT {
         branches.par_iter().find_map_any(|(v_s, tag)| {
             for sol in aligned_search(*v_s, t, eps, 1) {
                 let (u2t, gates) = match tag {
-                    DirectBranch::Plain => (
-                        solution_to_u2t(&sol, t),
-                        solution_to_gates(&sol, t),
-                    ),
+                    DirectBranch::Plain => (solution_to_u2t(&sol, t), solution_to_gates(&sol, t)),
                     DirectBranch::T => (
                         solution_to_u2t(&sol, t) * U2T::t(),
                         solution_to_gates(&sol, t) + "T",
@@ -719,26 +758,34 @@ impl SynthesizerT {
                     ),
                     DirectBranch::ClifEven(i) => {
                         let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
-                        (*c_u2t * solution_to_u2t(&sol, t), solution_to_gates(&sol, t) + c_str)
-                    },
+                        (
+                            *c_u2t * solution_to_u2t(&sol, t),
+                            solution_to_gates(&sol, t) + c_str,
+                        )
+                    }
                     DirectBranch::ClifT(i) => {
                         let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
                         (
                             *c_u2t * solution_to_u2t(&sol, t) * U2T::t(),
                             solution_to_gates(&sol, t) + "T" + c_str,
                         )
-                    },
+                    }
                     DirectBranch::ClifTdg(i) => {
                         let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
                         (
                             *c_u2t * solution_to_u2t(&sol, t) * U2T::t().dagger(),
                             solution_to_gates(&sol, t) + "SSST" + c_str,
                         )
-                    },
+                    }
                 };
                 let dist = diamond_distance_u2t_float(&u2t, target);
                 if dist < eps {
-                    return Some(SynthResultT { gates: Some(gates), lde: t, distance: dist });
+                    return Some(SynthResultT {
+                        gates: Some(gates),
+                        lde: t,
+                        distance: dist,
+                        x: Some(sol),
+                    });
                 }
             }
             None
@@ -757,7 +804,13 @@ impl SynthesizerT {
     /// one phase1 invocation exhausted its SE-callback budget — the caller may want to
     /// retry at the same lde with a larger budget. If `false` and `solution` is `None`,
     /// the search was exhaustive at this lde and the caller should advance to lde+1.
-    fn dc_search(&self, target: &Mat2, v: [Float; 4], t: u32, max_phase2_calls: u64) -> (Option<SynthResultT>, bool) {
+    fn dc_search(
+        &self,
+        target: &Mat2,
+        v: [Float; 4],
+        t: u32,
+        max_phase2_calls: u64,
+    ) -> (Option<SynthResultT>, bool) {
         let eps = self.epsilon;
 
         // Compute t_prime: use the optimal split from Prop 3.13, but if that gives
@@ -845,7 +898,13 @@ impl SynthesizerT {
 
                     // Even inner branch: U_L · U_R ≈ target
                     for sol in lll_aligned_search(
-                        scratch, v_inner, k_inner, eps, 1, max_phase2_calls, &budget_hit,
+                        scratch,
+                        v_inner,
+                        k_inner,
+                        eps,
+                        1,
+                        max_phase2_calls,
+                        &budget_hit,
                     ) {
                         let u2t = *u_l * solution_to_u2t(&sol, k_inner);
                         let dist = diamond_distance_u2t_float(&u2t, target);
@@ -854,6 +913,7 @@ impl SynthesizerT {
                                 gates: Some(BlochDecomposer.decompose(&u2t)),
                                 lde: t,
                                 distance: dist,
+                                x: Some(sol),
                             });
                         }
                         crate::synthesis::diag::N_DIST_REJECTED
@@ -864,7 +924,13 @@ impl SynthesizerT {
                     if t_inner > 0 {
                         let v_inner_t = apply_t_dag_to_uv(v_inner);
                         for sol in lll_aligned_search(
-                            scratch, v_inner_t, k_inner, eps, 1, max_phase2_calls, &budget_hit,
+                            scratch,
+                            v_inner_t,
+                            k_inner,
+                            eps,
+                            1,
+                            max_phase2_calls,
+                            &budget_hit,
                         ) {
                             let u2t = *u_l * solution_to_u2t(&sol, k_inner) * U2T::t();
                             let dist = diamond_distance_u2t_float(&u2t, target);
@@ -873,6 +939,7 @@ impl SynthesizerT {
                                     gates: Some(BlochDecomposer.decompose(&u2t)),
                                     lde: t,
                                     distance: dist,
+                                    x: Some(sol),
                                 });
                             }
                             crate::synthesis::diag::N_DIST_REJECTED
@@ -886,7 +953,10 @@ impl SynthesizerT {
             .find_any(|r| r.is_some())
             .flatten();
 
-        (result, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
+        (
+            result,
+            budget_hit.load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 }
 
@@ -896,7 +966,7 @@ impl SynthesizerT {
 mod tests {
     use super::*;
     use crate::synthesis::distance::diamond_distance_float;
-    use std::{f64::consts::{FRAC_1_SQRT_2, PI}};
+    use std::f64::consts::{FRAC_1_SQRT_2, PI};
 
     fn rz(theta: Float) -> Mat2 {
         [
@@ -916,8 +986,14 @@ mod tests {
 
     fn mat_mul(a: Mat2, b: Mat2) -> Mat2 {
         [
-            [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
-            [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
+            [
+                a[0][0] * b[0][0] + a[0][1] * b[1][0],
+                a[0][0] * b[0][1] + a[0][1] * b[1][1],
+            ],
+            [
+                a[1][0] * b[0][0] + a[1][1] * b[1][0],
+                a[1][0] * b[0][1] + a[1][1] * b[1][1],
+            ],
         ]
     }
 
@@ -930,7 +1006,8 @@ mod tests {
         assert!(
             result.distance < eps,
             "distance={:.6e} ≥ epsilon={:.6e}",
-            result.distance, eps
+            result.distance,
+            eps
         );
     }
 
@@ -1087,7 +1164,10 @@ mod tests {
 
     #[test]
     fn test_synthesize_identity() {
-        let id: Mat2 = [[Complex::new(1., 0.), Complex::new(0., 0.)], [Complex::new(0., 0.), Complex::new(1., 0.)]];
+        let id: Mat2 = [
+            [Complex::new(1., 0.), Complex::new(0., 0.)],
+            [Complex::new(0., 0.), Complex::new(1., 0.)],
+        ];
         // with_min_lde(0): identity is a Clifford with exact solution at lde=0.
         let synth = SynthesizerT::new(0.01).with_min_lde(0);
         let result = synth.synthesize(id).expect("Should synthesize identity");
@@ -1145,7 +1225,9 @@ mod tests {
     fn test_synthesize_rz_moderate_2() {
         let target = rz(1.34);
         let synth = SynthesizerT::new(0.01);
-        let result = synth.synthesize(target).expect("Should synthesize Rz(1.34)");
+        let result = synth
+            .synthesize(target)
+            .expect("Should synthesize Rz(1.34)");
         println!("{:?}", result.gates);
         check_result(&result, &target, 0.01);
     }
@@ -1156,7 +1238,9 @@ mod tests {
         // Much faster than eps=0.001 which needs t~40.
         let target = rz(0.3);
         let synth = SynthesizerT::new(0.01);
-        let result = synth.synthesize(target).expect("Should synthesize Rz(0.3) at eps=0.01");
+        let result = synth
+            .synthesize(target)
+            .expect("Should synthesize Rz(0.3) at eps=0.01");
         println!("{:?}", result.gates);
         check_result(&result, &target, 0.01);
     }
@@ -1165,7 +1249,9 @@ mod tests {
     fn test_synthesize_rz_hard_2() {
         let target = rz(1.34);
         let synth = SynthesizerT::new(0.001);
-        let result = synth.synthesize(target).expect("Should synthesize Rz(1.34) at eps=0.01");
+        let result = synth
+            .synthesize(target)
+            .expect("Should synthesize Rz(1.34) at eps=0.01");
         println!("{:?}", result.gates);
 
         check_result(&result, &target, 0.01);
@@ -1189,10 +1275,16 @@ mod tests {
             let mut counts: Vec<u64> = vec![0; 64];
             for u in l.iter() {
                 let k = u.k as usize;
-                if k < counts.len() { counts[k] += 1; }
+                if k < counts.len() {
+                    counts[k] += 1;
+                }
             }
-            let mut k_min = u32::MAX; let mut k_max = 0;
-            for u in l.iter() { k_min = k_min.min(u.k); k_max = k_max.max(u.k); }
+            let mut k_min = u32::MAX;
+            let mut k_max = 0;
+            for u in l.iter() {
+                k_min = k_min.min(u.k);
+                k_max = k_max.max(u.k);
+            }
             eprintln!(
                 "  t'={t_prime:>2}  total={:>8}  k range [{k_min}, {k_max}]",
                 l.len()
@@ -1206,7 +1298,9 @@ mod tests {
             let mut counts: Vec<u64> = vec![0; 64];
             for u in l.iter() {
                 let k = u.k as usize;
-                if k < counts.len() { counts[k] += 1; }
+                if k < counts.len() {
+                    counts[k] += 1;
+                }
             }
             eprint!("  {t_prime:>2}  {:>8}", l.len());
             for &alpha in &[2.0_f64, 2.5, 3.0, 3.5, 4.0] {
@@ -1231,7 +1325,10 @@ mod tests {
         let target = rz(0.3);
         let eps = 0.01_f64;
         let synth = SynthesizerT::new(eps).with_max_lde(35);
-        assert!(optimal_t_prime(20, eps) > 0, "DC should fire at t=20 for eps=0.01");
+        assert!(
+            optimal_t_prime(20, eps) > 0,
+            "DC should fire at t=20 for eps=0.01"
+        );
         let result = synth.synthesize(target).expect("Should find a solution");
         check_result(&result, &target, eps);
         // Verify that a solution was found via DC (lde > direct_limit)
@@ -1275,7 +1372,7 @@ mod tests {
     /// tests above mostly cover axis-aligned rotations.
     #[test]
     fn test_synthesize_random_unitary() {
-        use rand::{SeedableRng, rngs::StdRng, Rng};
+        use rand::{rngs::StdRng, Rng, SeedableRng};
 
         let mut rng = StdRng::seed_from_u64(42);
         let eps = 0.001_f64;
@@ -1283,7 +1380,7 @@ mod tests {
         let theta: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
         let phi: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
         let lambda: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
-        
+
         let ct = (theta / 2.0).cos();
         let st = (theta / 2.0).sin();
 
@@ -1291,17 +1388,30 @@ mod tests {
         // Normalize to SU(2) by multiplying by e^{-i(φ+λ)/2}.
         let global_phase = Complex::from_polar(1.0, -(phi + lambda) / 2.0);
         let target: Mat2 = [
-            [global_phase * Complex::new(ct, 0.0), global_phase * (-Complex::from_polar(st, lambda))],
-            [global_phase * Complex::from_polar(st, phi), global_phase * Complex::from_polar(ct, phi + lambda)],
+            [
+                global_phase * Complex::new(ct, 0.0),
+                global_phase * (-Complex::from_polar(st, lambda)),
+            ],
+            [
+                global_phase * Complex::from_polar(st, phi),
+                global_phase * Complex::from_polar(ct, phi + lambda),
+            ],
         ];
         println!("Target unitary:\n{:?}", target);
 
         let synth = SynthesizerT::new(eps);
-        let result = synth.synthesize(target).expect("Should synthesize random unitary");
-        print!("Random unitary synthesis result: gates={:?}, lde={}, distance={:.6e}\n",
-            result.gates, result.lde, result.distance);
-        assert!(result.distance < eps,
-            "distance={:.6e} >= epsilon={:.6e}", result.distance, eps);
+        let result = synth
+            .synthesize(target)
+            .expect("Should synthesize random unitary");
+        print!(
+            "Random unitary synthesis result: gates={:?}, lde={}, distance={:.6e}\n",
+            result.gates, result.lde, result.distance
+        );
+        assert!(
+            result.distance < eps,
+            "distance={:.6e} >= epsilon={:.6e}",
+            result.distance,
+            eps
+        );
     }
-
 }

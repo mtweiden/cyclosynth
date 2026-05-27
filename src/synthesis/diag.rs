@@ -88,7 +88,9 @@ pub fn watch_path_match_at_depth(z: &[i64; 16], depth: i32) -> bool {
         if let Some(target) = guard.as_ref() {
             let d = depth.max(0) as usize;
             for j in d..16 {
-                if z[j] != target[j] { return false; }
+                if z[j] != target[j] {
+                    return false;
+                }
             }
             return true;
         }
@@ -247,22 +249,58 @@ pub static N_NODES_AT_FIRST_SOLUTION: AtomicU64 = AtomicU64::new(0);
 // pruning actually trims.
 
 pub static N_RECURSE_ENTER_AT_DEPTH: [AtomicU64; 16] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 pub static N_PRUNE_FIRES_AT_DEPTH: [AtomicU64; 16] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 pub static N_PRUNE_ACTUAL_AT_DEPTH: [AtomicU64; 16] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 
 // ─── Distance-to-shell histogram at leaves ────────────────────────────────────
@@ -279,8 +317,14 @@ pub static N_PRUNE_ACTUAL_AT_DEPTH: [AtomicU64; 16] = [
 //   7: r > 1.10        (far above; should not happen if prune is right)
 pub const N_SHELL_BINS: usize = 8;
 pub static N_LEAF_BY_SHELL_RATIO: [AtomicU64; 8] = [
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
 ];
 
 /// 2-D histogram: (depth-1 partial ratio p1/T, leaf shell ratio r).
@@ -290,14 +334,46 @@ pub static N_LEAF_BY_SHELL_RATIO: [AtomicU64; 8] = [
 /// shell-ratio bins.
 pub const N_D1_BINS: usize = 4;
 pub static N_LEAF_BY_D1_AND_SHELL: [[AtomicU64; 8]; 4] = [
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
-     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)],
+    [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ],
+    [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ],
+    [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ],
+    [
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+        AtomicU64::new(0),
+    ],
 ];
 
 thread_local! {
@@ -308,22 +384,36 @@ thread_local! {
 
 #[inline]
 fn shell_bin(r: f64) -> usize {
-    if r <= 0.50 { 0 }
-    else if r <= 0.90 { 1 }
-    else if r <= 0.99 { 2 }
-    else if r < 1.00  { 3 }
-    else if r == 1.00 { 4 }
-    else if r <= 1.01 { 5 }
-    else if r <= 1.10 { 6 }
-    else { 7 }
+    if r <= 0.50 {
+        0
+    } else if r <= 0.90 {
+        1
+    } else if r <= 0.99 {
+        2
+    } else if r < 1.00 {
+        3
+    } else if r == 1.00 {
+        4
+    } else if r <= 1.01 {
+        5
+    } else if r <= 1.10 {
+        6
+    } else {
+        7
+    }
 }
 
 #[inline]
 fn d1_bin(p_over_t: f64) -> usize {
-    if p_over_t < 0.5 { 0 }
-    else if p_over_t < 0.9 { 1 }
-    else if p_over_t < 0.99 { 2 }
-    else { 3 } // 0.99..=1.0 (or above, but pruned at higher depths)
+    if p_over_t < 0.5 {
+        0
+    } else if p_over_t < 0.9 {
+        1
+    } else if p_over_t < 0.99 {
+        2
+    } else {
+        3
+    } // 0.99..=1.0 (or above, but pruned at higher depths)
 }
 
 #[inline]
@@ -367,10 +457,24 @@ pub static SAMPLE_ARMED: AtomicBool = AtomicBool::new(false);
 const MAX_PER_BIN: usize = 1000;
 
 pub fn arm_sampling() {
-    for v in [&SAMPLES_BIN_0, &SAMPLES_BIN_1, &SAMPLES_BIN_2, &SAMPLES_BIN_3, &SAMPLES_BIN_4] {
-        if let Ok(mut g) = v.lock() { g.clear(); }
+    for v in [
+        &SAMPLES_BIN_0,
+        &SAMPLES_BIN_1,
+        &SAMPLES_BIN_2,
+        &SAMPLES_BIN_3,
+        &SAMPLES_BIN_4,
+    ] {
+        if let Ok(mut g) = v.lock() {
+            g.clear();
+        }
     }
-    for f in [&BIN_FULL_0, &BIN_FULL_1, &BIN_FULL_2, &BIN_FULL_3, &BIN_FULL_4] {
+    for f in [
+        &BIN_FULL_0,
+        &BIN_FULL_1,
+        &BIN_FULL_2,
+        &BIN_FULL_3,
+        &BIN_FULL_4,
+    ] {
         f.store(false, Ordering::Relaxed);
     }
     SAMPLE_ARMED.store(true, Ordering::Release);
@@ -378,16 +482,24 @@ pub fn arm_sampling() {
 
 #[inline]
 fn bin_of(ratio: f64) -> usize {
-    if ratio < 1.05 { 0 }
-    else if ratio < 1.5 { 1 }
-    else if ratio < 2.0 { 2 }
-    else if ratio < 5.0 { 3 }
-    else { 4 }
+    if ratio < 1.05 {
+        0
+    } else if ratio < 1.5 {
+        1
+    } else if ratio < 2.0 {
+        2
+    } else if ratio < 5.0 {
+        3
+    } else {
+        4
+    }
 }
 
 #[inline]
 pub fn sample_prune_event(depth: i32, z: &[i64; 16], f64_partial: f64, threshold: f64) {
-    if !SAMPLE_ARMED.load(Ordering::Relaxed) { return; }
+    if !SAMPLE_ARMED.load(Ordering::Relaxed) {
+        return;
+    }
     let ratio = f64_partial / threshold;
     let bin = bin_of(ratio);
     let (full, samples) = match bin {
@@ -397,10 +509,17 @@ pub fn sample_prune_event(depth: i32, z: &[i64; 16], f64_partial: f64, threshold
         3 => (&BIN_FULL_3, &SAMPLES_BIN_3),
         _ => (&BIN_FULL_4, &SAMPLES_BIN_4),
     };
-    if full.load(Ordering::Relaxed) { return; }
+    if full.load(Ordering::Relaxed) {
+        return;
+    }
     if let Ok(mut v) = samples.lock() {
         if v.len() < MAX_PER_BIN {
-            v.push(PruneSample { depth, z: *z, f64_partial, threshold });
+            v.push(PruneSample {
+                depth,
+                z: *z,
+                f64_partial,
+                threshold,
+            });
             if v.len() >= MAX_PER_BIN {
                 full.store(true, Ordering::Release);
             }
@@ -410,7 +529,13 @@ pub fn sample_prune_event(depth: i32, z: &[i64; 16], f64_partial: f64, threshold
 
 pub fn collect_all_samples() -> Vec<PruneSample> {
     let mut all = Vec::new();
-    for v in [&SAMPLES_BIN_0, &SAMPLES_BIN_1, &SAMPLES_BIN_2, &SAMPLES_BIN_3, &SAMPLES_BIN_4] {
+    for v in [
+        &SAMPLES_BIN_0,
+        &SAMPLES_BIN_1,
+        &SAMPLES_BIN_2,
+        &SAMPLES_BIN_3,
+        &SAMPLES_BIN_4,
+    ] {
         if let Ok(g) = v.lock() {
             all.extend(g.iter().copied());
         }
@@ -499,7 +624,8 @@ pub fn reset_all() {
     ] {
         c.store(0, Ordering::Relaxed);
     }
-    for c in N_RECURSE_ENTER_AT_DEPTH.iter()
+    for c in N_RECURSE_ENTER_AT_DEPTH
+        .iter()
         .chain(N_PRUNE_FIRES_AT_DEPTH.iter())
         .chain(N_PRUNE_ACTUAL_AT_DEPTH.iter())
         .chain(N_LEAF_BY_SHELL_RATIO.iter())
@@ -570,12 +696,19 @@ pub fn snapshot() -> Snapshot {
 pub fn dump_zeta(s: &Snapshot, label: &str) {
     let total_se = s.norm_rejected + s.bilinear_rejected + s.align_rejected + s.sols_returned;
     let pct = |x: u64| -> f64 {
-        if total_se > 0 { 100.0 * x as f64 / total_se as f64 } else { 0.0 }
+        if total_se > 0 {
+            100.0 * x as f64 / total_se as f64
+        } else {
+            0.0
+        }
     };
-    let stage_total =
-        s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
+    let stage_total = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
     let pct_t = |x: f64| -> f64 {
-        if stage_total > 0.0 { 100.0 * x / stage_total } else { 0.0 }
+        if stage_total > 0.0 {
+            100.0 * x / stage_total
+        } else {
+            0.0
+        }
     };
     eprintln!("─── [zeta diag {label}] ───────────────────────────────");
     eprintln!(
@@ -590,25 +723,49 @@ pub fn dump_zeta(s: &Snapshot, label: &str) {
     );
     eprintln!(
         "    norm_reject:   {:>13}  ({:>5.1}%)",
-        s.norm_rejected, pct(s.norm_rejected),
+        s.norm_rejected,
+        pct(s.norm_rejected),
     );
     eprintln!(
         "    bilin_reject:  {:>13}  ({:>5.1}%)",
-        s.bilinear_rejected, pct(s.bilinear_rejected),
+        s.bilinear_rejected,
+        pct(s.bilinear_rejected),
     );
     eprintln!(
         "    align_reject:  {:>13}  ({:>5.1}%)",
-        s.align_rejected, pct(s.align_rejected),
+        s.align_rejected,
+        pct(s.align_rejected),
     );
     eprintln!(
         "    sols:          {:>13}  ({:>5.1}%)",
-        s.sols_returned, pct(s.sols_returned),
+        s.sols_returned,
+        pct(s.sols_returned),
     );
     eprintln!("  per-stage time (ms):");
-    eprintln!("    build_q:   {:>10.1}  ({:>5.1}%)", s.t_build_ms, pct_t(s.t_build_ms));
-    eprintln!("    lll:       {:>10.1}  ({:>5.1}%)", s.t_lll_ms, pct_t(s.t_lll_ms));
-    eprintln!("    cholesky:  {:>10.1}  ({:>5.1}%)", s.t_cholesky_ms, pct_t(s.t_cholesky_ms));
-    eprintln!("    lu_solve:  {:>10.1}  ({:>5.1}%)", s.t_lu_ms, pct_t(s.t_lu_ms));
-    eprintln!("    se_walk:   {:>10.1}  ({:>5.1}%)  (incl. leaf checks)", s.t_se_ms, pct_t(s.t_se_ms));
+    eprintln!(
+        "    build_q:   {:>10.1}  ({:>5.1}%)",
+        s.t_build_ms,
+        pct_t(s.t_build_ms)
+    );
+    eprintln!(
+        "    lll:       {:>10.1}  ({:>5.1}%)",
+        s.t_lll_ms,
+        pct_t(s.t_lll_ms)
+    );
+    eprintln!(
+        "    cholesky:  {:>10.1}  ({:>5.1}%)",
+        s.t_cholesky_ms,
+        pct_t(s.t_cholesky_ms)
+    );
+    eprintln!(
+        "    lu_solve:  {:>10.1}  ({:>5.1}%)",
+        s.t_lu_ms,
+        pct_t(s.t_lu_ms)
+    );
+    eprintln!(
+        "    se_walk:   {:>10.1}  ({:>5.1}%)  (incl. leaf checks)",
+        s.t_se_ms,
+        pct_t(s.t_se_ms)
+    );
     eprintln!("─────────────────────────────────────────────────────");
 }

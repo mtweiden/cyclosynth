@@ -22,18 +22,18 @@
 //!     `R_p(a·π/8)` for `p ∈ {x,y,z}, a ∈ {1,2,3}` per step. By
 //!     Theorem 4.1(c) the optimal `(p, a)` is unique while `max_exp > 0`.
 
-use std::fmt::Debug;
-use std::ops::{Mul, Sub};
-use crate::rings::{ZOmega, ZZeta, ZOmicron};
-use crate::rings::types::INT_ZERO;
-use crate::matrix::so3::{SO3, SO3T, SO3Q, SO3Omicron, SO3Ops, R2, R4, Ratio};
-use crate::matrix::u2::{U2, U2T, U2Q, RingElem};
+use crate::matrix::so3::{Ratio, SO3Omicron, SO3Ops, R2, R4, SO3, SO3Q, SO3T};
 #[cfg(feature = "python")]
 use crate::matrix::u2::{PyU2, U2Variant};
-use crate::matrix::{rz_pos, rx_pos, ry_pos, rz_pos_q, rx_pos_q, ry_pos_q};
-use crate::matrix::{rz_neg, rx_neg, ry_neg, rz_neg_q, rx_neg_q, ry_neg_q};
-use crate::matrix::{rz_pos_o, rx_pos_o, ry_pos_o, rz_neg_o, rx_neg_o, ry_neg_o};
+use crate::matrix::u2::{RingElem, U2, U2Q, U2T};
+use crate::matrix::{rx_neg, rx_neg_q, ry_neg, ry_neg_q, rz_neg, rz_neg_q};
+use crate::matrix::{rx_neg_o, rx_pos_o, ry_neg_o, ry_pos_o, rz_neg_o, rz_pos_o};
+use crate::matrix::{rx_pos, rx_pos_q, ry_pos, ry_pos_q, rz_pos, rz_pos_q};
+use crate::rings::types::INT_ZERO;
+use crate::rings::{ZOmega, ZOmicron, ZZeta};
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
+use std::fmt::Debug;
+use std::ops::{Mul, Sub};
 
 // ─── GateRing trait ───────────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 /// Implemented by `ZOmega` (→ Clifford+T) and `ZZeta` (→ Clifford+√T).
 /// Having this on the ring type means `U2<R>` automatically determines
 /// the SO3 representation, rotation generators, and Clifford table lookup.
-pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self>{
+pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self> {
     /// SO(3) matrix type for this gate set (`SO3T` or `SO3Q`).
     type SO3: SO3Ops + Debug;
 
@@ -89,20 +89,38 @@ pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self>{
 impl GateRing for ZOmega {
     type SO3 = SO3T;
 
-    fn so3_from_u2(u: &U2<Self>) -> SO3T { SO3T::from_u2(u) }
-    fn rz_pos() -> SO3T { rz_pos() }
-    fn rx_pos() -> SO3T { rx_pos() }
-    fn ry_pos() -> SO3T { ry_pos() }
-    fn rz_neg() -> SO3T { rz_neg() }
-    fn rx_neg() -> SO3T { rx_neg() }
-    fn ry_neg() -> SO3T { ry_neg() }
+    fn so3_from_u2(u: &U2<Self>) -> SO3T {
+        SO3T::from_u2(u)
+    }
+    fn rz_pos() -> SO3T {
+        rz_pos()
+    }
+    fn rx_pos() -> SO3T {
+        rx_pos()
+    }
+    fn ry_pos() -> SO3T {
+        ry_pos()
+    }
+    fn rz_neg() -> SO3T {
+        rz_neg()
+    }
+    fn rx_neg() -> SO3T {
+        rx_neg()
+    }
+    fn ry_neg() -> SO3T {
+        ry_neg()
+    }
 
-    fn rx_pos_u2() -> U2T { U2T::h() * U2T::t() * U2T::h() }
+    fn rx_pos_u2() -> U2T {
+        U2T::h() * U2T::t() * U2T::h()
+    }
     fn ry_pos_u2() -> U2T {
         // Ry(π/4) = S · Rx(π/4) · S†
         U2T::s() * U2T::h() * U2T::t() * U2T::h() * U2T::s().dagger()
     }
-    fn rz_pos_u2() -> U2T { U2T::t() }
+    fn rz_pos_u2() -> U2T {
+        U2T::t()
+    }
 
     fn identify_clifford(residual: &SO3T) -> Option<&'static str> {
         CLIFFORD_TABLE_T
@@ -135,7 +153,9 @@ impl GateRing for ZOmega {
             .map(|(name, _)| name)
     }
 
-    fn magic_gate_name() -> &'static str { "T" }
+    fn magic_gate_name() -> &'static str {
+        "T"
+    }
 
     fn decompose_target(target: &U2<Self>) -> String {
         decompose_so3::<Self>(target)
@@ -150,7 +170,10 @@ impl GateRing for ZOmega {
 fn embed_so3t_in_so3q(m: &SO3T) -> SO3Q {
     let e: [Ratio<R4>; 9] = std::array::from_fn(|i| {
         let R2(a, b) = m.e[i].num;
-        Ratio { num: R4(a, b, INT_ZERO, INT_ZERO), exp: m.e[i].exp }
+        Ratio {
+            num: R4(a, b, INT_ZERO, INT_ZERO),
+            exp: m.e[i].exp,
+        }
     });
     SO3 { e }
 }
@@ -158,20 +181,38 @@ fn embed_so3t_in_so3q(m: &SO3T) -> SO3Q {
 impl GateRing for ZZeta {
     type SO3 = SO3Q;
 
-    fn so3_from_u2(u: &U2<Self>) -> SO3Q { SO3Q::from_u2(u) }
-    fn rz_pos() -> SO3Q { rz_pos_q() }
-    fn rx_pos() -> SO3Q { rx_pos_q() }
-    fn ry_pos() -> SO3Q { ry_pos_q() }
-    fn rz_neg() -> SO3Q { rz_neg_q() }
-    fn rx_neg() -> SO3Q { rx_neg_q() }
-    fn ry_neg() -> SO3Q { ry_neg_q() }
+    fn so3_from_u2(u: &U2<Self>) -> SO3Q {
+        SO3Q::from_u2(u)
+    }
+    fn rz_pos() -> SO3Q {
+        rz_pos_q()
+    }
+    fn rx_pos() -> SO3Q {
+        rx_pos_q()
+    }
+    fn ry_pos() -> SO3Q {
+        ry_pos_q()
+    }
+    fn rz_neg() -> SO3Q {
+        rz_neg_q()
+    }
+    fn rx_neg() -> SO3Q {
+        rx_neg_q()
+    }
+    fn ry_neg() -> SO3Q {
+        ry_neg_q()
+    }
 
-    fn rx_pos_u2() -> U2Q { U2Q::h() * U2Q::q() * U2Q::h() }
+    fn rx_pos_u2() -> U2Q {
+        U2Q::h() * U2Q::q() * U2Q::h()
+    }
     fn ry_pos_u2() -> U2Q {
         // Ry(π/4) = S · Rx(π/4) · S†
         U2Q::s() * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s().dagger()
     }
-    fn rz_pos_u2() -> U2Q { U2Q::q() }
+    fn rz_pos_u2() -> U2Q {
+        U2Q::q()
+    }
 
     fn identify_clifford(residual: &SO3Q) -> Option<&'static str> {
         CLIFFORD_TABLE_T
@@ -207,7 +248,9 @@ impl GateRing for ZZeta {
             .map(|(name, _)| name)
     }
 
-    fn magic_gate_name() -> &'static str { "Q" }
+    fn magic_gate_name() -> &'static str {
+        "Q"
+    }
 
     fn decompose_target(target: &U2<Self>) -> String {
         decompose_so3_canonical_q(target)
@@ -219,17 +262,37 @@ impl GateRing for ZZeta {
 impl GateRing for ZOmicron {
     type SO3 = SO3Omicron;
 
-    fn so3_from_u2(u: &U2<Self>) -> SO3Omicron { SO3Omicron::from_u2(u) }
-    fn rz_pos() -> SO3Omicron { rz_pos_o() }
-    fn rx_pos() -> SO3Omicron { rx_pos_o() }
-    fn ry_pos() -> SO3Omicron { ry_pos_o() }
-    fn rz_neg() -> SO3Omicron { rz_neg_o() }
-    fn rx_neg() -> SO3Omicron { rx_neg_o() }
-    fn ry_neg() -> SO3Omicron { ry_neg_o() }
+    fn so3_from_u2(u: &U2<Self>) -> SO3Omicron {
+        SO3Omicron::from_u2(u)
+    }
+    fn rz_pos() -> SO3Omicron {
+        rz_pos_o()
+    }
+    fn rx_pos() -> SO3Omicron {
+        rx_pos_o()
+    }
+    fn ry_pos() -> SO3Omicron {
+        ry_pos_o()
+    }
+    fn rz_neg() -> SO3Omicron {
+        rz_neg_o()
+    }
+    fn rx_neg() -> SO3Omicron {
+        rx_neg_o()
+    }
+    fn ry_neg() -> SO3Omicron {
+        ry_neg_o()
+    }
 
     /// R gate = diag(1, ξ) = [[1,0],[0,ξ]], the Rz(π/6) magic gate.
     fn rz_pos_u2() -> U2<ZOmicron> {
-        U2::new(ZOmicron::ONE, ZOmicron::ZERO, ZOmicron::ZERO, ZOmicron::XI, 0)
+        U2::new(
+            ZOmicron::ONE,
+            ZOmicron::ZERO,
+            ZOmicron::ZERO,
+            ZOmicron::XI,
+            0,
+        )
     }
     fn rx_pos_u2() -> U2<ZOmicron> {
         U2::<ZOmicron>::h() * Self::rz_pos_u2() * U2::<ZOmicron>::h()
@@ -264,7 +327,7 @@ impl GateRing for ZOmicron {
                         'X' => U2::<ZOmicron>::x(),
                         'Y' => U2::<ZOmicron>::y(),
                         'Z' => U2::<ZOmicron>::z(),
-                        _   => U2::eye(),
+                        _ => U2::eye(),
                     }
                 });
                 (*name, gate_u.diamond_distance(u))
@@ -274,7 +337,9 @@ impl GateRing for ZOmicron {
             .map(|(name, _)| name)
     }
 
-    fn magic_gate_name() -> &'static str { "R" }
+    fn magic_gate_name() -> &'static str {
+        "R"
+    }
 
     fn decompose_target(target: &U2<Self>) -> String {
         decompose_so3_canonical_n6(target)
@@ -298,24 +363,26 @@ impl GateRing for ZOmicron {
 fn clifford_u2t_to_u2_omicron(u: &U2T) -> U2<ZOmicron> {
     // Float conversion then scale by √2^k and round to ZOmicron integers.
     // Clifford entries are small (coefficients ≤ 2), so this is exact.
-    let scale = (1u64 << u.k) as f64;  // 2^k (not √2^k — we want integer coords)
+    let scale = (1u64 << u.k) as f64; // 2^k (not √2^k — we want integer coords)
     let entries = [u.u11, u.u12, u.u21, u.u22];
     let convert = |z: crate::rings::ZOmega| -> ZOmicron {
-        let c = z.to_complex() * scale.sqrt();  // this is the integer numerator as complex
-        // Represent c as ZOmicron by matching to a 12th-root-of-unity linear combination.
-        // c = a + b*xi + c2*xi^2 + d*xi^3, solve via:
-        //   Re(c) = a + b*(√3/2) + c2*(1/2)
-        //   Im(c) = b*(1/2) + c2*(√3/2) + d
-        // with a,b,c2,d ∈ Z. For Clifford entries, all coords are small integers.
+        let c = z.to_complex() * scale.sqrt(); // this is the integer numerator as complex
+                                               // Represent c as ZOmicron by matching to a 12th-root-of-unity linear combination.
+                                               // c = a + b*xi + c2*xi^2 + d*xi^3, solve via:
+                                               //   Re(c) = a + b*(√3/2) + c2*(1/2)
+                                               //   Im(c) = b*(1/2) + c2*(√3/2) + d
+                                               // with a,b,c2,d ∈ Z. For Clifford entries, all coords are small integers.
         let re = c.re;
         let im = c.im;
         // Try all combinations of (a,b,c2,d) ∈ {-2..=2}^4
         for a in -2i32..=2 {
             for b in -2i32..=2 {
                 for c2 in -2i32..=2 {
-                    let d_f = im - (b as f64) * 0.5 - (c2 as f64) * (3.0f64.sqrt()/2.0);
+                    let d_f = im - (b as f64) * 0.5 - (c2 as f64) * (3.0f64.sqrt() / 2.0);
                     let d = d_f.round() as i32;
-                    if (d_f - d as f64).abs() > 0.01 { continue; }
+                    if (d_f - d as f64).abs() > 0.01 {
+                        continue;
+                    }
                     let z_test = ZOmicron::from_i32(a, b, c2, d);
                     let re_test = z_test.to_complex().re;
                     let im_test = z_test.to_complex().im;
@@ -325,9 +392,15 @@ fn clifford_u2t_to_u2_omicron(u: &U2T) -> U2<ZOmicron> {
                 }
             }
         }
-        ZOmicron::ZERO  // should never happen for valid Clifford entries
+        ZOmicron::ZERO // should never happen for valid Clifford entries
     };
-    U2::new(convert(entries[0]), convert(entries[1]), convert(entries[2]), convert(entries[3]), u.k)
+    U2::new(
+        convert(entries[0]),
+        convert(entries[1]),
+        convert(entries[2]),
+        convert(entries[3]),
+        u.k,
+    )
 }
 
 // ─── BlochDecomposer ─────────────────────────────────────────────────────────
@@ -340,7 +413,9 @@ fn clifford_u2t_to_u2_omicron(u: &U2T) -> U2<ZOmicron> {
 pub struct BlochDecomposer;
 
 impl BlochDecomposer {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     /// Decompose an exact unitary into a gate string.
     ///
@@ -419,15 +494,15 @@ fn translate(raw: &str, magic: &str) -> String {
 /// `R_p(a·π/8)` for `p ∈ {x,y,z}, a ∈ {1,2,3}` and picks the (unique, by
 /// Theorem 4.1(c)) argmin in `max_exp`.
 fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
-    let rz = R::rz_neg();   // negative generators guarantee progress
+    let rz = R::rz_neg(); // negative generators guarantee progress
     let rx = R::rx_neg();
     let ry = R::ry_neg();
-    let rx_u2 = R::rx_pos_u2();  // positive U2 rotations (peeled steps)
+    let rx_u2 = R::rx_pos_u2(); // positive U2 rotations (peeled steps)
     let ry_u2 = R::ry_pos_u2();
     let rz_u2 = R::rz_pos_u2();
 
     let mut raw = String::new();
-    let mut so3 = R::so3_from_u2(target);  // start from SO3(target), not SO3(target†)
+    let mut so3 = R::so3_from_u2(target); // start from SO3(target), not SO3(target†)
     let mut p_output_u2 = U2::<R>::eye();
     // For SO3T (Clifford+T) max_exp counts T-count, so each peel reduces by 1
     // and `max_steps = max_exp` is a tight bound. For SO3Q (Clifford+√T) the
@@ -443,11 +518,16 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
     let max_steps = (so3.max_exp() as usize) * 4 + 32;
 
     for _ in 0..max_steps {
-        if so3.max_exp() == 0 { break; }
+        if so3.max_exp() == 0 {
+            break;
+        }
 
-        let mut rx_r = so3.clone(); rx_r.left_mul(&rx);
-        let mut ry_r = so3.clone(); ry_r.left_mul(&ry);
-        let mut rz_r = so3.clone(); rz_r.left_mul(&rz);
+        let mut rx_r = so3.clone();
+        rx_r.left_mul(&rx);
+        let mut ry_r = so3.clone();
+        ry_r.left_mul(&ry);
+        let mut rz_r = so3.clone();
+        rz_r.left_mul(&rz);
 
         let ex = rx_r.max_exp();
         let ey = ry_r.max_exp();
@@ -456,7 +536,7 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
 
         if ex == best {
             so3 = rx_r;
-            p_output_u2 = p_output_u2 * rx_u2;   // right-accumulate: p = rx_1*...*rx_k
+            p_output_u2 = p_output_u2 * rx_u2; // right-accumulate: p = rx_1*...*rx_k
             raw.push('x');
         } else if ey == best {
             so3 = ry_r;
@@ -468,7 +548,9 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
             raw.push('z');
         }
 
-        if best == 0 { break; }
+        if best == 0 {
+            break;
+        }
     }
 
     // After N steps: target = rx_pos_1 * ... * rx_pos_N * gate_c = p_output_u2 * gate_c
@@ -512,15 +594,15 @@ fn canonical_candidates_o() -> Vec<CanonicalCandidateO> {
         so3_axis_neg.iter().zip(u2_axis_pos.iter()).enumerate()
     {
         let mut cur_so3 = SO3Omicron::identity();
-        let mut cur_u2  = U2::<ZOmicron>::eye();
+        let mut cur_u2 = U2::<ZOmicron>::eye();
         for a in 1..=5u8 {
             cur_so3 = so3_step_neg.clone() * cur_so3;
-            cur_u2  = cur_u2 * *u2_step_pos;
+            cur_u2 = cur_u2 * *u2_step_pos;
             out.push(CanonicalCandidateO {
                 axis: axis_idx as u8,
                 a,
                 so3_neg: cur_so3.clone(),
-                u2_pos:  cur_u2,
+                u2_pos: cur_u2,
             });
         }
     }
@@ -579,7 +661,9 @@ pub fn decompose_so3_canonical_n6(target: &U2<ZOmicron>) -> String {
     let mut raw_segments: Vec<String> = Vec::new();
 
     for _ in 0..max_steps {
-        if so3.max_exp() == 0 { break; }
+        if so3.max_exp() == 0 {
+            break;
+        }
 
         let mut best_idx: usize = 0;
         let mut best_so3 = so3.clone();
@@ -602,7 +686,9 @@ pub fn decompose_so3_canonical_n6(target: &U2<ZOmicron>) -> String {
         p_output_u2 = p_output_u2 * cand.u2_pos;
         raw_segments.push(canonical_segment_string_n6(cand.axis, cand.a));
 
-        if best_exp == 0 { break; }
+        if best_exp == 0 {
+            break;
+        }
     }
 
     let gate_c = p_output_u2.dagger() * *target;
@@ -655,11 +741,7 @@ struct CanonicalCandidate {
 fn canonical_candidates() -> Vec<CanonicalCandidate> {
     let mut out = Vec::with_capacity(9);
     let so3_axis_neg = [rx_neg_q(), ry_neg_q(), rz_neg_q()];
-    let u2_axis_pos: [U2Q; 3] = [
-        ZZeta::rx_pos_u2(),
-        ZZeta::ry_pos_u2(),
-        ZZeta::rz_pos_u2(),
-    ];
+    let u2_axis_pos: [U2Q; 3] = [ZZeta::rx_pos_u2(), ZZeta::ry_pos_u2(), ZZeta::rz_pos_u2()];
     for (axis_idx, (so3_step_neg, u2_step_pos)) in
         so3_axis_neg.iter().zip(u2_axis_pos.iter()).enumerate()
     {
@@ -710,7 +792,9 @@ pub(crate) fn canonical_form_axes_q_float(
         for r in 0..3 {
             for c in 0..3 {
                 let v = m[r][c].abs();
-                if v > best { best = v; }
+                if v > best {
+                    best = v;
+                }
             }
         }
         best
@@ -721,7 +805,9 @@ pub(crate) fn canonical_form_axes_q_float(
         for i in 0..3 {
             for j in 0..3 {
                 let mut s = 0.0_f64;
-                for k in 0..3 { s += a[i][k] * b[k][j]; }
+                for k in 0..3 {
+                    s += a[i][k] * b[k][j];
+                }
                 out[i][j] = s;
             }
         }
@@ -753,7 +839,9 @@ pub(crate) fn canonical_form_axes_q_float(
         }
         *so3 = best_so3;
         out.push(cand_meta[best_idx]);
-        if best_norm <= STOP_THRESHOLD { break; }
+        if best_norm <= STOP_THRESHOLD {
+            break;
+        }
     }
     out
 }
@@ -861,9 +949,9 @@ fn decompose_so3_canonical_q(target: &U2Q) -> String {
 fn canonical_segment_string(axis: u8, a: u8) -> String {
     let q_run: String = "Q".repeat(a as usize);
     match axis {
-        0 => format!("H{q_run}H"),       // x: R_x(a·π/8) = H · Q^a · H
-        1 => format!("SH{q_run}HSSS"),   // y: R_y(a·π/8) = S · H · Q^a · H · S†
-        2 => q_run,                       // z: R_z(a·π/8) = Q^a
+        0 => format!("H{q_run}H"),     // x: R_x(a·π/8) = H · Q^a · H
+        1 => format!("SH{q_run}HSSS"), // y: R_y(a·π/8) = S · H · Q^a · H · S†
+        2 => q_run,                    // z: R_z(a·π/8) = Q^a
         _ => unreachable!(),
     }
 }
@@ -912,14 +1000,16 @@ pub struct PyBlochDecomposer;
 #[pymethods]
 impl PyBlochDecomposer {
     #[new]
-    fn new() -> Self { Self }
+    fn new() -> Self {
+        Self
+    }
 
     /// Decompose a unitary into a gate string.
     /// Accepts U2(ZOmega) → {H, S, T} or U2(ZZeta) → {H, S, T, Q}.
     fn decompose(&self, u: pyo3::PyRef<'_, PyU2>) -> String {
         match u.to_inner() {
             U2Variant::Omega(u2t) => BlochDecomposer.decompose(u2t),
-            U2Variant::Zeta(u2q)  => BlochDecomposer.decompose(u2q),
+            U2Variant::Zeta(u2q) => BlochDecomposer.decompose(u2q),
         }
     }
 }
@@ -929,22 +1019,24 @@ impl PyBlochDecomposer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::Rng;
     use crate::rings::ZOmega;
     use num_complex::Complex64;
+    use rand::Rng;
     use std::f64::consts::FRAC_1_SQRT_2;
 
     // ── Exact SO3T construction from gate characters (test-only) ─────────────
 
     fn gate_to_u2t(ch: char) -> U2T {
         let u = match ch {
-            'H' => { U2T::h() }
-            'S' => { U2T::s() }
-            'T' => { U2T::t() }
-            'Z' => { U2T::z() }
-            'X' => { U2T::x() }
-            'Y' => { U2T::y() }
-            _ => { panic!("Invalid gate character: {ch}"); }
+            'H' => U2T::h(),
+            'S' => U2T::s(),
+            'T' => U2T::t(),
+            'Z' => U2T::z(),
+            'X' => U2T::x(),
+            'Y' => U2T::y(),
+            _ => {
+                panic!("Invalid gate character: {ch}");
+            }
         };
         u
     }
@@ -956,7 +1048,7 @@ mod tests {
             let g = gate_to_u2t(ch);
             u = u * g;
         }
-       u
+        u
     }
 
     /// Decompose a gate string via exact SO3T.
@@ -991,8 +1083,7 @@ mod tests {
     // ── Tests ─────────────────────────────────────────────────────────────────
 
     #[test]
-    fn test_cliffords() {
-    }
+    fn test_cliffords() {}
 
     #[test]
     fn test_sdg_gate() {
@@ -1036,9 +1127,11 @@ mod tests {
         let decomp = decompose_from_gates_t(gates);
         let u1 = gates_to_u2t(gates);
         let u2 = gates_to_u2t(&decomp);
-        assert!(u1.diamond_distance(&u2) < 1e-10,
+        assert!(
+            u1.diamond_distance(&u2) < 1e-10,
             "decomp: input=\"{gates}\" → \"{decomp}\", dist={:.3e}",
-            u1.diamond_distance(&u2));
+            u1.diamond_distance(&u2)
+        );
     }
 
     /// Debug: print gate_c details for the 5-T circuit.
@@ -1059,61 +1152,98 @@ mod tests {
         let max_steps = so3.max_exp() as usize;
 
         for _ in 0..max_steps {
-            if so3.max_exp() == 0 { break; }
-            let mut rx_r = so3.clone(); rx_r.left_mul(&rx);
-            let mut ry_r = so3.clone(); ry_r.left_mul(&ry);
-            let mut rz_r = so3.clone(); rz_r.left_mul(&rz);
+            if so3.max_exp() == 0 {
+                break;
+            }
+            let mut rx_r = so3.clone();
+            rx_r.left_mul(&rx);
+            let mut ry_r = so3.clone();
+            ry_r.left_mul(&ry);
+            let mut rz_r = so3.clone();
+            rz_r.left_mul(&rz);
             let ex = rx_r.max_exp();
             let ey = ry_r.max_exp();
             let ez = rz_r.max_exp();
             let best = ex.min(ey).min(ez);
-            if ex == best { so3 = rx_r; p_output_u2 = p_output_u2 * rx_u2; }
-            else if ey == best { so3 = ry_r; p_output_u2 = p_output_u2 * ry_u2; }
-            else { so3 = rz_r; p_output_u2 = p_output_u2 * rz_u2; }
-            if best == 0 { break; }
+            if ex == best {
+                so3 = rx_r;
+                p_output_u2 = p_output_u2 * rx_u2;
+            } else if ey == best {
+                so3 = ry_r;
+                p_output_u2 = p_output_u2 * ry_u2;
+            } else {
+                so3 = rz_r;
+                p_output_u2 = p_output_u2 * rz_u2;
+            }
+            if best == 0 {
+                break;
+            }
         }
 
         let gate_c_v1 = p_output_u2.dagger() * target;
         let gate_c_v2 = target * p_output_u2.dagger();
 
-        eprintln!("p_output_u2: u11={:?} u12={:?} u21={:?} u22={:?} k={}",
-            p_output_u2.u11, p_output_u2.u12, p_output_u2.u21, p_output_u2.u22, p_output_u2.k);
-        eprintln!("gate_c (P†·target): u11={:?} u12={:?} u21={:?} u22={:?} k={}",
-            gate_c_v1.u11, gate_c_v1.u12, gate_c_v1.u21, gate_c_v1.u22, gate_c_v1.k);
-        eprintln!("gate_c (target·P†): u11={:?} u12={:?} u21={:?} u22={:?} k={}",
-            gate_c_v2.u11, gate_c_v2.u12, gate_c_v2.u21, gate_c_v2.u22, gate_c_v2.k);
+        eprintln!(
+            "p_output_u2: u11={:?} u12={:?} u21={:?} u22={:?} k={}",
+            p_output_u2.u11, p_output_u2.u12, p_output_u2.u21, p_output_u2.u22, p_output_u2.k
+        );
+        eprintln!(
+            "gate_c (P†·target): u11={:?} u12={:?} u21={:?} u22={:?} k={}",
+            gate_c_v1.u11, gate_c_v1.u12, gate_c_v1.u21, gate_c_v1.u22, gate_c_v1.k
+        );
+        eprintln!(
+            "gate_c (target·P†): u11={:?} u12={:?} u21={:?} u22={:?} k={}",
+            gate_c_v2.u11, gate_c_v2.u12, gate_c_v2.u21, gate_c_v2.u22, gate_c_v2.k
+        );
 
         eprintln!("\nDistances from P†·target to Clifford table entries (U2T table values):");
         for (name, u2t_entry) in CLIFFORD_TABLE_T {
             let d = gate_c_v1.diamond_distance(u2t_entry);
-            if d < 0.1 { eprintln!("  {name}: dist={d:.6e}  <-- MATCH"); }
-            else { eprintln!("  {name}: dist={d:.6e}"); }
+            if d < 0.1 {
+                eprintln!("  {name}: dist={d:.6e}  <-- MATCH");
+            } else {
+                eprintln!("  {name}: dist={d:.6e}");
+            }
         }
 
         eprintln!("\nDistances from P†·target to gate-primitive Cliffords:");
         for (name, _) in CLIFFORD_TABLE_T {
             let gate_u: U2T = name.chars().fold(U2T::eye(), |acc, ch| {
                 acc * match ch {
-                    'H' => U2T::h(), 'S' => U2T::s(), 'X' => U2T::x(),
-                    'Y' => U2T::y(), 'Z' => U2T::z(), _ => U2T::eye(),
+                    'H' => U2T::h(),
+                    'S' => U2T::s(),
+                    'X' => U2T::x(),
+                    'Y' => U2T::y(),
+                    'Z' => U2T::z(),
+                    _ => U2T::eye(),
                 }
             });
             let d = gate_c_v1.diamond_distance(&gate_u);
-            if d < 0.1 { eprintln!("  {name}: dist={d:.6e}  <-- MATCH"); }
-            else { eprintln!("  {name}: dist={d:.6e}"); }
+            if d < 0.1 {
+                eprintln!("  {name}: dist={d:.6e}  <-- MATCH");
+            } else {
+                eprintln!("  {name}: dist={d:.6e}");
+            }
         }
 
         eprintln!("\nDistances from target·P† to gate-primitive Cliffords:");
         for (name, _) in CLIFFORD_TABLE_T {
             let gate_u: U2T = name.chars().fold(U2T::eye(), |acc, ch| {
                 acc * match ch {
-                    'H' => U2T::h(), 'S' => U2T::s(), 'X' => U2T::x(),
-                    'Y' => U2T::y(), 'Z' => U2T::z(), _ => U2T::eye(),
+                    'H' => U2T::h(),
+                    'S' => U2T::s(),
+                    'X' => U2T::x(),
+                    'Y' => U2T::y(),
+                    'Z' => U2T::z(),
+                    _ => U2T::eye(),
                 }
             });
             let d = gate_c_v2.diamond_distance(&gate_u);
-            if d < 0.1 { eprintln!("  {name}: dist={d:.6e}  <-- MATCH"); }
-            else { eprintln!("  {name}: dist={d:.6e}"); }
+            if d < 0.1 {
+                eprintln!("  {name}: dist={d:.6e}  <-- MATCH");
+            } else {
+                eprintln!("  {name}: dist={d:.6e}");
+            }
         }
     }
 
@@ -1136,23 +1266,42 @@ mod tests {
 
         for step in 0..max_steps {
             let cur = so3.max_exp();
-            if cur == 0 { eprintln!("step {step}: max_exp=0, breaking"); break; }
+            if cur == 0 {
+                eprintln!("step {step}: max_exp=0, breaking");
+                break;
+            }
 
-            let mut rx_r = so3.clone(); rx_r.left_mul(&rx);
-            let mut ry_r = so3.clone(); ry_r.left_mul(&ry);
-            let mut rz_r = so3.clone(); rz_r.left_mul(&rz);
+            let mut rx_r = so3.clone();
+            rx_r.left_mul(&rx);
+            let mut ry_r = so3.clone();
+            ry_r.left_mul(&ry);
+            let mut rz_r = so3.clone();
+            rz_r.left_mul(&rz);
 
             let ex = rx_r.max_exp();
             let ey = ry_r.max_exp();
             let ez = rz_r.max_exp();
             let best = ex.min(ey).min(ez);
 
-            let ch = if ex == best { so3 = rx_r; 'x' }
-                     else if ey == best { so3 = ry_r; 'y' }
-                     else { so3 = rz_r; 'z' };
+            let ch = if ex == best {
+                so3 = rx_r;
+                'x'
+            } else if ey == best {
+                so3 = ry_r;
+                'y'
+            } else {
+                so3 = rz_r;
+                'z'
+            };
             raw.push(ch);
-            eprintln!("step {step}: cur={cur}, ex={ex} ey={ey} ez={ez} → chose '{ch}', new max_exp={}", so3.max_exp());
-            if best == 0 { eprintln!("best=0, breaking"); break; }
+            eprintln!(
+                "step {step}: cur={cur}, ex={ex} ey={ey} ez={ez} → chose '{ch}', new max_exp={}",
+                so3.max_exp()
+            );
+            if best == 0 {
+                eprintln!("best=0, breaking");
+                break;
+            }
         }
         eprintln!("raw = \"{raw}\"");
         let cliff = ZOmega::identify_clifford(&so3);
@@ -1166,12 +1315,14 @@ mod tests {
             let gates: String = (0..rng.random_range(100..=500))
                 .map(|_| ['H', 'S', 'T'][rng.random_range(0..3)])
                 .collect();
-            let target     = gates_to_u2t(&gates);
+            let target = gates_to_u2t(&gates);
             let decomp = BlochDecomposer.decompose(&target);
             let from_decomp = gates_to_u2t(&decomp);
             let dist = target.diamond_distance(&from_decomp);
-            assert!(dist < 1e-6,
-                "random roundtrip: input=\"{gates}\" → \"{decomp}\", dist={dist:.3e}");
+            assert!(
+                dist < 1e-6,
+                "random roundtrip: input=\"{gates}\" → \"{decomp}\", dist={dist:.3e}"
+            );
         }
     }
 
@@ -1179,45 +1330,78 @@ mod tests {
 
     fn gate_to_mat(gates: &str) -> [[Complex64; 2]; 2] {
         use std::f64::consts::PI;
-        let i  = Complex64::new(0.0, 1.0);
+        let i = Complex64::new(0.0, 1.0);
         let r2 = FRAC_1_SQRT_2;
-        let h  = [[Complex64::new(r2, 0.0), Complex64::new(r2,  0.0)],
-                  [Complex64::new(r2, 0.0), Complex64::new(-r2, 0.0)]];
-        let s  = [[Complex64::new(1.0, 0.0), Complex64::ZERO],
-                  [Complex64::ZERO, i]];
-        let z  = [[Complex64::new(1.0, 0.0), Complex64::ZERO],
-                  [Complex64::ZERO, Complex64::new(-1.0, 0.0)]];
-        let x  = [[Complex64::ZERO, Complex64::new(1.0, 0.0)],
-                  [Complex64::new(1.0, 0.0), Complex64::ZERO]];
-        let t  = [[Complex64::from_polar(1.0, -PI/8.0), Complex64::ZERO],
-                  [Complex64::ZERO, Complex64::from_polar(1.0, PI/8.0)]];
-        let id = [[Complex64::new(1.0, 0.0), Complex64::ZERO],
-                  [Complex64::ZERO, Complex64::new(1.0, 0.0)]];
-        fn mmul(a: [[Complex64;2];2], b: [[Complex64;2];2]) -> [[Complex64;2];2] {
+        let h = [
+            [Complex64::new(r2, 0.0), Complex64::new(r2, 0.0)],
+            [Complex64::new(r2, 0.0), Complex64::new(-r2, 0.0)],
+        ];
+        let s = [
+            [Complex64::new(1.0, 0.0), Complex64::ZERO],
+            [Complex64::ZERO, i],
+        ];
+        let z = [
+            [Complex64::new(1.0, 0.0), Complex64::ZERO],
+            [Complex64::ZERO, Complex64::new(-1.0, 0.0)],
+        ];
+        let x = [
+            [Complex64::ZERO, Complex64::new(1.0, 0.0)],
+            [Complex64::new(1.0, 0.0), Complex64::ZERO],
+        ];
+        let t = [
+            [Complex64::from_polar(1.0, -PI / 8.0), Complex64::ZERO],
+            [Complex64::ZERO, Complex64::from_polar(1.0, PI / 8.0)],
+        ];
+        let id = [
+            [Complex64::new(1.0, 0.0), Complex64::ZERO],
+            [Complex64::ZERO, Complex64::new(1.0, 0.0)],
+        ];
+        fn mmul(a: [[Complex64; 2]; 2], b: [[Complex64; 2]; 2]) -> [[Complex64; 2]; 2] {
             let mut out = [[Complex64::ZERO; 2]; 2];
-            for r in 0..2 { for c in 0..2 { for k in 0..2 { out[r][c] += a[r][k] * b[k][c]; } } }
+            for r in 0..2 {
+                for c in 0..2 {
+                    for k in 0..2 {
+                        out[r][c] += a[r][k] * b[k][c];
+                    }
+                }
+            }
             out
         }
         let mut mat = id;
         for ch in gates.chars() {
             // Right-multiply: leftmost gate is the leftmost matrix factor,
             // matching the synthesis-side `gates_to_u2t` convention.
-            mat = mmul(mat, match ch { 'H'=>h, 'S'=>s, 'Z'=>z, 'X'=>x, 'T'=>t, _=>id });
+            mat = mmul(
+                mat,
+                match ch {
+                    'H' => h,
+                    'S' => s,
+                    'Z' => z,
+                    'X' => x,
+                    'T' => t,
+                    _ => id,
+                },
+            );
         }
         mat
     }
 
-    fn diamond_dist_mat(a: [[Complex64;2];2], b: [[Complex64;2];2]) -> f64 {
-        let tr: Complex64 = (0..2).flat_map(|r| (0..2).map(move |c| a[r][c] * b[r][c].conj())).sum();
+    fn diamond_dist_mat(a: [[Complex64; 2]; 2], b: [[Complex64; 2]; 2]) -> f64 {
+        let tr: Complex64 = (0..2)
+            .flat_map(|r| (0..2).map(move |c| a[r][c] * b[r][c].conj()))
+            .sum();
         (1.0 - tr.norm_sqr() / 4.0).max(0.0).sqrt()
     }
 
     #[test]
     fn test_x_translation_is_rx() {
         use std::f64::consts::PI;
-        let c = (PI/8.0).cos(); let s = -(PI/8.0).sin();
-        let rx = [[Complex64::new(c,0.0), Complex64::new(0.0,s)],
-                  [Complex64::new(0.0,s), Complex64::new(c,0.0)]];
+        let c = (PI / 8.0).cos();
+        let s = -(PI / 8.0).sin();
+        let rx = [
+            [Complex64::new(c, 0.0), Complex64::new(0.0, s)],
+            [Complex64::new(0.0, s), Complex64::new(c, 0.0)],
+        ];
         assert!(diamond_dist_mat(gate_to_mat("HTH"), rx) < 1e-10);
     }
 
@@ -1225,18 +1409,25 @@ mod tests {
     fn test_y_translation_is_ry() {
         use std::f64::consts::PI;
         let translated = translate("y", "T");
-        let c = (PI/8.0).cos(); let s = (PI/8.0).sin();
-        let ry = [[Complex64::new(c,0.0), Complex64::new(-s,0.0)],
-                  [Complex64::new(s,0.0), Complex64::new(c,0.0)]];
-        assert!(diamond_dist_mat(gate_to_mat(&translated), ry) < 1e-10,
-            "'y'→\"{translated}\"");
+        let c = (PI / 8.0).cos();
+        let s = (PI / 8.0).sin();
+        let ry = [
+            [Complex64::new(c, 0.0), Complex64::new(-s, 0.0)],
+            [Complex64::new(s, 0.0), Complex64::new(c, 0.0)],
+        ];
+        assert!(
+            diamond_dist_mat(gate_to_mat(&translated), ry) < 1e-10,
+            "'y'→\"{translated}\""
+        );
     }
 
     #[test]
     fn test_z_translation_is_rz() {
         use std::f64::consts::PI;
-        let rz = [[Complex64::from_polar(1.0,-PI/8.0), Complex64::ZERO],
-                  [Complex64::ZERO, Complex64::from_polar(1.0,PI/8.0)]];
+        let rz = [
+            [Complex64::from_polar(1.0, -PI / 8.0), Complex64::ZERO],
+            [Complex64::ZERO, Complex64::from_polar(1.0, PI / 8.0)],
+        ];
         assert!(diamond_dist_mat(gate_to_mat("T"), rz) < 1e-10);
     }
 
@@ -1278,8 +1469,10 @@ mod tests {
             );
             let recovered = gates_to_u2q(&decomp);
             let dist = u.diamond_distance(&recovered);
-            assert!(dist < 1e-9,
-                "Clifford-only round-trip: \"{input}\" → \"{decomp}\", dist={dist:.3e}");
+            assert!(
+                dist < 1e-9,
+                "Clifford-only round-trip: \"{input}\" → \"{decomp}\", dist={dist:.3e}"
+            );
         }
     }
 
@@ -1290,8 +1483,10 @@ mod tests {
         let decomp = BlochDecomposer.decompose(&u_in);
         let u_out = gates_to_u2q(&decomp);
         let dist = u_in.diamond_distance(&u_out);
-        assert!(dist < 1e-7,
-            "decomp \"{decomp}\" doesn't match input \"{gates}\": dist={dist:.3e}");
+        assert!(
+            dist < 1e-7,
+            "decomp \"{decomp}\" doesn't match input \"{gates}\": dist={dist:.3e}"
+        );
     }
 
     // ── ZZeta decomposer history ──────────────────────────────────────────────
@@ -1328,8 +1523,10 @@ mod tests {
         let decomp = BlochDecomposer.decompose(&u_in);
         let u_out = gates_to_u2q(&decomp);
         let dist = u_in.diamond_distance(&u_out);
-        assert!(dist < 1e-7,
-            "decomp \"{decomp}\" doesn't match input \"{gates}\": dist={dist:.3e}");
+        assert!(
+            dist < 1e-7,
+            "decomp \"{decomp}\" doesn't match input \"{gates}\": dist={dist:.3e}"
+        );
     }
 
     #[test]
@@ -1346,8 +1543,10 @@ mod tests {
             let decomp = BlochDecomposer.decompose(&target);
             let recovered = gates_to_u2q(&decomp);
             let dist = target.diamond_distance(&recovered);
-            assert!(dist < 1e-6,
-                "{{H,S,Q}} roundtrip: input=\"{gates}\" → \"{decomp}\", dist={dist:.3e}");
+            assert!(
+                dist < 1e-6,
+                "{{H,S,Q}} roundtrip: input=\"{gates}\" → \"{decomp}\", dist={dist:.3e}"
+            );
         }
     }
 
@@ -1365,8 +1564,10 @@ mod tests {
             let decomp = BlochDecomposer.decompose(&target);
             let recovered = gates_to_u2q(&decomp);
             let dist = target.diamond_distance(&recovered);
-            assert!(dist < 1e-6,
-                "{{H,S,T,Q}} roundtrip: input=\"{gates}\" → \"{decomp}\", dist={dist:.3e}");
+            assert!(
+                dist < 1e-6,
+                "{{H,S,T,Q}} roundtrip: input=\"{gates}\" → \"{decomp}\", dist={dist:.3e}"
+            );
         }
     }
 
@@ -1429,12 +1630,16 @@ mod tests {
         for input in ["H", "S", "X", "Y", "Z", "HH", "SH", "HS"] {
             let u = gates_to_u2o(input);
             let decomp = BlochDecomposer.decompose(&u);
-            assert!(!decomp.contains('R'),
-                "Clifford input \"{input}\" produced R-gate in \"{decomp}\"");
+            assert!(
+                !decomp.contains('R'),
+                "Clifford input \"{input}\" produced R-gate in \"{decomp}\""
+            );
             let recovered = gates_to_u2o(&decomp);
             let dist = u.diamond_distance(&recovered);
-            assert!(dist < 1e-9,
-                "Clifford round-trip \"{input}\" → \"{decomp}\", dist={dist:.3e}");
+            assert!(
+                dist < 1e-9,
+                "Clifford round-trip \"{input}\" → \"{decomp}\", dist={dist:.3e}"
+            );
         }
     }
 
@@ -1449,8 +1654,10 @@ mod tests {
             let decomp = BlochDecomposer.decompose(&target);
             let recovered = gates_to_u2o(&decomp);
             let dist = target.diamond_distance(&recovered);
-            assert!(dist < 1e-6,
-                "{{H,S,R}} roundtrip: \"{gates}\" → \"{decomp}\", dist={dist:.3e}");
+            assert!(
+                dist < 1e-6,
+                "{{H,S,R}} roundtrip: \"{gates}\" → \"{decomp}\", dist={dist:.3e}"
+            );
         }
     }
 }

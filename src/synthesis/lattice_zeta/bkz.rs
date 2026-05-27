@@ -48,8 +48,8 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use std::sync::atomic::Ordering;
 use super::scratch::IntScratch16;
+use std::sync::atomic::Ordering;
 
 /// BKZ block size. β=2 is LLL-equivalent; β≥3 gives strict improvement.
 /// Default β=4 is a sweet spot at d=16: per-tour cost is `(d-β+1)=13`
@@ -259,7 +259,9 @@ pub fn bkz_insert(
     // Branch 1: all-zero except one ±1 — just move it to κ.
     let nonzero: Vec<usize> = (0..block_size).filter(|&i| x[i] != 0).collect();
     if nonzero.len() == 1 {
-        if trace { crate::synthesis::diag::N_BKZ_BRANCH1.fetch_add(1, Ordering::Relaxed); }
+        if trace {
+            crate::synthesis::diag::N_BKZ_BRANCH1.fetch_add(1, Ordering::Relaxed);
+        }
         let i = nonzero[0];
         let sign = x[i];
         if i != 0 {
@@ -279,7 +281,9 @@ pub fn bkz_insert(
 
     // Branch 2: some |x[i]| = 1 — use it as a pivot.
     if let Some(piv_idx) = (0..block_size).find(|&i| x[i].abs() == 1) {
-        if trace { crate::synthesis::diag::N_BKZ_BRANCH2.fetch_add(1, Ordering::Relaxed); }
+        if trace {
+            crate::synthesis::diag::N_BKZ_BRANCH2.fetch_add(1, Ordering::Relaxed);
+        }
         let piv_sign = x[piv_idx];
         // For every other non-zero coord j, do
         //   b_{κ+piv_idx} ← b_{κ+piv_idx} + sign · |x[j]| · b_{κ+j}
@@ -362,13 +366,19 @@ pub fn bkz_insert(
     let mut g: i64 = 0;
     for &xi in x {
         g = gcd_i64(g, xi);
-        if g == 1 { break; }
+        if g == 1 {
+            break;
+        }
     }
     if g != 1 {
-        if trace { crate::synthesis::diag::N_BKZ_BRANCH3_NONPRIMITIVE.fetch_add(1, Ordering::Relaxed); }
+        if trace {
+            crate::synthesis::diag::N_BKZ_BRANCH3_NONPRIMITIVE.fetch_add(1, Ordering::Relaxed);
+        }
         return Err(());
     }
-    if trace { crate::synthesis::diag::N_BKZ_BRANCH3_SUCCESS.fetch_add(1, Ordering::Relaxed); }
+    if trace {
+        crate::synthesis::diag::N_BKZ_BRANCH3_SUCCESS.fetch_add(1, Ordering::Relaxed);
+    }
 
     // From here on, gcd = 1 guaranteed → the algorithm will succeed.
     let mut x: Vec<i64> = x.to_vec();
@@ -394,7 +404,9 @@ pub fn bkz_insert(
         let step = 2 * off;
         let mut k = block_size - 1;
         loop {
-            if k < off { break; }
+            if k < off {
+                break;
+            }
             let k_off = k - off;
             // Ensure x[k] ≥ x[k_off] entering the Euclidean reduction.
             if x[k] < x[k_off] {
@@ -410,19 +422,18 @@ pub fn bkz_insert(
                 // Basis op: b[k_off] ← b[k_off] + q · b[k].
                 // Realize as: b[k_off] ← b[k_off] − (−q)·b[k].
                 for c in 0..16 {
-                    scratch.basis[kappa + k_off][c] +=
-                        q * scratch.basis[kappa + k][c];
+                    scratch.basis[kappa + k_off][c] += q * scratch.basis[kappa + k][c];
                 }
-                super::lll::gram_update_size_reduce(
-                    scratch, kappa + k_off, kappa + k, -q,
-                );
+                super::lll::gram_update_size_reduce(scratch, kappa + k_off, kappa + k, -q);
                 // Now x[k] < x[k_off]. Swap to restore invariant.
                 x.swap(k, k_off);
                 scratch.basis.swap(kappa + k, kappa + k_off);
                 super::lll::gram_update_swap(scratch, kappa + k, kappa + k_off);
             }
             // x[k_off] = 0 here; x[k] holds gcd of the pair's originals.
-            if k < step { break; }
+            if k < step {
+                break;
+            }
             k -= step;
         }
         off *= 2;
@@ -431,8 +442,10 @@ pub fn bkz_insert(
     // After all rounds: x[block_size - 1] = 1 (since we pre-checked gcd = 1).
     // All other x[i] = 0. Row κ+block_size-1 now equals Σ x_orig[i]·b[κ+i].
     let final_idx = block_size - 1;
-    debug_assert_eq!(x[final_idx], 1,
-        "branch-3 invariant: gcd-bearing position should equal 1 (gcd was checked = 1)");
+    debug_assert_eq!(
+        x[final_idx], 1,
+        "branch-3 invariant: gcd-bearing position should equal 1 (gcd was checked = 1)"
+    );
 
     // Move row κ+final_idx to position κ.
     if final_idx != 0 {
@@ -490,11 +503,7 @@ fn negate_row(scratch: &mut IntScratch16, i: usize) {
 /// entry. Empirically rare on LLL-reduced bases (the SE walk usually
 /// finds an x with at least one ±1 coord), but not impossible. Falls
 /// back gracefully via panic catch in `run_lll_16_with_bkz`.
-pub fn bkz_tours(
-    scratch: &mut IntScratch16,
-    block_size: usize,
-    max_loops: usize,
-) -> bool {
+pub fn bkz_tours(scratch: &mut IntScratch16, block_size: usize, max_loops: usize) -> bool {
     debug_assert!((3..=8).contains(&block_size));
     let mut any_change = false;
 
@@ -586,7 +595,10 @@ mod tests {
         let result = svp_enum_block(&s, 0, 4, 4.0);
         let (x, norm_sq) = result.expect("identity Gram has shortest non-zero norm² = 1");
         // Shortest non-zero vector in Z^4 with Euclidean metric has norm² = 1.
-        assert!((norm_sq - 1.0).abs() < 1e-9, "norm² = {norm_sq}, expected 1.0");
+        assert!(
+            (norm_sq - 1.0).abs() < 1e-9,
+            "norm² = {norm_sq}, expected 1.0"
+        );
         let nz = x.iter().filter(|&&v| v != 0).count();
         assert_eq!(nz, 1, "expected exactly one ±1 entry, got {x:?}");
         assert!(x.iter().any(|&v| v == 1 || v == -1));
@@ -734,8 +746,7 @@ mod tests {
         setup_identity_basis(&mut s);
         // x = [-3, 2, -5, 0]: negative entries, gcd(3,2,5) = 1.
         // Row 0 should equal -3·e_0 + 2·e_1 + (-5)·e_2 = [-3, 2, -5, 0, ...].
-        bkz_insert(&mut s, 0, 4, &[-3, 2, -5, 0])
-            .expect("gcd=1 case should succeed");
+        bkz_insert(&mut s, 0, 4, &[-3, 2, -5, 0]).expect("gcd=1 case should succeed");
         assert_eq!(s.basis[0][0], -3);
         assert_eq!(s.basis[0][1], 2);
         assert_eq!(s.basis[0][2], -5);
@@ -754,8 +765,10 @@ mod tests {
         // mutating the basis.
         let res = bkz_insert(&mut s, 0, 4, &[2, 4, 6, 0]);
         assert!(res.is_err(), "non-primitive cofactor should return Err");
-        assert_eq!(s.basis, basis_before,
-            "basis must be unchanged when Branch 3 bails on gcd > 1");
+        assert_eq!(
+            s.basis, basis_before,
+            "basis must be unchanged when Branch 3 bails on gcd > 1"
+        );
     }
 
     /// End-to-end: run our LLL on a real Q-matrix (from a synthesis
@@ -764,9 +777,7 @@ mod tests {
     #[test]
     fn bkz_4_smoke_on_lll_basis() {
         use crate::synthesis::lattice_zeta::{
-            integer::phase1_with_stop,
-            lll_f64::cfa_row_f64,
-            se::det16_exact,
+            integer::phase1_with_stop, lll_f64::cfa_row_f64, se::det16_exact,
         };
         use crate::synthesis::search_zeta::uv_to_xy_zeta;
         use std::sync::atomic::AtomicBool;
@@ -782,7 +793,17 @@ mod tests {
 
         // First run regular LLL+SE to get an LLL-reduced basis.
         let budget_hit = AtomicBool::new(false);
-        let _sols = phase1_with_stop(&mut s, &y, k, eps, 100_000, &budget_hit, |_| false, None, None);
+        let _sols = phase1_with_stop(
+            &mut s,
+            &y,
+            k,
+            eps,
+            100_000,
+            &budget_hit,
+            |_| false,
+            None,
+            None,
+        );
 
         // Verify basis is unimodular pre-BKZ.
         let det_pre = det16_exact(&s.basis);

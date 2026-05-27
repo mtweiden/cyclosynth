@@ -36,7 +36,9 @@ pub struct LatticeScratch {
 
 impl LatticeScratch {
     pub fn new(eps: Float) -> Self {
-        Self { inner: scratch::IntScratch::new(eps) }
+        Self {
+            inner: scratch::IntScratch::new(eps),
+        }
     }
 }
 
@@ -57,7 +59,7 @@ pub fn phase1(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::synthesis::clifford_pi6::{check_bilinear, check_norm_eq, compute_y};
+    use crate::synthesis::clifford_pi6::{check_bilinear, check_norm_eq};
     use std::sync::atomic::AtomicBool;
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -67,7 +69,7 @@ mod tests {
     /// Uses an angle θ=0.15 rad with v₁=(cos θ, sin θ), v₂=0 so that
     /// the dominant u-block component is nonzero and alignment pruning fires.
     fn realistic_y_n6(k: u32) -> [Float; 8] {
-        let r = 2.0_f64.powi(k as i32).sqrt() / 2.0;  // scale for the norm shell
+        let r = 2.0_f64.powi(k as i32).sqrt() / 2.0; // scale for the norm shell
         let theta: Float = 0.15;
         let (c, s) = (theta.cos(), theta.sin());
         // compute_y(v1_re, v1_im, v2_re, v2_im) with v1 = (c·r, s·r), v2 = 0
@@ -77,7 +79,10 @@ mod tests {
             r * (s32 * c + 0.5 * s),
             r * (0.5 * c + s32 * s),
             r * s,
-            0.0, 0.0, 0.0, 0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
         ]
     }
 
@@ -88,8 +93,8 @@ mod tests {
     /// We check this by building p_u from scratch and verifying the block diagonal.
     #[test]
     fn sigma_gram_matches_sigma_gram_u() {
-        use crate::rings::zomicron::SIGMA_GRAM_U;
         use super::scratch::IntScratch;
+        use crate::rings::zomicron::SIGMA_GRAM_U;
 
         let s = IntScratch::new(1e-3);
         // With the n=6 row ordering, standard rows are {0,1,4,5} and bullet
@@ -121,20 +126,23 @@ mod tests {
     fn bilinear_b_correct_formula() {
         use super::se::bilinear_b;
         // Known zero: [1,0,0,0, 1,0,0,0] → all consecutive products = 0.
-        assert_eq!(bilinear_b(&[1,0,0,0, 1,0,0,0]), 0);
+        assert_eq!(bilinear_b(&[1, 0, 0, 0, 1, 0, 0, 0]), 0);
         // Known nonzero: [1,1,0,0, 0,0,0,0] → a₀a₁=1 → sum=1.
-        assert_eq!(bilinear_b(&[1,1,0,0, 0,0,0,0]), 1);
+        assert_eq!(bilinear_b(&[1, 1, 0, 0, 0, 0, 0, 0]), 1);
         // Cross-check against clifford_pi6::check_bilinear.
         let cases: &[[i64; 8]] = &[
-            [0, 1, -1, 0, 0, 1, -1, 0],  // should satisfy: 0-1+0 + 0-1+0 = -2 ≠ 0
-            [1, 0, 1, 0, 0, 0, 0, 0],    // a₀a₁=0, a₁a₂=0, a₂a₃=0 → 0 ✓
+            [0, 1, -1, 0, 0, 1, -1, 0], // should satisfy: 0-1+0 + 0-1+0 = -2 ≠ 0
+            [1, 0, 1, 0, 0, 0, 0, 0],   // a₀a₁=0, a₁a₂=0, a₂a₃=0 → 0 ✓
         ];
         for x in cases {
             let b_ours = bilinear_b(x);
             let b_ref = check_bilinear(x);
             // bilinear_b == 0 iff check_bilinear == true.
-            assert_eq!(b_ours == 0, b_ref,
-                "bilinear mismatch on {x:?}: bilinear_b={b_ours}, check_bilinear={b_ref}");
+            assert_eq!(
+                b_ours == 0,
+                b_ref,
+                "bilinear mismatch on {x:?}: bilinear_b={b_ours}, check_bilinear={b_ref}"
+            );
         }
     }
 
@@ -144,9 +152,15 @@ mod tests {
     fn norm_check_matches_check_norm_eq() {
         // The trivial solution [1,0,0,0, 1,0,0,0] has:
         //   euclid = 2, cross = 0, so norm_eq = 2 = 2^1.
-        let x = [1i64,0,0,0, 1,0,0,0];
-        assert!(check_norm_eq(&x, 1), "trivial solution should pass k=1 norm check");
-        assert!(check_bilinear(&x), "trivial solution should pass bilinear check");
+        let x = [1i64, 0, 0, 0, 1, 0, 0, 0];
+        assert!(
+            check_norm_eq(&x, 1),
+            "trivial solution should pass k=1 norm check"
+        );
+        assert!(
+            check_bilinear(&x),
+            "trivial solution should pass bilinear check"
+        );
     }
 
     // ── Phase-1 smoke tests ───────────────────────────────────────────────────
@@ -177,10 +191,8 @@ mod tests {
         let budget_hit = AtomicBool::new(false);
         let sols = phase1(&mut scratch, &y, k, eps, 10, &budget_hit);
         for x in &sols {
-            assert!(check_norm_eq(x, k),
-                "solution fails norm check: {x:?}");
-            assert!(check_bilinear(x),
-                "solution fails bilinear check: {x:?}");
+            assert!(check_norm_eq(x, k), "solution fails norm check: {x:?}");
+            assert!(check_bilinear(x), "solution fails bilinear check: {x:?}");
         }
     }
 
@@ -192,8 +204,7 @@ mod tests {
         let s32 = 3.0_f64.sqrt() / 2.0;
         // compute_y(1/√2, 0, 1/√2, 0) — v1 = 1/√2, v2 = 1/√2 (both real)
         let r2 = 1.0 / 2.0_f64.sqrt();
-        let y = [r2, s32*r2, 0.5*r2, 0.0,
-                 r2, s32*r2, 0.5*r2, 0.0];
+        let y = [r2, s32 * r2, 0.5 * r2, 0.0, r2, s32 * r2, 0.5 * r2, 0.0];
         let mut scratch = LatticeScratch::new(0.5);
         let budget_hit = AtomicBool::new(false);
         let sols = phase1(&mut scratch, &y, 1, 0.5, 100, &budget_hit);

@@ -26,19 +26,19 @@
 //! in the reconstruction already absorbs the det-phase mismatch).
 
 use crate::matrix::u2::U2Q;
-use crate::rings::ZZeta;
 use crate::rings::types::Int;
+use crate::rings::ZZeta;
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2q_float, Mat2};
 use crate::synthesis::lattice_zeta::{phase1_with_stop, IntScratch16};
 use crate::synthesis::search_zeta::{phase1_brute, uv_to_xy_zeta};
 use num_complex::Complex64;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::f64::consts::PI;
-use std::sync::{Arc, LazyLock, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use rayon::prelude::*;
+use std::sync::{Arc, LazyLock, Mutex};
 
 // ─── Solution → U2Q reconstruction (Z[ζ_16] analog of solution_to_u2t) ───────
 
@@ -77,10 +77,18 @@ fn zeta_16_pow(d: u32) -> ZZeta {
 /// products with non-unit determinant (e.g. circuits containing an odd
 /// number of Q gates).
 pub fn solution_to_u2q_d(sol: &[i64; 16], k: u32, det_phase: u32) -> U2Q {
-    let mk = |s: &[i64]| ZZeta::new(
-        Int::from_i64(s[0]), Int::from_i64(s[1]), Int::from_i64(s[2]), Int::from_i64(s[3]),
-        Int::from_i64(s[4]), Int::from_i64(s[5]), Int::from_i64(s[6]), Int::from_i64(s[7]),
-    );
+    let mk = |s: &[i64]| {
+        ZZeta::new(
+            Int::from_i64(s[0]),
+            Int::from_i64(s[1]),
+            Int::from_i64(s[2]),
+            Int::from_i64(s[3]),
+            Int::from_i64(s[4]),
+            Int::from_i64(s[5]),
+            Int::from_i64(s[6]),
+            Int::from_i64(s[7]),
+        )
+    };
     let u1 = mk(&sol[0..8]);
     let u2 = mk(&sol[8..16]);
     let phase = zeta_16_pow(det_phase);
@@ -265,7 +273,6 @@ fn enumerate_bodies(
     }
 }
 
-
 /// Result of a synthesis call: the gate string, its lde, and the diamond
 /// distance achieved.
 ///
@@ -282,6 +289,8 @@ pub struct SynthResultQ {
     pub lde: u32,
     /// Diamond distance to the target.
     pub distance: f64,
+    /// Raw 16D lattice vector `(u, t)` selected by the successful search.
+    pub x: Option<[i64; 16]>,
 }
 
 /// Clifford+√T synthesizer over `Z[ζ_16]`.
@@ -414,7 +423,12 @@ fn u2q_dag_times_mat2(u_l: &U2Q, target: &Mat2) -> Mat2 {
 /// unitary is unit-norm by construction, so no further normalization is
 /// needed.
 pub fn unitary_to_uv_zeta(target: &Mat2) -> [f64; 4] {
-    [target[0][0].re, target[0][0].im, target[1][0].re, target[1][0].im]
+    [
+        target[0][0].re,
+        target[0][0].im,
+        target[1][0].re,
+        target[1][0].im,
+    ]
 }
 
 impl SynthesizerQ {
@@ -449,7 +463,9 @@ impl SynthesizerQ {
         // and reach the deep tail.
         let log2_recip = if epsilon > 0.0 && epsilon < 1.0 {
             (1.0 / epsilon).log2()
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let min_lde = if epsilon <= 1e-8 {
             (0.7 * log2_recip).floor() as u32
         } else {
@@ -545,7 +561,6 @@ impl SynthesizerQ {
         self
     }
 
-
     /// Find a minimum-lde Clifford+√T circuit approximating `target`.
     ///
     /// Returns `None` if no circuit within `max_lde` achieves diamond
@@ -612,13 +627,12 @@ impl SynthesizerQ {
                              budget: u64,
                              scratch: &mut Option<Box<IntScratch16>>|
          -> (Vec<[i64; 16]>, bool) {
-            let s = scratch
-                .get_or_insert_with(|| {
-                    let mut sb = Box::new(IntScratch16::new(epsilon));
-                    sb.use_f64_gs = use_f64_gs;
-                    sb.bkz_block_size = bkz_block_size;
-                    sb
-                });
+            let s = scratch.get_or_insert_with(|| {
+                let mut sb = Box::new(IntScratch16::new(epsilon));
+                sb.use_f64_gs = use_f64_gs;
+                sb.bkz_block_size = bkz_block_size;
+                sb
+            });
             let y = uv_to_xy_zeta(v, k);
             let budget_hit = AtomicBool::new(false);
             let should_stop = |x: &[i64; 16]| -> bool {
@@ -626,7 +640,15 @@ impl SynthesizerQ {
                 diamond_distance_u2q_float(&cand, &target) < epsilon
             };
             let sols = phase1_with_stop(
-                s.as_mut(), &y, k, epsilon, budget, &budget_hit, should_stop, None, None,
+                s.as_mut(),
+                &y,
+                k,
+                epsilon,
+                budget,
+                &budget_hit,
+                should_stop,
+                None,
+                None,
             );
             (sols, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
         };
@@ -641,6 +663,7 @@ impl SynthesizerQ {
                         gates: Some(gates),
                         lde: k,
                         distance: dist,
+                        x: Some(*sol),
                     });
                 }
             }
@@ -652,8 +675,10 @@ impl SynthesizerQ {
             let sols = phase1_brute(k);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
-                    diag::dump_zeta(&diag::snapshot(),
-                        &format!("synthesize ε={:.0e} k={k}", self.epsilon));
+                    diag::dump_zeta(
+                        &diag::snapshot(),
+                        &format!("synthesize ε={:.0e} k={k}", self.epsilon),
+                    );
                 }
                 return Some(r);
             }
@@ -678,14 +703,19 @@ impl SynthesizerQ {
                 let (sols, _) = try_lattice_k(k, PASS1_CAP, &mut scratch);
                 if let Some(r) = check_sols(&sols, k) {
                     if trace {
-                        eprintln!("[zeta] dc lde={k:>2} (single fallback)  FOUND  dist={:.3e}  t={:.0}ms",
-                            r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                        eprintln!(
+                            "[zeta] dc lde={k:>2} (single fallback)  FOUND  dist={:.3e}  t={:.0}ms",
+                            r.distance,
+                            t_k.elapsed().as_secs_f64() * 1000.0
+                        );
                     }
                     return Some(r);
                 }
                 if trace {
-                    eprintln!("[zeta] dc lde={k:>2} (single fallback)  none   t={:.0}ms",
-                        t_k.elapsed().as_secs_f64() * 1000.0);
+                    eprintln!(
+                        "[zeta] dc lde={k:>2} (single fallback)  none   t={:.0}ms",
+                        t_k.elapsed().as_secs_f64() * 1000.0
+                    );
                 }
             }
 
@@ -705,8 +735,12 @@ impl SynthesizerQ {
                 for k in (m_split + 1).max(lattice_start)..=self.max_lde {
                     let t_k = std::time::Instant::now();
                     let (result, budget_hit) = self.dc_search_q(
-                        &target, k, m_split, dc_pass1_cap_for(self.epsilon),
-                        None, None,
+                        &target,
+                        k,
+                        m_split,
+                        dc_pass1_cap_for(self.epsilon),
+                        None,
+                        None,
                     );
                     if let Some(r) = result {
                         if trace {
@@ -716,11 +750,15 @@ impl SynthesizerQ {
                         return Some(r);
                     }
                     if trace {
-                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
+                        eprintln!(
+                            "[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
                             if budget_hit { " (budget hit)" } else { "" },
-                            t_k.elapsed().as_secs_f64() * 1000.0);
+                            t_k.elapsed().as_secs_f64() * 1000.0
+                        );
                     }
-                    if budget_hit { pass2_collector.lock().unwrap().push(k); }
+                    if budget_hit {
+                        pass2_collector.lock().unwrap().push(k);
+                    }
                 }
                 let mut pass2_queue: Vec<u32> = pass2_collector.into_inner().unwrap();
                 pass2_queue.sort_unstable();
@@ -730,7 +768,12 @@ impl SynthesizerQ {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
                     }
                     let (result, _) = self.dc_search_q(
-                        &target, k, m_split, dc_pass2_cap_for(self.epsilon), None, None,
+                        &target,
+                        k,
+                        m_split,
+                        dc_pass2_cap_for(self.epsilon),
+                        None,
+                        None,
                     );
                     if let Some(r) = result {
                         if trace {
@@ -740,8 +783,10 @@ impl SynthesizerQ {
                         return Some(r);
                     }
                     if trace {
-                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
-                            t_k.elapsed().as_secs_f64() * 1000.0);
+                        eprintln!(
+                            "[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
+                            t_k.elapsed().as_secs_f64() * 1000.0
+                        );
                     }
                 }
                 return None;
@@ -760,13 +805,20 @@ impl SynthesizerQ {
             let mut k_cursor = (m_split + 1).max(lattice_start);
 
             let parallel_result: Option<SynthResultQ> = 'outer: loop {
-                if k_cursor > self.max_lde { break 'outer None; }
-                if cross_lde_abort.load(Ordering::Relaxed) { break 'outer None; }
+                if k_cursor > self.max_lde {
+                    break 'outer None;
+                }
+                if cross_lde_abort.load(Ordering::Relaxed) {
+                    break 'outer None;
+                }
 
                 let window_end = (k_cursor + lde_window_size - 1).min(self.max_lde);
                 let lde_window: Vec<u32> = (k_cursor..=window_end).collect();
                 if trace {
-                    eprintln!("[zeta] dc m={m_split} pass1 parallel-lde window={:?} dispatching ...", lde_window);
+                    eprintln!(
+                        "[zeta] dc m={m_split} pass1 parallel-lde window={:?} dispatching ...",
+                        lde_window
+                    );
                 }
                 let t_window = std::time::Instant::now();
 
@@ -777,20 +829,24 @@ impl SynthesizerQ {
                 // abort fires. When `trigger_nodes == 0` peers launch
                 // immediately (window becomes naive parallel).
                 let trigger_nodes = self.parallel_lde_trigger_nodes;
-                let consumed_counters: Vec<std::sync::Arc<std::sync::atomic::AtomicU64>> =
-                    (0..lde_window.len())
-                        .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
-                        .collect();
-                let results: Mutex<Vec<(u32, Option<SynthResultQ>, bool)>> =
-                    Mutex::new(Vec::new());
+                let consumed_counters: Vec<std::sync::Arc<std::sync::atomic::AtomicU64>> = (0
+                    ..lde_window.len())
+                    .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
+                    .collect();
+                let results: Mutex<Vec<(u32, Option<SynthResultQ>, bool)>> = Mutex::new(Vec::new());
                 std::thread::scope(|s| {
                     for (i, &k) in lde_window.iter().enumerate() {
                         let results_ref = &results;
                         let abort_ref = &cross_lde_abort;
                         let pass2_ref = &pass2_collector;
                         let my_consumed = consumed_counters[i].clone();
-                        let predecessor_consumed: Option<std::sync::Arc<std::sync::atomic::AtomicU64>> =
-                            if i > 0 { Some(consumed_counters[i - 1].clone()) } else { None };
+                        let predecessor_consumed: Option<
+                            std::sync::Arc<std::sync::atomic::AtomicU64>,
+                        > = if i > 0 {
+                            Some(consumed_counters[i - 1].clone())
+                        } else {
+                            None
+                        };
                         s.spawn(move || {
                             // Wait for predecessor to consume `trigger_nodes`
                             // search-tree nodes (or for cross-LDE abort).
@@ -854,15 +910,19 @@ impl SynthesizerQ {
 
                 if let Some(r) = res {
                     if trace {
-                        eprintln!("[zeta] dc parallel-lde window wall  t={:.0}ms",
-                            t_window.elapsed().as_secs_f64() * 1000.0);
+                        eprintln!(
+                            "[zeta] dc parallel-lde window wall  t={:.0}ms",
+                            t_window.elapsed().as_secs_f64() * 1000.0
+                        );
                     }
                     break 'outer Some(r);
                 }
                 k_cursor = window_end + 1;
             };
 
-            if let Some(r) = parallel_result { return Some(r); }
+            if let Some(r) = parallel_result {
+                return Some(r);
+            }
 
             let mut pass2_queue: Vec<u32> = pass2_collector.into_inner().unwrap();
             pass2_queue.sort_unstable();
@@ -875,17 +935,29 @@ impl SynthesizerQ {
                 if trace {
                     eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
                 }
-                let (result, _) = self.dc_search_q(&target, k, m_split, dc_pass2_cap_for(self.epsilon), None, None);
+                let (result, _) = self.dc_search_q(
+                    &target,
+                    k,
+                    m_split,
+                    dc_pass2_cap_for(self.epsilon),
+                    None,
+                    None,
+                );
                 if let Some(r) = result {
                     if trace {
-                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
-                            r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                        eprintln!(
+                            "[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
+                            r.distance,
+                            t_k.elapsed().as_secs_f64() * 1000.0
+                        );
                     }
                     return Some(r);
                 }
                 if trace {
-                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
-                        t_k.elapsed().as_secs_f64() * 1000.0);
+                    eprintln!(
+                        "[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
+                        t_k.elapsed().as_secs_f64() * 1000.0
+                    );
                 }
             }
             return None;
@@ -899,17 +971,24 @@ impl SynthesizerQ {
             let (sols, budget_was_hit) = try_lattice_k(k, PASS1_CAP, &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
-                    eprintln!("[zeta] pass1 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
-                        r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
-                    diag::dump_zeta(&diag::snapshot(),
-                        &format!("synthesize ε={:.0e} k={k} (pass1)", self.epsilon));
+                    eprintln!(
+                        "[zeta] pass1 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
+                        r.distance,
+                        t_k.elapsed().as_secs_f64() * 1000.0
+                    );
+                    diag::dump_zeta(
+                        &diag::snapshot(),
+                        &format!("synthesize ε={:.0e} k={k} (pass1)", self.epsilon),
+                    );
                 }
                 return Some(r);
             }
             if trace {
-                eprintln!("[zeta] pass1 lde={k:>2}  none{}  t={:.0}ms",
+                eprintln!(
+                    "[zeta] pass1 lde={k:>2}  none{}  t={:.0}ms",
                     if budget_was_hit { " (budget hit)" } else { "" },
-                    t_k.elapsed().as_secs_f64() * 1000.0);
+                    t_k.elapsed().as_secs_f64() * 1000.0
+                );
             }
             if budget_was_hit {
                 pass2_queue.push(k);
@@ -925,22 +1004,31 @@ impl SynthesizerQ {
             let (sols, _) = try_lattice_k(k, PASS2_CAP, &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
-                    eprintln!("[zeta] pass2 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
-                        r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
-                    diag::dump_zeta(&diag::snapshot(),
-                        &format!("synthesize ε={:.0e} k={k} (pass2)", self.epsilon));
+                    eprintln!(
+                        "[zeta] pass2 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
+                        r.distance,
+                        t_k.elapsed().as_secs_f64() * 1000.0
+                    );
+                    diag::dump_zeta(
+                        &diag::snapshot(),
+                        &format!("synthesize ε={:.0e} k={k} (pass2)", self.epsilon),
+                    );
                 }
                 return Some(r);
             }
             if trace {
-                eprintln!("[zeta] pass2 lde={k:>2}  none   t={:.0}ms",
-                    t_k.elapsed().as_secs_f64() * 1000.0);
+                eprintln!(
+                    "[zeta] pass2 lde={k:>2}  none   t={:.0}ms",
+                    t_k.elapsed().as_secs_f64() * 1000.0
+                );
             }
         }
 
         if trace {
-            diag::dump_zeta(&diag::snapshot(),
-                &format!("synthesize ε={:.0e} (no sol)", self.epsilon));
+            diag::dump_zeta(
+                &diag::snapshot(),
+                &format!("synthesize ε={:.0e} (no sol)", self.epsilon),
+            );
         }
         None
     }
@@ -979,8 +1067,8 @@ impl SynthesizerQ {
         external_abort: Option<&AtomicBool>,
         consumed: Option<&std::sync::atomic::AtomicU64>,
     ) -> (Option<SynthResultQ>, bool) {
-        use rayon::prelude::*;
         use crate::synthesis::diag;
+        use rayon::prelude::*;
 
         let prefixes = build_l_q(m_split);
         let d_target = det_phase_of(target);
@@ -1065,16 +1153,26 @@ impl SynthesizerQ {
                         let hit = diamond_distance_u2q_float(&u_full, &target_local) < epsilon;
                         if hit && capture {
                             diag::try_capture(diag::CapturedFind {
-                                x_inner: *x, k_inner, k_total, d_r, d_l,
+                                x_inner: *x,
+                                k_inner,
+                                k_total,
+                                d_r,
+                                d_l,
                             });
                         }
                         hit
                     };
 
                     let sols = phase1_with_stop(
-                        scratch, &y, k_inner, epsilon,
-                        per_prefix_cap, &budget_hit, should_stop,
-                        external_abort, consumed,
+                        scratch,
+                        &y,
+                        k_inner,
+                        epsilon,
+                        per_prefix_cap,
+                        &budget_hit,
+                        should_stop,
+                        external_abort,
+                        consumed,
                     );
 
                     // Propagate this prefix's budget-hit signal to the
@@ -1097,6 +1195,7 @@ impl SynthesizerQ {
                                 gates: Some(gates),
                                 lde: k_total,
                                 distance: dist,
+                                x: Some(*sol),
                             });
                         }
                     }
@@ -1129,20 +1228,16 @@ mod tests {
     #[test]
     fn build_l_q_size_growth() {
         for m in 0..=5 {
-            let raw = if m == 0 {
-                1
-            } else {
-                9 * 6u64.pow(m - 1) * 24
-            };
+            let raw = if m == 0 { 1 } else { 9 * 6u64.pow(m - 1) * 24 };
             let l = build_l_q(m);
             let dedup = l.len();
             let factor = raw as f64 / dedup as f64;
-            eprintln!(
-                "m={m}  raw={raw:>8}  dedup={dedup:>8}  factor={factor:.2}x"
-            );
+            eprintln!("m={m}  raw={raw:>8}  dedup={dedup:>8}  factor={factor:.2}x");
             // Sanity: dedup never grows the set.
-            assert!((dedup as u64) <= raw,
-                "dedup ({dedup}) > raw ({raw}) at m={m}");
+            assert!(
+                (dedup as u64) <= raw,
+                "dedup ({dedup}) > raw ({raw}) at m={m}"
+            );
             // m=0 is just identity.
             if m == 0 {
                 assert_eq!(dedup, 1);
@@ -1181,8 +1276,10 @@ mod tests {
         // Also show what threshold-filtering buys: keep only
         // prefixes with k_prefix ≥ τ, recompute S(m, α=2.0).
         eprintln!("\nThreshold filter τ on k_prefix, S(m, α=2):");
-        eprintln!("{:>3}  {:>8}  τ=0    τ=4    τ=8    τ=12   τ=16   τ=20",
-                  "m", "|L_m^Q|");
+        eprintln!(
+            "{:>3}  {:>8}  τ=0    τ=4    τ=8    τ=12   τ=16   τ=20",
+            "m", "|L_m^Q|"
+        );
         for m in 1..=5 {
             let l = build_l_q(m);
             let mut counts: Vec<u64> = vec![0; 64];
@@ -1238,11 +1335,11 @@ mod tests {
                 }
             }
             let total: u64 = hist.iter().sum();
-            eprintln!(
-                "m={m}  total={total}  k range [{k_min}, {k_max}]"
-            );
+            eprintln!("m={m}  total={total}  k range [{k_min}, {k_max}]");
             for (k, count) in hist.iter().enumerate() {
-                if *count == 0 { continue; }
+                if *count == 0 {
+                    continue;
+                }
                 let pct = 100.0 * (*count as f64) / (total as f64);
                 eprintln!("    k={k:>2}: {count:>7}  ({pct:>5.1}%)");
             }
@@ -1254,18 +1351,24 @@ mod tests {
     #[test]
     #[ignore]
     fn z1_dc_dr_filter_random_targets() {
-        use rand::{Rng, SeedableRng};
         use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
 
         fn rz(t: f64) -> Mat2 {
             [
-                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
-                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
+                [
+                    Complex64::from_polar(1.0, -t / 2.0),
+                    Complex64::new(0.0, 0.0),
+                ],
+                [
+                    Complex64::new(0.0, 0.0),
+                    Complex64::from_polar(1.0, t / 2.0),
+                ],
             ]
         }
         fn ry(t: f64) -> Mat2 {
-            let c = (t/2.0).cos();
-            let s = (t/2.0).sin();
+            let c = (t / 2.0).cos();
+            let s = (t / 2.0).sin();
             [
                 [Complex64::new(c, 0.0), Complex64::new(-s, 0.0)],
                 [Complex64::new(s, 0.0), Complex64::new(c, 0.0)],
@@ -1273,8 +1376,14 @@ mod tests {
         }
         fn matmul(a: Mat2, b: Mat2) -> Mat2 {
             [
-                [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
-                [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
+                [
+                    a[0][0] * b[0][0] + a[0][1] * b[1][0],
+                    a[0][0] * b[0][1] + a[0][1] * b[1][1],
+                ],
+                [
+                    a[1][0] * b[0][0] + a[1][1] * b[1][0],
+                    a[1][0] * b[0][1] + a[1][1] * b[1][1],
+                ],
             ]
         }
 
@@ -1304,14 +1413,18 @@ mod tests {
             let ts = t0.elapsed().as_secs_f64() * 1000.0;
             assert!(r_s.is_some());
 
-            let synth_m1 = SynthesizerQ::new(eps).with_max_lde(20)
-                .with_dc_split(1).with_dc_dr_filter(vec![0, 1, 15]);
+            let synth_m1 = SynthesizerQ::new(eps)
+                .with_max_lde(20)
+                .with_dc_split(1)
+                .with_dc_dr_filter(vec![0, 1, 15]);
             let t0 = std::time::Instant::now();
             let r_m1 = synth_m1.synthesize(target);
             let tm1 = t0.elapsed().as_secs_f64() * 1000.0;
 
-            let synth_m2 = SynthesizerQ::new(eps).with_max_lde(20)
-                .with_dc_split(2).with_dc_dr_filter(vec![0]);
+            let synth_m2 = SynthesizerQ::new(eps)
+                .with_max_lde(20)
+                .with_dc_split(2)
+                .with_dc_dr_filter(vec![0]);
             let t0 = std::time::Instant::now();
             let r_m2 = synth_m2.synthesize(target);
             let tm2 = t0.elapsed().as_secs_f64() * 1000.0;
@@ -1319,8 +1432,12 @@ mod tests {
             total_single += ts;
             total_m1_relaxed += tm1;
             total_m2_strict += tm2;
-            if tm1 < ts { wins_m1 += 1; }
-            if tm2 < ts { wins_m2 += 1; }
+            if tm1 < ts {
+                wins_m1 += 1;
+            }
+            if tm2 < ts {
+                wins_m2 += 1;
+            }
             eprintln!(
                 "  trial {i}  single={ts:>6.0}ms  m1_relaxed={tm1:>6.0}ms ({:.2}×)  m2_strict={tm2:>6.0}ms ({:.2}×)",
                 ts/tm1, ts/tm2
@@ -1345,8 +1462,14 @@ mod tests {
     fn z1_dc_dr_filter() {
         let theta = 0.3_f64;
         let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+            [
+                Complex64::from_polar(1.0, -theta / 2.0),
+                Complex64::new(0.0, 0.0),
+            ],
+            [
+                Complex64::new(0.0, 0.0),
+                Complex64::from_polar(1.0, theta / 2.0),
+            ],
         ];
         let eps = 1e-3_f64;
 
@@ -1398,11 +1521,14 @@ mod tests {
                 l_size as u64
             } else {
                 let prefixes = build_l_q(*m);
-                prefixes.iter().filter(|u| {
-                    let d_l = det_phase_of(&u.to_float());
-                    let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
-                    filter.contains(&d_r)
-                }).count() as u64
+                prefixes
+                    .iter()
+                    .filter(|u| {
+                        let d_l = det_phase_of(&u.to_float());
+                        let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                        filter.contains(&d_r)
+                    })
+                    .count() as u64
             };
             eprintln!(
                 "  m={m} {label:<22} pass={n_pass:>5}/{l_size:<6}  lde={:?}  t={:>7.0}ms",
@@ -1417,8 +1543,14 @@ mod tests {
     fn z1_dc_smoke_rz_eps_1e_3() {
         let theta = 0.3_f64;
         let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+            [
+                Complex64::from_polar(1.0, -theta / 2.0),
+                Complex64::new(0.0, 0.0),
+            ],
+            [
+                Complex64::new(0.0, 0.0),
+                Complex64::from_polar(1.0, theta / 2.0),
+            ],
         ];
         let eps = 1e-3_f64;
 
@@ -1479,14 +1611,22 @@ mod tests {
         // f64 GS is on at moderate ε but auto-disabled at ε ≤ 1e-8
         // (where f64's 2-bit precision margin causes ladder thrashing).
         for &eps in &[1e-3, 1e-4, 1e-5, 1e-6, 1e-7_f64] {
-            assert!(SynthesizerQ::new(eps).use_f64_gs, "f64 default should be on at ε={eps:.0e}");
+            assert!(
+                SynthesizerQ::new(eps).use_f64_gs,
+                "f64 default should be on at ε={eps:.0e}"
+            );
         }
         for &eps in &[1e-8_f64] {
-            assert!(!SynthesizerQ::new(eps).use_f64_gs, "f64 default should be OFF at ε={eps:.0e}");
+            assert!(
+                !SynthesizerQ::new(eps).use_f64_gs,
+                "f64 default should be OFF at ε={eps:.0e}"
+            );
         }
 
         // Manual override still works.
-        let s_override = SynthesizerQ::new(1e-7).with_dc_split(1).with_dc_dr_filter(vec![0, 1, 15]);
+        let s_override = SynthesizerQ::new(1e-7)
+            .with_dc_split(1)
+            .with_dc_dr_filter(vec![0, 1, 15]);
         assert_eq!(s_override.dc_split, Some(1));
         assert_eq!(s_override.dc_dr_filter, vec![0u32, 1, 15]);
         let s_no_f64 = SynthesizerQ::new(1e-3).with_f64_gs(false);
@@ -1494,12 +1634,18 @@ mod tests {
 
         // BKZ-4 default: on at ε ≤ 1e-7, off above.
         for &eps in &[1e-3, 1e-4, 1e-5, 1e-6_f64] {
-            assert_eq!(SynthesizerQ::new(eps).bkz_block_size, 0,
-                "BKZ default should be 0 at ε={eps:.0e}");
+            assert_eq!(
+                SynthesizerQ::new(eps).bkz_block_size,
+                0,
+                "BKZ default should be 0 at ε={eps:.0e}"
+            );
         }
         for &eps in &[1e-7, 1e-8_f64] {
-            assert_eq!(SynthesizerQ::new(eps).bkz_block_size, 4,
-                "BKZ default should be 4 at ε={eps:.0e}");
+            assert_eq!(
+                SynthesizerQ::new(eps).bkz_block_size,
+                4,
+                "BKZ default should be 4 at ε={eps:.0e}"
+            );
         }
     }
 
@@ -1509,7 +1655,9 @@ mod tests {
         let zero = Complex64::new(0.0, 0.0);
         let target = complex_target([[one, zero], [zero, one]]);
         let synth = SynthesizerQ::new(1e-7);
-        let result = synth.synthesize(target).expect("identity should synthesize");
+        let result = synth
+            .synthesize(target)
+            .expect("identity should synthesize");
         assert_eq!(result.lde, 0, "identity should be at k=0");
         assert!(result.distance < 1e-7);
     }
@@ -1584,8 +1732,10 @@ mod tests {
         ];
         let synth = SynthesizerQ::new(1e-8).with_max_lde(2);
         let result = synth.synthesize(target);
-        assert!(result.is_none(),
-            "Rx(π/16) should not be reachable in Clifford+√T at k≤2 with ε=1e-8");
+        assert!(
+            result.is_none(),
+            "Rx(π/16) should not be reachable in Clifford+√T at k≤2 with ε=1e-8"
+        );
     }
 
     #[test]
@@ -1600,7 +1750,7 @@ mod tests {
             [Complex64::new(c, 0.0), -i * s],
             [-i * s, Complex64::new(c, 0.0)],
         ];
-        let synth = SynthesizerQ::new(0.3).with_max_lde(2);  // very loose
+        let synth = SynthesizerQ::new(0.3).with_max_lde(2); // very loose
         let result = synth.synthesize(target);
         assert!(result.is_some(), "loose ε should find an approximation");
         let r = result.unwrap();
@@ -1616,7 +1766,7 @@ mod tests {
         let targets: Vec<U2Q> = vec![
             U2Q::q(),
             U2Q::t(),
-            U2Q::q() * U2Q::q(),  // = T
+            U2Q::q() * U2Q::q(), // = T
             U2Q::h() * U2Q::q() * U2Q::h(),
             U2Q::q() * U2Q::h() * U2Q::q(),
         ];
@@ -1628,20 +1778,23 @@ mod tests {
             // Reconstruct via gates_to_u2q.
             let mut rebuilt = U2Q::eye();
             for c in gates.chars() {
-                rebuilt = rebuilt * match c {
-                    'H' => U2Q::h(),
-                    'S' => U2Q::s(),
-                    'T' => U2Q::t(),
-                    'Q' => U2Q::q(),
-                    'X' => U2Q::x(),
-                    'Y' => U2Q::y(),
-                    'Z' => U2Q::z(),
-                    _ => panic!("unexpected gate {c}"),
-                };
+                rebuilt = rebuilt
+                    * match c {
+                        'H' => U2Q::h(),
+                        'S' => U2Q::s(),
+                        'T' => U2Q::t(),
+                        'Q' => U2Q::q(),
+                        'X' => U2Q::x(),
+                        'Y' => U2Q::y(),
+                        'Z' => U2Q::z(),
+                        _ => panic!("unexpected gate {c}"),
+                    };
             }
             let dist = diamond_distance_float(&rebuilt.to_float(), &target);
-            assert!(dist < 1e-7,
-                "round-trip dist for gate string \"{gates}\" = {dist:.3e}");
+            assert!(
+                dist < 1e-7,
+                "round-trip dist for gate string \"{gates}\" = {dist:.3e}"
+            );
         }
     }
 
@@ -1650,26 +1803,39 @@ mod tests {
     /// Run with `cargo test --release --lib synthesize_rz_eps_1e_3 --
     /// --ignored --nocapture`.
     #[test]
-    #[ignore]
+    //#[ignore]
     fn synthesize_rz_eps_1e_3() {
         let theta = 0.3_f64;
         let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+            [
+                Complex64::from_polar(1.0, -theta / 2.0),
+                Complex64::new(0.0, 0.0),
+            ],
+            [
+                Complex64::new(0.0, 0.0),
+                Complex64::from_polar(1.0, theta / 2.0),
+            ],
         ];
-        let synth = SynthesizerQ::new(1e-3).with_max_lde(15);
+        let synth = SynthesizerQ::new(1e-6).with_max_lde(15);
         let t0 = std::time::Instant::now();
-        let result = synth.synthesize(target).expect("Rz(0.3) at ε=1e-3 should land");
+        let result = synth
+            .synthesize(target)
+            .expect("Rz(0.3) at ε=1e-6 should land");
         eprintln!(
-            "Rz(0.3) at ε=1e-3: lde={} dist={:.3e} t={:?}",
-            result.lde, result.distance, t0.elapsed()
+            "Rz(0.3) at ε=1e-6: lde={} dist={:.3e} t={:?}",
+            result.lde,
+            result.distance,
+            t0.elapsed()
         );
         assert!(result.distance < 1e-3);
         // Upper bound from 8D Clifford+T: lde=28. Z[ζ_16] should land much
         // smaller (~10) since `T = QQ` doubles the effective denominator
         // factor in the 8D path.
-        assert!(result.lde <= 14,
-            "expected lde ≤ 14 (8D Clifford+T is 28); got {}", result.lde);
+        assert!(
+            result.lde <= 14,
+            "expected lde ≤ 14 (8D Clifford+T is 28); got {}",
+            result.lde
+        );
     }
 
     #[test]
@@ -1678,17 +1844,31 @@ mod tests {
         // forcing min_lde > BRUTE_LIMIT exercises the LLL+SE lattice path.
         let theta = 0.3_f64;
         let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+            [
+                Complex64::from_polar(1.0, -theta / 2.0),
+                Complex64::new(0.0, 0.0),
+            ],
+            [
+                Complex64::new(0.0, 0.0),
+                Complex64::from_polar(1.0, theta / 2.0),
+            ],
         ];
         let synth = SynthesizerQ::new(0.05)
             .with_min_lde(BRUTE_LIMIT + 1)
             .with_max_lde(12);
-        let result = synth.synthesize(target).expect("Rz(0.3) at ε=0.05 should land");
-        assert!(result.lde > BRUTE_LIMIT,
-            "expected lattice backend (k > {BRUTE_LIMIT}), got k={}", result.lde);
-        assert!(result.distance < 0.05,
-            "diamond distance {:.3e} exceeds ε=0.05", result.distance);
+        let result = synth
+            .synthesize(target)
+            .expect("Rz(0.3) at ε=0.05 should land");
+        assert!(
+            result.lde > BRUTE_LIMIT,
+            "expected lattice backend (k > {BRUTE_LIMIT}), got k={}",
+            result.lde
+        );
+        assert!(
+            result.distance < 0.05,
+            "diamond distance {:.3e} exceeds ε=0.05",
+            result.distance
+        );
         assert!(result.gates.is_some());
     }
 }

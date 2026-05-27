@@ -6,11 +6,9 @@
 use i256::i256;
 use rug::{Assign, Float as RFloat};
 
-use super::scratch::{
-    compute_scale_bits, imat_zero, rfv, IntScratch, TARGET_BITS,
-};
+use super::scratch::{compute_scale_bits, imat_zero, rfv, IntScratch, TARGET_BITS};
 use super::scratch::{r_add, r_div, r_mul, r_sub};
-use crate::rings::Float;
+use crate::rings::{zomicron::SIGMA_INV_U, Float};
 
 // ─── build_q_mpfr: anisotropic Q-metric construction in MPFR ─────────────────
 
@@ -18,7 +16,7 @@ use crate::rings::Float;
 /// `scratch.q_mpfr`. Also computes the cap center into `scratch.c`.
 /// Q is the metric used by the LLL; the cap center is the projection of
 /// the target onto the alignment direction, used by the post-LLL LU solve.
-pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float) {
+pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], v: &[Float; 4], k: u32, eps: Float) {
     let prec = scratch.prec_q;
 
     // R² = 2^k. For k ≥ 64, `1u64 << k` is UB — build via f64 powi (f64 exp
@@ -48,18 +46,10 @@ pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
     for i in 0..8 {
         scratch.y_rf[i].assign(rfv(prec, y[i]));
     }
-    scratch.y_norm_sq.assign(0.0_f64);
-    for i in 0..8 {
-        r_mul!(scratch.tmp, scratch.y_rf[i], scratch.y_rf[i]);
-        let acc_clone = scratch.y_norm_sq.clone();
-        r_add!(scratch.y_norm_sq, acc_clone, scratch.tmp);
-    }
-    r_div!(scratch.inv_y_norm_sq, scratch.one, scratch.y_norm_sq);
-
     for i in 0..8 {
         for j in 0..8 {
             r_mul!(scratch.tmp, scratch.y_rf[i], scratch.y_rf[j]);
-            r_mul!(scratch.yhat_yhat_t[i][j], scratch.tmp, scratch.inv_y_norm_sq);
+            scratch.yy_t[i][j].assign(&scratch.tmp);
         }
     }
 
@@ -68,8 +58,8 @@ pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
 
     for i in 0..8 {
         for j in 0..8 {
-            r_mul!(scratch.tmp, scratch.inv_dy_sq, scratch.yhat_yhat_t[i][j]);
-            r_sub!(scratch.tmp2, scratch.p_u[i][j], scratch.yhat_yhat_t[i][j]);
+            r_mul!(scratch.tmp, scratch.inv_dy_sq, scratch.yy_t[i][j]);
+            r_sub!(scratch.tmp2, scratch.p_u[i][j], scratch.yy_t[i][j]);
             r_mul!(scratch.tmp3, scratch.inv_dp_sq, scratch.tmp2);
             r_mul!(scratch.acc, scratch.inv_r_sq, scratch.p_ub[i][j]);
             let tmp_clone = scratch.tmp.clone();
@@ -78,15 +68,29 @@ pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
         }
     }
 
-    // Cap center
+    // Cap center: c = cap_mid * R * Σ^{-1}(v, 0), where in the crate's
+    // image row order (Re u, Im u, Re u•, Im u•, Re t, Im t, Re t•, Im t•)
+    // the image vector is (v0, v1, 0, 0, v2, v3, 0, 0).
+    // v = (Re V00, Im V00, Re V10, Im V10). For y = Σ_top^T v as built by
+    // clifford_pi6::compute_y, these components are available directly.
     r_mul!(scratch.tmp, scratch.eps_rf, scratch.eps_rf);
     r_sub!(scratch.tmp2, scratch.one, scratch.tmp);
     let sqrt_1m = scratch.tmp2.clone().sqrt();
     r_add!(scratch.tmp, scratch.one, sqrt_1m);
     r_div!(scratch.cap_mid, scratch.tmp, scratch.two);
+
+    // TODO: c_seed_i is computed in f64 before lifting to MPFR.  At deep
+    // epsilon (~1e-15 and below) this could leak f64 precision into the
+    // cap center.  Promote SIGMA_INV_U @ v to MPFR end-to-end if precision
+    // matters.
     for i in 0..8 {
-        scratch.tmp.assign(rfv(prec, y[i]));
-        r_mul!(scratch.c[i], scratch.tmp, scratch.cap_mid);
+        let mut c_seed_i = 0.0_f64;
+        for (j, col) in [0usize, 1, 4, 5].iter().copied().enumerate() {
+            c_seed_i += SIGMA_INV_U[i][col] * v[j];
+        }
+        scratch.tmp.assign(rfv(prec, c_seed_i));
+        r_mul!(scratch.tmp2, scratch.tmp, scratch.r);
+        r_mul!(scratch.c[i], scratch.tmp2, scratch.cap_mid);
     }
 }
 
@@ -173,5 +177,9 @@ fn rfloat_to_i256(x: &RFloat) -> i256 {
         bytes[idx * 8..(idx + 1) * 8].copy_from_slice(&limb.to_le_bytes());
     }
     let val = i256::from_le_bytes(bytes);
-    if sign_neg { -val } else { val }
+    if sign_neg {
+        -val
+    } else {
+        val
+    }
 }

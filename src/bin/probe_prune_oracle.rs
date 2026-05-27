@@ -5,18 +5,16 @@
 
 use cyclosynth::matrix::U2Q;
 use cyclosynth::synthesis::clifford_sqrt_t::{
-    SynthesizerQ, build_l_q, det_phase_of, solution_to_u2q_d,
+    build_l_q, det_phase_of, solution_to_u2q_d, SynthesizerQ,
 };
 use cyclosynth::synthesis::diag;
 use cyclosynth::synthesis::distance::diamond_distance_float;
-use cyclosynth::synthesis::lattice_zeta::{
-    IntScratch16, build_q_int_zeta, build_q_mpfr_zeta_from_mpfr_v,
-    det16_exact, phase1_with_stop_mpfr, set_bypass_norm_prune,
-};
-use cyclosynth::synthesis::lattice_zeta::cholesky_lu::{
-    cholesky_f64_16, lu_solve_int_inplace_16,
-};
+use cyclosynth::synthesis::lattice_zeta::cholesky_lu::{cholesky_f64_16, lu_solve_int_inplace_16};
 use cyclosynth::synthesis::lattice_zeta::lll::run_lll_16;
+use cyclosynth::synthesis::lattice_zeta::{
+    build_q_int_zeta, build_q_mpfr_zeta_from_mpfr_v, det16_exact, phase1_with_stop_mpfr,
+    set_bypass_norm_prune, IntScratch16,
+};
 use cyclosynth::synthesis::search_zeta::uv_to_xy_zeta_mpfr;
 use num_complex::Complex;
 use rug::{Assign, Float as RFloat};
@@ -33,8 +31,8 @@ type Mat2Mpfr = [[(rug::Float, rug::Float); 2]; 2];
 /// Convert `U2Q` to `Mat2Mpfr`. Lifts ZZeta integer coefficients to MPFR
 /// via the basis `(cos(kπ/8), sin(kπ/8))`, k=0..7, then divides by `√2^k`.
 fn u2q_to_mat2_mpfr(u: &U2Q, prec: u32) -> Mat2Mpfr {
-    use std::f64::consts::PI;
     use cyclosynth::rings::types::int_to_f64;
+    use std::f64::consts::PI;
 
     let two = RFloat::with_val(prec, 2.0);
     let inv_sqrt2 = RFloat::with_val(prec, 1.0) / two.clone().sqrt();
@@ -46,12 +44,21 @@ fn u2q_to_mat2_mpfr(u: &U2Q, prec: u32) -> Mat2Mpfr {
     }
     let basis: [(RFloat, RFloat); 8] = std::array::from_fn(|k| {
         let theta = (k as f64) * PI / 8.0;
-        (RFloat::with_val(prec, theta.cos()), RFloat::with_val(prec, theta.sin()))
+        (
+            RFloat::with_val(prec, theta.cos()),
+            RFloat::with_val(prec, theta.sin()),
+        )
     });
     let zzeta_to_re_im = |z: &cyclosynth::rings::ZZeta| -> (RFloat, RFloat) {
         let coeffs = [
-            int_to_f64(z.a), int_to_f64(z.b), int_to_f64(z.c), int_to_f64(z.d),
-            int_to_f64(z.e), int_to_f64(z.f), int_to_f64(z.g), int_to_f64(z.h),
+            int_to_f64(z.a),
+            int_to_f64(z.b),
+            int_to_f64(z.c),
+            int_to_f64(z.d),
+            int_to_f64(z.e),
+            int_to_f64(z.f),
+            int_to_f64(z.g),
+            int_to_f64(z.h),
         ];
         let mut re = RFloat::with_val(prec, 0.0);
         let mut im = RFloat::with_val(prec, 0.0);
@@ -76,14 +83,15 @@ fn u2q_dag_times_mat2_mpfr(u_l: &U2Q, target: &Mat2Mpfr, prec: u32) -> Mat2Mpfr 
     let ud10 = (u[0][1].0.clone(), RFloat::with_val(prec, -&u[0][1].1));
     let ud11 = (u[1][1].0.clone(), RFloat::with_val(prec, -&u[1][1].1));
     let mul = |a: &(RFloat, RFloat), b: &(RFloat, RFloat)| -> (RFloat, RFloat) {
-        let re = RFloat::with_val(prec, &a.0 * &b.0)
-            - RFloat::with_val(prec, &a.1 * &b.1);
-        let im = RFloat::with_val(prec, &a.0 * &b.1)
-            + RFloat::with_val(prec, &a.1 * &b.0);
+        let re = RFloat::with_val(prec, &a.0 * &b.0) - RFloat::with_val(prec, &a.1 * &b.1);
+        let im = RFloat::with_val(prec, &a.0 * &b.1) + RFloat::with_val(prec, &a.1 * &b.0);
         (RFloat::with_val(prec, re), RFloat::with_val(prec, im))
     };
     let add = |a: (RFloat, RFloat), b: (RFloat, RFloat)| -> (RFloat, RFloat) {
-        (RFloat::with_val(prec, &a.0 + &b.0), RFloat::with_val(prec, &a.1 + &b.1))
+        (
+            RFloat::with_val(prec, &a.0 + &b.0),
+            RFloat::with_val(prec, &a.1 + &b.1),
+        )
     };
     [
         [
@@ -100,14 +108,18 @@ fn u2q_dag_times_mat2_mpfr(u_l: &U2Q, target: &Mat2Mpfr, prec: u32) -> Mat2Mpfr 
 /// Column-1 of an MPFR target as `(Re V₀₀, Im V₀₀, Re V₁₀, Im V₁₀)`.
 fn unitary_to_uv_zeta_mpfr(target: &Mat2Mpfr) -> [rug::Float; 4] {
     [
-        target[0][0].0.clone(), target[0][0].1.clone(),
-        target[1][0].0.clone(), target[1][0].1.clone(),
+        target[0][0].0.clone(),
+        target[0][0].1.clone(),
+        target[1][0].0.clone(),
+        target[1][0].1.clone(),
     ]
 }
 
 fn rz_f64(t: f64) -> Mat2 {
-    [[C64::from_polar(1.0, -t / 2.0), C64::new(0.0, 0.0)],
-     [C64::new(0.0, 0.0), C64::from_polar(1.0, t / 2.0)]]
+    [
+        [C64::from_polar(1.0, -t / 2.0), C64::new(0.0, 0.0)],
+        [C64::new(0.0, 0.0), C64::from_polar(1.0, t / 2.0)],
+    ]
 }
 
 fn rz_mpfr(theta_mpfr: &RFloat, prec: u32) -> Mat2Mpfr {
@@ -116,14 +128,25 @@ fn rz_mpfr(theta_mpfr: &RFloat, prec: u32) -> Mat2Mpfr {
     let sin_half = half.clone().sin();
     let zero = RFloat::with_val(prec, 0.0);
     [
-        [(cos_half.clone(), RFloat::with_val(prec, -&sin_half)), (zero.clone(), zero.clone())],
+        [
+            (cos_half.clone(), RFloat::with_val(prec, -&sin_half)),
+            (zero.clone(), zero.clone()),
+        ],
         [(zero.clone(), zero.clone()), (cos_half, sin_half)],
     ]
 }
 
-fn find_u_l(prefixes: &[U2Q], d_l: u32, u_r: U2Q, target: &Mat2, expected_dist: f64) -> Option<U2Q> {
+fn find_u_l(
+    prefixes: &[U2Q],
+    d_l: u32,
+    u_r: U2Q,
+    target: &Mat2,
+    expected_dist: f64,
+) -> Option<U2Q> {
     for u_l in prefixes.iter() {
-        if det_phase_of(&u_l.to_float()) != d_l { continue; }
+        if det_phase_of(&u_l.to_float()) != d_l {
+            continue;
+        }
         let u_full_test = *u_l * u_r;
         let f_test = u_full_test.to_float();
         let diff = diamond_distance_float(&f_test, target);
@@ -156,7 +179,8 @@ fn partial_eucl_mpfr(basis: &[[i64; 16]; 16], z: &[i64; 16], depth_set: usize) -
     }
 
     // Lift to MPFR.
-    let mut g: [[Float; 16]; 16] = std::array::from_fn(|_| std::array::from_fn(|_| Float::with_val(PREC, 0.0)));
+    let mut g: [[Float; 16]; 16] =
+        std::array::from_fn(|_| std::array::from_fn(|_| Float::with_val(PREC, 0.0)));
     for i in 0..16 {
         for j in 0..16 {
             // i128 → MPFR via two-limb: hi*2^64 + lo.
@@ -173,7 +197,8 @@ fn partial_eucl_mpfr(basis: &[[i64; 16]; 16], z: &[i64; 16], depth_set: usize) -
     }
 
     // Cholesky G = L L^T (L lower triangular, MPFR).
-    let mut l: [[Float; 16]; 16] = std::array::from_fn(|_| std::array::from_fn(|_| Float::with_val(PREC, 0.0)));
+    let mut l: [[Float; 16]; 16] =
+        std::array::from_fn(|_| std::array::from_fn(|_| Float::with_val(PREC, 0.0)));
     for i in 0..16 {
         for j in 0..=i {
             let mut s = g[i][j].clone();
@@ -249,7 +274,9 @@ fn dd_add(a: DD, b: DD) -> DD {
 }
 
 #[inline]
-fn dd_sub(a: DD, b: DD) -> DD { dd_add(a, (-b.0, -b.1)) }
+fn dd_sub(a: DD, b: DD) -> DD {
+    dd_add(a, (-b.0, -b.1))
+}
 
 #[inline]
 fn dd_mul(a: DD, b: DD) -> DD {
@@ -259,10 +286,14 @@ fn dd_mul(a: DD, b: DD) -> DD {
 }
 
 #[inline]
-fn dd_from_f64(a: f64) -> DD { (a, 0.0) }
+fn dd_from_f64(a: f64) -> DD {
+    (a, 0.0)
+}
 
 #[inline]
-fn dd_to_f64(a: DD) -> f64 { a.0 + a.1 }
+fn dd_to_f64(a: DD) -> f64 {
+    a.0 + a.1
+}
 
 /// Reciprocal in dd: one Newton step from a f64 initial guess gives
 /// ~106-bit accuracy. r' = r · (2 − b·r).
@@ -277,13 +308,17 @@ fn dd_recip(b: DD) -> DD {
 }
 
 #[inline]
-fn dd_div(a: DD, b: DD) -> DD { dd_mul(a, dd_recip(b)) }
+fn dd_div(a: DD, b: DD) -> DD {
+    dd_mul(a, dd_recip(b))
+}
 
 /// Square root in dd. One Newton step from f64 guess: x_new = x + (s − x²)/(2x).
 /// The (s − x²) is computed in dd; the divide uses dd_recip for ~106-bit accuracy.
 #[inline]
 fn dd_sqrt(s: DD) -> DD {
-    if s.0 <= 0.0 { return (0.0, 0.0); }
+    if s.0 <= 0.0 {
+        return (0.0, 0.0);
+    }
     let x = s.0.sqrt();
     let x_dd = dd_from_f64(x);
     let x_sq = dd_mul(x_dd, x_dd);
@@ -310,7 +345,9 @@ fn partial_eucl_dd_scratch(basis: &[[i64; 16]; 16], z: &[i64; 16], depth_set: us
     // Lift to dd: i128 = hi·2^64 + lo. Both halves fit in f64 exactly when
     // ≤ 2^53; we exploit dd's 106-bit range via split.
     let i128_to_dd = |v: i128| -> DD {
-        if v == 0 { return (0.0, 0.0); }
+        if v == 0 {
+            return (0.0, 0.0);
+        }
         let neg = v < 0;
         let abs = if neg { -v } else { v } as u128;
         let hi = (abs >> 64) as u64;
@@ -321,7 +358,11 @@ fn partial_eucl_dd_scratch(basis: &[[i64; 16]; 16], z: &[i64; 16], depth_set: us
         let two64 = (1u128 << 63) as f64 * 2.0;
         let p = dd_mul(dd_from_f64(hi_f), dd_from_f64(two64));
         let r = dd_add(p, dd_from_f64(lo_f));
-        if neg { (-r.0, -r.1) } else { r }
+        if neg {
+            (-r.0, -r.1)
+        } else {
+            r
+        }
     };
 
     let mut g: [[DD; 16]; 16] = [[(0.0, 0.0); 16]; 16];
@@ -340,7 +381,9 @@ fn partial_eucl_dd_scratch(basis: &[[i64; 16]; 16], z: &[i64; 16], depth_set: us
                 s = dd_sub(s, prod);
             }
             if i == j {
-                if s.0 <= 0.0 { return (f64::INFINITY, 0.0); }
+                if s.0 <= 0.0 {
+                    return (f64::INFINITY, 0.0);
+                }
                 l[i][i] = dd_sqrt(s);
             } else {
                 l[i][j] = dd_div(s, l[j][j]);
@@ -367,7 +410,11 @@ fn partial_eucl_dd_scratch(basis: &[[i64; 16]; 16], z: &[i64; 16], depth_set: us
                     let two32 = (1u64 << 32) as f64;
                     let p = dd_mul(dd_from_f64(hi), dd_from_f64(two32));
                     let r = dd_add(p, dd_from_f64(lo));
-                    if neg { (-r.0, -r.1) } else { r }
+                    if neg {
+                        (-r.0, -r.1)
+                    } else {
+                        r
+                    }
                 }
             };
             let term = dd_mul(l[j][i], zj_dd);
@@ -405,13 +452,21 @@ fn partial_eucl_rug106(basis: &[[i64; 16]; 16], z: &[i64; 16], depth_set: usize)
         let mut f = Float::with_val(PREC, hi);
         f <<= 64u32;
         f += Float::with_val(PREC, lo);
-        if neg { -f } else { f }
+        if neg {
+            -f
+        } else {
+            f
+        }
     };
-    let mut g: [[Float; 16]; 16] = std::array::from_fn(|_| std::array::from_fn(|_| Float::with_val(PREC, 0.0)));
+    let mut g: [[Float; 16]; 16] =
+        std::array::from_fn(|_| std::array::from_fn(|_| Float::with_val(PREC, 0.0)));
     for i in 0..16 {
-        for j in 0..16 { g[i][j] = lift(gram[i][j]); }
+        for j in 0..16 {
+            g[i][j] = lift(gram[i][j]);
+        }
     }
-    let mut l: [[Float; 16]; 16] = std::array::from_fn(|_| std::array::from_fn(|_| Float::with_val(PREC, 0.0)));
+    let mut l: [[Float; 16]; 16] =
+        std::array::from_fn(|_| std::array::from_fn(|_| Float::with_val(PREC, 0.0)));
     for i in 0..16 {
         for j in 0..=i {
             let mut s = g[i][j].clone();
@@ -461,7 +516,9 @@ fn partial_eucl_f64_scratch(basis: &[[i64; 16]; 16], z: &[i64; 16], depth_set: u
                 s -= l[i][k] * l[j][k];
             }
             if i == j {
-                if s <= 0.0 { return f64::INFINITY; }
+                if s <= 0.0 {
+                    return f64::INFINITY;
+                }
                 l[i][i] = s.sqrt();
             } else {
                 l[i][j] = s / l[j][j];
@@ -493,14 +550,19 @@ fn main() {
     set_bypass_norm_prune(true); // capture must succeed despite the f64 prune false-negative
     let synth = SynthesizerQ::new(eps).with_max_lde(35);
     let r = synth.synthesize(target).expect("expected to find");
-    let cap = diag::CAPTURED_FIND.lock().unwrap().clone().expect("capture must fire");
-    eprintln!("  k_total={}, k_inner={}, d_r={}, d_l={}",
-        cap.k_total, cap.k_inner, cap.d_r, cap.d_l);
+    let cap = diag::CAPTURED_FIND
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("capture must fire");
+    eprintln!(
+        "  k_total={}, k_inner={}, d_r={}, d_l={}",
+        cap.k_total, cap.k_inner, cap.d_r, cap.d_l
+    );
 
     let u_r = solution_to_u2q_d(&cap.x_inner, cap.k_inner, cap.d_r);
     let prefixes = build_l_q(2);
-    let u_l = find_u_l(&prefixes, cap.d_l, u_r, &target, r.distance)
-        .expect("U_L must be found");
+    let u_l = find_u_l(&prefixes, cap.d_l, u_r, &target, r.distance).expect("U_L must be found");
 
     eprintln!("\n=== Phase 1.5: build MPFR pipeline at SAME (k_inner, v_inner_mpfr) ===");
     let m_inner_mpfr = u2q_dag_times_mat2_mpfr(&u_l, &target_mpfr, prec);
@@ -512,7 +574,11 @@ fn main() {
     build_q_mpfr_zeta_from_mpfr_v(&mut scratch, &v_inner_mpfr, cap.k_inner, eps);
     build_q_int_zeta(&mut scratch);
     let lll_result = run_lll_16(&mut scratch);
-    eprintln!("  LLL: {:?}, det(B)={:?}", lll_result, det16_exact(&scratch.basis));
+    eprintln!(
+        "  LLL: {:?}, det(B)={:?}",
+        lll_result,
+        det16_exact(&scratch.basis)
+    );
 
     // Step 1 (critic Q1): measure i256 Gram G = B B^T magnitude vs qd::Double's
     // 2^106 integer-exact range. We use i128 here as a proxy (max basis entry
@@ -525,24 +591,40 @@ fn main() {
             for j in 0..16 {
                 let mut s: i128 = 0;
                 for k in 0..16 {
-                    let prod = (scratch.basis[i][k] as i128).checked_mul(scratch.basis[j][k] as i128);
+                    let prod =
+                        (scratch.basis[i][k] as i128).checked_mul(scratch.basis[j][k] as i128);
                     match prod.and_then(|p| s.checked_add(p)) {
                         Some(v) => s = v,
-                        None => { overflowed_i128 = true; break; }
+                        None => {
+                            overflowed_i128 = true;
+                            break;
+                        }
                     }
                 }
                 let abs = s.unsigned_abs();
-                if abs as i128 > max_abs { max_abs = abs as i128; }
+                if abs as i128 > max_abs {
+                    max_abs = abs as i128;
+                }
             }
-            if overflowed_i128 { break; }
+            if overflowed_i128 {
+                break;
+            }
         }
-        let bitlen = if max_abs == 0 { 0 } else { 128 - (max_abs as u128).leading_zeros() };
-        eprintln!("  G_ij magnitude (cliff lde={}): max |G_ij| ≈ 2^{}, i128 overflow: {}",
-            cap.k_inner, bitlen, overflowed_i128);
+        let bitlen = if max_abs == 0 {
+            0
+        } else {
+            128 - (max_abs as u128).leading_zeros()
+        };
+        eprintln!(
+            "  G_ij magnitude (cliff lde={}): max |G_ij| ≈ 2^{}, i128 overflow: {}",
+            cap.k_inner, bitlen, overflowed_i128
+        );
         if overflowed_i128 {
             eprintln!("  → G exceeds i128. Need i256 path for exact representation.");
         } else if bitlen <= 106 {
-            eprintln!("  → G_ij fits in qd::Double's 2^106 integer-exact range. Conversion is exact.");
+            eprintln!(
+                "  → G_ij fits in qd::Double's 2^106 integer-exact range. Conversion is exact."
+            );
         } else {
             eprintln!("  → G_ij exceeds qd's 2^106 exact range by {} bits. qd Cholesky has rounded input; audit decides safety.",
                 bitlen - 106);
@@ -562,25 +644,33 @@ fn main() {
         scratch.c[i].assign(RFloat::with_val(prec_q, &y_inner_mpfr[i] * &cap_mid));
     }
     if !cholesky_f64_16(&mut scratch) || !lu_solve_int_inplace_16(&mut scratch) {
-        eprintln!("setup failed"); return;
+        eprintln!("setup failed");
+        return;
     }
 
     // z_target_mpfr = (B^T_mpfr)^-1 · x_target.
     for i in 0..16 {
         scratch.c[i].assign(rug::Float::with_val(scratch.lu_prec, cap.x_inner[i] as f64));
     }
-    if !lu_solve_int_inplace_16(&mut scratch) { eprintln!("lu_solve(x) FAIL"); return; }
+    if !lu_solve_int_inplace_16(&mut scratch) {
+        eprintln!("lu_solve(x) FAIL");
+        return;
+    }
     let z_target_mpfr: [i64; 16] = std::array::from_fn(|i| {
         let mut rounded = scratch.lu_x[i].clone();
         rounded.round_mut();
-        rounded.to_integer().map(|n| n.to_i64_wrapping()).unwrap_or(0)
+        rounded
+            .to_integer()
+            .map(|n| n.to_i64_wrapping())
+            .unwrap_or(0)
     });
 
     // Sanity: B · z_target_mpfr = x_target?
     let mut x_check = [0i64; 16];
     for i in 0..16 {
         for j in 0..16 {
-            x_check[i] = x_check[i].wrapping_add(scratch.basis[j][i].wrapping_mul(z_target_mpfr[j]));
+            x_check[i] =
+                x_check[i].wrapping_add(scratch.basis[j][i].wrapping_mul(z_target_mpfr[j]));
         }
     }
     if x_check != cap.x_inner {
@@ -606,17 +696,32 @@ fn main() {
     let should_stop = |x: &[i64; 16]| -> bool {
         let cand = solution_to_u2q_d(x, k_inner, d_r);
         let u_full = u_l * cand;
-        cyclosynth::synthesis::distance::diamond_distance_u2q_float(&u_full, &target_for_check) < eps
+        cyclosynth::synthesis::distance::diamond_distance_u2q_float(&u_full, &target_for_check)
+            < eps
     };
     let _sols = phase1_with_stop_mpfr(
-        &mut scratch2, &y_inner_mpfr, &v_inner_mpfr, k_inner, eps,
-        100_000_000, &budget_hit, should_stop, None, None,
+        &mut scratch2,
+        &y_inner_mpfr,
+        &v_inner_mpfr,
+        k_inner,
+        eps,
+        100_000_000,
+        &budget_hit,
+        should_stop,
+        None,
+        None,
     );
-    eprintln!("  phase1_with_stop_mpfr done. budget_hit={}", budget_hit.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!(
+        "  phase1_with_stop_mpfr done. budget_hit={}",
+        budget_hit.load(std::sync::atomic::Ordering::Relaxed)
+    );
     eprintln!("  sols.len() = {}", _sols.len());
 
     let hits = diag::WATCH_HITS.lock().unwrap().clone();
-    eprintln!("\n=== Watchdog firings on z_target_mpfr's path: {} ===", hits.len());
+    eprintln!(
+        "\n=== Watchdog firings on z_target_mpfr's path: {} ===",
+        hits.len()
+    );
     if hits.is_empty() {
         eprintln!("  No prune fired on z_target_mpfr's path.");
         eprintln!("  Either: (a) the SE walk found a candidate before reaching this depth, or");
@@ -626,17 +731,22 @@ fn main() {
     }
 
     eprintln!("\n=== Oracle comparison: f64-incr vs f64-scratch vs DD vs rug-106 vs MPFR-192 ===");
-    eprintln!("  Threshold T = 2^k_inner · (1 + 1e-9) = {:.6e}", hits[0].threshold);
+    eprintln!(
+        "  Threshold T = 2^k_inner · (1 + 1e-9) = {:.6e}",
+        hits[0].threshold
+    );
     eprintln!();
     eprintln!("  depth | f64 incr       | f64 scratch    | dd scratch     | rug-106        | MPFR-192       | T              | dd>T | r106>T | mpfr>T");
     eprintln!("  ──────┼────────────────┼────────────────┼────────────────┼────────────────┼────────────────┼────────────────┼──────┼────────┼───────");
     for (i, hit) in hits.iter().enumerate().take(8) {
         let mpfr_partial = partial_eucl_mpfr(&scratch2.basis, &hit.z_at_prune, hit.depth as usize);
         let mpfr_partial_f = mpfr_partial.to_f64();
-        let scratch_f64 = partial_eucl_f64_scratch(&scratch2.basis, &hit.z_at_prune, hit.depth as usize);
+        let scratch_f64 =
+            partial_eucl_f64_scratch(&scratch2.basis, &hit.z_at_prune, hit.depth as usize);
         let dd_p = partial_eucl_dd_scratch(&scratch2.basis, &hit.z_at_prune, hit.depth as usize);
         let dd_f = dd_to_f64(dd_p);
-        let r106 = partial_eucl_rug106(&scratch2.basis, &hit.z_at_prune, hit.depth as usize).to_f64();
+        let r106 =
+            partial_eucl_rug106(&scratch2.basis, &hit.z_at_prune, hit.depth as usize).to_f64();
         let dd_over = dd_f > hit.threshold;
         let r106_over = r106 > hit.threshold;
         let mpfr_over = mpfr_partial_f > hit.threshold;
@@ -646,7 +756,10 @@ fn main() {
             dd_over, r106_over, mpfr_over,
         );
         if i == 0 {
-            eprintln!("    z[d..16] (the path): {:?}", &hit.z_at_prune[hit.depth as usize..]);
+            eprintln!(
+                "    z[d..16] (the path): {:?}",
+                &hit.z_at_prune[hit.depth as usize..]
+            );
             // Decompose: print per-element |R[i][:] · z| and |R z|² for context.
             eprintln!("    per-row decomposition (scratch f64):");
             // Recompute Gram + Cholesky locally to get individual rows.
@@ -664,8 +777,14 @@ fn main() {
             for ii in 0..16 {
                 for jj in 0..=ii {
                     let mut s = gram[ii][jj];
-                    for k in 0..jj { s -= ll[ii][k] * ll[jj][k]; }
-                    if ii == jj { ll[ii][ii] = s.sqrt(); } else { ll[ii][jj] = s / ll[jj][jj]; }
+                    for k in 0..jj {
+                        s -= ll[ii][k] * ll[jj][k];
+                    }
+                    if ii == jj {
+                        ll[ii][ii] = s.sqrt();
+                    } else {
+                        ll[ii][jj] = s / ll[jj][jj];
+                    }
                 }
             }
             for ii in (hit.depth as usize)..(hit.depth as usize + 4).min(16) {
@@ -674,7 +793,9 @@ fn main() {
                 for jj in ii..16 {
                     let term = ll[jj][ii] * (hit.z_at_prune[jj] as f64);
                     row += term;
-                    if term.abs() > max_term { max_term = term.abs(); }
+                    if term.abs() > max_term {
+                        max_term = term.abs();
+                    }
                 }
                 eprintln!("      row[{ii}]: (Rz)[i] = {:>12.4e}, |max term| = {:>12.4e}, cancel ratio = {:>5.2}× ULP",
                     row, max_term, max_term.abs() / row.abs() / f64::EPSILON,
@@ -694,10 +815,16 @@ fn main() {
     eprintln!("\n=== Q4: prune-firing frequency at ε=1.5e-8 ===");
     eprintln!("  total prune firings:           {:>12}", total_fires);
     if total_fires > 0 {
-        eprintln!("  within 10% of threshold (≤1.10): {:>10} ({:>5.1}%)",
-            near_fires, 100.0 * near_fires as f64 / total_fires as f64);
-        eprintln!("  within  1% of threshold (≤1.01): {:>10} ({:>5.1}%)",
-            very_near, 100.0 * very_near as f64 / total_fires as f64);
+        eprintln!(
+            "  within 10% of threshold (≤1.10): {:>10} ({:>5.1}%)",
+            near_fires,
+            100.0 * near_fires as f64 / total_fires as f64
+        );
+        eprintln!(
+            "  within  1% of threshold (≤1.01): {:>10} ({:>5.1}%)",
+            very_near,
+            100.0 * very_near as f64 / total_fires as f64
+        );
     }
 
     // Classify based on the table.
@@ -710,8 +837,14 @@ fn main() {
         let m = partial_eucl_mpfr(&scratch2.basis, &h.z_at_prune, h.depth as usize).to_f64();
         m <= h.threshold
     });
-    eprintln!("  MPFR consistently says these paths should NOT prune: {}", mpfr_consistent);
-    eprintln!("  Scratch-f64 consistently says these paths should NOT prune: {}", scratch_fixes);
+    eprintln!(
+        "  MPFR consistently says these paths should NOT prune: {}",
+        mpfr_consistent
+    );
+    eprintln!(
+        "  Scratch-f64 consistently says these paths should NOT prune: {}",
+        scratch_fixes
+    );
     if mpfr_consistent && scratch_fixes {
         eprintln!("  → Option (1) recompute-in-f64 IS sufficient for these instances.");
         eprintln!("  → Dominant error is accumulation drift in incremental w[d], NOT intrinsic cancellation.");
@@ -725,7 +858,10 @@ fn main() {
     // ─── Critic Step 1: oracle audit of false-negative ratio tail ─────────────
     let samples = diag::collect_all_samples();
     eprintln!("\n=== Step 1: oracle audit of false-negative tail ===");
-    eprintln!("  Stratified samples collected (1000 per bin, 5 bins): {}", samples.len());
+    eprintln!(
+        "  Stratified samples collected (1000 per bin, 5 bins): {}",
+        samples.len()
+    );
     if samples.is_empty() {
         eprintln!("  No samples — nothing to audit.");
         return;
@@ -734,17 +870,23 @@ fn main() {
     // For each sample, recompute the oracle MPFR partial. Classify:
     //   FN (false-negative): f64 says prune (already ratio > 1) AND MPFR ≤ T
     //   TN (true-positive prune): f64 says prune AND MPFR > T
-    let mut fn_ratios: Vec<f64> = Vec::new();   // ratio = f64_partial / T (false negs)
-    let mut tn_ratios: Vec<f64> = Vec::new();   // ratio for true-positive prunes
+    let mut fn_ratios: Vec<f64> = Vec::new(); // ratio = f64_partial / T (false negs)
+    let mut tn_ratios: Vec<f64> = Vec::new(); // ratio for true-positive prunes
     let mut fn_per_bin: [u64; 5] = [0; 5];
     let mut tn_per_bin: [u64; 5] = [0; 5];
 
     let bin_label = |r: f64| -> usize {
-        if r < 1.05 { 0 }
-        else if r < 1.5 { 1 }
-        else if r < 2.0 { 2 }
-        else if r < 5.0 { 3 }
-        else { 4 }
+        if r < 1.05 {
+            0
+        } else if r < 1.5 {
+            1
+        } else if r < 2.0 {
+            2
+        } else if r < 5.0 {
+            3
+        } else {
+            4
+        }
     };
 
     for s in &samples {
@@ -761,17 +903,32 @@ fn main() {
     }
 
     eprintln!("  Audit results (n={} samples):", samples.len());
-    eprintln!("    True-positive prunes (MPFR>T):     {:>6} ({:>5.1}%)",
-        tn_ratios.len(), 100.0 * tn_ratios.len() as f64 / samples.len() as f64);
-    eprintln!("    False-negative prunes (MPFR≤T):    {:>6} ({:>5.1}%)",
-        fn_ratios.len(), 100.0 * fn_ratios.len() as f64 / samples.len() as f64);
+    eprintln!(
+        "    True-positive prunes (MPFR>T):     {:>6} ({:>5.1}%)",
+        tn_ratios.len(),
+        100.0 * tn_ratios.len() as f64 / samples.len() as f64
+    );
+    eprintln!(
+        "    False-negative prunes (MPFR≤T):    {:>6} ({:>5.1}%)",
+        fn_ratios.len(),
+        100.0 * fn_ratios.len() as f64 / samples.len() as f64
+    );
     eprintln!();
     eprintln!("  Distribution of f64_partial/T across the 5 bins:");
     eprintln!("    bin            range          | FN count | TN count");
     eprintln!("    ──────────────────────────────┼──────────┼─────────");
-    let bin_ranges = ["[1.00, 1.05)", "[1.05, 1.50)", "[1.50, 2.00)", "[2.00, 5.00)", "[5.00,   ∞)"];
+    let bin_ranges = [
+        "[1.00, 1.05)",
+        "[1.05, 1.50)",
+        "[1.50, 2.00)",
+        "[2.00, 5.00)",
+        "[5.00,   ∞)",
+    ];
     for i in 0..5 {
-        eprintln!("    bin {} {:14}    | {:>8} | {:>8}", i, bin_ranges[i], fn_per_bin[i], tn_per_bin[i]);
+        eprintln!(
+            "    bin {} {:14}    | {:>8} | {:>8}",
+            i, bin_ranges[i], fn_per_bin[i], tn_per_bin[i]
+        );
     }
 
     if !fn_ratios.is_empty() {
@@ -791,14 +948,25 @@ fn main() {
             eprintln!("  → Guard `f64_partial ≤ 2T` would catch ALL observed false negatives.");
             eprintln!("  → The 2T guard is empirically validated for this target.");
         } else if max_fn < 5.0 {
-            eprintln!("  → Guard `f64_partial ≤ 5T` needed (max observed = {:.2}).", max_fn);
-            eprintln!("  → 2T is INSUFFICIENT — would leave false negatives at ratio in [2, {:.2}].", max_fn);
+            eprintln!(
+                "  → Guard `f64_partial ≤ 5T` needed (max observed = {:.2}).",
+                max_fn
+            );
+            eprintln!(
+                "  → 2T is INSUFFICIENT — would leave false negatives at ratio in [2, {:.2}].",
+                max_fn
+            );
         } else {
-            eprintln!("  → MAX observed f64/T = {:.2} ≥ 5. Bounded guards are not safe.", max_fn);
+            eprintln!(
+                "  → MAX observed f64/T = {:.2} ≥ 5. Bounded guards are not safe.",
+                max_fn
+            );
             eprintln!("  → Must always-recompute in qd::Double on prune-fire (no f64 guard).");
         }
     } else {
-        eprintln!("  → No false negatives in this sample. The cliff failure may be concentrated in");
+        eprintln!(
+            "  → No false negatives in this sample. The cliff failure may be concentrated in"
+        );
         eprintln!("    a small region of the search tree not hit by stratified random sampling.");
     }
 }

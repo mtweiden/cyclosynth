@@ -17,13 +17,12 @@ pub type Int = i256;
 /// TODO: add support for much higher precisions
 pub type Float = f64;
 
-
 // Int constants — use these instead of Int::from(n) at call sites
-pub const INT_ZERO:    Int = Int::from_i8(0);
-pub const INT_ONE:     Int = Int::from_i8(1);
-pub const INT_TWO:     Int = Int::from_i8(2);
-pub const INT_THREE:   Int = Int::from_i8(3);
-pub const INT_FOUR:    Int = Int::from_i8(4);
+pub const INT_ZERO: Int = Int::from_i8(0);
+pub const INT_ONE: Int = Int::from_i8(1);
+pub const INT_TWO: Int = Int::from_i8(2);
+pub const INT_THREE: Int = Int::from_i8(3);
+pub const INT_FOUR: Int = Int::from_i8(4);
 pub const INT_NEG_ONE: Int = Int::from_i8(-1);
 
 /// Convert an `Int` to `f64`. Values are assumed small enough to fit in i128.

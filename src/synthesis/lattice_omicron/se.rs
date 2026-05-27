@@ -176,6 +176,7 @@ pub fn schnorr_euchner_8d<F>(
 where
     F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
 {
+    let __t0 = std::time::Instant::now();
     let mut z = [0i64; 8];
     let result = std::cell::RefCell::new(None);
     let zero = RFloat::with_val(SE_PREC, 0.0_f64);
@@ -194,7 +195,17 @@ where
         &mut callback,
         &result,
     );
-    result.into_inner()
+    let r = result.into_inner();
+    if crate::synthesis::diag::trace_enabled() {
+        eprintln!(
+            "[SE] found={} bound={:.3e} target_norm={:.3e} elapsed_ms={}",
+            r.is_some(),
+            bound.to_f64(),
+            target_norm_eucl,
+            __t0.elapsed().as_millis(),
+        );
+    }
+    r
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -244,8 +255,18 @@ fn recurse<F>(
     if tmp.to_f64() < 1e-30 {
         z[d] = z_c[d].to_f64().round() as i64;
         recurse(
-            depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
-            partial_eucl, z, partial, abort, callback, result,
+            depth - 1,
+            r_chol,
+            z_c,
+            bound,
+            r_chol_eucl,
+            target_norm_eucl,
+            partial_eucl,
+            z,
+            partial,
+            abort,
+            callback,
+            result,
         );
         return;
     }
@@ -329,8 +350,18 @@ fn recurse<F>(
 
         z[d] = zd;
         recurse(
-            depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
-            new_partial_eucl, z, &new_partial, abort, callback, result,
+            depth - 1,
+            r_chol,
+            z_c,
+            bound,
+            r_chol_eucl,
+            target_norm_eucl,
+            new_partial_eucl,
+            z,
+            &new_partial,
+            abort,
+            callback,
+            result,
         );
     }
 }

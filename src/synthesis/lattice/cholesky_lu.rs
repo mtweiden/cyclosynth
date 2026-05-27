@@ -152,7 +152,9 @@ pub fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
             scratch.lu_rhs.swap(k, piv);
         }
         for i in (k + 1)..8 {
-            scratch.lu_tmp.assign(&scratch.lu_a[i][k] / &scratch.lu_a[k][k]);
+            scratch
+                .lu_tmp
+                .assign(&scratch.lu_a[i][k] / &scratch.lu_a[k][k]);
             let factor = scratch.lu_tmp.clone();
             // a[i][j] -= factor · a[k][j] for j in k..8.
             // Avoid simultaneous &mut borrows on rows i and k.
@@ -176,7 +178,9 @@ pub fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
     for i in (0..8).rev() {
         scratch.lu_acc.assign(&scratch.lu_rhs[i]);
         for j in (i + 1)..8 {
-            scratch.lu_tmp.assign(&scratch.lu_a[i][j] * &scratch.lu_x[j]);
+            scratch
+                .lu_tmp
+                .assign(&scratch.lu_a[i][j] * &scratch.lu_x[j]);
             let cur = scratch.lu_acc.clone();
             scratch.lu_acc.assign(&cur - &scratch.lu_tmp);
         }

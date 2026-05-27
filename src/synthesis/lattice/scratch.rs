@@ -155,8 +155,8 @@ pub struct IntScratch {
     // ── Integer LLL buffers ──
     pub q_int: Mat256,
     pub basis: IMat8,
-    pub gram: Mat256,        // G = B · Q_int · Bᵀ
-    pub temp_bq: Mat256,     // intermediate = B · Q_int
+    pub gram: Mat256,    // G = B · Q_int · Bᵀ
+    pub temp_bq: Mat256, // intermediate = B · Q_int
 
     // ── L²-LLL state (Nguyen-Stehlé 2009): pure f64. Theorem 2 + Figure 7
     // prove this precision is sufficient for d ≤ 11; we operate at d=8.
@@ -236,14 +236,14 @@ pub fn identity_basis() -> IMat8 {
 /// {0, ±1, ±2} map to {0, ±1, ±1/√2}.
 fn fill_sigma(sigma: &mut [[RFloat; 8]; 8], prec: u32) {
     let pattern: [[i32; 8]; 8] = [
-        [1,  2, 0, -2, 0,  0, 0,  0],
-        [0,  2, 1,  2, 0,  0, 0,  0],
-        [0,  0, 0,  0, 1,  2, 0, -2],
-        [0,  0, 0,  0, 0,  2, 1,  2],
-        [1, -2, 0,  2, 0,  0, 0,  0],
-        [0, -2, 1, -2, 0,  0, 0,  0],
-        [0,  0, 0,  0, 1, -2, 0,  2],
-        [0,  0, 0,  0, 0, -2, 1, -2],
+        [1, 2, 0, -2, 0, 0, 0, 0],
+        [0, 2, 1, 2, 0, 0, 0, 0],
+        [0, 0, 0, 0, 1, 2, 0, -2],
+        [0, 0, 0, 0, 0, 2, 1, 2],
+        [1, -2, 0, 2, 0, 0, 0, 0],
+        [0, -2, 1, -2, 0, 0, 0, 0],
+        [0, 0, 0, 0, 1, -2, 0, 2],
+        [0, 0, 0, 0, 0, -2, 1, -2],
     ];
     let two = rfv(prec, 2.0);
     let r2 = two.sqrt().recip();
@@ -277,7 +277,11 @@ fn fill_p_u_p_ub(scratch: &mut IntScratch) {
             scratch.acc.assign(0.0_f64);
             scratch.tmp2.assign(0.0_f64);
             for r_idx in 0..4 {
-                r_mul!(scratch.tmp, scratch.sigma[r_idx][i], scratch.sigma[r_idx][j]);
+                r_mul!(
+                    scratch.tmp,
+                    scratch.sigma[r_idx][i],
+                    scratch.sigma[r_idx][j]
+                );
                 let acc_clone = scratch.acc.clone();
                 r_add!(scratch.acc, acc_clone, scratch.tmp);
                 r_mul!(

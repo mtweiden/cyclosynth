@@ -25,7 +25,9 @@ pub use crate::synthesis::lattice_common::{
 /// `8·log₂(1/ε)` covers κ(Q) ≈ 16/ε⁴ with safety margin; floor at 100 bits
 /// for moderate ε where the formula otherwise underflows.
 pub fn compute_prec_q(eps: Float) -> u32 {
-    if eps <= 0.0 { return 100; }
+    if eps <= 0.0 {
+        return 100;
+    }
     let log_recip = (1.0 / eps).log2().max(1.0);
     let bits = (8.0 * log_recip).ceil() as u32;
     bits.max(100).min(4096)
@@ -43,7 +45,9 @@ pub fn compute_prec_q(eps: Float) -> u32 {
 /// Versus `prec_q = 8·log₂(1/ε)` this is 75% of the precision, so each MPFR
 /// op is ~1.3× cheaper.
 pub fn compute_lu_prec(eps: Float) -> u32 {
-    if eps <= 0.0 { return 96; }
+    if eps <= 0.0 {
+        return 96;
+    }
     let log_recip = (1.0 / eps).log2().max(1.0);
     let bits = (6.0 * log_recip).ceil() as u32;
     bits.max(96).min(4096)
@@ -136,7 +140,7 @@ pub struct IntScratch {
     pub acc: RFloat,
     pub p_u: [[RFloat; 8]; 8],
     pub p_ub: [[RFloat; 8]; 8],
-    pub yhat_yhat_t: [[RFloat; 8]; 8],
+    pub yy_t: [[RFloat; 8]; 8],
     pub y_rf: [RFloat; 8],
     pub eps_rf: RFloat,
     pub r: RFloat,
@@ -146,15 +150,13 @@ pub struct IntScratch {
     pub inv_dy_sq: RFloat,
     pub inv_dp_sq: RFloat,
     pub inv_r_sq: RFloat,
-    pub y_norm_sq: RFloat,
-    pub inv_y_norm_sq: RFloat,
     pub cap_mid: RFloat,
 
     // ── Integer LLL buffers ──
     pub q_int: Mat256,
     pub basis: IMat8,
-    pub gram: Mat256,        // G = B · Q_int · Bᵀ
-    pub temp_bq: Mat256,     // intermediate = B · Q_int
+    pub gram: Mat256,    // G = B · Q_int · Bᵀ
+    pub temp_bq: Mat256, // intermediate = B · Q_int
 
     // ── L²-LLL state (Nguyen-Stehlé 2009): pure f64. ──
     pub r_bar: [[f64; 8]; 8],
@@ -231,37 +233,39 @@ fn fill_sigma(sigma: &mut [[RFloat; 8]; 8], prec: u32) {
     // Row × column pattern (see doc above).
     // Values: 0=0, 1=+1, -1=-1, 2=+√3/2, -2=-√3/2, 3=+½
     let pattern: [[i32; 8]; 8] = [
-        [ 1,  2,  3,  0,  0,  0,  0,  0],  // Re u
-        [ 0,  3,  2,  1,  0,  0,  0,  0],  // Im u
-        [ 1, -2,  3,  0,  0,  0,  0,  0],  // Re u• (bullet: √3 → -√3)
-        [ 0,  3, -2,  1,  0,  0,  0,  0],  // Im u•
-        [ 0,  0,  0,  0,  1,  2,  3,  0],  // Re t
-        [ 0,  0,  0,  0,  0,  3,  2,  1],  // Im t
-        [ 0,  0,  0,  0,  1, -2,  3,  0],  // Re t•
-        [ 0,  0,  0,  0,  0,  3, -2,  1],  // Im t•
+        [1, 2, 3, 0, 0, 0, 0, 0],  // Re u
+        [0, 3, 2, 1, 0, 0, 0, 0],  // Im u
+        [1, -2, 3, 0, 0, 0, 0, 0], // Re u• (bullet: √3 → -√3)
+        [0, 3, -2, 1, 0, 0, 0, 0], // Im u•
+        [0, 0, 0, 0, 1, 2, 3, 0],  // Re t
+        [0, 0, 0, 0, 0, 3, 2, 1],  // Im t
+        [0, 0, 0, 0, 1, -2, 3, 0], // Re t•
+        [0, 0, 0, 0, 0, 3, -2, 1], // Im t•
     ];
 
     // Precompute the distinct values at full MPFR precision.
-    let zero  = rfv(prec, 0.0);
-    let one   = rfv(prec, 1.0);
-    let mut none = rfz(prec); none.assign(-&one);
+    let zero = rfv(prec, 0.0);
+    let one = rfv(prec, 1.0);
+    let mut none = rfz(prec);
+    none.assign(-&one);
     // √3/2
     let mut s32 = rfz(prec);
     s32.assign(rfv(prec, 3.0_f64).sqrt());
     s32 /= 2u32;
-    let mut ns32 = rfz(prec); ns32.assign(-&s32);
+    let mut ns32 = rfz(prec);
+    ns32.assign(-&s32);
     // ½
     let half = rfv(prec, 0.5);
 
     for i in 0..8 {
         for j in 0..8 {
             sigma[i][j].assign(match pattern[i][j] {
-                 1 => &one,
+                1 => &one,
                 -1 => &none,
-                 2 => &s32,
+                2 => &s32,
                 -2 => &ns32,
-                 3 => &half,
-                 _ => &zero,
+                3 => &half,
+                _ => &zero,
             });
         }
     }
@@ -318,7 +322,7 @@ impl IntScratch {
             acc: rfz(prec_q),
             p_u: rmat_zero(prec_q),
             p_ub: rmat_zero(prec_q),
-            yhat_yhat_t: rmat_zero(prec_q),
+            yy_t: rmat_zero(prec_q),
             y_rf: rvec_zero(prec_q),
             eps_rf: rfz(prec_q),
             r: rfz(prec_q),
@@ -328,8 +332,6 @@ impl IntScratch {
             inv_dy_sq: rfz(prec_q),
             inv_dp_sq: rfz(prec_q),
             inv_r_sq: rfz(prec_q),
-            y_norm_sq: rfz(prec_q),
-            inv_y_norm_sq: rfz(prec_q),
             cap_mid: rfz(prec_q),
             q_int: imat_zero(),
             basis: identity_basis(),

@@ -36,7 +36,7 @@ use super::scratch::{IntScratch16, GRAM_OVERFLOW_THRESHOLD_BITS};
 // ─── L²-LLL parameters & result type — moved to lattice_common ──────────────
 
 pub use crate::synthesis::lattice_common::{
-    L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
+    LllResult, L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, MAX_LAZY_PASSES,
 };
 
 /// Hard cap on outer L²-LLL iterations. **lattice_zeta-specific**: the 8D
@@ -104,7 +104,9 @@ pub fn cfa_row(scratch: &mut IntScratch16, i: usize) {
         // r̄_{i,j} -= Σ_{k<j} μ̄_{j,k} · r̄_{i,k}.
         for k in 0..j {
             // tmp = μ̄_{j,k} · r̄_{i,k}
-            scratch.tmp_a.assign(&scratch.mu_bar[j][k] * &scratch.r_bar[i][k]);
+            scratch
+                .tmp_a
+                .assign(&scratch.mu_bar[j][k] * &scratch.r_bar[i][k]);
             scratch.tmp_b.assign(&scratch.r_bar[i][j] - &scratch.tmp_a);
             scratch.r_bar[i][j].assign(&scratch.tmp_b);
         }
@@ -113,8 +115,7 @@ pub fn cfa_row(scratch: &mut IntScratch16, i: usize) {
         if r_jj_f.abs() < 1e-300 {
             scratch.mu_bar[i][j].assign(0.0_f64);
         } else {
-            scratch.mu_bar[i][j]
-                .assign(&scratch.r_bar[i][j] / &scratch.r_bar[j][j]);
+            scratch.mu_bar[i][j].assign(&scratch.r_bar[i][j] / &scratch.r_bar[j][j]);
         }
     }
 
@@ -122,8 +123,12 @@ pub fn cfa_row(scratch: &mut IntScratch16, i: usize) {
     i256_to_rfloat_inplace(scratch.gram[i][i], &mut scratch.s_bar[i][0]);
     for j in 1..=i {
         // s̄_{i,j} = s̄_{i,j-1} - μ̄_{i,j-1} · r̄_{i,j-1}.
-        scratch.tmp_a.assign(&scratch.mu_bar[i][j - 1] * &scratch.r_bar[i][j - 1]);
-        scratch.tmp_b.assign(&scratch.s_bar[i][j - 1] - &scratch.tmp_a);
+        scratch
+            .tmp_a
+            .assign(&scratch.mu_bar[i][j - 1] * &scratch.r_bar[i][j - 1]);
+        scratch
+            .tmp_b
+            .assign(&scratch.s_bar[i][j - 1] - &scratch.tmp_a);
         scratch.s_bar[i][j].assign(&scratch.tmp_b);
     }
     let _ = prec;
@@ -141,12 +146,7 @@ pub fn cfa_full(scratch: &mut IntScratch16) {
 
 /// Apply `b_k -= r·b_j` to the i256 Gram in O(d) ops.
 /// Math: `B_new = M·B` where `M = I − r·E_kj`, hence `G_new = M·G·Mᵀ`.
-pub(super) fn gram_update_size_reduce(
-    scratch: &mut IntScratch16,
-    k: usize,
-    j: usize,
-    r: i64,
-) {
+pub(super) fn gram_update_size_reduce(scratch: &mut IntScratch16, k: usize, j: usize, r: i64) {
     if r == 0 {
         return;
     }
@@ -268,7 +268,9 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch16, kappa: usize) -> usize {
                 for j in 0..i {
                     // μ̄_{κ,j} -= xi · μ̄_{i,j}
                     scratch.tmp_a.assign(&xi_f * &scratch.mu_bar[i][j]);
-                    scratch.tmp_b.assign(&scratch.mu_bar[kappa][j] - &scratch.tmp_a);
+                    scratch
+                        .tmp_b
+                        .assign(&scratch.mu_bar[kappa][j] - &scratch.tmp_a);
                     scratch.mu_bar[kappa][j].assign(&scratch.tmp_b);
                 }
             }
@@ -385,9 +387,9 @@ pub fn run_lll_16(scratch: &mut IntScratch16) -> LllResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
     use super::super::scratch::IntScratch16;
+    use super::*;
 
     /// Compute the determinant of a 16×16 i64 matrix exactly via Bareiss
     /// in i256. Returns `None` on i64 overflow at the end (shouldn't happen
@@ -462,8 +464,11 @@ mod tests {
     #[test]
     fn lll16_unimodular_eps_1e_5() {
         let (r, s) = run_for(1e-5, 14);
-        assert!(matches!(r, LllResult::Converged | LllResult::IterCap),
-            "unexpected result: {:?}", r);
+        assert!(
+            matches!(r, LllResult::Converged | LllResult::IterCap),
+            "unexpected result: {:?}",
+            r
+        );
         if !matches!(r, LllResult::GramOverflow) {
             let det = det16_exact(&s.basis).expect("det16 overflow");
             assert!(det == 1 || det == -1, "non-unimodular: det={}", det);
@@ -478,9 +483,14 @@ mod tests {
         for i in 1..16 {
             for j in 0..i {
                 let m = s.mu_bar[i][j].to_f64().abs();
-                assert!(m <= L2_ETA + 1e-9,
+                assert!(
+                    m <= L2_ETA + 1e-9,
                     "size-reduction violated: |μ̄[{}][{}]| = {} > η = {}",
-                    i, j, m, L2_ETA);
+                    i,
+                    j,
+                    m,
+                    L2_ETA
+                );
             }
         }
     }
@@ -493,9 +503,16 @@ mod tests {
         for kappa in 1..16 {
             let lhs = L2_DELTA * s.r_bar[kappa - 1][kappa - 1].to_f64();
             let rhs = s.s_bar[kappa][kappa - 1].to_f64();
-            assert!(lhs <= rhs + 1e-9 * rhs.abs().max(1.0),
+            assert!(
+                lhs <= rhs + 1e-9 * rhs.abs().max(1.0),
                 "Lovász violated at κ={}: δ·r̄_{}={} > s̄_{}^{}_={}",
-                kappa, kappa - 1, lhs, kappa - 1, kappa, rhs);
+                kappa,
+                kappa - 1,
+                lhs,
+                kappa - 1,
+                kappa,
+                rhs
+            );
         }
     }
 
@@ -529,9 +546,12 @@ mod tests {
         // The reduced first vector should have Q-norm ≤ min original diag
         // (if it's larger, the LLL hasn't reduced anything — bug). At d=16
         // the actual ratio is much better; we keep this conservative.
-        assert!(g00 <= min_orig_diag * 1.05,
+        assert!(
+            g00 <= min_orig_diag * 1.05,
             "b_0 Q-norm {} > smallest original diag {} (× 1.05): no reduction!",
-            g00, min_orig_diag);
+            g00,
+            min_orig_diag
+        );
     }
 
     #[test]
@@ -550,8 +570,12 @@ mod tests {
         // No two rows should be identical.
         for i in 0..16 {
             for j in (i + 1)..16 {
-                assert!(s.basis[i] != s.basis[j],
-                    "rows {} and {} of LLL basis are identical", i, j);
+                assert!(
+                    s.basis[i] != s.basis[j],
+                    "rows {} and {} of LLL basis are identical",
+                    i,
+                    j
+                );
             }
         }
     }
@@ -571,12 +595,18 @@ mod tests {
         let r = run_lll_16(&mut s);
         let elapsed = start.elapsed();
         eprintln!("lll16_perf_at_k_8: {:?}, elapsed={:?}", r, elapsed);
-        assert!(matches!(r, LllResult::Converged | LllResult::IterCap),
-            "unexpected at k=8: {:?}", r);
+        assert!(
+            matches!(r, LllResult::Converged | LllResult::IterCap),
+            "unexpected at k=8: {:?}",
+            r
+        );
         // 5 seconds is a generous budget; the actual 16D LLL with MPFR
         // GS should finish in ~100-500ms.
-        assert!(elapsed.as_secs() < 5,
-            "LLL at k=8 took {:?}; budget was 5s", elapsed);
+        assert!(
+            elapsed.as_secs() < 5,
+            "LLL at k=8 took {:?}; budget was 5s",
+            elapsed
+        );
     }
 
     /// Deeper-ε smoke test: at ε=1e-5, k=14, LLL should still converge in
@@ -592,11 +622,17 @@ mod tests {
         let r = run_lll_16(&mut s);
         let elapsed = start.elapsed();
         eprintln!("lll16_perf_at_eps_1e_5: {:?}, elapsed={:?}", r, elapsed);
-        assert!(matches!(r, LllResult::Converged | LllResult::IterCap),
-            "unexpected at ε=1e-5: {:?}", r);
+        assert!(
+            matches!(r, LllResult::Converged | LllResult::IterCap),
+            "unexpected at ε=1e-5: {:?}",
+            r
+        );
         // 30 seconds is a generous budget for deeper ε.
-        assert!(elapsed.as_secs() < 30,
-            "LLL at ε=1e-5 took {:?}; budget was 30s", elapsed);
+        assert!(
+            elapsed.as_secs() < 30,
+            "LLL at ε=1e-5 took {:?}; budget was 30s",
+            elapsed
+        );
     }
 
     /// Build Q at a random direction and confirm LLL converges with
@@ -618,12 +654,20 @@ mod tests {
             build_q_mpfr_zeta(&mut s, v, 6, 1e-3);
             build_q_int_zeta(&mut s);
             let r = run_lll_16(&mut s);
-            assert!(matches!(r, LllResult::Converged | LllResult::IterCap),
-                "unexpected at v={:?}: {:?}", v, r);
+            assert!(
+                matches!(r, LllResult::Converged | LllResult::IterCap),
+                "unexpected at v={:?}: {:?}",
+                v,
+                r
+            );
             if !matches!(r, LllResult::GramOverflow) {
                 let det = det16_exact(&s.basis).expect("det16 overflow");
-                assert!(det == 1 || det == -1,
-                    "non-unimodular at v={:?}: det={}", v, det);
+                assert!(
+                    det == 1 || det == -1,
+                    "non-unimodular at v={:?}: det={}",
+                    v,
+                    det
+                );
             }
         }
     }

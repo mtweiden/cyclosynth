@@ -8,16 +8,16 @@
 //!
 //! This works for both Clifford+T (ZOmega) and Clifford+√T (ZZeta).
 
+#[cfg(feature = "python")]
+use crate::rings::zomega::PyZOmega;
+use crate::rings::zomega::ZOmega;
+use crate::rings::zomicron::ZOmicron;
+#[cfg(feature = "python")]
+use crate::rings::zzeta::PyZZeta;
+use crate::rings::zzeta::ZZeta;
 use num_complex::Complex64;
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
-use crate::rings::zomega::ZOmega;
-use crate::rings::zzeta::ZZeta;
-use crate::rings::zomicron::ZOmicron;
-#[cfg(feature = "python")]
-use crate::rings::zomega::PyZOmega;
-#[cfg(feature = "python")]
-use crate::rings::zzeta::PyZZeta;
 
 // ─── Trait ────────────────────────────────────────────────────────────────────
 
@@ -27,40 +27,82 @@ pub trait RingElem: Copy + Add<Output = Self> + Neg<Output = Self> {
     fn to_complex(self) -> Complex64;
     fn zero() -> Self;
     fn one() -> Self;
-    fn i() -> Self;  // imaginary unit
-    fn omega() -> Self;  // ω = e^{iπ/4}
-    fn root_of_unity() -> Self;  // ω = e^{iπ/4} or ζ = e^{iπ/8}
+    fn i() -> Self; // imaginary unit
+    fn omega() -> Self; // ω = e^{iπ/4}
+    fn root_of_unity() -> Self; // ω = e^{iπ/4} or ζ = e^{iπ/8}
 }
 
 impl RingElem for ZOmega {
-    fn conj(self) -> Self { self.conj() }
-    fn to_complex(self) -> Complex64 { self.to_complex() }
-    fn zero() -> Self { Self::ZERO }
-    fn one() -> Self { Self::ONE }
-    fn i() -> Self { Self::I }
-    fn omega() -> Self { Self::OMEGA }
-    fn root_of_unity() -> Self { Self::OMEGA }
+    fn conj(self) -> Self {
+        self.conj()
+    }
+    fn to_complex(self) -> Complex64 {
+        self.to_complex()
+    }
+    fn zero() -> Self {
+        Self::ZERO
+    }
+    fn one() -> Self {
+        Self::ONE
+    }
+    fn i() -> Self {
+        Self::I
+    }
+    fn omega() -> Self {
+        Self::OMEGA
+    }
+    fn root_of_unity() -> Self {
+        Self::OMEGA
+    }
 }
 
 impl RingElem for ZZeta {
-    fn conj(self) -> Self { self.conj() }
-    fn to_complex(self) -> Complex64 { self.to_complex() }
-    fn zero() -> Self { Self::ZERO }
-    fn one() -> Self { Self::ONE }
-    fn i() -> Self { Self::I }
-    fn omega() -> Self { Self::OMEGA }
-    fn root_of_unity() -> Self { Self::ZETA }
+    fn conj(self) -> Self {
+        self.conj()
+    }
+    fn to_complex(self) -> Complex64 {
+        self.to_complex()
+    }
+    fn zero() -> Self {
+        Self::ZERO
+    }
+    fn one() -> Self {
+        Self::ONE
+    }
+    fn i() -> Self {
+        Self::I
+    }
+    fn omega() -> Self {
+        Self::OMEGA
+    }
+    fn root_of_unity() -> Self {
+        Self::ZETA
+    }
 }
 
 impl RingElem for ZOmicron {
-    fn conj(self) -> Self { self.conj() }
-    fn to_complex(self) -> Complex64 { self.to_complex() }
-    fn zero() -> Self { Self::ZERO }
-    fn one() -> Self { Self::ONE }
-    fn i() -> Self { Self::I }
+    fn conj(self) -> Self {
+        self.conj()
+    }
+    fn to_complex(self) -> Complex64 {
+        self.to_complex()
+    }
+    fn zero() -> Self {
+        Self::ZERO
+    }
+    fn one() -> Self {
+        Self::ONE
+    }
+    fn i() -> Self {
+        Self::I
+    }
     /// ξ = e^{iπ/6}: used so U2::<ZOmicron>::t() gives the R gate diag(1, ξ).
-    fn omega() -> Self { Self::XI }
-    fn root_of_unity() -> Self { Self::XI }
+    fn omega() -> Self {
+        Self::XI
+    }
+    fn root_of_unity() -> Self {
+        Self::XI
+    }
 }
 
 // ─── U2<R> ────────────────────────────────────────────────────────────────────
@@ -79,7 +121,13 @@ pub struct U2<R: RingElem + Mul<Output = R> + Sub<Output = R>> {
 
 impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
     pub const fn new(u11: R, u12: R, u21: R, u22: R, k: u32) -> Self {
-        Self { u11, u12, u21, u22, k }
+        Self {
+            u11,
+            u12,
+            u21,
+            u22,
+            k,
+        }
     }
 
     /// Hermitian adjoint: U† = conj-transpose = [[ū11, ū21], [ū12, ū22]] / √2^k.
@@ -89,13 +137,13 @@ impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
             u12: self.u21.conj(),
             u21: self.u12.conj(),
             u22: self.u22.conj(),
-            k:  self.k,
+            k: self.k,
         }
     }
 
     /// Convert to 2×2 complex float matrix (row-major [[a,b],[c,d]]).
     pub fn to_float(&self) -> [[Complex64; 2]; 2] {
-        let scale = 1.0 / (self.k as f64 / 2.0).exp2();  // 1 / √2^k = 2^{-k/2}
+        let scale = 1.0 / (self.k as f64 / 2.0).exp2(); // 1 / √2^k = 2^{-k/2}
         [
             [self.u11.to_complex() * scale, self.u12.to_complex() * scale],
             [self.u21.to_complex() * scale, self.u22.to_complex() * scale],
@@ -111,9 +159,9 @@ impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
     /// while still deferring the denominator scaling to the final float step.
     pub fn diamond_distance(&self, other: &Self) -> f64 {
         let p = self.u11.to_complex() * other.u11.to_complex().conj()
-              + self.u12.to_complex() * other.u12.to_complex().conj()
-              + self.u21.to_complex() * other.u21.to_complex().conj()
-              + self.u22.to_complex() * other.u22.to_complex().conj();
+            + self.u12.to_complex() * other.u12.to_complex().conj()
+            + self.u21.to_complex() * other.u21.to_complex().conj()
+            + self.u22.to_complex() * other.u22.to_complex().conj();
         let denom = 4.0 * (2.0_f64).powi((self.k + other.k) as i32);
         let t = p.norm_sqr() / denom;
         (1.0_f64 - t).max(0.0).sqrt()
@@ -122,7 +170,7 @@ impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
 
 // ─── Helpful constructors ────────────────────────────────────────────────────
 
-impl <R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
+impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
     /// Identity matrix: [[1,0],[0,1]] / √2^0
     pub fn eye() -> Self {
         Self::new(R::one(), R::zero(), R::zero(), R::one(), 0)
@@ -166,7 +214,7 @@ impl U2<ZZeta> {
 // ─── Multiplication (matrix product) ─────────────────────────────────────────
 
 /// U2 matrix multiplication
-/// TODO: There should be a "reduction" method that I can call that reduces the 
+/// TODO: There should be a "reduction" method that I can call that reduces the
 /// value of k as much as possible while keeping coefficients as integers.
 impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> Mul for U2<R> {
     type Output = Self;
@@ -176,7 +224,13 @@ impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> Mul for U2<R> {
         let u12 = self.u11 * rhs.u12 + self.u12 * rhs.u22;
         let u21 = self.u21 * rhs.u11 + self.u22 * rhs.u21;
         let u22 = self.u21 * rhs.u12 + self.u22 * rhs.u22;
-        Self { u11, u12, u21, u22, k }
+        Self {
+            u11,
+            u12,
+            u21,
+            u22,
+            k,
+        }
     }
 }
 
@@ -185,9 +239,14 @@ impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> Mul for U2<R> {
 impl<R: RingElem + Mul<Output = R> + Sub<Output = R> + fmt::Display> fmt::Display for U2<R> {
     /// Formats as `[[u11, u12], [u21, u22]] / √2^k`, omitting `/ √2^0`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[[{}, {}], [{}, {}]]",
-               self.u11, self.u12, self.u21, self.u22)?;
-        if self.k > 0 { write!(f, " / √2^{}", self.k)?; }
+        write!(
+            f,
+            "[[{}, {}], [{}, {}]]",
+            self.u11, self.u12, self.u21, self.u22
+        )?;
+        if self.k > 0 {
+            write!(f, " / √2^{}", self.k)?;
+        }
         Ok(())
     }
 }
@@ -225,7 +284,9 @@ pub struct PyU2 {
 
 #[cfg(feature = "python")]
 impl PyU2 {
-    pub fn to_inner(&self) -> &U2Variant { &self.inner }
+    pub fn to_inner(&self) -> &U2Variant {
+        &self.inner
+    }
 }
 
 #[cfg(feature = "python")]
@@ -239,9 +300,11 @@ impl PyU2 {
         u22: Bound<'_, PyAny>,
         k: u32,
     ) -> PyResult<Self> {
-        let type_err = |name: &str| PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            format!("{name} must be the same ring type as u11 (ZOmega or ZZeta)")
-        );
+        let type_err = |name: &str| {
+            PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+                "{name} must be the same ring type as u11 (ZOmega or ZZeta)"
+            ))
+        };
 
         // Try ZOmega
         if let Ok(a) = u11.downcast::<PyZOmega>() {
@@ -250,8 +313,10 @@ impl PyU2 {
             let d = u22.downcast::<PyZOmega>().map_err(|_| type_err("u22"))?;
             return Ok(Self {
                 inner: U2Variant::Omega(U2T::new(
-                    a.get().to_inner(), b.get().to_inner(),
-                    c.get().to_inner(), d.get().to_inner(),
+                    a.get().to_inner(),
+                    b.get().to_inner(),
+                    c.get().to_inner(),
+                    d.get().to_inner(),
                     k,
                 )),
             });
@@ -264,15 +329,17 @@ impl PyU2 {
             let d = u22.downcast::<PyZZeta>().map_err(|_| type_err("u22"))?;
             return Ok(Self {
                 inner: U2Variant::Zeta(U2Q::new(
-                    a.get().to_inner(), b.get().to_inner(),
-                    c.get().to_inner(), d.get().to_inner(),
+                    a.get().to_inner(),
+                    b.get().to_inner(),
+                    c.get().to_inner(),
+                    d.get().to_inner(),
                     k,
                 )),
             });
         }
 
         Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "u11 must be an instance of ZOmega or ZZeta"
+            "u11 must be an instance of ZOmega or ZZeta",
         ))
     }
 
@@ -287,28 +354,28 @@ impl PyU2 {
     fn u11(&self, py: Python<'_>) -> PyResult<PyObject> {
         match self.inner {
             U2Variant::Omega(u) => Ok(Bound::new(py, PyZOmega { inner: u.u11 })?.to_object(py)),
-            U2Variant::Zeta(u)  => Ok(Bound::new(py, PyZZeta  { inner: u.u11 })?.to_object(py)),
+            U2Variant::Zeta(u) => Ok(Bound::new(py, PyZZeta { inner: u.u11 })?.to_object(py)),
         }
     }
 
     fn u12(&self, py: Python<'_>) -> PyResult<PyObject> {
         match self.inner {
             U2Variant::Omega(u) => Ok(Bound::new(py, PyZOmega { inner: u.u12 })?.to_object(py)),
-            U2Variant::Zeta(u)  => Ok(Bound::new(py, PyZZeta  { inner: u.u12 })?.to_object(py)),
+            U2Variant::Zeta(u) => Ok(Bound::new(py, PyZZeta { inner: u.u12 })?.to_object(py)),
         }
     }
 
     fn u21(&self, py: Python<'_>) -> PyResult<PyObject> {
         match self.inner {
             U2Variant::Omega(u) => Ok(Bound::new(py, PyZOmega { inner: u.u21 })?.to_object(py)),
-            U2Variant::Zeta(u)  => Ok(Bound::new(py, PyZZeta  { inner: u.u21 })?.to_object(py)),
+            U2Variant::Zeta(u) => Ok(Bound::new(py, PyZZeta { inner: u.u21 })?.to_object(py)),
         }
     }
 
     fn u22(&self, py: Python<'_>) -> PyResult<PyObject> {
         match self.inner {
             U2Variant::Omega(u) => Ok(Bound::new(py, PyZOmega { inner: u.u22 })?.to_object(py)),
-            U2Variant::Zeta(u)  => Ok(Bound::new(py, PyZZeta  { inner: u.u22 })?.to_object(py)),
+            U2Variant::Zeta(u) => Ok(Bound::new(py, PyZZeta { inner: u.u22 })?.to_object(py)),
         }
     }
 
@@ -319,24 +386,20 @@ impl PyU2 {
         };
 
         mat.iter()
-            .map(|row| {
-                row.iter()
-                    .map(|c| (c.re, c.im))
-                    .collect()
-            })
+            .map(|row| row.iter().map(|c| (c.re, c.im)).collect())
             .collect()
     }
 
     fn __mul__(&self, other: &Self) -> PyResult<Self> {
         match (&self.inner, &other.inner) {
-            (U2Variant::Omega(a), U2Variant::Omega(b)) => {
-                Ok(Self { inner: U2Variant::Omega((*a) * (*b)) })
-            }
-            (U2Variant::Zeta(a), U2Variant::Zeta(b)) => {
-                Ok(Self { inner: U2Variant::Zeta((*a) * (*b)) })
-            }
+            (U2Variant::Omega(a), U2Variant::Omega(b)) => Ok(Self {
+                inner: U2Variant::Omega((*a) * (*b)),
+            }),
+            (U2Variant::Zeta(a), U2Variant::Zeta(b)) => Ok(Self {
+                inner: U2Variant::Zeta((*a) * (*b)),
+            }),
             _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "Cannot multiply U2 matrices of different ring types"
+                "Cannot multiply U2 matrices of different ring types",
             )),
         }
     }
@@ -367,7 +430,7 @@ mod tests {
 
     /// i·H = [[i,i],[i,−i]] / √2.
     fn h_gate() -> U2T {
-        let i  = ZOmega::I;
+        let i = ZOmega::I;
         let ni = -ZOmega::I;
         U2T::new(i, i, i, ni, 1)
     }
@@ -404,10 +467,26 @@ mod tests {
         let m = h.to_float();
         let r2inv = 1.0 / std::f64::consts::SQRT_2;
         // i·H = [[i,i],[i,−i]] / √2 — entries are purely imaginary
-        assert!((m[0][0].im - r2inv).abs() < 1e-10, "m[0][0].im={}", m[0][0].im);
-        assert!((m[0][1].im - r2inv).abs() < 1e-10, "m[0][1].im={}", m[0][1].im);
-        assert!((m[1][0].im - r2inv).abs() < 1e-10, "m[1][0].im={}", m[1][0].im);
-        assert!((m[1][1].im + r2inv).abs() < 1e-10, "m[1][1].im={}", m[1][1].im);
+        assert!(
+            (m[0][0].im - r2inv).abs() < 1e-10,
+            "m[0][0].im={}",
+            m[0][0].im
+        );
+        assert!(
+            (m[0][1].im - r2inv).abs() < 1e-10,
+            "m[0][1].im={}",
+            m[0][1].im
+        );
+        assert!(
+            (m[1][0].im - r2inv).abs() < 1e-10,
+            "m[1][0].im={}",
+            m[1][0].im
+        );
+        assert!(
+            (m[1][1].im + r2inv).abs() < 1e-10,
+            "m[1][1].im={}",
+            m[1][1].im
+        );
     }
 
     #[test]
@@ -419,9 +498,27 @@ mod tests {
     #[test]
     fn test_random_mul() {
         for _ in 0..100 {
-            let a = U2T::new(random_zomega(), random_zomega(), random_zomega(), random_zomega(), 100);
-            let b = U2T::new(random_zomega(), random_zomega(), random_zomega(), random_zomega(), 100);
-            let c = U2T::new(random_zomega(), random_zomega(), random_zomega(), random_zomega(), 100);
+            let a = U2T::new(
+                random_zomega(),
+                random_zomega(),
+                random_zomega(),
+                random_zomega(),
+                100,
+            );
+            let b = U2T::new(
+                random_zomega(),
+                random_zomega(),
+                random_zomega(),
+                random_zomega(),
+                100,
+            );
+            let c = U2T::new(
+                random_zomega(),
+                random_zomega(),
+                random_zomega(),
+                random_zomega(),
+                100,
+            );
             let lhs = (a * b) * c;
             let rhs = a * (b * c);
             assert_eq!(lhs, rhs, "Associativity failed for random U2T");
@@ -440,7 +537,10 @@ mod tests {
         let h_q = U2Q::h();
         let hdg_q = h_q.dagger();
         let hh_q = h_q * hdg_q;
-        assert!(hh_q.diamond_distance(&eye_q) < 1e-10, "H·H† should be identity");
+        assert!(
+            hh_q.diamond_distance(&eye_q) < 1e-10,
+            "H·H† should be identity"
+        );
     }
 
     #[test]
@@ -455,7 +555,10 @@ mod tests {
         let s_q = U2Q::s();
         let sdg_q = s_q.dagger();
         let ss_q = s_q * sdg_q;
-        assert!(ss_q.diamond_distance(&eye_q) < 1e-10, "S·S† should be identity");
+        assert!(
+            ss_q.diamond_distance(&eye_q) < 1e-10,
+            "S·S† should be identity"
+        );
     }
 
     #[test]
@@ -470,7 +573,10 @@ mod tests {
         let t_q = U2Q::t();
         let tdg_q = t_q.dagger();
         let tt_q = t_q * tdg_q;
-        assert!(tt_q.diamond_distance(&eye_q) < 1e-10, "T·T† should be identity");
+        assert!(
+            tt_q.diamond_distance(&eye_q) < 1e-10,
+            "T·T† should be identity"
+        );
     }
 
     #[test]
@@ -479,6 +585,9 @@ mod tests {
         let q = U2Q::q();
         let qdg = q.dagger();
         let qq = q * qdg;
-        assert!(qq.diamond_distance(&eye_q) < 1e-10, "Q·Q† should be identity");
+        assert!(
+            qq.diamond_distance(&eye_q) < 1e-10,
+            "Q·Q† should be identity"
+        );
     }
 }

@@ -34,7 +34,9 @@ pub struct LatticeScratch {
 
 impl LatticeScratch {
     pub fn new(eps: Float) -> Self {
-        Self { inner: scratch::IntScratch::new(eps) }
+        Self {
+            inner: scratch::IntScratch::new(eps),
+        }
     }
 }
 
@@ -64,8 +66,14 @@ mod tests {
         let c = 0.15_f64.cos();
         let ns = -0.15_f64.sin();
         [
-            s * c, s * (c + ns) * r2, s * ns, s * (-c + ns) * r2,
-            0.0, 0.0, 0.0, 0.0,
+            s * c,
+            s * (c + ns) * r2,
+            s * ns,
+            s * (-c + ns) * r2,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
         ]
     }
 
