@@ -474,6 +474,8 @@ fn brute_force_direct_search_n6(
 pub const LATTICE_K_MIN: u32 = 7;
 const DEFAULT_DC_INNER_K: u32 = 12;
 const TIGHT_DC_INNER_K: u32 = 18;
+const DEEP_DC_INNER_K: u32 = 21;
+const VERY_DEEP_DC_INNER_K: u32 = 22;
 
 fn default_dc_inner_k(epsilon: f64) -> u32 {
     if epsilon <= 1e-4 {
@@ -481,6 +483,35 @@ fn default_dc_inner_k(epsilon: f64) -> u32 {
     } else {
         DEFAULT_DC_INNER_K
     }
+}
+
+fn max_dc_inner_k(epsilon: f64) -> u32 {
+    if epsilon <= 1e-6 {
+        VERY_DEEP_DC_INNER_K
+    } else if epsilon <= 1e-5 {
+        DEEP_DC_INNER_K
+    } else {
+        default_dc_inner_k(epsilon)
+    }
+}
+
+fn dc_inner_candidates(k: u32, epsilon: f64, base_inner: u32) -> Vec<u32> {
+    let log2_recip = if epsilon > 0.0 && epsilon < 1.0 {
+        (1.0 / epsilon).log2()
+    } else {
+        0.0
+    };
+    let msa_like_inner = (1.55 * log2_recip).ceil() as u32;
+    let max_inner = max_dc_inner_k(epsilon).min(k);
+    let preferred = msa_like_inner.clamp(base_inner, max_inner);
+
+    let mut out = Vec::new();
+    for inner in (base_inner..=preferred).rev() {
+        if inner <= k && !out.contains(&inner) {
+            out.push(inner);
+        }
+    }
+    out
 }
 
 /// Phase-1 search: enumerate x with norm_eq=true, bilinear=true, alignment ok.
@@ -844,7 +875,14 @@ impl SynthesizerPi6 {
         let (min_lde, max_lde) = if epsilon > 0.0 && epsilon < 1.0 {
             // R_z(π/6)-count scales as ~log₂(1/ε²) ≈ 2·log₂(1/ε).
             let log2_recip = (1.0 / epsilon).log2();
-            let min_lde = (1.3 * log2_recip).floor() as u32;
+            let min_coef = if epsilon <= 1e-6 {
+                1.66
+            } else if epsilon <= 1e-5 {
+                1.6
+            } else {
+                1.3
+            };
+            let min_lde = (min_coef * log2_recip).floor() as u32;
             let max_lde = ((2.2 * log2_recip).ceil() as u32 + 4).max(30);
             (min_lde, max_lde)
         } else {
@@ -882,14 +920,12 @@ impl SynthesizerPi6 {
 
         let start = std::time::Instant::now();
         for k in self.min_lde..=self.max_lde {
-            // Label reflects actual inner path: dc_search always uses k_inner=direct_limit,
-            // so the lattice threshold is evaluated against direct_limit, not k.
-            let inner_k = if k <= self.direct_limit {
-                k
+            let inner_candidates = if k <= self.direct_limit {
+                vec![k]
             } else {
-                self.direct_limit
+                dc_inner_candidates(k, self.epsilon, self.direct_limit)
             };
-            let path = if inner_k < LATTICE_K_MIN {
+            let path = if inner_candidates.iter().any(|&inner| inner < LATTICE_K_MIN) {
                 "brute"
             } else {
                 "lattice"
@@ -897,12 +933,25 @@ impl SynthesizerPi6 {
             let result = if k <= self.direct_limit {
                 self.direct_search(&target, v, k)
             } else {
-                let k_prefix = k - self.direct_limit;
-                self.dc_search(&target, v, k, k_prefix)
+                let mut found = None;
+                for k_inner in inner_candidates.iter().copied() {
+                    let k_prefix = k - k_inner;
+                    if trace {
+                        eprintln!(
+                            "attempting k={k} via {path} (inner_k={k_inner}, prefix_k={k_prefix}, {} ms elapsed)",
+                            start.elapsed().as_millis()
+                        );
+                    }
+                    found = self.dc_search(&target, v, k, k_prefix);
+                    if found.is_some() {
+                        break;
+                    }
+                }
+                found
             };
-            if trace {
+            if trace && k <= self.direct_limit {
                 eprintln!(
-                    "attempting k={k} via {path} (inner_k={inner_k}, {} ms elapsed)",
+                    "attempting k={k} via {path} (inner_k={k}, {} ms elapsed)",
                     start.elapsed().as_millis()
                 );
             }
