@@ -1,5 +1,5 @@
 //! Minimal driver for tracing n=6 (Clifford+R_z(π/6)) synthesis instrumentation.
-//! Synthesizes one fixed target at eps=1e-3 with a deterministic seed.
+//! Synthesizes one deterministic random target at configurable eps.
 //! Stderr carries the [SE], [DC], and [OPT] eprintln lines.
 //!
 //!   cargo run --release --bin trace_pi6 2> /tmp/n6_trace.txt
@@ -7,30 +7,32 @@
 use cyclosynth::synthesis::clifford_pi6::SynthesizerPi6;
 use num_complex::Complex64;
 
-fn rz(theta: f64) -> [[Complex64; 2]; 2] {
-    [
-        [
-            Complex64::from_polar(1.0, -theta / 2.0),
-            Complex64::new(0.0, 0.0),
-        ],
-        [
-            Complex64::new(0.0, 0.0),
-            Complex64::from_polar(1.0, theta / 2.0),
-        ],
-    ]
-}
-
 fn main() {
-    // Deterministic target: Rz(0.3) — the canonical "small angle" test case.
-    // Fix k=9 region by using eps=1e-3 (default min_lde ≈ 13, so this exercises
-    // k=13+ where the lattice path fires via direct_search_n6).
-    let theta = 0.3_f64;
-    let target = rz(theta);
-    let eps = 1e-3_f64;
+    let eps = std::env::var("EPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1e-8_f64);
 
-    eprintln!("trace_pi6: theta={theta} eps={eps:.0e}");
+    let theta = 1.234_567_89_f64;
+    let phi = 2.345_678_91_f64;
+    let lambda = 3.456_789_12_f64;
+    let ct = (theta / 2.0).cos();
+    let st = (theta / 2.0).sin();
+    let global_phase = Complex64::from_polar(1.0, -(phi + lambda) / 2.0);
+    let target = [
+        [
+            global_phase * Complex64::new(ct, 0.0),
+            global_phase * (-Complex64::from_polar(st, lambda)),
+        ],
+        [
+            global_phase * Complex64::from_polar(st, phi),
+            global_phase * Complex64::from_polar(ct, phi + lambda),
+        ],
+    ];
 
-    let synth = SynthesizerPi6::new(eps).with_max_lde(20);
+    eprintln!("trace_pi6: fixed U3 target eps={eps:.0e}");
+
+    let synth = SynthesizerPi6::new(eps);
 
     match synth.synthesize(target) {
         Some(r) => {
@@ -40,7 +42,7 @@ fn main() {
             );
         }
         None => {
-            eprintln!("trace_pi6: FAILED (no solution within max_lde=20)");
+            eprintln!("trace_pi6: FAILED");
         }
     }
 }

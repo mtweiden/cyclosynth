@@ -476,6 +476,8 @@ const DEFAULT_DC_INNER_K: u32 = 12;
 const TIGHT_DC_INNER_K: u32 = 18;
 const DEEP_DC_INNER_K: u32 = 21;
 const VERY_DEEP_DC_INNER_K: u32 = 22;
+const ULTRA_DEEP_DC_INNER_K: u32 = 26;
+const EPS_1E8_DC_INNER_K: u32 = 34;
 
 fn default_dc_inner_k(epsilon: f64) -> u32 {
     if epsilon <= 1e-4 {
@@ -486,7 +488,11 @@ fn default_dc_inner_k(epsilon: f64) -> u32 {
 }
 
 fn max_dc_inner_k(epsilon: f64) -> u32 {
-    if epsilon <= 1e-6 {
+    if epsilon <= 1e-8 {
+        EPS_1E8_DC_INNER_K
+    } else if epsilon <= 1e-7 {
+        ULTRA_DEEP_DC_INNER_K
+    } else if epsilon <= 1e-6 {
         VERY_DEEP_DC_INNER_K
     } else if epsilon <= 1e-5 {
         DEEP_DC_INNER_K
@@ -504,9 +510,14 @@ fn dc_inner_candidates(k: u32, epsilon: f64, base_inner: u32) -> Vec<u32> {
     let msa_like_inner = (1.55 * log2_recip).ceil() as u32;
     let max_inner = max_dc_inner_k(epsilon).min(k);
     let preferred = msa_like_inner.clamp(base_inner, max_inner);
+    let min_inner = if epsilon <= 1e-8 {
+        preferred.saturating_sub(4).max(base_inner)
+    } else {
+        base_inner
+    };
 
     let mut out = Vec::new();
-    for inner in (base_inner..=preferred).rev() {
+    for inner in (min_inner..=preferred).rev() {
         if inner <= k && !out.contains(&inner) {
             out.push(inner);
         }
@@ -875,7 +886,11 @@ impl SynthesizerPi6 {
         let (min_lde, max_lde) = if epsilon > 0.0 && epsilon < 1.0 {
             // R_z(π/6)-count scales as ~log₂(1/ε²) ≈ 2·log₂(1/ε).
             let log2_recip = (1.0 / epsilon).log2();
-            let min_coef = if epsilon <= 1e-6 {
+            let min_coef = if epsilon <= 1e-8 {
+                1.72
+            } else if epsilon <= 1e-7 {
+                1.68
+            } else if epsilon <= 1e-6 {
                 1.66
             } else if epsilon <= 1e-5 {
                 1.6
@@ -1883,16 +1898,16 @@ mod tests {
         }
     }
 
-    /// Synthesize a deterministic Haar-style random SU(2) unitary at ε=1e-3.
+    /// Synthesize a deterministic Haar-style random SU(2) unitary at ε=1e-8.
     /// The fixed seed keeps the regression reproducible while still exercising
     /// a non-axis-aligned target.
     #[test]
-    #[ignore = "slow n=6 random-unitary synthesis regression at eps=1e-3 - 1e-5"]
+    #[ignore = "slow random-unitary synthesis regression at eps=1e-8"]
     fn synthesize_random_unitary() {
         use rand::{rngs::StdRng, Rng, SeedableRng};
 
-        let mut rng = StdRng::seed_from_u64(0xC0DEC0DE);
-        let eps = 1e-6_f64;
+        let mut rng = StdRng::seed_from_u64(1);
+        let eps = 1e-8_f64;
 
         let theta = rng.random::<f64>() * (2.0 * PI);
         let phi = rng.random::<f64>() * (2.0 * PI);
