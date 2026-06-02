@@ -1,11 +1,14 @@
 //! Unified user-facing `Synthesizer` API.
 //!
-//! Wraps the two ring-specific synthesis backends —
+//! Wraps the ring-specific synthesis backends —
 //! [`SynthesizerT`](crate::synthesis::clifford_t::SynthesizerT) for
-//! Clifford+T over Z[ω] and
+//! Clifford+T over Z[ω],
+//! [`SynthesizerPi6`](crate::synthesis::clifford_pi6::SynthesizerPi6) for
+//! Clifford+R_z(π/6) over Z[ξ],
+//! [`SynthesizerPi12`](crate::synthesis::clifford_pi12::SynthesizerPi12) for
+//! Clifford+R_z(π/12) over Z[υ], and
 //! [`SynthesizerQ`](crate::synthesis::clifford_sqrt_t::SynthesizerQ) for
-//! Clifford+√T over Z[ζ_16] — behind a single struct. Pick the backend at
-//! construction with the `sqrt_t: bool` flag (default false → Clifford+T).
+//! Clifford+√T over Z[ζ_16] — behind a single struct.
 //!
 //! ## Why two backends behind one type
 //!
@@ -18,6 +21,7 @@
 //! be replaced with monomorphised generic instantiations and `sqrt_t`
 //! will keep working as a public-API parameter.
 
+use crate::synthesis::clifford_pi6::SynthesizerPi6;
 use crate::synthesis::clifford_sqrt_t::SynthesizerQ;
 use crate::synthesis::clifford_t::SynthesizerT;
 use crate::synthesis::distance::Mat2;
@@ -27,8 +31,10 @@ use crate::synthesis::distance::Mat2;
 #[derive(Debug, Clone)]
 pub struct SynthResult {
     /// Gate string (leftmost = first gate applied). Alphabet is
-    /// `{H, S, T, X, Y, Z}` for Clifford+T and `{H, S, T, Q, X, Y, Z}` for
-    /// Clifford+√T (`Q = √T`). `None` if extraction failed.
+    /// `{H, S, T, X, Y, Z}` for Clifford+T, `{H, S, R, X, Z}` for
+    /// Clifford+R_z(π/6), `{H, S, P, X, Y, Z}` for Clifford+R_z(π/12),
+    /// and `{H, S, T, Q, X, Y, Z}` for Clifford+√T (`Q = √T`).
+    /// `None` if extraction failed.
     pub gates: Option<String>,
     /// Denominator exponent of the synthesized unitary.
     pub lde: u32,
@@ -52,6 +58,7 @@ pub struct Synthesizer {
 
 enum Backend {
     T(SynthesizerT),
+    Pi6(SynthesizerPi6),
     Q(SynthesizerQ),
 }
 
@@ -68,10 +75,18 @@ impl Synthesizer {
         Self { inner }
     }
 
+    /// Create a Clifford+R_z(π/6) synthesizer over Z[ξ].
+    pub fn new_pi6(epsilon: f64) -> Self {
+        Self {
+            inner: Backend::Pi6(SynthesizerPi6::new(epsilon)),
+        }
+    }
+
     /// Override the maximum lde the search will probe.
     pub fn with_max_lde(mut self, max_lde: u32) -> Self {
         match &mut self.inner {
             Backend::T(s) => s.max_lde = max_lde,
+            Backend::Pi6(s) => s.max_lde = max_lde,
             Backend::Q(s) => s.max_lde = max_lde,
         }
         self
@@ -81,6 +96,7 @@ impl Synthesizer {
     pub fn with_min_lde(mut self, min_lde: u32) -> Self {
         match &mut self.inner {
             Backend::T(s) => s.min_lde = min_lde,
+            Backend::Pi6(s) => s.min_lde = min_lde,
             Backend::Q(s) => s.min_lde = min_lde,
         }
         self
@@ -96,6 +112,11 @@ impl Synthesizer {
                 lde: r.lde,
                 distance: r.distance,
             }),
+            Backend::Pi6(s) => s.synthesize(target).map(|r| SynthResult {
+                gates: r.gates,
+                lde: r.lde,
+                distance: r.distance,
+            }),
             Backend::Q(s) => s.synthesize(target).map(|r| SynthResult {
                 gates: r.gates,
                 lde: r.lde,
@@ -107,6 +128,7 @@ impl Synthesizer {
     pub fn epsilon(&self) -> f64 {
         match &self.inner {
             Backend::T(s) => s.epsilon,
+            Backend::Pi6(s) => s.epsilon,
             Backend::Q(s) => s.epsilon,
         }
     }
@@ -114,6 +136,7 @@ impl Synthesizer {
     pub fn max_lde(&self) -> u32 {
         match &self.inner {
             Backend::T(s) => s.max_lde,
+            Backend::Pi6(s) => s.max_lde,
             Backend::Q(s) => s.max_lde,
         }
     }
@@ -121,12 +144,17 @@ impl Synthesizer {
     pub fn min_lde(&self) -> u32 {
         match &self.inner {
             Backend::T(s) => s.min_lde,
+            Backend::Pi6(s) => s.min_lde,
             Backend::Q(s) => s.min_lde,
         }
     }
 
     pub fn sqrt_t(&self) -> bool {
         matches!(&self.inner, Backend::Q(_))
+    }
+
+    pub fn is_pi6(&self) -> bool {
+        matches!(&self.inner, Backend::Pi6(_))
     }
 }
 
@@ -145,6 +173,8 @@ use pyo3::prelude::*;
 pub struct PySynthResult {
     /// Gate string (leftmost = first gate applied), or `None` if extraction
     /// failed. Alphabet `{H, S, T, X, Y, Z}` for Clifford+T,
+    /// `{H, S, R, X, Z}` for Clifford+R_z(π/6),
+    /// `{H, S, P, X, Y, Z}` for Clifford+R_z(π/12), and
     /// `{H, S, T, Q, X, Y, Z}` for Clifford+√T.
     #[pyo3(get)]
     pub gates: Option<String>,
@@ -182,6 +212,10 @@ impl PySynthResult {
 ///
 /// # Clifford+T (default).
 /// synth = cyclosynth.Synthesizer(epsilon=1e-5)
+/// # Clifford+R_z(pi/6).
+/// synth = cyclosynth.Synthesizer(epsilon=1e-5, pi6=True)
+/// # Clifford+R_z(pi/12).
+/// synth = cyclosynth.Synthesizer(epsilon=1e-5, pi12=True)
 /// # Clifford+√T (denser, generally fewer gates).
 /// synth = cyclosynth.Synthesizer(epsilon=1e-5, sqrt_t=True)
 ///
@@ -198,16 +232,36 @@ pub struct PySynthesizer {
 #[pymethods]
 impl PySynthesizer {
     #[new]
-    #[pyo3(signature = (epsilon, *, sqrt_t=false, max_lde=None, min_lde=None))]
-    fn new(epsilon: f64, sqrt_t: bool, max_lde: Option<u32>, min_lde: Option<u32>) -> Self {
-        let mut s = Synthesizer::new(epsilon, sqrt_t);
+    #[pyo3(signature = (epsilon, *, sqrt_t=false, pi6=false, pi12=false, max_lde=None, min_lde=None))]
+    fn new(
+        epsilon: f64,
+        sqrt_t: bool,
+        pi6: bool,
+        pi12: bool,
+        max_lde: Option<u32>,
+        min_lde: Option<u32>,
+    ) -> PyResult<Self> {
+        let selected = [sqrt_t, pi6, pi12].iter().filter(|&&v| v).count();
+        if selected > 1 {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "sqrt_t=True, pi6=True, and pi12=True are mutually exclusive",
+            ));
+        }
+
+        let mut s = if pi6 {
+            Synthesizer::new_pi6(epsilon)
+        } else if pi12 {
+            Synthesizer::new_pi12(epsilon)
+        } else {
+            Synthesizer::new(epsilon, sqrt_t)
+        };
         if let Some(v) = max_lde {
             s = s.with_max_lde(v);
         }
         if let Some(v) = min_lde {
             s = s.with_min_lde(v);
         }
-        Self { inner: s }
+        Ok(Self { inner: s })
     }
 
     /// Synthesize `target` (a 2×2 `np.complex128` array).
@@ -256,11 +310,23 @@ impl PySynthesizer {
         self.inner.sqrt_t()
     }
 
+    #[getter]
+    fn pi6(&self) -> bool {
+        self.inner.is_pi6()
+    }
+
+    #[getter]
+    fn pi12(&self) -> bool {
+        self.inner.is_pi12()
+    }
+
     fn __repr__(&self) -> String {
         format!(
-            "Synthesizer(epsilon={:.3e}, sqrt_t={}, min_lde={}, max_lde={})",
+            "Synthesizer(epsilon={:.3e}, sqrt_t={}, pi6={}, pi12={}, min_lde={}, max_lde={})",
             self.inner.epsilon(),
             self.inner.sqrt_t(),
+            self.inner.is_pi6(),
+            self.inner.is_pi12(),
             self.inner.min_lde(),
             self.inner.max_lde(),
         )

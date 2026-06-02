@@ -1,3 +1,4 @@
+pub mod clifford_pi12;
 pub mod clifford_pi6;
 pub mod clifford_sqrt_t;
 pub mod clifford_t;
@@ -8,6 +9,7 @@ pub mod distance;
 pub mod lattice;
 pub mod lattice_common;
 pub mod lattice_omicron;
+pub mod lattice_upsilon;
 pub mod lattice_zeta;
 pub mod search;
 pub mod search_zeta;

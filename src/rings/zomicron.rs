@@ -566,12 +566,12 @@ impl PyZOmicron {
 
     fn complex_norm_sqr(&self) -> (i64, i64) {
         let (r, s) = self.inner.complex_norm_sqr();
-        // Adjust the conversion if Int is wider than i64
-        (r as i64, s as i64)
+        // Python-facing helpers are intended for small display/test values.
+        (r.as_i128() as i64, s.as_i128() as i64)
     }
 
     fn field_norm(&self) -> i64 {
-        self.inner.field_norm() as i64
+        self.inner.field_norm().as_i128() as i64
     }
 
     #[staticmethod]

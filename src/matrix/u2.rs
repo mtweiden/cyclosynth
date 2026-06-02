@@ -12,6 +12,7 @@
 use crate::rings::zomega::PyZOmega;
 use crate::rings::zomega::ZOmega;
 use crate::rings::zomicron::ZOmicron;
+use crate::rings::zupsilon::ZUpsilon;
 #[cfg(feature = "python")]
 use crate::rings::zzeta::PyZZeta;
 use crate::rings::zzeta::ZZeta;
@@ -102,6 +103,31 @@ impl RingElem for ZOmicron {
     }
     fn root_of_unity() -> Self {
         Self::XI
+    }
+}
+
+impl RingElem for ZUpsilon {
+    fn conj(self) -> Self {
+        self.conj()
+    }
+    fn to_complex(self) -> Complex64 {
+        self.to_complex()
+    }
+    fn zero() -> Self {
+        Self::ZERO
+    }
+    fn one() -> Self {
+        Self::ONE
+    }
+    fn i() -> Self {
+        Self::I
+    }
+    /// υ = e^{iπ/12}: used so U2::<ZUpsilon>::t() gives the π/12 phase gate.
+    fn omega() -> Self {
+        Self::UPSILON
+    }
+    fn root_of_unity() -> Self {
+        Self::UPSILON
     }
 }
 
@@ -208,6 +234,19 @@ impl U2<ZZeta> {
     /// Q gate: [[1,0],[0,ζ]] / √2^0 (for U2Q)
     pub fn q() -> Self {
         Self::new(ZZeta::ONE, ZZeta::ZERO, ZZeta::ZERO, ZZeta::ZETA, 0)
+    }
+}
+
+impl U2<ZUpsilon> {
+    /// P gate: diag(1, υ), with υ = e^{iπ/12}.
+    pub fn p() -> Self {
+        Self::new(
+            ZUpsilon::ONE,
+            ZUpsilon::ZERO,
+            ZUpsilon::ZERO,
+            ZUpsilon::UPSILON,
+            0,
+        )
     }
 }
 

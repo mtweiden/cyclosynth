@@ -246,7 +246,9 @@ pub fn phase1(
                 return None;
             }
             count.fetch_add(1, Ordering::Relaxed);
-            let x = super::se::reconstruct_x(&basis, z);
+            let Some(x) = super::se::try_reconstruct_x(&basis, z) else {
+                return None;
+            };
             // Norm check: i64 fast path for k ≤ 62, i128 path otherwise.
             // Most SE candidates fail this check, so it's the hottest test;
             // keeping it in i64 when safe is worth the branch.

@@ -359,17 +359,30 @@ fn recurse<F>(
 
 /// Reconstruct the lattice point `x = B·z` where `B` is the LLL-reduced
 /// basis (rows are basis vectors) and `z` are the SE-output coordinates.
-/// Done in i64; for our problem the components stay within i64 by Theorem 2's
-/// L³-reduced-basis bound combined with the SE bound.
+/// Accumulates in i128 because deep ε can make the intermediate products
+/// `z_i * B_ij` overflow i64 even when the final lattice coordinates fit.
 #[inline]
-pub fn reconstruct_x(b_lll: &IMat8, z: &[i64; 8]) -> [i64; 8] {
-    let mut x = [0i64; 8];
+pub fn try_reconstruct_x(b_lll: &IMat8, z: &[i64; 8]) -> Option<[i64; 8]> {
+    let mut x = [0i128; 8];
     for i in 0..8 {
         for j in 0..8 {
-            x[j] += z[i] * b_lll[i][j];
+            x[j] += (z[i] as i128) * (b_lll[i][j] as i128);
         }
     }
-    x
+    let mut out = [0i64; 8];
+    for j in 0..8 {
+        if x[j] < i64::MIN as i128 || x[j] > i64::MAX as i128 {
+            return None;
+        }
+        out[j] = x[j] as i64;
+    }
+    Some(out)
+}
+
+/// Reconstruct the lattice point `x = B·z`.
+#[inline]
+pub fn reconstruct_x(b_lll: &IMat8, z: &[i64; 8]) -> [i64; 8] {
+    try_reconstruct_x(b_lll, z).expect("reconstructed lattice coordinate exceeds i64")
 }
 
 /// Evaluate the bilinear form `B(x) = a₁b₁ − a₁d₁ + b₁c₁ + c₁d₁ + a₂b₂ −

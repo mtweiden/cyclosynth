@@ -198,7 +198,7 @@ pub fn phase1(
     let target_norm_eucl_f = 2.0 * target_norm as f64;
     let count = AtomicU64::new(0);
     let abort = AtomicBool::new(false);
-    let bound_se = RFloat::with_val(super::se::SE_PREC, 2.5_f64);
+    let bound_se = RFloat::with_val(super::se::SE_PREC, 1.51_f64);
     let t_phase = if trace {
         Some(std::time::Instant::now())
     } else {
