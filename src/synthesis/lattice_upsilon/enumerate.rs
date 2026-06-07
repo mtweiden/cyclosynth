@@ -370,18 +370,20 @@ pub fn compute_align_vec(v: [f64; 4]) -> [f64; D_FULL] {
     y
 }
 
-/// Scaled alignment vector: `√(2^k) · compute_align_vec(v)`.
+/// Lattice-coord alignment vector: just `compute_align_vec(v)` — NO `√(2^k)`
+/// scaling.
+///
+/// Matches the lattice_omicron / n=6 convention where `y = Σ_topᵀ · v_pad`
+/// (raw, no R factor). With this normalization, target `(y · x_target)² =
+/// 2^k` (not `2^(2k)`), which keeps the Q-metric's rank-1 term k-independent
+/// in Q-norm units. The earlier `√(2^k) · compute_align_vec(v)` form leaked
+/// a hidden `2^k` factor into the rank-1 Q² contribution, blowing the
+/// SE bound out at production depth.
 ///
 /// `‖ỹ‖²` is NOT constant in `v` (the cap-block Gram is `4I+2C` — not a
 /// scalar identity — SPEC §6); compute it per call rather than caching.
-pub fn uv_to_xy(v: [f64; 4], k: u32) -> [f64; D_FULL] {
-    let scale = 2.0f64.powf(k as f64 / 2.0);
-    let raw = compute_align_vec(v);
-    let mut out = raw;
-    for x in out.iter_mut() {
-        *x *= scale;
-    }
-    out
+pub fn uv_to_xy(v: [f64; 4], _k: u32) -> [f64; D_FULL] {
+    compute_align_vec(v)
 }
 
 /// `|x · ỹ|²` for a candidate `x` and target `ỹ` at the same scale.
@@ -428,21 +430,9 @@ mod tests {
             let (s2_fast, s3_fast, s6_fast) = bullets_per_element_twice(c);
             // The rational component is u.norm_sqr (returns r·1). We just compare irrational parts.
             let _ = r_ring;
-            assert_eq!(
-                s2_ring,
-                Int::from_i64(s2_fast),
-                "2·s₂ mismatch for {c:?}"
-            );
-            assert_eq!(
-                s3_ring,
-                Int::from_i64(s3_fast),
-                "2·s₃ mismatch for {c:?}"
-            );
-            assert_eq!(
-                s6_ring,
-                Int::from_i64(s6_fast),
-                "2·s₆ mismatch for {c:?}"
-            );
+            assert_eq!(s2_ring, Int::from_i64(s2_fast), "2·s₂ mismatch for {c:?}");
+            assert_eq!(s3_ring, Int::from_i64(s3_fast), "2·s₃ mismatch for {c:?}");
+            assert_eq!(s6_ring, Int::from_i64(s6_fast), "2·s₆ mismatch for {c:?}");
         }
     }
 
@@ -586,10 +576,7 @@ mod tests {
         ];
         for x in &cases {
             let x_int: [Int; 16] = std::array::from_fn(|i| Int::from_i64(x[i]));
-            assert_eq!(
-                norm_sqr_total_int(&x_int),
-                Int::from_i64(norm_sqr_total(x))
-            );
+            assert_eq!(norm_sqr_total_int(&x_int), Int::from_i64(norm_sqr_total(x)));
             let (b2_i64, b3_i64, b6_i64) = bullets_total_twice(x);
             let (b2_int, b3_int, b6_int) = bullets_total_twice_int(&x_int);
             assert_eq!(b2_int, Int::from_i64(b2_i64));
@@ -630,16 +617,21 @@ mod tests {
         assert!((v_pos - v_neg).abs() < 1e-12);
     }
 
-    /// `uv_to_xy(v, k)` scales `compute_align_vec(v)` by `√(2^k)`.
+    /// `uv_to_xy(v, k)` returns `compute_align_vec(v)` unscaled (k-independent).
+    /// Post-y-rescaling fix: dropped the spurious `√(2^k)` factor so the
+    /// Q-metric's rank-1 term is k-independent. See `uv_to_xy` docstring.
     #[test]
-    fn uv_to_xy_scales_correctly() {
+    fn uv_to_xy_is_raw_align_vec() {
         let v = [0.5, 0.3, 0.7, -0.4];
-        let k = 6;
-        let raw = compute_align_vec(v);
-        let scaled = uv_to_xy(v, k);
-        let scale = (2.0_f64).powi(k as i32).sqrt();
-        for i in 0..16 {
-            assert!((scaled[i] - scale * raw[i]).abs() < 1e-10);
+        for &k in &[0u32, 3, 6, 12] {
+            let raw = compute_align_vec(v);
+            let scaled = uv_to_xy(v, k);
+            for i in 0..16 {
+                assert!(
+                    (scaled[i] - raw[i]).abs() < 1e-14,
+                    "uv_to_xy at k={k} differs from compute_align_vec",
+                );
+            }
         }
     }
 
@@ -671,8 +663,7 @@ mod tests {
             dot += x[i] as f64 * y[i];
         }
         // Expected: v · σ_1(u₁) + v · σ_1(u₂) (the cap rows are 0,1 of Σ_el).
-        let expected =
-            v[0] * s1_u1[0] + v[1] * s1_u1[1] + v[2] * s1_u2[0] + v[3] * s1_u2[1];
+        let expected = v[0] * s1_u1[0] + v[1] * s1_u1[1] + v[2] * s1_u2[0] + v[3] * s1_u2[1];
         assert!(
             (dot - expected).abs() < 1e-9,
             "x·ỹ = {dot}, expected v·σ_1(u₁) + v·σ_1(u₂) = {expected}"

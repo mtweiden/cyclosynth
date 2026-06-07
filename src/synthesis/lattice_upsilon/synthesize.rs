@@ -79,7 +79,7 @@ pub fn solution_to_unitary(sol: &[i64; 16], k: u32, phase: u32) -> U2<ZUpsilon> 
     let phase_factor = zeta_pow(phase);
     let u12 = -(u2.conj() * phase_factor);
     let u22 = u1.conj() * phase_factor;
-    U2::new(u1, u2, u12, u22, k)
+    U2::new(u1, u12, u2, u22, k)
 }
 
 /// Search the 24 phase branches and return the one minimizing diamond
@@ -181,19 +181,13 @@ pub fn synthesize(target: &[[Complex64; 2]; 2], k: u32, eps: f64) -> Option<Synt
 /// candidate (`sol`, `phase`) that meets `eps`. Matches the bandb5/7.py
 /// short-circuit semantics. Faster than [`synthesize`] when a "good
 /// enough" answer is acceptable.
-pub fn synthesize_first(
-    target: &[[Complex64; 2]; 2],
-    k: u32,
-    eps: f64,
-) -> Option<SynthResult> {
-    use crate::synthesis::distance::diamond_distance_float;
+pub fn synthesize_first(target: &[[Complex64; 2]; 2], k: u32, eps: f64) -> Option<SynthResult> {
     // Walk the brute enumerator one sol at a time; on each, try all 24
     // phases; return the first (sol, phase) within eps.
-    let sols = phase1_brute(k);
-    for sol in &sols {
-        for phase in 0..NUM_PHASES as u32 {
-            let u = solution_to_unitary(sol, k, phase);
-            let d = diamond_distance_float(&u.to_float(), target);
+    if k <= BRUTE_K_MAX {
+        let sols = phase1_brute(k);
+        for sol in &sols {
+            let (u, phase, d) = best_phase(sol, k, target);
             if d <= eps {
                 return Some(SynthResult {
                     u,
@@ -203,11 +197,38 @@ pub fn synthesize_first(
                 });
             }
         }
+        let _ = phase1_brute_first(k);
+        return None;
     }
-    // No phase hit; fall through and report the first valid sol so the
-    // caller can see what was best. Keep the short-circuit explicit.
-    let _ = phase1_brute_first(k);
-    None
+
+    let v = [
+        target[0][0].re,
+        target[0][0].im,
+        target[1][0].re,
+        target[1][0].im,
+    ];
+    let mut scratch = super::LatticeScratch::new(eps);
+    let budget_hit = std::sync::atomic::AtomicBool::new(false);
+    let mut hit: Option<SynthResult> = None;
+    let max_leaves: u64 = std::env::var("CYCLOSYNTH_N12_MAX_LEAVES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| if eps <= 1e-5 { 2_000_000 } else { 100_000_000 });
+    let _ = super::phase1_with_stop(&mut scratch, v, k, eps, max_leaves, &budget_hit, |sol| {
+        let (u, phase, d) = best_phase(sol, k, target);
+        if d <= eps {
+            hit = Some(SynthResult {
+                u,
+                solution: *sol,
+                phase,
+                distance: d,
+            });
+            true
+        } else {
+            false
+        }
+    });
+    hit
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -247,7 +268,7 @@ mod tests {
     fn solution_to_unitary_p_gate_phase_one() {
         let mut sol = [0i64; 16];
         sol[0] = 1; // u₁ = 1
-        // phase=1 ⇒ u₂₂ = conj(1) · ζ = ζ.
+                    // phase=1 ⇒ u₂₂ = conj(1) · ζ = ζ.
         let u = solution_to_unitary(&sol, 0, 1);
         assert_eq!(u.u11, ZUpsilon::ONE);
         assert_eq!(u.u12, ZUpsilon::ZERO);
@@ -277,7 +298,10 @@ mod tests {
     fn synthesize_p_gate_recovers_exact() {
         let p: [[Complex64; 2]; 2] = [
             [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, std::f64::consts::PI / 12.0)],
+            [
+                Complex64::new(0.0, 0.0),
+                Complex64::from_polar(1.0, std::f64::consts::PI / 12.0),
+            ],
         ];
         let result = synthesize(&p, 0, 1e-9).expect("P gate should be recoverable at k=0");
         assert!(
@@ -296,9 +320,8 @@ mod tests {
     fn round_trip_clifford_level_unitaries() {
         fn round_trip(label: &str, target: U2<ZUpsilon>) {
             let target_float = target.to_float();
-            let result = synthesize(&target_float, target.k, 1e-9).unwrap_or_else(|| {
-                panic!("{label}: synthesize returned None at k={}", target.k)
-            });
+            let result = synthesize(&target_float, target.k, 1e-9)
+                .unwrap_or_else(|| panic!("{label}: synthesize returned None at k={}", target.k));
             assert!(
                 result.distance < 1e-10,
                 "{label}: distance {} too large",
@@ -356,7 +379,11 @@ mod tests {
             seen.insert(u.u22);
             last_u22 = Some(u.u22);
         }
-        assert_eq!(seen.len(), 24, "expected 24 distinct u22 values across phases");
+        assert_eq!(
+            seen.len(),
+            24,
+            "expected 24 distinct u22 values across phases"
+        );
         assert!(last_u22.is_some());
     }
 }

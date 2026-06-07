@@ -377,10 +377,43 @@ pub fn run_lll_16(scratch: &mut IntScratch16) -> LllResult {
     if !scratch.warm_lll {
         scratch.reset_basis();
     }
+    let trace = std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some();
     if !compute_gram_full(scratch) {
+        if trace {
+            eprintln!("[trace stage 2 run_lll_16] EARLY EXIT: compute_gram_full → GramOverflow before LLL ran");
+        }
         return LllResult::GramOverflow;
     }
-    lll_l2_16(scratch)
+    if trace {
+        let mut max_in: i32 = -1;
+        for i in 0..16 {
+            for j in 0..16 {
+                let v = i256_log2_ceil(&scratch.gram[i][j]);
+                if v > max_in {
+                    max_in = v;
+                }
+            }
+        }
+        eprintln!("[trace stage 2 run_lll_16] Gram IN max|entry| ≈ 2^{max_in}");
+    }
+    let result = lll_l2_16(scratch);
+    if trace {
+        let mut max_out: i32 = -1;
+        for i in 0..16 {
+            for j in 0..16 {
+                let v = i256_log2_ceil(&scratch.gram[i][j]);
+                if v > max_out {
+                    max_out = v;
+                }
+            }
+        }
+        let max_out_f64 = (max_out as f64).exp2();
+        eprintln!(
+            "[trace stage 2 run_lll_16] result={result:?} Gram OUT max|entry| ≈ 2^{max_out} = {max_out_f64:.3e}  F64_EXACT_CEIL = 2^53 = {:.3e}",
+            (53_f64).exp2()
+        );
+    }
+    result
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

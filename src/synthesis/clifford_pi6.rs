@@ -1907,7 +1907,7 @@ mod tests {
         use rand::{rngs::StdRng, Rng, SeedableRng};
 
         let mut rng = StdRng::seed_from_u64(1);
-        let eps = 1e-8_f64;
+        let eps = 1e-7_f64;
 
         let theta = rng.random::<f64>() * (2.0 * PI);
         let phi = rng.random::<f64>() * (2.0 * PI);

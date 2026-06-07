@@ -31,9 +31,7 @@ use i256::i256;
 use rug::{Assign, Float as RFloat};
 use std::f64::consts::PI;
 
-use super::scratch::{
-    compute_scale_bits, imat_zero_16, rfv, rfz, IntScratch16, TARGET_BITS,
-};
+use super::scratch::{compute_scale_bits, imat_zero_16, rfv, rfz, IntScratch16, TARGET_BITS};
 use crate::rings::Float;
 
 // ─── Row ordering for the n=12 Σ ─────────────────────────────────────────────
@@ -81,12 +79,7 @@ fn fill_sigma_f64(sigma: &mut [[f64; 16]; 16]) {
 ///   `c = cap_mid · R · Σ⁻¹·(v, 0)` where `Σ⁻¹·(v, 0)` is computed by solving
 ///   `(ΣᵀΣ) · z = Σᵀ · v_padded` once at f64 precision (the f64→MPFR lift
 ///   adds <1 ULP error, well within the LU-solve tolerance downstream).
-pub fn build_q_mpfr_zeta(
-    scratch: &mut IntScratch16,
-    v: [f64; 4],
-    k: u32,
-    eps: Float,
-) {
+pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: Float) {
     // Compute y from v internally (lattice-coord alignment image of v at
     // scale √(2^k)), matching the lattice_zeta::build_q_mpfr_zeta signature.
     let y = crate::synthesis::lattice_upsilon::enumerate::uv_to_xy(v, k);
@@ -115,30 +108,6 @@ pub fn build_q_mpfr_zeta(
     let inv_dp_sq = RFloat::with_val(prec, &one / &dp_sq);
     let inv_r_sq = RFloat::with_val(prec, &one / &r_sq);
 
-    // §3-1: rank-1 term coefficient is `inv_dy_sq − inv_dp_sq` (cap radial −
-    // cap tangential, applied to the UNNORMALIZED outer product ŷŷᵀ).
-    let coef_yy = RFloat::with_val(prec, &inv_dy_sq - &inv_dp_sq);
-    // Cap tangential coefficient.
-    let coef_p_cap = inv_dp_sq;
-    // Bullet ball coefficient.
-    let coef_p_bullet = inv_r_sq;
-
-    // ŷ = y / ‖y‖.
-    let mut y_norm_sq = rfz(prec);
-    for i in 0..16 {
-        let yi_sq = rfv(prec, y[i] * y[i]);
-        y_norm_sq += yi_sq;
-    }
-    let y_norm = y_norm_sq.clone().sqrt();
-    let y_zero = y_norm_sq.is_zero();
-    let mut yhat = [0.0f64; 16];
-    if !y_zero {
-        let y_norm_f = y_norm.to_f64();
-        for i in 0..16 {
-            yhat[i] = y[i] / y_norm_f;
-        }
-    }
-
     // Pre-compute Σ-row sums for the projectors.
     let mut sigma = [[0.0f64; 16]; 16];
     fill_sigma_f64(&mut sigma);
@@ -159,9 +128,21 @@ pub fn build_q_mpfr_zeta(
         }
     }
 
+    // §3-1: rank-1 term uses RAW (un-normalized) `y` (matches the n=6
+    // anisotropic build in lattice_omicron). §3-2: y is the caller's raw
+    // alignment vector (already populated above from `v` via uv_to_xy).
+    //
+    // Build the algebraically equivalent positive-sum form
+    //
+    //   Q = (inv_dy_sq − inv_dp_sq)·yyᵀ + inv_dp_sq·p_cap + inv_r_sq·p_bullet
+    //
+    // instead of `inv_dy_sq·yyᵀ + inv_dp_sq·(p_cap − yyᵀ)`. At ε=1e-4,
+    // `p_cap − yyᵀ` is nearly singular; forming that subtraction first can
+    // turn the integer snapshot non-PSD and make Cholesky reject every k.
+    let coef_yy = RFloat::with_val(prec, &inv_dy_sq - &inv_dp_sq);
     for i in 0..16 {
         for j in 0..16 {
-            let yy = yhat[i] * yhat[j];
+            let yy = y[i] * y[j];
             let p_cap = p_cap_f[i][j];
             let p_bul = p_bullet_f[i][j];
 
@@ -170,12 +151,40 @@ pub fn build_q_mpfr_zeta(
             let p_bul_rf = rfv(prec, p_bul);
 
             let t1 = RFloat::with_val(prec, &coef_yy * &yy_rf);
-            let cap_minus_yy = RFloat::with_val(prec, &p_cap_rf - &yy_rf);
-            let t2 = RFloat::with_val(prec, &coef_p_cap * &cap_minus_yy);
-            let t3 = RFloat::with_val(prec, &coef_p_bullet * &p_bul_rf);
+            let t2 = RFloat::with_val(prec, &inv_dp_sq * &p_cap_rf);
+            let t3 = RFloat::with_val(prec, &inv_r_sq * &p_bul_rf);
             let s12 = RFloat::with_val(prec, &t1 + &t2);
             scratch.q_mpfr[i][j].assign(RFloat::with_val(prec, &s12 + &t3));
         }
+    }
+
+    let mut max_q_rf = rfz(prec);
+    for i in 0..16 {
+        for j in 0..16 {
+            let v = scratch.q_mpfr[i][j].clone().abs();
+            if v > max_q_rf {
+                max_q_rf.assign(v);
+            }
+        }
+    }
+    if !max_q_rf.is_zero() {
+        let floor = RFloat::with_val(prec, &max_q_rf * rfv(prec, 1e-15));
+        for i in 0..16 {
+            let cur = scratch.q_mpfr[i][i].clone();
+            scratch.q_mpfr[i][i].assign(RFloat::with_val(prec, cur + &floor));
+        }
+    }
+
+    // ─── READ-ONLY TRACE [stage 1: Q metric] ─────────────────────────────
+    // Gated on CYCLOSYNTH_TRACE_DEEP_EPS; prints only, no behavior change.
+    if std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some() {
+        eprintln!(
+            "[trace stage 1 build_q_mpfr_zeta] k={k} eps={eps:e} inv_dy_sq={:.3e} inv_dp_sq={:.3e} inv_r_sq={:.3e} max|Q_ij|={max_q:.3e}",
+            inv_dy_sq.to_f64(),
+            inv_dp_sq.to_f64(),
+            inv_r_sq.to_f64(),
+            max_q = max_q_rf.to_f64(),
+        );
     }
 
     // ─── Cap center c = cap_mid · R · Σ⁻¹·(v, 0) ───────────────────────────

@@ -44,10 +44,12 @@
 //! correctness oracle role that `super::search_zeta::phase1_brute` plays
 //! for n=16.
 
+pub mod bkz;
 pub mod cholesky_lu;
 pub mod enumerate;
 pub mod integer;
 pub mod lll;
+pub mod lll_f64;
 pub mod q_metric;
 pub mod scratch;
 pub mod se;
@@ -106,6 +108,31 @@ pub fn phase1_first(
         |_| true,
     );
     sols.into_iter().next()
+}
+
+/// LLL+SE phase1 with an early-exit predicate.
+pub fn phase1_with_stop<F>(
+    scratch: &mut LatticeScratch,
+    v: [Float; 4],
+    k: u32,
+    eps: Float,
+    max_leaves: u64,
+    budget_hit: &AtomicBool,
+    should_stop: F,
+) -> Vec<[i64; 16]>
+where
+    F: FnMut(&[i64; 16]) -> bool,
+{
+    scratch.inner.reset_basis();
+    integer::phase1_with_stop(
+        &mut scratch.inner,
+        v,
+        k,
+        eps,
+        max_leaves,
+        budget_hit,
+        should_stop,
+    )
 }
 
 pub use enumerate::{

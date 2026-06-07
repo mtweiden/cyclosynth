@@ -105,6 +105,9 @@ pub fn cholesky_int_16(
 /// Solution lands in `scratch.lu_x`. Returns `false` if the matrix is
 /// numerically singular (pivot below 1e-30).
 pub fn lu_solve_int_inplace_16(scratch: &mut IntScratch16) -> bool {
+    if std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some() {
+        eprintln!("[trace stage 4 lu_solve_int_inplace_16] REACHED");
+    }
     // Load lu_a = Bᵀ and lu_rhs = c. Convert i64 → MPFR via f64 (every i64
     // basis entry post-LLL is well within f64's 53-bit exact range — the
     // basis stays under 2^41 even at deep ε, and at moderate ε ≤ 2^15).
@@ -129,6 +132,12 @@ pub fn lu_solve_int_inplace_16(scratch: &mut IntScratch16) -> bool {
             }
         }
         if piv_abs < tol {
+            if std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some() {
+                eprintln!(
+                    "[trace stage 4 lu_solve_int_inplace_16] PIVOT GUARD TRIPPED at k={k}: |piv|={:.3e} < tol → returning false",
+                    piv_abs.to_f64()
+                );
+            }
             return false;
         }
         if piv != k {
@@ -171,6 +180,9 @@ pub fn lu_solve_int_inplace_16(scratch: &mut IntScratch16) -> bool {
         let acc_clone = scratch.lu_acc.clone();
         scratch.lu_x[i].assign(&acc_clone / &scratch.lu_a[i][i]);
     }
+    if std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some() {
+        eprintln!("[trace stage 4 lu_solve_int_inplace_16] SUCCESS");
+    }
     true
 }
 
@@ -196,6 +208,23 @@ pub fn cholesky_f64_16(scratch: &mut IntScratch16) -> bool {
             g[i][j] = i256_to_f64(scratch.gram[i][j]) * scale;
         }
     }
+    let trace = std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some();
+    if trace {
+        let mut max_g: f64 = 0.0;
+        for i in 0..16 {
+            for j in 0..=i {
+                let a = g[i][j].abs();
+                if a > max_g {
+                    max_g = a;
+                }
+            }
+        }
+        let f64_ceil = (53_f64).exp2();
+        let cross = if max_g > f64_ceil { "EXCEEDS" } else { "under" };
+        eprintln!(
+            "[trace stage 3 cholesky_f64_16] max|G_ij| (post-LLL, natural-scale) = {max_g:.3e}  F64_EXACT_CEIL = 2^53 = {f64_ceil:.3e}  ({cross} the f64 exact ceiling)"
+        );
+    }
     for i in 0..16 {
         for j in 0..16 {
             scratch.l_f64[i][j] = 0.0;
@@ -209,6 +238,11 @@ pub fn cholesky_f64_16(scratch: &mut IntScratch16) -> bool {
             }
             if i == j {
                 if s <= 0.0 {
+                    if trace {
+                        eprintln!(
+                            "[trace stage 3 cholesky_f64_16] PIVOT GUARD TRIPPED at i=j={i}: s={s:.3e} ≤ 0 → returning false"
+                        );
+                    }
                     return false;
                 }
                 scratch.l_f64[i][i] = s.sqrt();
@@ -216,6 +250,44 @@ pub fn cholesky_f64_16(scratch: &mut IntScratch16) -> bool {
                 scratch.l_f64[i][j] = s / scratch.l_f64[j][j];
             }
         }
+    }
+    if trace {
+        eprintln!("[trace stage 3 cholesky_f64_16] SUCCESS (factorization complete)");
+    }
+    true
+}
+
+/// Run MPFR Cholesky on the natural-scale post-LLL Gram, then copy the
+/// factor into the f64 buffer used by the SE walker.
+///
+/// The n=12 Q metric is very thin in the radial cap direction at deep ε.
+/// After LLL, a mathematically PSD Gram can have pivots small enough that
+/// f64 Cholesky trips a false non-PSD pivot. MPFR factorization avoids that
+/// false rejection while preserving the existing f64 Schnorr-Euchner walker.
+pub fn cholesky_mpfr_to_f64_16(scratch: &mut IntScratch16) -> bool {
+    let trace = std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some();
+    let g_post = snapshot_gram_to_mpfr_16(scratch);
+    let Some(l_post) = cholesky_int_16(scratch, &g_post) else {
+        if trace {
+            eprintln!("[trace stage 3 cholesky_mpfr_to_f64_16] MPFR pivot guard tripped");
+        }
+        return false;
+    };
+    for i in 0..16 {
+        for j in 0..16 {
+            scratch.l_f64[i][j] = if j <= i { l_post[i][j].to_f64() } else { 0.0 };
+        }
+    }
+    if trace {
+        let mut max_l: f64 = 0.0;
+        for i in 0..16 {
+            for j in 0..=i {
+                max_l = max_l.max(scratch.l_f64[i][j].abs());
+            }
+        }
+        eprintln!(
+            "[trace stage 3 cholesky_mpfr_to_f64_16] SUCCESS (copied MPFR factor to f64, max|L_ij|={max_l:.3e})"
+        );
     }
     true
 }

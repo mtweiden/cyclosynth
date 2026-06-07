@@ -28,13 +28,15 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::matrix::U2;
-use crate::rings::types::{Int, INT_ONE, INT_ZERO};
+use crate::rings::types::{Int, INT_ZERO};
 use crate::rings::ZUpsilon;
 use num_complex::Complex64;
+use rayon::prelude::*;
 use std::cmp::min;
-use std::f64::consts::PI;
+use std::collections::HashMap;
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
+use std::sync::{Arc, LazyLock, Mutex};
 
 // ─── RealScalar = Z[ζ₂₄]_real / √2^m ─────────────────────────────────────────
 
@@ -635,6 +637,22 @@ pub struct DecomposeResult {
     pub t12_count: usize,
 }
 
+/// Output of native approximate synthesis followed by exact pi/12
+/// decomposition.
+#[derive(Debug, Clone)]
+pub struct CircuitSynthResult {
+    /// Gate sequence over Clifford + `P = R_z(pi/12)`.
+    pub circuit: Vec<Gate>,
+    /// Denominator exponent of the synthesized exact unitary.
+    pub lde: u32,
+    /// Selected `Z[ζ24]` phase branch.
+    pub phase: u32,
+    /// Diamond distance from the synthesized unitary to the float target.
+    pub distance: f64,
+    /// Minimal R_z(π/12) gate count.
+    pub t12_count: usize,
+}
+
 /// Decompose `U ∈ G₁₂` into an optimal Clifford + R_z(π/12) circuit.
 ///
 /// Uses trial-peel (Forest §3 canonical form): at each step, pick the
@@ -724,6 +742,186 @@ pub fn verify_circuit(circuit: &[Gate], u: &U2<ZUpsilon>) -> bool {
     d < 1e-9
 }
 
+// ─── Prefix split for approximate synthesis ─────────────────────────────────
+
+type Mat2 = [[Complex64; 2]; 2];
+
+fn mat_mul_f64(a: Mat2, b: Mat2) -> Mat2 {
+    let mut out = [[Complex64::new(0.0, 0.0); 2]; 2];
+    for i in 0..2 {
+        for j in 0..2 {
+            for k in 0..2 {
+                out[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    out
+}
+
+fn mat_dag_f64(a: Mat2) -> Mat2 {
+    [
+        [a[0][0].conj(), a[1][0].conj()],
+        [a[0][1].conj(), a[1][1].conj()],
+    ]
+}
+
+fn canonical_key_f64(m: &Mat2) -> [i64; 8] {
+    let flat = [m[0][0], m[0][1], m[1][0], m[1][1]];
+    let (idx, _) = flat
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.norm_sqr().partial_cmp(&b.norm_sqr()).unwrap())
+        .unwrap();
+    let piv = flat[idx];
+    let rot: Vec<f64> = if piv.norm() < 1e-12 {
+        flat.iter().flat_map(|c| [c.re, c.im]).collect()
+    } else {
+        let phase = piv / piv.norm();
+        flat.iter()
+            .flat_map(|c| {
+                let r = c / phase;
+                [r.re, r.im]
+            })
+            .collect()
+    };
+    rot.iter()
+        .map(|x| (x * 1_000_000.0).round() as i64)
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap()
+}
+
+fn default_dc_inner_k_pi12(eps: f64) -> u32 {
+    if eps <= 1e-7 {
+        22
+    } else if eps <= 1e-5 {
+        18
+    } else if eps <= 1e-4 {
+        12
+    } else {
+        8
+    }
+}
+
+#[derive(Clone)]
+struct PrefixPi12 {
+    u: U2<ZUpsilon>,
+    f: Mat2,
+}
+
+fn build_l_pi12(k_prefix: u32) -> Arc<Vec<PrefixPi12>> {
+    static CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<PrefixPi12>>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    {
+        let cache = CACHE.lock().unwrap();
+        if let Some(v) = cache.get(&k_prefix) {
+            return Arc::clone(v);
+        }
+    }
+
+    let result = Arc::new(build_l_pi12_inner(k_prefix));
+    CACHE.lock().unwrap().insert(k_prefix, Arc::clone(&result));
+    result
+}
+
+fn push_prefix_pi12(
+    out: &mut Vec<PrefixPi12>,
+    seen: &mut std::collections::HashSet<[i64; 8]>,
+    u: U2<ZUpsilon>,
+) {
+    let f = u.to_float();
+    if seen.insert(canonical_key_f64(&f)) {
+        out.push(PrefixPi12 { u, f });
+    }
+}
+
+fn build_l_pi12_inner(k_prefix: u32) -> Vec<PrefixPi12> {
+    if k_prefix == 0 {
+        return vec![PrefixPi12 {
+            u: U2::<ZUpsilon>::eye(),
+            f: U2::<ZUpsilon>::eye().to_float(),
+        }];
+    }
+
+    let h = U2::<ZUpsilon>::h();
+    let s = U2::<ZUpsilon>::s();
+    let p = U2::<ZUpsilon>::p();
+    let hp = h * p;
+    let hsp = h * s * p;
+    let cliffords = clifford_table_u();
+
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let n_even = 1u64 << k_prefix.min(62);
+    for bits in 0..n_even {
+        let mut u = U2::<ZUpsilon>::eye();
+        for i in 0..k_prefix {
+            u = u * if (bits >> i) & 1 == 1 { hsp } else { hp };
+        }
+        for (_, clifford, _) in &cliffords {
+            push_prefix_pi12(&mut out, &mut seen, u * *clifford);
+        }
+    }
+    if k_prefix >= 1 {
+        let n_odd = 1u64 << (k_prefix - 1).min(62);
+        for bits in 0..n_odd {
+            let mut u = p;
+            for i in 0..(k_prefix - 1) {
+                u = u * if (bits >> i) & 1 == 1 { hsp } else { hp };
+            }
+            for (_, clifford, _) in &cliffords {
+                push_prefix_pi12(&mut out, &mut seen, u * *clifford);
+            }
+        }
+    }
+    if std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some() {
+        eprintln!(
+            "[trace pi12 dc] built prefix_k={k_prefix} prefixes={}",
+            out.len()
+        );
+    }
+    out
+}
+
+fn synthesize_circuit_dc_at_k(
+    target: &Mat2,
+    k: u32,
+    eps: f64,
+    k_inner: u32,
+) -> Option<CircuitSynthResult> {
+    if k_inner >= k {
+        return None;
+    }
+    let k_prefix = k - k_inner;
+    let prefixes = build_l_pi12(k_prefix);
+    if std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some() {
+        eprintln!(
+            "[trace pi12 dc] try k={k} prefix_k={k_prefix} inner_k={k_inner} prefixes={}",
+            prefixes.len()
+        );
+    }
+    prefixes.par_iter().find_map_any(|prefix| {
+        let inner_target = mat_mul_f64(mat_dag_f64(prefix.f), *target);
+        let synth =
+            crate::synthesis::lattice_upsilon::synthesize_first(&inner_target, k_inner, eps)?;
+        let full_u = prefix.u * synth.u;
+        let full_f = full_u.to_float();
+        let d = crate::synthesis::distance::diamond_distance_float(&full_f, target);
+        if d > eps {
+            return None;
+        }
+        let decomposed = decompose(&full_u);
+        Some(CircuitSynthResult {
+            circuit: decomposed.circuit,
+            lde: k,
+            phase: synth.phase,
+            distance: d,
+            t12_count: decomposed.t12_count,
+        })
+    })
+}
+
 // ─── Integration with lattice_upsilon::synthesize ────────────────────────────
 
 /// One-shot: approximate target → exact `U ∈ G₁₂` → optimal Clifford +
@@ -736,8 +934,64 @@ pub fn synthesize_circuit(
     k: u32,
     eps: f64,
 ) -> Option<DecomposeResult> {
-    let synth = crate::synthesis::lattice_upsilon::synthesize(target, k, eps)?;
-    Some(decompose(&synth.u))
+    synthesize_circuit_at_k(target, k, eps).map(|r| DecomposeResult {
+        circuit: r.circuit,
+        t12_count: r.t12_count,
+    })
+}
+
+/// Native one-shot approximate synthesis at denominator `√2^k`, followed
+/// by exact Clifford + `P` decomposition.
+pub fn synthesize_circuit_at_k(
+    target: &[[Complex64; 2]; 2],
+    k: u32,
+    eps: f64,
+) -> Option<CircuitSynthResult> {
+    let synth = crate::synthesis::lattice_upsilon::synthesize_first(target, k, eps)?;
+    let decomposed = decompose(&synth.u);
+    Some(CircuitSynthResult {
+        circuit: decomposed.circuit,
+        lde: k,
+        phase: synth.phase,
+        distance: synth.distance,
+        t12_count: decomposed.t12_count,
+    })
+}
+
+/// Native approximate synthesis over a denominator range. This is the
+/// pi/12 arbitrary-unitary entry point: every returned circuit is produced
+/// by the `Z[ζ24]` lattice path and decomposed into `P`. There is no
+/// cross-ring fallback; failure is reported honestly as `None`.
+pub fn synthesize_circuit_in_range(
+    target: &[[Complex64; 2]; 2],
+    eps: f64,
+    min_k: u32,
+    max_k: u32,
+) -> Option<CircuitSynthResult> {
+    let enable_dc = std::env::var_os("CYCLOSYNTH_PI12_ENABLE_DC").is_some();
+    for k in min_k..=max_k {
+        if let Some(result) = synthesize_circuit_at_k(target, k, eps) {
+            return Some(result);
+        }
+        if !enable_dc {
+            continue;
+        }
+        let base_inner = default_dc_inner_k_pi12(eps).min(k);
+        if k > base_inner {
+            let mut inners = Vec::new();
+            for inner in (base_inner.saturating_sub(2)..=base_inner + 2).rev() {
+                if inner >= 5 && inner < k && !inners.contains(&inner) {
+                    inners.push(inner);
+                }
+            }
+            for inner in inners {
+                if let Some(result) = synthesize_circuit_dc_at_k(target, k, eps, inner) {
+                    return Some(result);
+                }
+            }
+        }
+    }
+    None
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -745,10 +999,31 @@ pub fn synthesize_circuit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rings::types::INT_ZERO;
+    use crate::rings::types::{INT_ONE, INT_ZERO};
+    use std::f64::consts::PI;
 
     fn near_f64(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-10
+    }
+
+    #[test]
+    fn gate_matrices_are_unitary() {
+        let identity = U2::<ZUpsilon>::eye().to_float();
+        for gate in [
+            Gate::H,
+            Gate::S,
+            Gate::Sdg,
+            Gate::P,
+            Gate::Pdg,
+            Gate::X,
+            Gate::Y,
+            Gate::Z,
+        ] {
+            let u = gate.to_u2();
+            let product = (u * u.dagger()).to_float();
+            let d = crate::synthesis::distance::diamond_distance_float(&product, &identity);
+            assert!(d < 1e-12, "{gate}: U·U† is not identity (d={d:.3e})");
+        }
     }
 
     // ── RealScalar arithmetic ────────────────────────────────────────────────
@@ -818,7 +1093,10 @@ mod tests {
         for (a, q) in expect_q {
             let (c, s) = cos_sin_real(a);
             let m_max = c.m.max(s.m);
-            assert_eq!(m_max, q, "lde of cos/sin at a={a}: got {m_max}, expected {q}");
+            assert_eq!(
+                m_max, q,
+                "lde of cos/sin at a={a}: got {m_max}, expected {q}"
+            );
         }
     }
 
@@ -983,6 +1261,175 @@ mod tests {
         }
     }
 
+    /// Synthesize a deterministic Haar-style random SU(2) unitary using the
+    /// native n=12 lattice path.
+    #[test]
+    #[ignore = "slow native random-unitary synthesis regression"]
+    fn synthesize_random_unitary() {
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+
+        let mut rng = StdRng::seed_from_u64(1);
+        let eps = std::env::var("CYCLOSYNTH_PI12_RANDOM_EPS")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(1e-4_f64);
+
+        let theta = rng.random::<f64>() * (2.0 * PI);
+        let phi = rng.random::<f64>() * (2.0 * PI);
+        let lambda = rng.random::<f64>() * (2.0 * PI);
+        let ct = (theta / 2.0).cos();
+        let st = (theta / 2.0).sin();
+
+        // U3(θ, φ, λ), normalized by a global phase so det(target)=1.
+        let global_phase = Complex64::from_polar(1.0, -(phi + lambda) / 2.0);
+        let target = [
+            [
+                global_phase * Complex64::new(ct, 0.0),
+                global_phase * (-Complex64::from_polar(st, lambda)),
+            ],
+            [
+                global_phase * Complex64::from_polar(st, phi),
+                global_phase * Complex64::from_polar(ct, phi + lambda),
+            ],
+        ];
+
+        let min_k = std::env::var("CYCLOSYNTH_PI12_RANDOM_MIN_K")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or_else(|| if eps >= 1e-3 { 8 } else { 5 });
+        let max_k = std::env::var("CYCLOSYNTH_PI12_RANDOM_MAX_K")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or_else(|| {
+                if eps >= 1e-3 {
+                    18
+                } else if eps <= 1e-5 {
+                    40
+                } else {
+                    12
+                }
+            });
+
+        let t0 = std::time::Instant::now();
+        let result = synthesize_circuit_in_range(&target, eps, min_k, max_k).unwrap_or_else(|| {
+            panic!(
+                "n=12 failed to synthesize deterministic random unitary at eps={eps:.1e}, k={min_k}..={max_k}"
+            )
+        });
+        let elapsed = t0.elapsed();
+        let recovered = circuit_to_u2(&result.circuit);
+        let actual =
+            crate::synthesis::distance::diamond_distance_float(&recovered.to_float(), &target);
+        let gates_pi12 = result
+            .circuit
+            .iter()
+            .map(ToString::to_string)
+            .collect::<String>();
+
+        eprintln!(
+            "n=12 pi12 eps={eps:.1e}: elapsed={}ms k={} phase={} claimed={:.6e} actual={:.6e} t12_count={} gates_len={} gates={}",
+            elapsed.as_millis(),
+            result.lde,
+            result.phase,
+            result.distance,
+            actual,
+            result.t12_count,
+            result.circuit.len(),
+            gates_pi12
+        );
+        assert!(
+            result
+                .circuit
+                .iter()
+                .any(|g| matches!(g, Gate::P | Gate::Pdg)),
+            "pi/12 random synthesis produced no P gate: {gates_pi12}"
+        );
+        assert!(
+            result.distance < eps && actual < eps,
+            "n=12 pi12 failed: claimed={:.6e}, actual={actual:.6e}, epsilon={eps:.6e}, gates={gates_pi12}",
+            result.distance
+        );
+    }
+
+    /// Synthesize deterministic random exact G₁₂ unitaries through the full
+    /// n=12 lattice → decomposition path.
+    #[test]
+    fn synthesize_random_exact_gate_unitaries() {
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+
+        struct EnvGuard {
+            key: &'static str,
+            old: Option<std::ffi::OsString>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    match &self.old {
+                        Some(v) => std::env::set_var(self.key, v),
+                        None => std::env::remove_var(self.key),
+                    }
+                }
+            }
+        }
+
+        let _bound_guard = EnvGuard {
+            key: "CYCLOSYNTH_BOUND_SQ_N12",
+            old: std::env::var_os("CYCLOSYNTH_BOUND_SQ_N12"),
+        };
+        unsafe {
+            std::env::set_var("CYCLOSYNTH_BOUND_SQ_N12", "32");
+        }
+
+        let mut rng = StdRng::seed_from_u64(1);
+        let eps = 1e-3_f64;
+
+        for trial in 0..3 {
+            let mut gates = Vec::new();
+            for _ in 0..5 {
+                match rng.random_range(0..4) {
+                    0 => gates.push(Gate::S),
+                    1 => gates.push(Gate::P),
+                    2 => gates.push(Gate::Pdg),
+                    _ => {}
+                }
+                gates.push(Gate::H);
+                match rng.random_range(0..4) {
+                    0 => gates.push(Gate::S),
+                    1 => gates.push(Gate::P),
+                    2 => gates.push(Gate::Pdg),
+                    _ => {}
+                }
+            }
+            match rng.random_range(0..4) {
+                0 => gates.push(Gate::S),
+                1 => gates.push(Gate::P),
+                2 => gates.push(Gate::Pdg),
+                _ => {}
+            }
+
+            let target_u = circuit_to_u2(&gates);
+            assert_eq!(
+                target_u.k, 5,
+                "trial {trial}: random circuit should force k=5"
+            );
+            let target = target_u.to_float();
+
+            let result = synthesize_circuit(&target, target_u.k, eps).unwrap_or_else(|| {
+                panic!(
+                    "trial {trial}: n=12 failed to synthesize random exact unitary at eps={eps:.1e}, k={}",
+                    target_u.k
+                )
+            });
+            let recovered = circuit_to_u2(&result.circuit);
+            let actual =
+                crate::synthesis::distance::diamond_distance_float(&recovered.to_float(), &target);
+            assert!(
+                actual < eps,
+                "trial {trial}: n=12 exact gate synthesis failed: actual={actual:.6e}, epsilon={eps:.6e}"
+            );
+        }
+    }
+
     // ── lattice_upsilon round-trip (cross-module test #6 of PROMPT) ─────────
 
     /// The lattice_upsilon round-trip (un-ignored in Part A.2) implicitly
@@ -1030,10 +1477,8 @@ mod tests {
             let id = identify_clifford(u).unwrap_or_else(|| panic!("missing: {name}"));
             // The returned gates should re-multiply to u (modulo global phase).
             let cu = circuit_to_u2(&id);
-            let d = crate::synthesis::distance::diamond_distance_float(
-                &cu.to_float(),
-                &u.to_float(),
-            );
+            let d =
+                crate::synthesis::distance::diamond_distance_float(&cu.to_float(), &u.to_float());
             assert!(d < 1e-9, "{name}: identified circuit ≠ u (d={d})");
             let _ = gates;
         }

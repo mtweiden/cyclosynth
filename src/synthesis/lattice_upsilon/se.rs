@@ -81,6 +81,115 @@ pub fn norm_sqr_i128(x: &[i64; 16]) -> i128 {
     s
 }
 
+#[inline]
+fn norm_sqr_i128_wide(x: &[i128; 16]) -> i128 {
+    let mut s: i128 = 0;
+    for v in x {
+        s += *v * *v;
+    }
+    for i in 0..4 {
+        s += x[i] * x[i + 4];
+    }
+    for i in 0..4 {
+        s += x[8 + i] * x[8 + i + 4];
+    }
+    s
+}
+
+#[inline]
+fn isqrt_i128(n: i128) -> i128 {
+    if n < 0 {
+        return -1;
+    }
+    if n < 2 {
+        return n;
+    }
+    let mut x = n;
+    let mut y = (n + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
+
+#[inline]
+fn floor_div_i128(a: i128, b: i128) -> i128 {
+    debug_assert!(b > 0);
+    let q = a / b;
+    let r = a % b;
+    if r < 0 {
+        q - 1
+    } else {
+        q
+    }
+}
+
+/// Exact depth-0 shell filter for the n=12 cyclotomic norm. With
+/// `z[1..15]` fixed, solve the quadratic
+/// `N(p + z0*b0) = target_norm` and return the few integer `z0` values
+/// that can hit the norm shell inside the active SE bracket.
+#[inline]
+fn analytical_depth0_z0_candidates_upsilon(
+    x: &[i64; 16],
+    z0_curr: i64,
+    basis_0: &[i64; 16],
+    target_norm: i128,
+    z_low: i64,
+    z_high: i64,
+    out: &mut [i64; 6],
+) -> usize {
+    let p: [i128; 16] =
+        std::array::from_fn(|i| (x[i] as i128) - (z0_curr as i128) * (basis_0[i] as i128));
+    let b0: [i128; 16] = std::array::from_fn(|i| basis_0[i] as i128);
+    let p_plus_b0: [i128; 16] = std::array::from_fn(|i| p[i] + b0[i]);
+
+    let p_norm = norm_sqr_i128_wide(&p);
+    let b_norm = norm_sqr_i128_wide(&b0);
+    if b_norm == 0 {
+        return 0;
+    }
+    let linear = norm_sqr_i128_wide(&p_plus_b0) - p_norm - b_norm;
+    let constant = p_norm - target_norm;
+    let disc = linear * linear - 4 * b_norm * constant;
+    if disc < 0 {
+        return 0;
+    }
+
+    let sqrt_disc = isqrt_i128(disc);
+    let denom = 2 * b_norm;
+    let mut n = 0usize;
+    for &sign in &[1_i128, -1_i128] {
+        let q = floor_div_i128(-linear + sign * sqrt_disc, denom);
+        for nudge in -1_i64..=1 {
+            let cand_i128 = q + nudge as i128;
+            if cand_i128 < i64::MIN as i128 || cand_i128 > i64::MAX as i128 {
+                continue;
+            }
+            let cand = cand_i128 as i64;
+            if cand < z_low || cand > z_high {
+                continue;
+            }
+            let mut already = false;
+            for existing in out.iter().take(n) {
+                if *existing == cand {
+                    already = true;
+                    break;
+                }
+            }
+            if already {
+                continue;
+            }
+            let x_candidate: [i128; 16] = std::array::from_fn(|i| p[i] + (cand as i128) * b0[i]);
+            if norm_sqr_i128_wide(&x_candidate) == target_norm && n < out.len() {
+                out[n] = cand;
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 // ─── x = B · z reconstruction (verbatim from lattice_zeta) ───────────────────
 
 /// Reconstruct `x = B·z` where `B[i]` is the i-th LLL basis vector (row).
@@ -100,8 +209,7 @@ pub fn reconstruct_x(b_lll: &[[i64; 16]; 16], z: &[i64; 16]) -> [i64; 16] {
 /// Exact 16×16 i64 determinant via Bareiss in i128. Returns `None` on
 /// overflow. Used to validate basis unimodularity after LLL.
 pub fn det16_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
-    let mut a: [[i128; 16]; 16] =
-        std::array::from_fn(|i| std::array::from_fn(|j| m[i][j] as i128));
+    let mut a: [[i128; 16]; 16] = std::array::from_fn(|i| std::array::from_fn(|j| m[i][j] as i128));
     let mut sign: i128 = 1;
     let mut prev: i128 = 1;
     for k in 0..16 {
@@ -161,18 +269,83 @@ where
     let mut z = [0i64; 16];
     let mut leaves: usize = 0;
     let mut aborted = false;
+    let trace = std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some();
+    if trace {
+        let mut max_l: f64 = 0.0;
+        for i in 0..16 {
+            for j in 0..16 {
+                let a = l[i][j].abs();
+                if a > max_l {
+                    max_l = a;
+                }
+            }
+        }
+        let max_zc = z_c.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0);
+        eprintln!(
+            "[trace stage 5 schnorr_euchner_16d] ENTERED bound_sq={bound_sq:.3e} max|L_ij|={max_l:.3e} max|z_c|={max_zc}"
+        );
+    }
     recurse_16(
         15,
         l,
         z_c,
         bound_sq,
         0.0,
+        None,
         &mut z,
         &mut callback,
         budget,
         &mut leaves,
         &mut aborted,
     );
+    if trace {
+        eprintln!("[trace stage 5 schnorr_euchner_16d] EXITED n_enumerated (leaves) = {leaves}");
+    }
+    leaves
+}
+
+/// SE walk with an exact n=12 norm-shell filter at the final coordinate.
+/// This avoids spending the leaf budget on candidates that cannot satisfy
+/// `N(x) = 2^k`, while preserving the caller's exact leaf checks.
+pub fn schnorr_euchner_16d_norm_shell<F>(
+    l: &[[f64; 16]; 16],
+    z_c: &[i64; 16],
+    bound_sq: f64,
+    basis: &[[i64; 16]; 16],
+    target_norm: i128,
+    mut callback: F,
+    budget: &AtomicU64,
+) -> usize
+where
+    F: FnMut(&[i64; 16]) -> bool,
+{
+    let mut z = [0i64; 16];
+    let mut leaves: usize = 0;
+    let mut aborted = false;
+    let trace = std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some();
+    if trace {
+        eprintln!(
+            "[trace stage 5 schnorr_euchner_16d_norm_shell] ENTERED bound_sq={bound_sq:.3e} target_norm={target_norm}"
+        );
+    }
+    recurse_16(
+        15,
+        l,
+        z_c,
+        bound_sq,
+        0.0,
+        Some((basis, target_norm)),
+        &mut z,
+        &mut callback,
+        budget,
+        &mut leaves,
+        &mut aborted,
+    );
+    if trace {
+        eprintln!(
+            "[trace stage 5 schnorr_euchner_16d_norm_shell] EXITED n_enumerated (shell leaves) = {leaves}"
+        );
+    }
     leaves
 }
 
@@ -183,6 +356,7 @@ fn recurse_16<F>(
     z_c: &[i64; 16],
     bound_sq: f64,
     partial: f64,
+    shell: Option<(&[[i64; 16]; 16], i128)>,
     z: &mut [i64; 16],
     callback: &mut F,
     budget: &AtomicU64,
@@ -194,9 +368,13 @@ fn recurse_16<F>(
     if *aborted {
         return;
     }
+    if shell.is_some() && budget.fetch_sub(1, Ordering::Relaxed) <= 1 {
+        *aborted = true;
+        return;
+    }
     if depth < 0 {
         *leaves += 1;
-        if budget.fetch_sub(1, Ordering::Relaxed) <= 1 {
+        if shell.is_none() && budget.fetch_sub(1, Ordering::Relaxed) <= 1 {
             *aborted = true;
         }
         if !callback(z) {
@@ -215,6 +393,7 @@ fn recurse_16<F>(
             z_c,
             bound_sq,
             partial,
+            shell,
             z,
             callback,
             budget,
@@ -241,6 +420,41 @@ fn recurse_16<F>(
     let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
     let z_mid = z_c[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
+
+    if d == 0 {
+        if let Some((basis, target_norm)) = shell {
+            let x = reconstruct_x(basis, z);
+            let mut candidates = [0i64; 6];
+            let n = analytical_depth0_z0_candidates_upsilon(
+                &x,
+                z[0],
+                &basis[0],
+                target_norm,
+                z_low,
+                z_high,
+                &mut candidates,
+            );
+            if n == 0 {
+                return;
+            }
+            for &zd in candidates.iter().take(n) {
+                if *aborted {
+                    return;
+                }
+                let level = l_dd * ((zd - z_c[d]) as f64) + tail;
+                let new_partial = partial + level * level;
+                if new_partial > bound_sq + 1e-9 * bound_sq.abs() {
+                    continue;
+                }
+                z[d] = zd;
+                *leaves += 1;
+                if !callback(z) {
+                    *aborted = true;
+                }
+            }
+            return;
+        }
+    }
 
     for raw in 0..=(2 * max_off + 1) {
         if *aborted {
@@ -269,6 +483,7 @@ fn recurse_16<F>(
             z_c,
             bound_sq,
             new_partial,
+            shell,
             z,
             callback,
             budget,
