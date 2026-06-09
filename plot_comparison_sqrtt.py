@@ -4,10 +4,36 @@ style; y-axis is the T-count-equivalent cost (T_count + 2.5·Q_count).
 """
 
 import csv
+import glob
+import os
 from collections import defaultdict
+import matplotlib as mpl
+import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 
+plt.style.use("dark_background")
+
+# Latin Modern. Default path: register lmroman10 for body text and use
+# bundled Computer Modern for mathtext (visually equivalent to Latin
+# Modern Math; mathtext can't consume OpenType MATH tables).
+# Set CYCLOSYNTH_USETEX=1 to delegate rendering to LaTeX with `lmodern`
+# for true Latin Modern Math glyphs — requires `latex` and `dvipng` on
+# PATH (TeX Live 2026basic is missing dvipng; install via tlmgr).
+USETEX = os.environ.get("CYCLOSYNTH_USETEX") == "1"
+if USETEX:
+    mpl.rcParams["text.usetex"] = True
+    mpl.rcParams["text.latex.preamble"] = (
+        r"\usepackage[T1]{fontenc}\usepackage{lmodern}"
+    )
+else:
+    for _f in glob.glob(
+        "/usr/local/texlive/*/texmf-dist/fonts/opentype/public/lm/lmroman10-*.otf"
+    ):
+        fm.fontManager.addfont(_f)
+    mpl.rcParams["font.family"] = "serif"
+    mpl.rcParams["font.serif"] = ["Latin Modern Roman", "DejaVu Serif"]
+    mpl.rcParams["mathtext.fontset"] = "cm"
 
 CSV_PATH = "comparison_sqrtt_data.csv"
 OUT_PATH = "comparison_sqrtt_violin.png"
@@ -24,9 +50,12 @@ def load(path):
             d = data[eps][method]
             d["total"] += 1
             if success:
-                d["cost"].append(float(row["cost"]))
-                d["t"].append(int(row["t_count"]))
-                d["q"].append(int(row["q_count"]))
+                # d["cost"].append(float(row["cost"]))
+                t = int(row["t_count"])
+                q = int(row["q_count"])
+                d["cost"].append(t + 3.5 * q)
+                d["t"].append(t)
+                d["q"].append(q)
                 d["s"].append(float(row["duration_ms"]) / 1000)
             else:
                 d["fail"] += 1
@@ -51,11 +80,11 @@ def grouped_violin(ax, data, epsilons, methods, key, colors, slot_width=0.8):
         )
         for body in parts["bodies"]:
             body.set_facecolor(colors[i])
-            body.set_edgecolor("black")
+            body.set_edgecolor("white")
             body.set_alpha(0.6)
         for line_key in ("cmeans", "cmaxes", "cmins", "cbars"):
             if line_key in parts:
-                parts[line_key].set_edgecolor("black")
+                parts[line_key].set_edgecolor("white")
                 parts[line_key].set_linewidth(0.8)
 
 
@@ -89,7 +118,7 @@ def main():
     # Pretty labels.
     label_map = {
         "clifford_t": "Clifford+T",
-        "clifford_sqrt_t": "Clifford+√T",
+        "clifford_sqrt_t": r"Clifford+$\sqrt{T}$",
     }
     pretty = [label_map.get(m, m) for m in methods]
     # Clifford+T → tab:blue (tab10[0]); Clifford+√T → tab:purple (tab10[4],
@@ -103,11 +132,11 @@ def main():
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
     grouped_violin(axes[0], data, epsilons, methods, "cost", colors)
-    axes[0].set_ylabel("T-count-equivalent cost (T + 2.5·Q)")
+    axes[0].set_ylabel("T-count-equivalent cost (T + 3.5Q)")
     axes[0].set_title("Cost distribution")
     bound_xs = range(len(epsilons))
     bound_ys = [3 * np.log2(1 / eps) for eps in epsilons]
-    axes[0].plot(bound_xs, bound_ys, linestyle=":", color="black",
+    axes[0].plot(bound_xs, bound_ys, linestyle=":", color="white",
                  linewidth=1.0, label=r"$3\log_2(1/\varepsilon)$")
 
     grouped_violin(axes[1], data, epsilons, methods, "s", colors)
@@ -126,7 +155,7 @@ def main():
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=colors[i], alpha=0.6)
                for i in range(len(methods))]
-    bound_handle = plt.Line2D([0], [0], linestyle=":", color="black",
+    bound_handle = plt.Line2D([0], [0], linestyle=":", color="white",
                               linewidth=1.0)
     axes[0].legend(handles + [bound_handle],
                    pretty + [r"$3\log_2(1/\varepsilon)$"], loc="best")
