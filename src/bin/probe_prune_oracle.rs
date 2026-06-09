@@ -491,7 +491,7 @@ fn main() {
 
     eprintln!("=== Phase 1: capture x_target via f64 synthesize (bypass=on) ===");
     set_bypass_norm_prune(true); // capture must succeed despite the f64 prune false-negative
-    let synth = SynthesizerQ::new(eps).with_max_lde(35);
+    let synth = SynthesizerQ::new(eps).with_optimize_cost(false).with_max_lde(35);
     let r = synth.synthesize(target).expect("expected to find");
     let cap = diag::CAPTURED_FIND.lock().unwrap().clone().expect("capture must fire");
     eprintln!("  k_total={}, k_inner={}, d_r={}, d_l={}",

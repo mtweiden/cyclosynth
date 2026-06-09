@@ -72,13 +72,13 @@ fn main() {
     let mut total_bkz = 0.0_f64;
     for (idx, target) in targets.iter().enumerate() {
         let t = Instant::now();
-        let synth_pure = SynthesizerQ::new(eps).with_max_lde(max_lde);
+        let synth_pure = SynthesizerQ::new(eps).with_optimize_cost(false).with_max_lde(max_lde);
         let r_pure = synth_pure.synthesize(*target);
         let dt_pure = t.elapsed().as_secs_f64();
         total_pure += dt_pure;
 
         let t = Instant::now();
-        let synth_bkz = SynthesizerQ::new(eps).with_max_lde(max_lde).with_bkz(beta);
+        let synth_bkz = SynthesizerQ::new(eps).with_optimize_cost(false).with_max_lde(max_lde).with_bkz(beta);
         let r_bkz = synth_bkz.synthesize(*target);
         let dt_bkz = t.elapsed().as_secs_f64();
         total_bkz += dt_bkz;
