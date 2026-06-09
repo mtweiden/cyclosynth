@@ -78,6 +78,11 @@ fn run_q(target: Mat2, eps: f64, optimize: bool, lde_window: u32, m_sweep: Optio
     let mut synth = SynthesizerQ::new(eps)
         .with_optimize_cost(optimize)
         .with_optimal_lde_window(lde_window);
+    if let Ok(mult) = std::env::var("CYCLOSYNTH_BUDGET_MULT") {
+        if let Ok(m) = mult.parse::<u64>() {
+            synth = synth.with_optimal_budget_multiplier(m);
+        }
+    }
     if let Some(ms) = m_sweep {
         synth = synth.with_optimal_m_sweep(ms);
     }
