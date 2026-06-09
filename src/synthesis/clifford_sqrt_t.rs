@@ -590,14 +590,20 @@ impl SynthesizerQ {
 
         let bkz_block_size = if epsilon <= 1e-7 { 4 } else { 0 };
 
-        // Below ε = 2.5e-8 a no-solution lde level burns its full budget
-        // (tens of seconds) before the search moves on; speculating the
-        // next lde behind a one-prefix-budget trigger recovers most of
-        // that wall (4.6× on the θ=1.1 cliff instance at ε=1.5e-8).
-        // The trigger keeps easy targets sequential: they find a solution
-        // long before the predecessor consumes a full prefix budget.
+        // Below ε = 2.5e-8 a no-solution lde level burns its full pass-1
+        // node budget (n_prefixes × cap ≈ 9 × cap nodes, tens of seconds)
+        // before the search moves on; speculating the next lde behind a
+        // consumed-nodes trigger overlaps that burn (θ=1.1 cliff: 3.5× at
+        // ε=1.5e-8, 4.7× at 2e-8). The trigger keeps likely-solution
+        // levels sequential. At ε ≤ 1e-8 the solution level itself can
+        // consume ≈ 1× cap before finding (~92M observed), so a 1×cap
+        // trigger spawns a spurious peer that dilutes the find ~2.5×;
+        // 3× cap is measured overhead-free there while still overlapping
+        // the last ~2/3 of a real burn.
         let (parallel_lde_window, parallel_lde_trigger_nodes) = if epsilon < 2.5e-8 {
-            (2, dc_pass1_cap_for(epsilon))
+            let cap = dc_pass1_cap_for(epsilon);
+            let mult: u64 = if epsilon <= 1e-8 { 3 } else { 1 };
+            (2, cap.saturating_mul(mult))
         } else {
             (1, 0)
         };
