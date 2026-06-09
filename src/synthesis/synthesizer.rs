@@ -87,6 +87,36 @@ impl Synthesizer {
         self
     }
 
+    /// Clifford+√T only: enumerate all ε-close candidates at the found
+    /// lde and return the one minimising the weighted gate cost (see
+    /// [`SynthesizerQ::with_optimize_cost`]). Ignored for Clifford+T,
+    /// where the search is already T-count-minimal by construction.
+    pub fn with_optimize_cost(mut self, on: bool) -> Self {
+        if let Backend::Q(s) = self.inner {
+            self.inner = Backend::Q(s.with_optimize_cost(on));
+        }
+        self
+    }
+
+    /// Clifford+√T only: Q-gate weight in T units for the optimize-cost
+    /// model (default 3.5). Ignored for Clifford+T.
+    pub fn with_q_cost(mut self, weight: f64) -> Self {
+        if let Backend::Q(s) = self.inner {
+            self.inner = Backend::Q(s.with_q_cost(weight));
+        }
+        self
+    }
+
+    /// Clifford+√T only: also search `window` lde levels above the first
+    /// hit and return the global min-cost candidate (see
+    /// [`SynthesizerQ::with_optimal_lde_window`]). Ignored for Clifford+T.
+    pub fn with_optimal_lde_window(mut self, window: u32) -> Self {
+        if let Backend::Q(s) = self.inner {
+            self.inner = Backend::Q(s.with_optimal_lde_window(window));
+        }
+        self
+    }
+
     /// Synthesize `target` (a 2×2 unitary). Returns `None` if no circuit
     /// in the chosen gate set within `max_lde` reaches diamond distance
     /// below `epsilon`.
@@ -199,12 +229,16 @@ pub struct PySynthesizer {
 #[pymethods]
 impl PySynthesizer {
     #[new]
-    #[pyo3(signature = (epsilon, *, sqrt_t=false, max_lde=None, min_lde=None))]
+    #[pyo3(signature = (epsilon, *, sqrt_t=false, max_lde=None, min_lde=None,
+                        optimize_cost=false, q_cost=None, lde_window=None))]
     fn new(
         epsilon: f64,
         sqrt_t: bool,
         max_lde: Option<u32>,
         min_lde: Option<u32>,
+        optimize_cost: bool,
+        q_cost: Option<f64>,
+        lde_window: Option<u32>,
     ) -> Self {
         let mut s = Synthesizer::new(epsilon, sqrt_t);
         if let Some(v) = max_lde {
@@ -212,6 +246,15 @@ impl PySynthesizer {
         }
         if let Some(v) = min_lde {
             s = s.with_min_lde(v);
+        }
+        if optimize_cost {
+            s = s.with_optimize_cost(true);
+        }
+        if let Some(w) = q_cost {
+            s = s.with_q_cost(w);
+        }
+        if let Some(w) = lde_window {
+            s = s.with_optimal_lde_window(w);
         }
         Self { inner: s }
     }
