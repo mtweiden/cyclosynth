@@ -1469,13 +1469,6 @@ fn recurse_collect_norm_pruned<F>(
         aborted.store(true, Ordering::Relaxed);
         return;
     }
-    // Shared consumed-node counter for budget-triggered speculation.
-    // Increment per recurse-enter so the outer dispatcher can observe
-    // search-tree progress hardware-agnostically (depends on tree
-    // geometry, not wall clock).
-    if let Some(c) = consumed {
-        c.fetch_add(1, Ordering::Relaxed);
-    }
     // Per-node budget (phase 1): decrement on every recurse-enter so the
     // budget bounds total tree-traversal work, not just leaf checks. This
     // is the prerequisite for depth-1 / depth-0 analytical filters whose
@@ -1485,9 +1478,21 @@ fn recurse_collect_norm_pruned<F>(
     // time). Bounding nodes makes the budget proportional to traversal
     // cost. PASS{1,2}_CAP are calibrated empirically (see
     // clifford_sqrt_t.rs); the new units are nodes, not leaves.
-    if budget.fetch_sub(1, Ordering::Relaxed) <= 1 {
+    let budget_prior = budget.fetch_sub(1, Ordering::Relaxed);
+    if budget_prior <= 1 {
         aborted.store(true, Ordering::Relaxed);
         return;
+    }
+    // Shared consumed-node counter for budget-triggered speculation,
+    // batched to kill cross-core contention: `fetch_sub` hands out unique
+    // consecutive budget values across all rayon workers, so exactly one
+    // worker observes each multiple of 4096 and flushes the whole batch.
+    // A second contended fetch_add per node here costs 3× wall at
+    // ε ≤ 1e-8 (measured 15.9 s → 47 s on the θ=1.1 instance).
+    if let Some(c) = consumed {
+        if budget_prior & 4095 == 0 {
+            c.fetch_add(4096, Ordering::Relaxed);
+        }
     }
     let trace = crate::synthesis::diag::trace_enabled();
     if trace && depth >= 0 && (depth as usize) < 16 {
