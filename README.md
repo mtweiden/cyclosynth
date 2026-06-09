@@ -10,6 +10,12 @@ T-count for that ε. This implements Algorithm 3.14 of
 itself rests on the 8-dimensional integer enumeration of Algorithm 3.6 plus
 the divide-and-conquer split of Algorithm 3.11.
 
+A second backend extends the same machinery to the Clifford+√T gate set
+(ring Z[ζ₁₆], 16-dimensional lattice). `Synthesizer::new_sqrt_t(eps)` (Rust:
+`SynthesizerQ`) returns gate strings over `{H, S, T, Q, X, Y, Z}` where
+`Q = √T`, and `with_optimize_cost(true)` minimizes a weighted
+`T_count + c·Q_count` cost instead of taking the first solution.
+
 ## Quick start (Python)
 
 Install via [maturin](https://www.maturin.rs/) — this builds the Rust
@@ -130,26 +136,37 @@ lattice points within the cap × ball intersection (Schnorr-Euchner
 enumeration) until it finds an `x ∈ ℤ⁸` whose reconstruction satisfies the
 unitarity constraints.
 
-## File layout
+## Repository layout
 
 ```
 src/
-├── lib.rs
+├── lib.rs              PyO3 module + crate root
 ├── matrix/             U2, SO3 matrix types and basic operations
-├── rings/              Cyclotomic integer rings Z[ω], Z[ζ] and Float aliases
-└── synthesis/
-    ├── cliffords.rs        24-element Clifford table for the outer search
-    ├── decomposer.rs       Output-side: Z[ω]² unitary → Clifford+T gate string
-    ├── diag.rs             Optional CYCLOSYNTH_TRACE=1 counters
-    ├── search.rs           Direct enumeration over small norm shells
-    ├── synthesizer.rs      Top-level Synthesizer, T-count loop, dc_search,
-    │                       parallel dispatch
-    └── lenstra/
-        ├── mod.rs          LenstraScratch dispatch + phase1 entry point
-        ├── integer.rs      L²-LLL with i256 Gram + f64 GS for all ε
-        └── se.rs           Schnorr-Euchner walk + post-LLL helpers
-                            (det check, Euclidean Cholesky, lattice-point
-                            reconstruction, bilinear-form check)
+├── rings/              Cyclotomic integer rings Z[ω], Z[ζ₁₆] and Float aliases
+├── synthesis/
+│   ├── synthesizer.rs      Unified Synthesizer wrapper over both backends
+│   ├── clifford_t.rs       Clifford+T backend (8D, Z[ω])
+│   ├── clifford_sqrt_t.rs  Clifford+√T backend (16D, Z[ζ₁₆]), FGKM
+│   │                       divide-and-conquer + optimize-cost mode
+│   ├── cliffords.rs        24-element Clifford table for the outer search
+│   ├── decomposer.rs       Output-side: ring unitary → gate string
+│   ├── diag.rs             Optional CYCLOSYNTH_TRACE=1 counters
+│   ├── search.rs           Direct enumeration over small norm shells (Z[ω])
+│   ├── search_zeta.rs      Direct enumeration for Z[ζ₁₆]
+│   ├── distance.rs         Diamond-distance via Frobenius identity
+│   ├── sigma.rs            Minkowski-embedding Σ matrices
+│   ├── lattice/            8D pipeline: L²-LLL (i256 Gram + f64 GS),
+│   │                       Cholesky/LU, Schnorr-Euchner enumeration
+│   ├── lattice_zeta/       16D pipeline for Z[ζ₁₆]: LLL, BKZ-β, SE walk,
+│   │                       Q-metric, MPFR verification
+│   └── lattice_common/     Code shared by both lattice pipelines
+└── bin/                Benchmarks (time_synthesis, …) and probe_* diagnostics
+
+scripts/                Benchmark drivers + plotting (comparison*.py,
+                        plot_comparison*.py, recompute_csv_cost.py)
+examples/               Python usage examples and verification helpers
+docs/                   Research notes, plans, and baselines (untracked)
+bench_logs/             Raw benchmark logs referenced by docs/
 ```
 
 ## The lattice-enumeration pipeline
@@ -160,7 +177,7 @@ exponent). The lattice carries an anisotropic inner product `Q` that encodes
 the `cap × ball` body whose interior contains valid `(u₁, u₂) ∈ Z[ω]²`
 candidates.
 
-[`lenstra::integer`](src/synthesis/lenstra/integer.rs) runs L²-LLL
+[`lattice::integer`](src/synthesis/lattice/integer.rs) runs L²-LLL
 (Nguyen–Stehlé 2009): exact integer Gram in `i256`, Gram-Schmidt
 coefficients in `f64`, INSERT semantics + lazy size-reduction. Stable
 down to `ε = 1e-10`. Theorem 2 of the paper proves `f64` is sufficient for
@@ -172,7 +189,7 @@ The post-LLL phase runs:
 - MPFR LU at scaled precision (`compute_lu_prec(eps) ≈ 6·log₂(1/ε)`)
   for the cap-center solve.
 - Schnorr-Euchner enumeration in MPFR-128 in
-  [`lenstra::se`](src/synthesis/lenstra/se.rs).
+  [`lattice::se`](src/synthesis/lattice/se.rs).
 
 ## Threading model
 
