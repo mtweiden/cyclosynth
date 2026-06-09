@@ -173,34 +173,30 @@ pub fn build_l_q(m: u32) -> Arc<Vec<U2Q>> {
     result
 }
 
-/// Cache for prefix gate costs (parallel to `BUILD_L_Q_CACHE`).
-static BUILD_L_Q_COST_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<usize>>>>> =
+/// Cache for prefix `(T, Q)` gate counts (parallel to `BUILD_L_Q_CACHE`).
+static BUILD_L_Q_TQ_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<(usize, usize)>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Pre-computed `cost(U_L) = T + 3·Q` for each prefix in `build_l_q(m)`,
-/// indexed parallel to that Vec. Cached forever per `m`.
-///
-/// Cost is the canonical [`BlochDecomposer`] decomposition's
-/// `T + 3·Q`. NB: this is **not a lower bound** on `cost(U_L · U_R)` —
-/// U_R can cancel parts of U_L. The number is used as a heuristic
-/// ranking + prune, not a sound bound.
-pub fn build_l_q_costs(m: u32) -> Arc<Vec<usize>> {
+/// Pre-computed `(T_count, Q_count)` of the canonical [`BlochDecomposer`]
+/// decomposition for each prefix in `build_l_q(m)`, indexed parallel to
+/// that Vec. Cached forever per `m`; the caller applies its own Q-cost
+/// weight. NB: the weighted cost is **not a lower bound** on
+/// `cost(U_L · U_R)` — U_R can cancel parts of U_L. It is used as a
+/// heuristic ranking + prune, not a sound bound.
+pub fn build_l_q_tq(m: u32) -> Arc<Vec<(usize, usize)>> {
     {
-        let cache = BUILD_L_Q_COST_CACHE.lock().unwrap();
+        let cache = BUILD_L_Q_TQ_CACHE.lock().unwrap();
         if let Some(v) = cache.get(&m) {
             return Arc::clone(v);
         }
     }
     let prefixes = build_l_q(m);
-    let costs: Vec<usize> = prefixes
+    let counts: Vec<(usize, usize)> = prefixes
         .iter()
-        .map(|u_l| {
-            let gates = BlochDecomposer.decompose(u_l);
-            gates_cost(&gates)
-        })
+        .map(|u_l| gates_tq(&BlochDecomposer.decompose(u_l)))
         .collect();
-    let arc = Arc::new(costs);
-    BUILD_L_Q_COST_CACHE
+    let arc = Arc::new(counts);
+    BUILD_L_Q_TQ_CACHE
         .lock()
         .unwrap()
         .insert(m, Arc::clone(&arc));
@@ -368,7 +364,7 @@ pub struct SynthesizerQ {
     /// When true, at the smallest lde that admits a solution the
     /// synthesizer enumerates **all** ε-close candidates (no early
     /// termination), decomposes each via [`BlochDecomposer`], and returns
-    /// the one minimising cost `T + 3·Q`. Wall-time can grow 5-50× vs the
+    /// the one minimising cost `T + (q_cost_x2/2)·Q` (default `T + 3.5·Q`). Wall-time can grow 5-50× vs the
     /// default first-hit path. Default false. Builder:
     /// [`Self::with_optimize_cost`].
     pub optimize_cost: bool,
@@ -388,7 +384,7 @@ pub struct SynthesizerQ {
     /// Default 4. Builder: [`Self::with_optimal_budget_multiplier`].
     pub optimal_budget_multiplier: u64,
     /// Stage-3 prefix-cost prune: in `optimize_cost` mode, sort prefixes
-    /// by precomputed `cost(U_L) = T + 3·Q` ascending and skip any
+    /// by the precomputed weighted prefix cost ascending and skip any
     /// prefix whose own cost already exceeds the best total cost found
     /// so far. **Heuristic** — `cost(U_L · U_R)` can be lower than
     /// `cost(U_L)` when U_R cancels parts of U_L, so this can in
@@ -405,6 +401,13 @@ pub struct SynthesizerQ {
     /// lde-vs-cost relationship is not monotone). Builder:
     /// [`Self::with_optimal_lde_window`].
     pub optimal_lde_window: u32,
+    /// Q-gate cost weight in **half-units of a T gate**: the cost model
+    /// is `cost = T_count + (q_cost_x2 / 2)·Q_count`, computed internally
+    /// as integer `2·T + q_cost_x2·Q` so it stays exactly comparable (and
+    /// CAS-able). Default 7 → `T + 3.5·Q`, matching the fault-tolerant
+    /// accounting in `scripts/plot_comparison_sqrtt.py`. Builder:
+    /// [`Self::with_q_cost`].
+    pub q_cost_x2: usize,
 }
 
 /// k cutoff: brute-force handles `k ≤ BRUTE_LIMIT`, lattice handles the rest.
@@ -449,9 +452,17 @@ fn default_dc_dr_filter(m: u32) -> Vec<u32> {
     }
 }
 
-/// Resource cost of a decomposed Clifford+√T gate string: `T + 3·Q`.
-/// Q (= √T) is weighted 3× under standard surface-code costing.
-fn gates_cost(gates: &str) -> usize {
+/// Resource cost of a decomposed Clifford+√T gate string in half-units
+/// of a T gate: `2·T + q_cost_x2·Q`. With the default `q_cost_x2 = 7`
+/// this realises the `T + 3.5·Q` model from the plotting scripts while
+/// staying integer (exact comparisons, atomic CAS in the prefix prune).
+fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
+    let (t, q) = gates_tq(gates);
+    2 * t + q_cost_x2 * q
+}
+
+/// `(T_count, Q_count)` of a decomposed gate string.
+fn gates_tq(gates: &str) -> (usize, usize) {
     let mut t = 0usize;
     let mut q = 0usize;
     for c in gates.chars() {
@@ -461,7 +472,7 @@ fn gates_cost(gates: &str) -> usize {
             _ => {}
         }
     }
-    t + 3 * q
+    (t, q)
 }
 
 /// Two-pass leaf-budget strategy: pass 1 bails fast on doomed lde levels;
@@ -593,6 +604,7 @@ impl SynthesizerQ {
             optimal_budget_multiplier: 4,
             optimal_prefix_prune: true,
             optimal_lde_window: 0,
+            q_cost_x2: 7,
         }
     }
 
@@ -668,7 +680,8 @@ impl SynthesizerQ {
 
     /// Enable cost-optimal selection: enumerate every ε-close candidate
     /// at the smallest feasible lde and return the one with the lowest
-    /// `T + 3·Q`. Off by default; see the `optimize_cost` field doc.
+    /// the configured cost model (default `T + 3.5·Q`). Off by default;
+    /// see the `optimize_cost` field doc.
     ///
     /// When turning on, also auto-populates `optimal_m_sweep` based on
     /// ε if the user has not configured one. Shallower ε gets single-
@@ -712,6 +725,15 @@ impl SynthesizerQ {
     /// lde `f+1..=f+N` and return the global min-cost candidate.
     pub fn with_optimal_lde_window(mut self, window: u32) -> Self {
         self.optimal_lde_window = window;
+        self
+    }
+
+    /// Set the Q-gate cost weight in T-gate units (e.g. `3.5` for the
+    /// `T + 3.5·Q` model). Stored in exact half-units; weights are
+    /// rounded to the nearest 0.5.
+    pub fn with_q_cost(mut self, weight: f64) -> Self {
+        debug_assert!(weight > 0.0 && weight.is_finite());
+        self.q_cost_x2 = (2.0 * weight).round().max(1.0) as usize;
         self
     }
 
@@ -784,6 +806,7 @@ impl SynthesizerQ {
         let use_f64_gs = self.use_f64_gs;
         let bkz_block_size = self.bkz_block_size;
         let optimize_cost = self.optimize_cost;
+        let q_cost_x2 = self.q_cost_x2;
         let try_lattice_k = |k: u32,
                              budget: u64,
                              scratch: &mut Option<Box<IntScratch16>>|
@@ -815,7 +838,7 @@ impl SynthesizerQ {
                 let dist = diamond_distance_u2q_float(&cand, &target);
                 if dist < self.epsilon {
                     let gates = BlochDecomposer.decompose(&cand);
-                    let cost = gates_cost(&gates);
+                    let cost = gates_cost(&gates, q_cost_x2);
                     let cand_result = SynthResultQ {
                         gates: Some(gates),
                         lde: k,
@@ -1248,7 +1271,11 @@ impl SynthesizerQ {
         use crate::synthesis::diag;
 
         let prefixes = build_l_q(m_split);
-        let prefix_costs = build_l_q_costs(m_split);
+        let q_cost_x2 = self.q_cost_x2;
+        let prefix_costs: Vec<usize> = build_l_q_tq(m_split)
+            .iter()
+            .map(|&(t, q)| 2 * t + q_cost_x2 * q)
+            .collect();
         let d_target = det_phase_of(target);
         let epsilon = self.epsilon;
         let use_f64_gs = self.use_f64_gs;
@@ -1366,7 +1393,7 @@ impl SynthesizerQ {
                 let dist = diamond_distance_u2q_float(&u_full, target);
                 if dist < epsilon {
                     let gates = BlochDecomposer.decompose(&u_full);
-                    let cost = gates_cost(&gates);
+                    let cost = gates_cost(&gates, q_cost_x2);
                     let result = SynthResultQ {
                         gates: Some(gates),
                         lde: k_total,
@@ -1476,7 +1503,7 @@ impl SynthesizerQ {
             let dist = diamond_distance_u2q_float(&cand, target);
             if dist < epsilon {
                 let gates = BlochDecomposer.decompose(&cand);
-                let cost = gates_cost(&gates);
+                let cost = gates_cost(&gates, self.q_cost_x2);
                 let result = SynthResultQ {
                     gates: Some(gates),
                     lde: k,
@@ -1520,7 +1547,7 @@ impl SynthesizerQ {
                     &target, k, m, Some(&filter), cap, None, None, Some(cost_min),
                 );
                 r.map(|res| {
-                    let c = gates_cost(res.gates.as_deref().unwrap_or(""));
+                    let c = gates_cost(res.gates.as_deref().unwrap_or(""), self.q_cost_x2);
                     (c, res)
                 })
             } else {

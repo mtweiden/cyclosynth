@@ -82,9 +82,9 @@ fn main() {
                 ),
                 None => (0, 0, 0),
             };
-            let cost = t + 3 * q;
+            let cost = t as f64 + 3.5 * q as f64;
             println!(
-                "theta={} eps={:e} → FOUND lde={} dist={:.2e} time={:.2}s  T={} Q={} len={} cost(T+3Q)={}",
+                "theta={} eps={:e} → FOUND lde={} dist={:.2e} time={:.2}s  T={} Q={} len={} cost(T+3.5Q)={}",
                 theta, eps, r.lde, r.distance, dt, t, q, n, cost
             );
         }
