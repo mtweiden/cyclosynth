@@ -36,9 +36,13 @@ fn main() {
         synth = synth.with_bkz(bs);
         eprintln!("  (BKZ block_size override: {bs})");
     }
-    if plde_window > 1 {
+    if args.get(3).is_some() {
+        // Explicit arg overrides the ε-based default (1 forces sequential).
         synth = synth.with_parallel_lde_window(plde_window);
         eprintln!("  (parallel-LDE window: {plde_window})");
+        if plde_window == 1 {
+            synth.parallel_lde_trigger_nodes = 0;
+        }
     }
     // Optional budget-trigger threshold (5th arg, node count).
     let plde_trigger = args.get(4).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
