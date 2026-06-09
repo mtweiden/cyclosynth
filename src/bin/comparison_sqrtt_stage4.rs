@@ -1,6 +1,8 @@
 //! Emit a CSV in the structure of `comparison_sqrtt_data.csv`, using
 //! Clifford+T defaults vs Clifford+√T with Stage-4 optimisation
-//! (`with_optimize_cost(true).with_optimal_lde_window(1)`).
+//! (`with_optimize_cost(true).with_optimal_lde_window(2)`; window 2
+//! measured best under T+3.5Q — ratio 0.853 vs 0.872 at window 1 on the
+//! ε=1e-5 12-target suite, at ~1.6× the wall).
 //!
 //! Target generator: `rz(α) · ry(β) · rz(γ)` with α, β, γ ∈ [0, 2π),
 //! matching `comparison_sqrtt.py`. Costs reported:
@@ -102,7 +104,7 @@ fn run_q_stage4(target: Mat2, eps: f64) -> (Option<String>, f64, f64) {
     let t0 = Instant::now();
     let r = SynthesizerQ::new(eps)
         .with_optimize_cost(true)
-        .with_optimal_lde_window(1)
+        .with_optimal_lde_window(2)
         .synthesize(target);
     let dt_ms = t0.elapsed().as_secs_f64() * 1000.0;
     let dist = r.as_ref().map(|r| r.distance).unwrap_or(f64::INFINITY);
