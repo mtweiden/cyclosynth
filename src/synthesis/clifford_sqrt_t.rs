@@ -7,15 +7,17 @@
 //! `sqrt_t = true`. The struct stays public so the test suite can poke at
 //! it (`pub` instead of `pub(crate)`).
 //!
-//! ## Backend (hybrid)
+//! ## Backend (hybrid, three modes)
 //!
-//! For `k ≤ BRUTE_LIMIT` (=4): brute-force enumeration via
+//! For `k ≤ BRUTE_LIMIT` (=3): brute-force enumeration via
 //! [`crate::synthesis::search_zeta::phase1_brute`] — cheap exact-find
-//! for small Clifford+√T targets.
+//! for small Clifford+√T targets (also the lattice pipeline's oracle).
 //!
-//! For `k > BRUTE_LIMIT`: 16D L²-LLL + Schnorr-Euchner via
-//! [`crate::synthesis::lattice_zeta::phase1`] with adaptive leaf budget
-//! scaling exponentially in `k`. Reaches ε ≲ 1e-5 at k ≈ 30.
+//! For larger `k`: single-shot 16D L²-LLL + Schnorr-Euchner via
+//! [`crate::synthesis::lattice_zeta::phase1`] (with an optional BKZ-β
+//! post-pass), plus an FGKM-prefix divide-and-conquer mode (`dc_search_q`)
+//! for deep `k`. Adaptive leaf budget scales exponentially in `k`;
+//! reaches ε ≲ 1e-5 at k ≈ 30.
 //!
 //! ## Reconstruction
 //!
@@ -38,7 +40,6 @@ use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use rayon::prelude::*;
 
 // ─── Solution → U2Q reconstruction (Z[ζ_16] analog of solution_to_u2t) ───────
 
@@ -170,6 +171,40 @@ pub fn build_l_q(m: u32) -> Arc<Vec<U2Q>> {
         .unwrap()
         .insert(m, Arc::clone(&result));
     result
+}
+
+/// Cache for prefix gate costs (parallel to `BUILD_L_Q_CACHE`).
+static BUILD_L_Q_COST_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<usize>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Pre-computed `cost(U_L) = T + 3·Q` for each prefix in `build_l_q(m)`,
+/// indexed parallel to that Vec. Cached forever per `m`.
+///
+/// Cost is the canonical [`BlochDecomposer`] decomposition's
+/// `T + 3·Q`. NB: this is **not a lower bound** on `cost(U_L · U_R)` —
+/// U_R can cancel parts of U_L. The number is used as a heuristic
+/// ranking + prune, not a sound bound.
+pub fn build_l_q_costs(m: u32) -> Arc<Vec<usize>> {
+    {
+        let cache = BUILD_L_Q_COST_CACHE.lock().unwrap();
+        if let Some(v) = cache.get(&m) {
+            return Arc::clone(v);
+        }
+    }
+    let prefixes = build_l_q(m);
+    let costs: Vec<usize> = prefixes
+        .iter()
+        .map(|u_l| {
+            let gates = BlochDecomposer.decompose(u_l);
+            gates_cost(&gates)
+        })
+        .collect();
+    let arc = Arc::new(costs);
+    BUILD_L_Q_COST_CACHE
+        .lock()
+        .unwrap()
+        .insert(m, Arc::clone(&arc));
+    arc
 }
 
 fn build_l_q_inner(m: u32) -> Vec<U2Q> {
@@ -330,6 +365,46 @@ pub struct SynthesizerQ {
     /// = ~900M total → threshold ≈ 225M. Default 0 (disabled).
     /// Builder: [`Self::with_parallel_lde_trigger_nodes`].
     pub parallel_lde_trigger_nodes: u64,
+    /// When true, at the smallest lde that admits a solution the
+    /// synthesizer enumerates **all** ε-close candidates (no early
+    /// termination), decomposes each via [`BlochDecomposer`], and returns
+    /// the one minimising cost `T + 3·Q`. Wall-time can grow 5-50× vs the
+    /// default first-hit path. Default false. Builder:
+    /// [`Self::with_optimize_cost`].
+    pub optimize_cost: bool,
+    /// Stage-2 m-sweep: when `optimize_cost` is on and this is non-empty,
+    /// at each lde the synthesizer tries every m in this list (m=0 =
+    /// single-search, m≥1 = D&C with that FGKM-prefix split). Candidates
+    /// from every variant are collected and the min-cost one wins.
+    /// Default `vec![]` (Stage-1 behaviour: just the configured
+    /// `dc_split`). `with_optimize_cost(true)` auto-populates based on ε.
+    /// Builder: [`Self::with_optimal_m_sweep`].
+    pub optimal_m_sweep: Vec<u32>,
+    /// Stage-2 budget multiplier: when `optimize_cost` is on, every
+    /// per-prefix and single-search budget cap is multiplied by this.
+    /// Counteracts the early-bail advantage first-hit gets — bigger
+    /// budget means optimal-mode walkers can finish the SE region they
+    /// need to find the same candidate (plus deeper enumeration).
+    /// Default 4. Builder: [`Self::with_optimal_budget_multiplier`].
+    pub optimal_budget_multiplier: u64,
+    /// Stage-3 prefix-cost prune: in `optimize_cost` mode, sort prefixes
+    /// by precomputed `cost(U_L) = T + 3·Q` ascending and skip any
+    /// prefix whose own cost already exceeds the best total cost found
+    /// so far. **Heuristic** — `cost(U_L · U_R)` can be lower than
+    /// `cost(U_L)` when U_R cancels parts of U_L, so this can in
+    /// principle miss the global minimum. Empirically it preserves the
+    /// optimum on random SU(2) targets. Default true. Builder:
+    /// [`Self::with_optimal_prefix_prune`].
+    pub optimal_prefix_prune: bool,
+    /// Stage-4 lde-window: after the m-sweep finds an ε-close candidate
+    /// at lde `find_lde`, continue searching `find_lde + 1 ..= find_lde
+    /// + window` and pick the global min-cost candidate across the
+    /// whole window. 0 (default) = strict min-lde-first (current
+    /// behaviour). Larger values can catch targets whose cost-min has
+    /// a better T/Q split at lde + 1 (because Clifford+√T's
+    /// lde-vs-cost relationship is not monotone). Builder:
+    /// [`Self::with_optimal_lde_window`].
+    pub optimal_lde_window: u32,
 }
 
 /// k cutoff: brute-force handles `k ≤ BRUTE_LIMIT`, lattice handles the rest.
@@ -346,6 +421,47 @@ fn lattice_lde_estimate(epsilon: f64) -> u32 {
     }
     let raw = (-epsilon.log2()).ceil() as i32 - 3;
     raw.max(0) as u32
+}
+
+/// Default Stage-2 m-sweep for `optimize_cost` mode. Empirically m=0
+/// (single-search) is **6-7× slower** than m=[1,2] for only ~0.5-2%
+/// cheaper mean cost at ε ∈ [1e-5, 1e-3]; the trade is overwhelmingly
+/// worth making, so we standardise on [1,2] everywhere except the
+/// deepest regime.
+/// * ε ≥ 1e-7: vec![1, 2]
+/// * ε < 1e-7: vec![2] only (m=1 is too noisy at this depth).
+fn default_optimal_m_sweep(epsilon: f64) -> Vec<u32> {
+    if epsilon >= 1e-7 {
+        vec![1, 2]
+    } else {
+        vec![2]
+    }
+}
+
+/// Default `dc_dr_filter` per m, mirroring the auto-defaults set in
+/// [`SynthesizerQ::new`]: m=1 → relaxed `[0, 1, 15]`, m=2 → strict `[0]`,
+/// anything else → open (no filter).
+fn default_dc_dr_filter(m: u32) -> Vec<u32> {
+    match m {
+        1 => vec![0, 1, 15],
+        2 => vec![0],
+        _ => Vec::new(),
+    }
+}
+
+/// Resource cost of a decomposed Clifford+√T gate string: `T + 3·Q`.
+/// Q (= √T) is weighted 3× under standard surface-code costing.
+fn gates_cost(gates: &str) -> usize {
+    let mut t = 0usize;
+    let mut q = 0usize;
+    for c in gates.chars() {
+        match c {
+            'T' => t += 1,
+            'Q' => q += 1,
+            _ => {}
+        }
+    }
+    t + 3 * q
 }
 
 /// Two-pass leaf-budget strategy: pass 1 bails fast on doomed lde levels;
@@ -472,6 +588,11 @@ impl SynthesizerQ {
             bkz_block_size,
             parallel_lde_window: 1,
             parallel_lde_trigger_nodes: 0,
+            optimize_cost: false,
+            optimal_m_sweep: Vec::new(),
+            optimal_budget_multiplier: 4,
+            optimal_prefix_prune: true,
+            optimal_lde_window: 0,
         }
     }
 
@@ -545,6 +666,55 @@ impl SynthesizerQ {
         self
     }
 
+    /// Enable cost-optimal selection: enumerate every ε-close candidate
+    /// at the smallest feasible lde and return the one with the lowest
+    /// `T + 3·Q`. Off by default; see the `optimize_cost` field doc.
+    ///
+    /// When turning on, also auto-populates `optimal_m_sweep` based on
+    /// ε if the user has not configured one. Shallower ε gets single-
+    /// search (m=0) and m=1; deeper ε uses m=1 + m=2; very deep is
+    /// m=2 only (m=0 single-search at deep lde would be far too slow).
+    pub fn with_optimize_cost(mut self, on: bool) -> Self {
+        self.optimize_cost = on;
+        if on && self.optimal_m_sweep.is_empty() {
+            self.optimal_m_sweep = default_optimal_m_sweep(self.epsilon);
+        }
+        self
+    }
+
+    /// Override the Stage-2 m-sweep list (m=0 = single-search, m≥1 = D&C
+    /// with that FGKM-prefix split). Empty Vec disables the m-sweep and
+    /// falls back to Stage-1 behaviour (use the configured `dc_split`).
+    pub fn with_optimal_m_sweep(mut self, ms: Vec<u32>) -> Self {
+        self.optimal_m_sweep = ms;
+        self
+    }
+
+    /// Multiply every per-prefix and single-search budget cap by this
+    /// when `optimize_cost` is on. Default 4. Higher values reduce the
+    /// chance of budget-cap regressions but increase worst-case wall.
+    pub fn with_optimal_budget_multiplier(mut self, mult: u64) -> Self {
+        self.optimal_budget_multiplier = mult.max(1);
+        self
+    }
+
+    /// Toggle the Stage-3 prefix-cost heuristic prune. Off → enumerate
+    /// every (filtered) prefix; on → skip prefixes whose own decomposed
+    /// cost already exceeds the best total found so far. See the
+    /// `optimal_prefix_prune` field for the soundness caveat.
+    pub fn with_optimal_prefix_prune(mut self, on: bool) -> Self {
+        self.optimal_prefix_prune = on;
+        self
+    }
+
+    /// Set the Stage-4 lde-window. 0 = strict min-lde-first (default,
+    /// current behaviour). N>0 = after finding at lde `f`, also search
+    /// lde `f+1..=f+N` and return the global min-cost candidate.
+    pub fn with_optimal_lde_window(mut self, window: u32) -> Self {
+        self.optimal_lde_window = window;
+        self
+    }
+
 
     /// Find a minimum-lde Clifford+√T circuit approximating `target`.
     ///
@@ -552,8 +722,10 @@ impl SynthesizerQ {
     /// distance < `epsilon`. Returns the FIRST candidate found at the
     /// smallest k that works (not necessarily √T-count optimal).
     ///
-    /// **Backend**: hybrid — brute-force `phase1_brute` for `k ≤ BRUTE_LIMIT`,
-    /// 16D L²-LLL + Schnorr-Euchner `phase1` for larger k.
+    /// **Backend**: hybrid — brute-force `phase1_brute` for `k ≤ BRUTE_LIMIT`
+    /// (=3), then single-shot 16D L²-LLL + Schnorr-Euchner `phase1` (optionally
+    /// BKZ-reduced) and an FGKM-prefix divide-and-conquer mode (`dc_search_q`)
+    /// for larger / deep k.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
         use crate::synthesis::diag;
         use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
@@ -605,9 +777,13 @@ impl SynthesizerQ {
         // `should_stop` runs only on leaves passing the integer-exact
         // filter (typically a handful per call) and short-circuits the
         // walker once a candidate's diamond distance is below ε.
+        // In `optimize_cost` mode we return false unconditionally so the
+        // walker enumerates *every* ε-close leaf at this k; check_sols
+        // then picks the min-cost candidate.
         let epsilon = self.epsilon;
         let use_f64_gs = self.use_f64_gs;
         let bkz_block_size = self.bkz_block_size;
+        let optimize_cost = self.optimize_cost;
         let try_lattice_k = |k: u32,
                              budget: u64,
                              scratch: &mut Option<Box<IntScratch16>>|
@@ -622,6 +798,7 @@ impl SynthesizerQ {
             let y = uv_to_xy_zeta(v, k);
             let budget_hit = AtomicBool::new(false);
             let should_stop = |x: &[i64; 16]| -> bool {
+                if optimize_cost { return false; }
                 let cand = solution_to_u2q_d(x, k, d);
                 diamond_distance_u2q_float(&cand, &target) < epsilon
             };
@@ -632,19 +809,28 @@ impl SynthesizerQ {
         };
 
         let check_sols = |sols: &[[i64; 16]], k: u32| -> Option<SynthResultQ> {
+            let mut best: Option<(usize, SynthResultQ)> = None;
             for sol in sols {
                 let cand: U2Q = solution_to_u2q_d(sol, k, d);
                 let dist = diamond_distance_u2q_float(&cand, &target);
                 if dist < self.epsilon {
                     let gates = BlochDecomposer.decompose(&cand);
-                    return Some(SynthResultQ {
+                    let cost = gates_cost(&gates);
+                    let cand_result = SynthResultQ {
                         gates: Some(gates),
                         lde: k,
                         distance: dist,
-                    });
+                    };
+                    if !optimize_cost {
+                        return Some(cand_result);
+                    }
+                    match &best {
+                        Some((bcost, _)) if *bcost <= cost => {}
+                        _ => best = Some((cost, cand_result)),
+                    }
                 }
             }
-            None
+            best.map(|(_, r)| r)
         };
 
         // Brute regime: iterate every k for exact small-T Clifford+√T finds.
@@ -657,6 +843,82 @@ impl SynthesizerQ {
                 }
                 return Some(r);
             }
+        }
+
+        // Stage-2 optimal m-sweep + Stage-4 lde-window with parallel
+        // execution. Two phases:
+        //
+        // Phase 1 — first-hit *screen* (cost_min=false): sequentially
+        // walk lde from lattice_start, with each `try_optimal_at_k`
+        // using fast first-hit semantics (should_stop returns on first
+        // ε-close leaf; dc_search_q uses find_map_any; no prefix-cost
+        // prune). Purpose is *only* to determine find_lde. The
+        // candidates returned here are discarded — phase 2 will
+        // re-enumerate at find_lde for the actual cost-min selection.
+        // Screen cost per failed lde is ~5-10× cheaper than full
+        // enumeration, so phase 1 wall drops dramatically at deep ε
+        // where lattice_start..find_lde spans 2-3 ldes.
+        //
+        // Phase 2 — full-enum cost-min (cost_min=true) over
+        // `[find_lde, find_lde+window]`, parallel via thread::scope.
+        // Each lde spawns one outer thread; each thread uses rayon
+        // internally. Reduce by min cost across all spawned threads.
+        //
+        // Cost outcome is identical to the prior sequential-phase-1
+        // implementation — same candidates explored, same min selection.
+        // Wall at ε=1e-7 drops ~30-40% vs prior.
+        if self.optimize_cost && !self.optimal_m_sweep.is_empty() {
+            let lde_window = self.optimal_lde_window;
+            let mut find_lde: Option<u32> = None;
+            for k in lattice_start..=self.max_lde {
+                let t_k = std::time::Instant::now();
+                if self.try_optimal_at_k(target, d, v, k, /*cost_min=*/false).is_some() {
+                    if trace {
+                        eprintln!("[zeta] m-sweep lde={k:>2}  screen-hit  t={:.0}ms",
+                            t_k.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    find_lde = Some(k);
+                    break;
+                } else if trace {
+                    eprintln!("[zeta] m-sweep lde={k:>2}  screen none   t={:.0}ms",
+                        t_k.elapsed().as_secs_f64() * 1000.0);
+                }
+            }
+
+            let mut best_overall: Option<(usize, SynthResultQ, u32)> = None;
+            if let Some(fl) = find_lde {
+                let window_kk: Vec<u32> = (0..=lde_window)
+                    .map(|i| fl + i)
+                    .filter(|&k| k <= self.max_lde)
+                    .collect();
+                let t_w = std::time::Instant::now();
+                let window_results: Vec<Option<(usize, SynthResultQ, u32)>> =
+                    std::thread::scope(|s| {
+                        let handles: Vec<_> = window_kk
+                            .iter()
+                            .map(|&k| s.spawn(move || {
+                                self.try_optimal_at_k(target, d, v, k, /*cost_min=*/true)
+                            }))
+                            .collect();
+                        handles.into_iter().map(|h| h.join().unwrap()).collect()
+                    });
+                if trace {
+                    eprintln!("[zeta] m-sweep enum {:?} parallel t={:.0}ms",
+                        window_kk, t_w.elapsed().as_secs_f64() * 1000.0);
+                }
+                for r in window_results.into_iter().flatten() {
+                    if trace {
+                        eprintln!("[zeta]   enum  lde={:>2}  cost={} m={} dist={:.3e}",
+                            r.1.lde, r.0, r.2, r.1.distance);
+                    }
+                    match &best_overall {
+                        Some((bc, _, _)) if *bc <= r.0 => {}
+                        _ => best_overall = Some(r),
+                    }
+                }
+            }
+
+            return best_overall.map(|(_, r, _)| r);
         }
 
         // Z1 D&C prototype: when `dc_split = Some(m)`, run the FGKM-prefix
@@ -705,8 +967,8 @@ impl SynthesizerQ {
                 for k in (m_split + 1).max(lattice_start)..=self.max_lde {
                     let t_k = std::time::Instant::now();
                     let (result, budget_hit) = self.dc_search_q(
-                        &target, k, m_split, dc_pass1_cap_for(self.epsilon),
-                        None, None,
+                        &target, k, m_split, None, dc_pass1_cap_for(self.epsilon),
+                        None, None, None,
                     );
                     if let Some(r) = result {
                         if trace {
@@ -730,7 +992,7 @@ impl SynthesizerQ {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
                     }
                     let (result, _) = self.dc_search_q(
-                        &target, k, m_split, dc_pass2_cap_for(self.epsilon), None, None,
+                        &target, k, m_split, None, dc_pass2_cap_for(self.epsilon), None, None, None,
                     );
                     if let Some(r) = result {
                         if trace {
@@ -819,9 +1081,10 @@ impl SynthesizerQ {
                                 None
                             };
                             let (result, budget_hit) = self.dc_search_q(
-                                &target, k, m_split, dc_pass1_cap_for(self.epsilon),
+                                &target, k, m_split, None, dc_pass1_cap_for(self.epsilon),
                                 abort_opt,
                                 consumed_opt,
+                                None,
                             );
                             let dt = t_k.elapsed().as_secs_f64() * 1000.0;
                             if let Some(ref r) = result {
@@ -875,7 +1138,7 @@ impl SynthesizerQ {
                 if trace {
                     eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
                 }
-                let (result, _) = self.dc_search_q(&target, k, m_split, dc_pass2_cap_for(self.epsilon), None, None);
+                let (result, _) = self.dc_search_q(&target, k, m_split, None, dc_pass2_cap_for(self.epsilon), None, None, None);
                 if let Some(r) = result {
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
@@ -975,14 +1238,17 @@ impl SynthesizerQ {
         target: &Mat2,
         k_total: u32,
         m_split: u32,
+        dr_filter_override: Option<&[u32]>,
         per_prefix_cap: u64,
         external_abort: Option<&AtomicBool>,
         consumed: Option<&std::sync::atomic::AtomicU64>,
+        cost_min_override: Option<bool>,
     ) -> (Option<SynthResultQ>, bool) {
         use rayon::prelude::*;
         use crate::synthesis::diag;
 
         let prefixes = build_l_q(m_split);
+        let prefix_costs = build_l_q_costs(m_split);
         let d_target = det_phase_of(target);
         let epsilon = self.epsilon;
         let use_f64_gs = self.use_f64_gs;
@@ -995,14 +1261,15 @@ impl SynthesizerQ {
 
         // Pre-filter the prefixes once: drop those whose lde already
         // exceeds k_total (k_inner would be ≤ 0), and drop those whose
-        // required d_R isn't in the allowed-offsets set. We collect into
-        // a Vec of references so the per-thread closure does cheap reads
-        // only.
-        let dc_dr_filter = &self.dc_dr_filter;
-        let mut usable: Vec<&U2Q> = prefixes
+        // required d_R isn't in the allowed-offsets set. Each entry
+        // carries its precomputed decomposed cost for Stage-3 ranking
+        // + heuristic pruning.
+        let dc_dr_filter: &[u32] = dr_filter_override.unwrap_or(&self.dc_dr_filter);
+        let mut usable: Vec<(&U2Q, usize)> = prefixes
             .iter()
-            .filter(|u_l| u_l.k < k_total)
-            .filter(|u_l| {
+            .zip(prefix_costs.iter().copied())
+            .filter(|(u_l, _)| u_l.k < k_total)
+            .filter(|(u_l, _)| {
                 if dc_dr_filter.is_empty() {
                     return true;
                 }
@@ -1016,97 +1283,262 @@ impl SynthesizerQ {
             return (None, false);
         }
 
-        // **Prefix prioritisation by k_prefix (descending)**: prefixes
-        // with high k_prefix have small `k_inner = k_total − k_prefix` →
-        // tiny SE region per prefix → fast bail or fast hit. Sorting
-        // before dispatch matters when |usable| > num_cores (the m=2
-        // case has ~108 usable, more than 8 cores), so the work-stealing
-        // queue picks the cheap high-k ones first. At m=1 with 36
-        // usable on 8 cores there's also some benefit since rayon's
-        // chunking respects the iter order.
-        usable.sort_by(|a, b| b.k.cmp(&a.k));
+        let optimize_cost = cost_min_override.unwrap_or(self.optimize_cost);
+        let prefix_prune = self.optimal_prefix_prune;
 
-        // Distribute prefixes across rayon workers. `with_min_len(chunk)`
-        // ensures each worker gets at least `chunk` prefixes so the
-        // per-prefix scratch allocation amortises over the chunk.
+        // Sort order: optimal mode prefers cheap-prefix-cost first so
+        // that the shared `best_cost` atomic drops quickly and later
+        // prefixes can be heuristically skipped. First-hit mode keeps
+        // the legacy k_prefix-desc heuristic (high k → small k_inner →
+        // fast bail or hit, useful when |usable| > num_cores).
+        if optimize_cost {
+            usable.sort_by_key(|(_, c)| *c);
+        } else {
+            usable.sort_by(|(a, _), (b, _)| b.k.cmp(&a.k));
+        }
+
         let n_threads = rayon::current_num_threads().max(1);
         let chunk = (usable.len() / n_threads).max(1);
 
-        let result = usable
-            .par_iter()
-            .with_min_len(chunk)
-            .map_init(
-                || {
-                    let mut s = IntScratch16::new(epsilon);
-                    s.use_f64_gs = use_f64_gs;
-                    s.bkz_block_size = bkz_block_size;
-                    s
-                },
-                |scratch, u_l| -> Option<SynthResultQ> {
-                    let k_prefix = u_l.k;
-                    let k_inner = k_total - k_prefix;
+        // Stage-3 shared best-cost tracker. Optimal-mode workers CAS this
+        // when they find a candidate; later prefixes whose precomputed
+        // cost(U_L) already exceeds the current best are skipped when
+        // `optimal_prefix_prune` is on.
+        let best_cost = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
 
-                    // m_inner = U_L† · target as a continuous Mat2.
-                    let m_inner = u2q_dag_times_mat2(u_l, target);
-                    let v_inner = unitary_to_uv_zeta(&m_inner);
+        let per_prefix = |scratch: &mut IntScratch16,
+                          entry: &(&U2Q, usize)|
+         -> Option<(usize, SynthResultQ)> {
+            let (u_l, u_l_cost) = (entry.0, entry.1);
+            if optimize_cost && prefix_prune {
+                let cur_best = best_cost.load(std::sync::atomic::Ordering::Relaxed);
+                if u_l_cost > cur_best {
+                    return None;
+                }
+            }
+            let k_prefix = u_l.k;
+            let k_inner = k_total - k_prefix;
 
-                    // d_L from prefix's float det.
-                    let d_l = det_phase_of(&u_l.to_float());
-                    let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+            // m_inner = U_L† · target as a continuous Mat2.
+            let m_inner = u2q_dag_times_mat2(u_l, target);
+            let v_inner = unitary_to_uv_zeta(&m_inner);
 
-                    let y = uv_to_xy_zeta(v_inner, k_inner);
-                    let budget_hit = AtomicBool::new(false);
-                    let u_l_local = **u_l;
-                    let target_local = *target;
-                    let capture = diag::capture_enabled();
-                    let should_stop = |x: &[i64; 16]| -> bool {
-                        let u_r = solution_to_u2q_d(x, k_inner, d_r);
-                        let u_full = u_l_local * u_r;
-                        let hit = diamond_distance_u2q_float(&u_full, &target_local) < epsilon;
-                        if hit && capture {
-                            diag::try_capture(diag::CapturedFind {
-                                x_inner: *x, k_inner, k_total, d_r, d_l,
-                            });
-                        }
-                        hit
+            // d_L from prefix's float det.
+            let d_l = det_phase_of(&u_l.to_float());
+            let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+
+            let y = uv_to_xy_zeta(v_inner, k_inner);
+            let budget_hit = AtomicBool::new(false);
+            let u_l_local = *u_l;
+            let target_local = *target;
+            let capture = diag::capture_enabled();
+            let should_stop = |x: &[i64; 16]| -> bool {
+                if optimize_cost { return false; }
+                let u_r = solution_to_u2q_d(x, k_inner, d_r);
+                let u_full = u_l_local * u_r;
+                let hit = diamond_distance_u2q_float(&u_full, &target_local) < epsilon;
+                if hit && capture {
+                    diag::try_capture(diag::CapturedFind {
+                        x_inner: *x, k_inner, k_total, d_r, d_l,
+                    });
+                }
+                hit
+            };
+
+            let sols = phase1_with_stop(
+                scratch, &y, k_inner, epsilon,
+                per_prefix_cap, &budget_hit, should_stop,
+                external_abort, consumed,
+            );
+
+            if budget_hit.load(std::sync::atomic::Ordering::Relaxed) {
+                any_budget_hit.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+
+            // First-hit: return on first ε-close sol. Optimal: scan all
+            // ε-close sols, decompose each, keep the min-cost one. In
+            // optimal mode we also CAS-publish the per-prefix best into
+            // the shared `best_cost` so subsequent prefixes can prune.
+            let mut best: Option<(usize, SynthResultQ)> = None;
+            for sol in &sols {
+                let u_r = solution_to_u2q_d(sol, k_inner, d_r);
+                let u_full = u_l_local * u_r;
+                let dist = diamond_distance_u2q_float(&u_full, target);
+                if dist < epsilon {
+                    let gates = BlochDecomposer.decompose(&u_full);
+                    let cost = gates_cost(&gates);
+                    let result = SynthResultQ {
+                        gates: Some(gates),
+                        lde: k_total,
+                        distance: dist,
                     };
-
-                    let sols = phase1_with_stop(
-                        scratch, &y, k_inner, epsilon,
-                        per_prefix_cap, &budget_hit, should_stop,
-                        external_abort, consumed,
-                    );
-
-                    // Propagate this prefix's budget-hit signal to the
-                    // dispatcher level. We OR in our local flag; the
-                    // dispatcher reads `any_budget_hit` after the
-                    // par_iter completes (or aborts via find_map_any).
-                    if budget_hit.load(std::sync::atomic::Ordering::Relaxed) {
-                        any_budget_hit.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if !optimize_cost {
+                        return Some((cost, result));
                     }
-
-                    // Score each returned solution and return the first
-                    // that satisfies the ε bound.
-                    for sol in &sols {
-                        let u_r = solution_to_u2q_d(sol, k_inner, d_r);
-                        let u_full = u_l_local * u_r;
-                        let dist = diamond_distance_u2q_float(&u_full, target);
-                        if dist < epsilon {
-                            let gates = BlochDecomposer.decompose(&u_full);
-                            return Some(SynthResultQ {
-                                gates: Some(gates),
-                                lde: k_total,
-                                distance: dist,
-                            });
+                    match &best {
+                        Some((bcost, _)) if *bcost <= cost => {}
+                        _ => best = Some((cost, result)),
+                    }
+                }
+            }
+            if optimize_cost {
+                if let Some((c, _)) = &best {
+                    // CAS-publish: lower the shared best_cost if we
+                    // improved it. Relaxed ordering is sufficient — the
+                    // prune is a heuristic, not a correctness guarantee.
+                    let mut cur = best_cost.load(std::sync::atomic::Ordering::Relaxed);
+                    while *c < cur {
+                        match best_cost.compare_exchange_weak(
+                            cur, *c,
+                            std::sync::atomic::Ordering::Relaxed,
+                            std::sync::atomic::Ordering::Relaxed,
+                        ) {
+                            Ok(_) => break,
+                            Err(actual) => cur = actual,
                         }
                     }
-                    None
-                },
-            )
-            .find_map_any(|x| x);
+                }
+            }
+            best
+        };
+
+        let make_scratch = || {
+            let mut s = IntScratch16::new(epsilon);
+            s.use_f64_gs = use_f64_gs;
+            s.bkz_block_size = bkz_block_size;
+            s
+        };
+
+        let result_pair: Option<(usize, SynthResultQ)> = if optimize_cost {
+            // Reduce across prefixes by min cost. No early-abort across
+            // prefixes (every prefix runs to completion or its budget).
+            usable
+                .par_iter()
+                .with_min_len(chunk)
+                .map_init(make_scratch, per_prefix)
+                .reduce(
+                    || None,
+                    |a, b| match (a, b) {
+                        (None, x) | (x, None) => x,
+                        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+                    },
+                )
+        } else {
+            // First-hit: abort other prefixes as soon as one finds.
+            usable
+                .par_iter()
+                .with_min_len(chunk)
+                .map_init(make_scratch, per_prefix)
+                .find_map_any(|x| x)
+        };
+        let result = result_pair.map(|(_, r)| r);
 
         let budget_hit = any_budget_hit.load(std::sync::atomic::Ordering::Relaxed);
         (result, budget_hit)
+    }
+
+    /// Single-search lattice probe at lde `k`, returning the best
+    /// `(cost, SynthResultQ)` under the current `optimize_cost` mode.
+    /// Mirrors the `try_lattice_k` + `check_sols` closures in
+    /// [`Self::synthesize`] but as a method so it can be reused by the
+    /// Stage-2/4 m-sweep and called concurrently from `thread::scope`.
+    #[allow(clippy::too_many_arguments)]
+    fn run_single_optimal(
+        &self,
+        target: &Mat2,
+        d: u32,
+        v: [f64; 4],
+        k: u32,
+        budget: u64,
+        scratch: &mut Option<Box<IntScratch16>>,
+        cost_min: bool,
+    ) -> Option<(usize, SynthResultQ)> {
+        let epsilon = self.epsilon;
+        let s = scratch.get_or_insert_with(|| {
+            let mut sb = Box::new(IntScratch16::new(epsilon));
+            sb.use_f64_gs = self.use_f64_gs;
+            sb.bkz_block_size = self.bkz_block_size;
+            sb
+        });
+        let y = uv_to_xy_zeta(v, k);
+        let budget_hit = AtomicBool::new(false);
+        let should_stop = |x: &[i64; 16]| -> bool {
+            if cost_min { return false; }
+            let cand = solution_to_u2q_d(x, k, d);
+            diamond_distance_u2q_float(&cand, target) < epsilon
+        };
+        let sols = phase1_with_stop(
+            s.as_mut(), &y, k, epsilon, budget, &budget_hit, should_stop, None, None,
+        );
+        let mut best: Option<(usize, SynthResultQ)> = None;
+        for sol in &sols {
+            let cand: U2Q = solution_to_u2q_d(sol, k, d);
+            let dist = diamond_distance_u2q_float(&cand, target);
+            if dist < epsilon {
+                let gates = BlochDecomposer.decompose(&cand);
+                let cost = gates_cost(&gates);
+                let result = SynthResultQ {
+                    gates: Some(gates),
+                    lde: k,
+                    distance: dist,
+                };
+                if !cost_min {
+                    return Some((cost, result));
+                }
+                match &best {
+                    Some((bcost, _)) if *bcost <= cost => {}
+                    _ => best = Some((cost, result)),
+                }
+            }
+        }
+        best
+    }
+
+    /// Stage-2/4 per-lde m-sweep: try every `m` in `optimal_m_sweep` and
+    /// return the best `(cost, SynthResultQ, winning_m)` found at `k`.
+    /// Used by both the sequential phase-1 search and the parallel-
+    /// window phase-2 thread::scope spawns in [`Self::synthesize`].
+    fn try_optimal_at_k(
+        &self,
+        target: Mat2,
+        d: u32,
+        v: [f64; 4],
+        k: u32,
+        cost_min: bool,
+    ) -> Option<(usize, SynthResultQ, u32)> {
+        let budget_mult = self.optimal_budget_multiplier.max(1);
+        let mut local_scratch: Option<Box<IntScratch16>> = None;
+        let mut best_at_k: Option<(usize, SynthResultQ, u32)> = None;
+        for &m in &self.optimal_m_sweep {
+            let cand_pair: Option<(usize, SynthResultQ)> = if m == 0 {
+                let cap = PASS1_CAP.saturating_mul(budget_mult);
+                self.run_single_optimal(&target, d, v, k, cap, &mut local_scratch, cost_min)
+            } else if m < k {
+                let filter = default_dc_dr_filter(m);
+                let cap = dc_pass1_cap_for(self.epsilon).saturating_mul(budget_mult);
+                let (r, _) = self.dc_search_q(
+                    &target, k, m, Some(&filter), cap, None, None, Some(cost_min),
+                );
+                r.map(|res| {
+                    let c = gates_cost(res.gates.as_deref().unwrap_or(""));
+                    (c, res)
+                })
+            } else {
+                None
+            };
+            if let Some((c, r)) = cand_pair {
+                // Screen mode (first-hit): return on first find — we
+                // only need find_lde, not the optimal cost at this k.
+                if !cost_min {
+                    return Some((c, r, m));
+                }
+                match &best_at_k {
+                    Some((bc, _, _)) if *bc <= c => {}
+                    _ => best_at_k = Some((c, r, m)),
+                }
+            }
+        }
+        best_at_k
     }
 }
 

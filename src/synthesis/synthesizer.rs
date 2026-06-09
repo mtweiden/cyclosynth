@@ -9,9 +9,10 @@
 //!
 //! ## Why two backends behind one type
 //!
-//! The two flows currently use *different algorithms* (8D MA-prefix
-//! decomposition vs single-shot 16D LLL+SE), so they can't be expressed
-//! cleanly as a single generic `Synthesizer<R: GateRing>`. This wrapper
+//! The two flows currently use *different algorithms* (Z[ω]: 8D MA-prefix
+//! divide-and-conquer; Z[ζ_16]: 16D LLL+SE with a brute-force small-k mode
+//! and an FGKM-prefix divide-and-conquer mode for deep k), so they can't be
+//! expressed cleanly as a single generic `Synthesizer<R: GateRing>`. This wrapper
 //! gives users a single API today while the internals keep their own
 //! optimised code paths. Once the algorithmic structure converges (see
 //! the `project_synthesizer_generic_followup` memory), the wrapper will
