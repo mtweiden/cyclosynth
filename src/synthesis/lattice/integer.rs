@@ -21,8 +21,8 @@
 //!     i256 Gram on the side. Per Theorem 2 + Figure 7 of the paper, f64
 //!     (ℓ=52 mantissa bits) is provably sufficient at d=8 with
 //!     (δ=0.75, η=0.55), giving 18-bit precision margin. INSERT semantics
-//!     + lazy size-reduction maintain the L³-reduced invariant required by
-//!     the f64 sufficiency proof. ~70% of phase1 CPU at deep ε.
+//!     and lazy size-reduction maintain the L³-reduced invariant required
+//!     by the f64 sufficiency proof. ~70% of phase1 CPU at deep ε.
 //!
 //!  4. **Cholesky + LU** post-LLL (`cholesky_lu::*`): f64 Cholesky on the
 //!     reduced Gram (justified by the LLL invariant κ(G) ≤ 16) + MPFR LU

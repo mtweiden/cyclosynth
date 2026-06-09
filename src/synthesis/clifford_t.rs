@@ -543,9 +543,9 @@ impl SynthesizerT {
     ///
     /// # Performance
     ///
-    /// All ε regimes go through the unified Lenstra 8D pipeline (L²-LLL
-    /// over an exact i256 Gram + f64 Gram-Schmidt + MPFR-128 Schnorr-Euchner
-    /// + MPFR-scaled-precision LU for the cap-center solve). MPFR precision
+    /// All ε regimes go through the unified Lenstra 8D pipeline (L²-LLL over
+    /// an exact i256 Gram + f64 Gram-Schmidt + MPFR-128 Schnorr-Euchner +
+    /// MPFR-scaled-precision LU for the cap-center solve). MPFR precision
     /// scales with ε via `compute_prec_q` (build_q at `8·log₂(1/ε)` bits)
     /// and `compute_lu_prec` (LU at `6·log₂(1/ε)`).
     ///
@@ -1298,7 +1298,7 @@ mod tests {
 
         let synth = SynthesizerT::new(eps);
         let result = synth.synthesize(target).expect("Should synthesize random unitary");
-        print!("Random unitary synthesis result: gates={:?}, lde={}, distance={:.6e}\n",
+        println!("Random unitary synthesis result: gates={:?}, lde={}, distance={:.6e}",
             result.gates, result.lde, result.distance);
         assert!(result.distance < eps,
             "distance={:.6e} >= epsilon={:.6e}", result.distance, eps);

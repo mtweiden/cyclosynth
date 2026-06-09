@@ -21,9 +21,9 @@ fn rz_f64(t: f64) -> Mat2 {
 
 fn main() {
     std::env::set_var("CYCLOSYNTH_TRACE", "1");
-    let theta: f64 = std::env::args().skip(1).next()
+    let theta: f64 = std::env::args().nth(1)
         .and_then(|s| s.parse().ok()).unwrap_or(1.1);
-    let eps: f64 = std::env::args().skip(2).next()
+    let eps: f64 = std::env::args().nth(2)
         .and_then(|s| s.parse().ok()).unwrap_or(1.5e-8);
 
     diag::reset_all();

@@ -1913,9 +1913,8 @@ mod tests {
         for &eps in &[1e-3, 1e-4, 1e-5, 1e-6, 1e-7_f64] {
             assert!(SynthesizerQ::new(eps).use_f64_gs, "f64 default should be on at ε={eps:.0e}");
         }
-        for &eps in &[1e-8_f64] {
-            assert!(!SynthesizerQ::new(eps).use_f64_gs, "f64 default should be OFF at ε={eps:.0e}");
-        }
+        let eps = 1e-8_f64;
+        assert!(!SynthesizerQ::new(eps).use_f64_gs, "f64 default should be OFF at ε={eps:.0e}");
 
         // Manual override still works.
         let s_override = SynthesizerQ::new(1e-7).with_dc_split(1).with_dc_dr_filter(vec![0, 1, 15]);
