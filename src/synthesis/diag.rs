@@ -337,9 +337,9 @@ pub fn record_leaf_shell_ratio(norm_sq: i64, target: i64) {
     N_LEAF_BY_D1_AND_SHELL[d_bin][s_bin].fetch_add(1, Ordering::Relaxed);
 }
 
-/// One prune-event sample for the offline oracle audit. Captures z + depth
-/// + the f64 partial so we can recompute the MPFR oracle partial later and
-/// classify true-positive vs false-negative.
+/// One prune-event sample for the offline oracle audit. Captures z, depth,
+/// and the f64 partial so we can recompute the MPFR oracle partial later
+/// and classify true-positive vs false-negative.
 #[derive(Clone, Copy, Debug)]
 pub struct PruneSample {
     pub depth: i32,

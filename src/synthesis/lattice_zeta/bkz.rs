@@ -244,6 +244,9 @@ fn enumerate_recursive(
 /// coordinate vector hits the unimplemented general-case (no ±1 entry)
 /// branch. The caller should skip the BKZ tour step in that case — the
 /// basis remains LLL-reduced (the prior reduction state is preserved).
+// `Err(())` is a documented "skip this tour step" signal, not an error
+// value the caller inspects; a dedicated error type adds nothing.
+#[allow(clippy::result_unit_err)]
 pub fn bkz_insert(
     scratch: &mut IntScratch16,
     kappa: usize,
@@ -580,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn svp_identity_β4_returns_unit_vector() {
+    fn svp_identity_beta4_returns_unit_vector() {
         let mut s = IntScratch16::new(1e-3);
         setup_identity_gso(&mut s, 4);
         let result = svp_enum_block(&s, 0, 4, 4.0);

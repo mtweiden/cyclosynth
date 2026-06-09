@@ -19,6 +19,14 @@ numpy = { version = "0.22", optional = true }
 [dev-dependencies]
 rand = "0.9"
 
+# Index-based loops in the lattice kernels mirror the matrix math they
+# implement; iterator rewrites obscure the correspondence with the paper's
+# pseudocode. Numeric kernels also thread scratch buffers + several scalar
+# params, tripping the arg-count lint without an ergonomic win.
+[lints.clippy]
+needless_range_loop = "allow"
+too_many_arguments = "allow"
+
 [profile.release]
 debug = 1
 

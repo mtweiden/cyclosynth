@@ -403,7 +403,7 @@ fn isqrt_i256(n: i256) -> i256 {
         return i256::from_i64(1);
     }
     let bits = 256 - n.leading_zeros();
-    let seed_shift = (bits + 1) / 2;
+    let seed_shift = bits.div_ceil(2);
     let mut x = i256::from_i64(1).wrapping_shl(seed_shift);
     loop {
         let q = n.wrapping_div(x);
@@ -613,6 +613,10 @@ pub fn det16_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
 
 // ─── Euclidean Cholesky (test-oracle / sanity check) ─────────────────────────
 
+/// Upper-triangular Cholesky factor `R` of the Euclidean Gram, as an f64
+/// snapshot plus a double-double `(hi, lo)` projection of the same factor.
+pub type CholeskyDual16 = ([[f64; 16]; 16], [[(f64, f64); 16]; 16]);
+
 /// MPFR-precision Euclidean Cholesky. Compute `R · Rᵀ = B · Bᵀ` with the
 /// factorization done at 128-bit precision, then snapshot R to f64. Used by
 /// the norm-shell-pruned SE walk so the per-leaf `‖R·z‖²` accumulator drifts
@@ -633,9 +637,7 @@ pub fn det16_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
 /// `s -= l[i][k]*l[j][k]` cancellation is tight; 128-bit is safe. The
 /// dd projection of the final factor is probe-confirmed to match
 /// MPFR-192 oracle on the cliff failure instance.
-pub fn euclidean_cholesky_16_mpfr_dual(
-    basis: &[[i64; 16]; 16],
-) -> Option<([[f64; 16]; 16], [[(f64, f64); 16]; 16])> {
+pub fn euclidean_cholesky_16_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyDual16> {
     use rug::Float;
     const PREC: u32 = 128;
     let mut gram = [[0_i128; 16]; 16];
@@ -959,11 +961,8 @@ where
     let mut w = [0f64; 16];
     let mut leaves: usize = 0;
     let mut aborted = false;
-    // Convert target_norm_sq (f64) to i64 for exact pruning. f64 represents
-    // 2^k exactly for k ≤ 1023 so no precision loss.
-    let target_norm_sq_i64 = target_norm_sq as i64;
     recurse_16_norm_pruned(
-        15, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
+        15, l, z_c, bound_sq, r_eucl, target_norm_sq,
         0.0, 0.0, &mut z, &mut x, &mut w, basis, &mut callback, budget,
         &mut leaves, &mut aborted,
     );
@@ -978,7 +977,6 @@ fn recurse_16_norm_pruned<F>(
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
     target_norm_sq: f64,
-    target_norm_sq_i64: i64,
     partial_q: f64,
     partial_eucl: f64,
     z: &mut [i64; 16],
@@ -1025,7 +1023,7 @@ fn recurse_16_norm_pruned<F>(
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
         if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_16_norm_pruned(
-                depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
+                depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq,
                 partial_q, new_partial_eucl, z, x, w, basis, callback, budget,
                 leaves, aborted,
             );
@@ -1112,8 +1110,8 @@ fn recurse_16_norm_pruned<F>(
                     partial_eucl_f64: new_partial_eucl,
                     threshold,
                     partial_q_f64: new_partial_q,
-                    r_eucl_diag_d: r_eucl[d as usize][d as usize],
-                    w_d: w[d as usize],
+                    r_eucl_diag_d: r_eucl[d][d],
+                    w_d: w[d],
                 });
             }
         }
@@ -1121,7 +1119,7 @@ fn recurse_16_norm_pruned<F>(
             continue;
         }
         recurse_16_norm_pruned(
-            depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq, target_norm_sq_i64,
+            depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq,
             new_partial_q, new_partial_eucl, z, x, w, basis, callback, budget,
             leaves, aborted,
         );
@@ -1389,7 +1387,7 @@ where
             if aborted.load(Ordering::Relaxed) {
                 return Vec::new().into_iter();
             }
-            if external_abort.map_or(false, |e| e.load(Ordering::Relaxed)) {
+            if external_abort.is_some_and(|e| e.load(Ordering::Relaxed)) {
                 aborted.store(true, Ordering::Relaxed);
                 return Vec::new().into_iter();
             }
@@ -1467,7 +1465,7 @@ fn recurse_collect_norm_pruned<F>(
     // Cross-LDE abort signal (parallel LDE speculation): when a peer LDE
     // task at a different lattice level finds a solution, it sets this
     // shared flag. Check once per recurse entry — cheap atomic load.
-    if external_abort.map_or(false, |e| e.load(Ordering::Relaxed)) {
+    if external_abort.is_some_and(|e| e.load(Ordering::Relaxed)) {
         aborted.store(true, Ordering::Relaxed);
         return;
     }
