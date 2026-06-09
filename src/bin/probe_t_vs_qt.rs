@@ -1,4 +1,4 @@
-//! Compare Clifford+T vs Clifford+√T under cost = T + 3·Q.
+//! Compare Clifford+T vs Clifford+√T under cost = T + 3.5·Q.
 //!
 //! Random U3 targets across a fixed seed, both synthesizers, gate counts,
 //! per-target winner + aggregate. Args:
@@ -118,7 +118,7 @@ fn main() {
     )).collect();
 
     let verbose = n <= 20;
-    println!("ε={eps:e}, n={n} U3 targets, seed=0x{seed:X}, cost = T + 3·Q, √T mode={mode_label}, lde_window={lde_window}, m_sweep={}\n",
+    println!("ε={eps:e}, n={n} U3 targets, seed=0x{seed:X}, cost = T + 3.5·Q, √T mode={mode_label}, lde_window={lde_window}, m_sweep={}\n",
         m_sweep_override.as_ref().map(|v| format!("{:?}", v)).unwrap_or_else(|| "auto".to_string()));
 
     if mode == Mode::Compare {
@@ -136,8 +136,8 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
         println!("  #  | θ      φ      λ      | Clifford+T (T-only)       | Clifford+√T (T+√T)             | winner");
         println!("─────┼──────────────────────┼───────────────────────────┼────────────────────────────────┼───────");
     }
-    let mut total_t_cost = 0usize;
-    let mut total_q_cost = 0usize;
+    let mut total_t_cost = 0.0_f64;
+    let mut total_q_cost = 0.0_f64;
     let (mut t_wins, mut q_wins, mut ties) = (0usize, 0usize, 0usize);
     let mut t_total_wall = 0.0_f64;
     let mut q_total_wall = 0.0_f64;
@@ -153,7 +153,7 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
         let t_wall = t0.elapsed().as_secs_f64();
         t_total_wall += t_wall;
         let (t_t, t_q, _t_h, t_len) = gate_cost(rt.as_ref().and_then(|r| r.gates.as_deref()));
-        let t_cost = t_t + 3 * t_q;
+        let t_cost = t_t as f64 + 3.5 * t_q as f64;
         let t_lde = rt.as_ref().map(|r| r.lde).unwrap_or(0);
         if verbose {
             eprint!("{t_wall:>5.1}s √T... ");
@@ -162,7 +162,7 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
         let (qg, q_wall, q_lde) = run_q(target, eps, optimize, lde_window, m_sweep.clone());
         q_total_wall += q_wall;
         let (q_t, q_q, _q_h, q_len) = gate_cost(qg.as_deref());
-        let q_cost = q_t + 3 * q_q;
+        let q_cost = q_t as f64 + 3.5 * q_q as f64;
         if verbose { eprintln!("{q_wall:>5.1}s"); }
         total_t_cost += t_cost;
         total_q_cost += q_cost;
@@ -182,18 +182,18 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
         if !verbose && (i + 1) % 10 == 0 {
             eprintln!("    [{}/{}] T_mean={:.1} √T_mean={:.1}",
                 i + 1, n,
-                total_t_cost as f64 / (i + 1) as f64,
-                total_q_cost as f64 / (i + 1) as f64);
+                total_t_cost / (i + 1) as f64,
+                total_q_cost / (i + 1) as f64);
         }
     }
     println!();
     println!("Aggregate over {n} targets:");
-    println!("  Clifford+T : total cost = {:>4}, total wall = {:>6.2}s, mean cost = {:.1}",
-        total_t_cost, t_total_wall, total_t_cost as f64 / n as f64);
-    println!("  Clifford+√T: total cost = {:>4}, total wall = {:>6.2}s, mean cost = {:.1}",
-        total_q_cost, q_total_wall, total_q_cost as f64 / n as f64);
+    println!("  Clifford+T : total cost = {:>6.1}, total wall = {:>6.2}s, mean cost = {:.1}",
+        total_t_cost, t_total_wall, total_t_cost / n as f64);
+    println!("  Clifford+√T: total cost = {:>6.1}, total wall = {:>6.2}s, mean cost = {:.1}",
+        total_q_cost, q_total_wall, total_q_cost / n as f64);
     println!("  Wins: T={t_wins}  √T={q_wins}  ties={ties}");
-    let ratio = total_q_cost as f64 / total_t_cost as f64;
+    let ratio = total_q_cost / total_t_cost;
     println!("  cost(√T) / cost(T) = {ratio:.3}");
 }
 
@@ -204,10 +204,10 @@ fn run_compare(targets: &[(f64, f64, f64)], eps: f64, verbose: bool, lde_window:
         println!("  #  | θ     φ     λ     | T_cost | Q_first cost / wall | Q_opt cost / wall | Δcost | wall mult");
         println!("─────┼───────────────────┼────────┼─────────────────────┼───────────────────┼───────┼──────────");
     }
-    let mut deltas: Vec<i64> = Vec::with_capacity(n);
-    let mut q_first_costs: Vec<usize> = Vec::with_capacity(n);
-    let mut q_opt_costs: Vec<usize> = Vec::with_capacity(n);
-    let mut t_costs: Vec<usize> = Vec::with_capacity(n);
+    let mut deltas: Vec<f64> = Vec::with_capacity(n);
+    let mut q_first_costs: Vec<f64> = Vec::with_capacity(n);
+    let mut q_opt_costs: Vec<f64> = Vec::with_capacity(n);
+    let mut t_costs: Vec<f64> = Vec::with_capacity(n);
     let mut q_first_walls: Vec<f64> = Vec::with_capacity(n);
     let mut q_opt_walls: Vec<f64> = Vec::with_capacity(n);
 
@@ -219,24 +219,24 @@ fn run_compare(targets: &[(f64, f64, f64)], eps: f64, verbose: bool, lde_window:
         }
         let rt = SynthesizerT::new(eps).synthesize(target);
         let (t_t, t_q, _, _) = gate_cost(rt.as_ref().and_then(|r| r.gates.as_deref()));
-        let t_cost = t_t + 3 * t_q;
+        let t_cost = t_t as f64 + 3.5 * t_q as f64;
         t_costs.push(t_cost);
 
         if verbose { eprint!("Q_first... "); let _ = std::io::stderr().flush(); }
         let (qg1, qw1, _) = run_q(target, eps, false, 0, None);
         let (q_t1, q_q1, _, _) = gate_cost(qg1.as_deref());
-        let q_first_cost = q_t1 + 3 * q_q1;
+        let q_first_cost = q_t1 as f64 + 3.5 * q_q1 as f64;
         q_first_costs.push(q_first_cost);
         q_first_walls.push(qw1);
 
         if verbose { eprint!("Q_opt... "); let _ = std::io::stderr().flush(); }
         let (qg2, qw2, _) = run_q(target, eps, true, lde_window, m_sweep.clone());
         let (q_t2, q_q2, _, _) = gate_cost(qg2.as_deref());
-        let q_opt_cost = q_t2 + 3 * q_q2;
+        let q_opt_cost = q_t2 as f64 + 3.5 * q_q2 as f64;
         q_opt_costs.push(q_opt_cost);
         q_opt_walls.push(qw2);
 
-        let delta = q_first_cost as i64 - q_opt_cost as i64;
+        let delta = q_first_cost - q_opt_cost;
         deltas.push(delta);
         if verbose {
             eprintln!("done");
@@ -252,40 +252,41 @@ fn run_compare(targets: &[(f64, f64, f64)], eps: f64, verbose: bool, lde_window:
             let _ = std::io::stdout().flush();
         }
         if !verbose && (i + 1) % 10 == 0 {
-            let helped = deltas.iter().filter(|&&d| d > 0).count();
-            let mean_d: f64 = deltas.iter().map(|&d| d as f64).sum::<f64>() / (i + 1) as f64;
+            let helped = deltas.iter().filter(|&&d| d > 0.0).count();
+            let mean_d: f64 = deltas.iter().sum::<f64>() / (i + 1) as f64;
             eprintln!("    [{}/{}] mean Δ={:.1}, helped {}/{}",
                 i + 1, n, mean_d, helped, i + 1);
         }
     }
 
-    let sum_t: usize = t_costs.iter().sum();
-    let sum_q1: usize = q_first_costs.iter().sum();
-    let sum_q2: usize = q_opt_costs.iter().sum();
+    let sum_t: f64 = t_costs.iter().sum();
+    let sum_q1: f64 = q_first_costs.iter().sum();
+    let sum_q2: f64 = q_opt_costs.iter().sum();
     let sum_w1: f64 = q_first_walls.iter().sum();
     let sum_w2: f64 = q_opt_walls.iter().sum();
-    let helped = deltas.iter().filter(|&&d| d > 0).count();
-    let regressed = deltas.iter().filter(|&&d| d < 0).count();
-    let unchanged = deltas.iter().filter(|&&d| d == 0).count();
-    let max_gain = *deltas.iter().max().unwrap_or(&0);
+    let helped = deltas.iter().filter(|&&d| d > 0.0).count();
+    let regressed = deltas.iter().filter(|&&d| d < 0.0).count();
+    let unchanged = deltas.iter().filter(|&&d| d == 0.0).count();
+    let max_gain = deltas.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let max_gain = if max_gain.is_finite() { max_gain } else { 0.0 };
     let mut sorted_deltas = deltas.clone();
-    sorted_deltas.sort_unstable();
-    let med = if n == 0 { 0 } else { sorted_deltas[n / 2] };
-    let mean_d: f64 = deltas.iter().map(|&d| d as f64).sum::<f64>() / n as f64;
+    sorted_deltas.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+    let med = if n == 0 { 0.0 } else { sorted_deltas[n / 2] };
+    let mean_d: f64 = deltas.iter().sum::<f64>() / n as f64;
 
     println!();
     println!("Aggregate over {n} targets:");
-    println!("  Clifford+T mean cost            = {:.2}", sum_t as f64 / n as f64);
-    println!("  Clifford+√T first-hit mean cost = {:.2}  wall = {:.2}s", sum_q1 as f64 / n as f64, sum_w1);
-    println!("  Clifford+√T optimal  mean cost  = {:.2}  wall = {:.2}s", sum_q2 as f64 / n as f64, sum_w2);
-    let ratio1 = sum_q1 as f64 / sum_t as f64;
-    let ratio2 = sum_q2 as f64 / sum_t as f64;
+    println!("  Clifford+T mean cost            = {:.2}", sum_t / n as f64);
+    println!("  Clifford+√T first-hit mean cost = {:.2}  wall = {:.2}s", sum_q1 / n as f64, sum_w1);
+    println!("  Clifford+√T optimal  mean cost  = {:.2}  wall = {:.2}s", sum_q2 / n as f64, sum_w2);
+    let ratio1 = sum_q1 / sum_t;
+    let ratio2 = sum_q2 / sum_t;
     println!("  cost(√T_first) / cost(T)        = {ratio1:.3}");
     println!("  cost(√T_opt)   / cost(T)        = {ratio2:.3}");
-    let cost_red_pct = if sum_q1 > 0 {
-        (sum_q1 as f64 - sum_q2 as f64) / sum_q1 as f64 * 100.0
+    let cost_red_pct = if sum_q1 > 0.0 {
+        (sum_q1 - sum_q2) / sum_q1 * 100.0
     } else { 0.0 };
-    println!("  √T optimal vs first-hit Δ: mean={mean_d:>+.2}  median={med:>+}  max-gain={max_gain:>+}");
+    println!("  √T optimal vs first-hit Δ: mean={mean_d:>+.2}  median={med:>+.1}  max-gain={max_gain:>+.1}");
     println!("  cost reduction from optimal:    {cost_red_pct:.2}% over first-hit");
     println!("  helped {helped}/{n}, regressed {regressed}/{n}, unchanged {unchanged}/{n}");
     let wmult = if sum_w1 > 1e-6 { sum_w2 / sum_w1 } else { 0.0 };

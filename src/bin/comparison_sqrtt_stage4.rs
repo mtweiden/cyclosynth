@@ -4,7 +4,7 @@
 //!
 //! Target generator: `rz(α) · ry(β) · rz(γ)` with α, β, γ ∈ [0, 2π),
 //! matching `comparison_sqrtt.py`. Costs reported:
-//!   * `cost` = T + 3·Q   (matches the synthesizer's internal optimisation
+//!   * `cost` = T + 3.5·Q (matches the synthesizer's internal optimisation
 //!     target in `gates_cost`)
 //!   * `non_clifford_depth` = T + 1.5·Q  (NCD with H/S/X/Y/Z free)
 //!
