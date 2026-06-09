@@ -537,6 +537,10 @@ pub struct Snapshot {
     pub align_rejected: u64,
     pub sols_returned: u64,
     pub t_leaf_check_ms: f64,
+    pub prune_fires: u64,
+    pub verify_prune_fires: u64,
+    pub verify_prune_corrected: u64,
+    pub t_verify_dd_ms: f64,
 }
 
 pub fn snapshot() -> Snapshot {
@@ -562,6 +566,10 @@ pub fn snapshot() -> Snapshot {
         align_rejected: N_ALIGN_REJECTED.load(Ordering::Relaxed),
         sols_returned: N_SOLS_RETURNED.load(Ordering::Relaxed),
         t_leaf_check_ms: T_LEAF_CHECK_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
+        prune_fires: N_PRUNE_FIRES.load(Ordering::Relaxed),
+        verify_prune_fires: N_VERIFY_PRUNE_FIRES.load(Ordering::Relaxed),
+        verify_prune_corrected: N_VERIFY_PRUNE_CORRECTED.load(Ordering::Relaxed),
+        t_verify_dd_ms: T_VERIFY_DD_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
     }
 }
 
@@ -610,5 +618,11 @@ pub fn dump_zeta(s: &Snapshot, label: &str) {
     eprintln!("    cholesky:  {:>10.1}  ({:>5.1}%)", s.t_cholesky_ms, pct_t(s.t_cholesky_ms));
     eprintln!("    lu_solve:  {:>10.1}  ({:>5.1}%)", s.t_lu_ms, pct_t(s.t_lu_ms));
     eprintln!("    se_walk:   {:>10.1}  ({:>5.1}%)  (incl. leaf checks)", s.t_se_ms, pct_t(s.t_se_ms));
+    if s.prune_fires > 0 {
+        eprintln!(
+            "  norm-prune fires: {}  dd-verified: {}  corrected: {}  dd time: {:.1} ms",
+            s.prune_fires, s.verify_prune_fires, s.verify_prune_corrected, s.t_verify_dd_ms,
+        );
+    }
     eprintln!("─────────────────────────────────────────────────────");
 }
