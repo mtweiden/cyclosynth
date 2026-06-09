@@ -6,7 +6,7 @@ single-qubit unitaries.
 Given a 2×2 target unitary `V` and a tolerance `ε`, the synthesizer finds a
 Clifford+T circuit `U` with `d_diamond(U, V) < ε` and the smallest possible
 T-count for that ε. This implements Algorithm 3.14 of
-[Mosca et al., arXiv:2510.05816](https://arxiv.org/abs/2510.05816), which
+[Morisaki et al., arXiv:2510.05816](https://arxiv.org/abs/2510.05816), which
 itself rests on the 8-dimensional integer enumeration of Algorithm 3.6 plus
 the divide-and-conquer split of Algorithm 3.11.
 

@@ -1,8 +1,34 @@
 import csv
+import glob
+import os
 from collections import defaultdict
+import matplotlib as mpl
+import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 
+plt.style.use("dark_background")
+
+# Latin Modern. Default path: register lmroman10 for body text and use
+# bundled Computer Modern for mathtext (visually equivalent to Latin
+# Modern Math; mathtext can't consume OpenType MATH tables).
+# Set CYCLOSYNTH_USETEX=1 to delegate rendering to LaTeX with `lmodern`
+# for true Latin Modern Math glyphs — requires `latex` and `dvipng` on
+# PATH (TeX Live 2026basic is missing dvipng; install via tlmgr).
+USETEX = os.environ.get("CYCLOSYNTH_USETEX") == "1"
+if USETEX:
+    mpl.rcParams["text.usetex"] = True
+    mpl.rcParams["text.latex.preamble"] = (
+        r"\usepackage[T1]{fontenc}\usepackage{lmodern}"
+    )
+else:
+    for _f in glob.glob(
+        "/usr/local/texlive/*/texmf-dist/fonts/opentype/public/lm/lmroman10-*.otf"
+    ):
+        fm.fontManager.addfont(_f)
+    mpl.rcParams["font.family"] = "serif"
+    mpl.rcParams["font.serif"] = ["Latin Modern Roman", "DejaVu Serif"]
+    mpl.rcParams["mathtext.fontset"] = "cm"
 
 CSV_PATH = "comparison_data.csv"
 OUT_PATH = "comparison_violin.png"
@@ -46,11 +72,11 @@ def grouped_violin(ax, data, epsilons, methods, key, colors, slot_width=0.8):
         )
         for body in parts["bodies"]:
             body.set_facecolor(colors[i])
-            body.set_edgecolor("black")
+            body.set_edgecolor("white")
             body.set_alpha(0.6)
         for line_key in ("cmeans", "cmaxes", "cmins", "cbars"):
             if line_key in parts:
-                parts[line_key].set_edgecolor("black")
+                parts[line_key].set_edgecolor("white")
                 parts[line_key].set_linewidth(0.8)
 
 
@@ -91,7 +117,7 @@ def main():
     axes[0].set_title("T-count distribution")
     bound_xs = range(len(epsilons))
     bound_ys = [3 * np.log2(1 / eps) for eps in epsilons]
-    axes[0].plot(bound_xs, bound_ys, linestyle=":", color="black",
+    axes[0].plot(bound_xs, bound_ys, linestyle=":", color="white",
                  linewidth=1.0, label=r"$3\log_2(1/\varepsilon)$")
 
     grouped_violin(axes[1], data, epsilons, methods, "s", colors)
@@ -110,7 +136,7 @@ def main():
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=colors[i], alpha=0.6)
                for i in range(len(methods))]
-    bound_handle = plt.Line2D([0], [0], linestyle=":", color="black",
+    bound_handle = plt.Line2D([0], [0], linestyle=":", color="white",
                               linewidth=1.0)
     axes[0].legend(handles + [bound_handle],
                    methods + [r"$3\log_2(1/\varepsilon)$"], loc="best")
