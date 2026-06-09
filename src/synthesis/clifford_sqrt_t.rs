@@ -932,9 +932,19 @@ impl SynthesizerQ {
                     std::thread::scope(|s| {
                         let handles: Vec<_> = window_kk
                             .iter()
-                            .map(|&k| s.spawn(move || {
-                                self.try_optimal_at_k(target, d, v, k, /*cost_min=*/true)
-                            }))
+                            .map(|&k| {
+                                // 16 MiB stack: these threads participate in
+                                // rayon's in-place execution of dc_search_q,
+                                // whose per-prefix scratch + SE recursion
+                                // overflow the 2 MiB scoped-thread default
+                                // (observed SIGABRT at lde_window = 2).
+                                std::thread::Builder::new()
+                                    .stack_size(16 * 1024 * 1024)
+                                    .spawn_scoped(s, move || {
+                                        self.try_optimal_at_k(target, d, v, k, /*cost_min=*/true)
+                                    })
+                                    .expect("spawn lde-window thread")
+                            })
                             .collect();
                         handles.into_iter().map(|h| h.join().unwrap()).collect()
                     });
@@ -1444,8 +1454,11 @@ impl SynthesizerQ {
             best
         };
 
+        // Boxed so the per-worker scratch lives on the heap — rayon's
+        // in-place execution can run these closures on the caller's
+        // (possibly small) thread stack.
         let make_scratch = || {
-            let mut s = IntScratch16::new(epsilon);
+            let mut s = Box::new(IntScratch16::new(epsilon));
             s.use_f64_gs = use_f64_gs;
             s.bkz_block_size = bkz_block_size;
             s
@@ -1457,7 +1470,7 @@ impl SynthesizerQ {
             usable
                 .par_iter()
                 .with_min_len(chunk)
-                .map_init(make_scratch, per_prefix)
+                .map_init(make_scratch, |s, e| per_prefix(s, e))
                 .reduce(
                     || None,
                     |a, b| match (a, b) {
@@ -1470,7 +1483,7 @@ impl SynthesizerQ {
             usable
                 .par_iter()
                 .with_min_len(chunk)
-                .map_init(make_scratch, per_prefix)
+                .map_init(make_scratch, |s, e| per_prefix(s, e))
                 .find_map_any(|x| x)
         };
         let result = result_pair.map(|(_, r)| r);
