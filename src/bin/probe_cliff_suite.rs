@@ -57,7 +57,7 @@ fn main() {
         std::io::stdout().flush().ok();
 
         let target = rz_f64(theta);
-        let synth = SynthesizerQ::new(eps).with_max_lde(30);
+        let synth = SynthesizerQ::new(eps).with_optimize_cost(false).with_max_lde(30);
         let t0 = Instant::now();
         let result = synth.synthesize(target);
         let dt = t0.elapsed().as_secs_f64();

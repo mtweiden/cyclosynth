@@ -28,7 +28,7 @@ fn main() {
 
     diag::reset_all();
     let target = rz_f64(theta);
-    let synth = SynthesizerQ::new(eps).with_max_lde(35);
+    let synth = SynthesizerQ::new(eps).with_optimize_cost(false).with_max_lde(35);
     let t0 = Instant::now();
     let r = synth.synthesize(target);
     let dt = t0.elapsed().as_secs_f64();

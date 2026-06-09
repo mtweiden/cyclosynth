@@ -366,15 +366,16 @@ pub struct SynthesizerQ {
     /// synthesizer enumerates **all** ε-close candidates (no early
     /// termination), decomposes each via [`BlochDecomposer`], and returns
     /// the one minimising cost `T + (q_cost_x2/2)·Q` (default `T + 3.5·Q`). Wall-time can grow 5-50× vs the
-    /// default first-hit path. Default false. Builder:
+    /// default first-hit path. Default **true** (with the Clifford+T
+    /// baseline floor; see `synthesize_optimal`). Builder:
     /// [`Self::with_optimize_cost`].
     pub optimize_cost: bool,
     /// Stage-2 m-sweep: when `optimize_cost` is on and this is non-empty,
     /// at each lde the synthesizer tries every m in this list (m=0 =
     /// single-search, m≥1 = D&C with that FGKM-prefix split). Candidates
     /// from every variant are collected and the min-cost one wins.
-    /// Default `vec![]` (Stage-1 behaviour: just the configured
-    /// `dc_split`). `with_optimize_cost(true)` auto-populates based on ε.
+    /// Default: `default_optimal_m_sweep(ε)`. An empty Vec disables the
+    /// sweep (Stage-1 behaviour: just the configured `dc_split`).
     /// Builder: [`Self::with_optimal_m_sweep`].
     pub optimal_m_sweep: Vec<u32>,
     /// Stage-2 budget multiplier: when `optimize_cost` is on, every
@@ -397,8 +398,8 @@ pub struct SynthesizerQ {
     /// Stage-4 lde-window: after the m-sweep finds an ε-close candidate
     /// at lde `find_lde`, continue searching `find_lde + 1 ..= find_lde
     /// + window` and pick the global min-cost candidate across the
-    /// whole window. 0 (default) = strict min-lde-first (current
-    /// behaviour). Larger values can catch targets whose cost-min has
+    /// whole window. 0 = strict min-lde-first. Default 2 (best measured
+    /// cost under T+3.5Q). Larger values can catch targets whose cost-min has
     /// a better T/Q split at lde + 1 (because Clifford+√T's
     /// lde-vs-cost relationship is not monotone). Builder:
     /// [`Self::with_optimal_lde_window`].
@@ -620,11 +621,17 @@ impl SynthesizerQ {
             bkz_block_size,
             parallel_lde_window,
             parallel_lde_trigger_nodes,
-            optimize_cost: false,
-            optimal_m_sweep: Vec::new(),
+            // Cost-optimal hybrid is the default: the user-facing
+            // objective is the weighted cost (T + 3.5·Q), and the
+            // Clifford+T baseline inside `synthesize_optimal` guarantees
+            // the result never costs more than Clifford+T on the same
+            // target. First-hit (min-lde, ~10× faster, Q-heavy output)
+            // remains available via `with_optimize_cost(false)`.
+            optimize_cost: true,
+            optimal_m_sweep: default_optimal_m_sweep(epsilon),
             optimal_budget_multiplier: 2,
             optimal_prefix_prune: true,
-            optimal_lde_window: 0,
+            optimal_lde_window: 2,
             q_cost_x2: 7,
         }
     }
@@ -1593,13 +1600,11 @@ impl SynthesizerQ {
         });
         let baseline_cost = baseline.as_ref().map(|(c, _)| *c).unwrap_or(usize::MAX);
 
-        // If the √T screen found nothing, the baseline (if any) is the
-        // result; if both failed, give up.
-        let first = match (first, &baseline) {
-            (Some(f), _) => f,
-            (None, Some(_)) => return baseline.map(|(_, r)| r),
-            (None, None) => return None,
-        };
+        // If the √T screen found nothing within the configured bounds
+        // (max_lde, budgets), return None: the baseline is a cost floor
+        // for comparison, not a fallback — returning it would silently
+        // bypass the caller's search bounds.
+        let first = first?;
         let fl = first.lde;
         let first_cost = first
             .gates

@@ -230,13 +230,13 @@ pub struct PySynthesizer {
 impl PySynthesizer {
     #[new]
     #[pyo3(signature = (epsilon, *, sqrt_t=false, max_lde=None, min_lde=None,
-                        optimize_cost=false, q_cost=None, lde_window=None))]
+                        optimize_cost=None, q_cost=None, lde_window=None))]
     fn new(
         epsilon: f64,
         sqrt_t: bool,
         max_lde: Option<u32>,
         min_lde: Option<u32>,
-        optimize_cost: bool,
+        optimize_cost: Option<bool>,
         q_cost: Option<f64>,
         lde_window: Option<u32>,
     ) -> Self {
@@ -247,8 +247,10 @@ impl PySynthesizer {
         if let Some(v) = min_lde {
             s = s.with_min_lde(v);
         }
-        if optimize_cost {
-            s = s.with_optimize_cost(true);
+        // None = keep the ε-based default (on for √T at ε ≥ 1e-6);
+        // Some(b) = explicit override in either direction.
+        if let Some(b) = optimize_cost {
+            s = s.with_optimize_cost(b);
         }
         if let Some(w) = q_cost {
             s = s.with_q_cost(w);

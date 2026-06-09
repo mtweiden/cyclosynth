@@ -31,7 +31,9 @@ fn main() {
     // Optional parallel-LDE window (4th arg). >=2 enables parallel speculation.
     let plde_window = args.get(3).and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
     let target = rz_f64(theta);
-    let mut synth = SynthesizerQ::new(eps).with_max_lde(35);
+    // First-hit mode: this probe measures the lde search machinery
+    // (speculation, budgets), not the cost-optimal product path.
+    let mut synth = SynthesizerQ::new(eps).with_optimize_cost(false).with_max_lde(35);
     if let Some(bs) = bkz_override {
         synth = synth.with_bkz(bs);
         eprintln!("  (BKZ block_size override: {bs})");
