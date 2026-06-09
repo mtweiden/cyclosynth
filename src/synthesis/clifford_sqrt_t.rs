@@ -589,6 +589,19 @@ impl SynthesizerQ {
         };
 
         let bkz_block_size = if epsilon <= 1e-7 { 4 } else { 0 };
+
+        // Below ε = 2.5e-8 a no-solution lde level burns its full budget
+        // (tens of seconds) before the search moves on; speculating the
+        // next lde behind a one-prefix-budget trigger recovers most of
+        // that wall (4.6× on the θ=1.1 cliff instance at ε=1.5e-8).
+        // The trigger keeps easy targets sequential: they find a solution
+        // long before the predecessor consumes a full prefix budget.
+        let (parallel_lde_window, parallel_lde_trigger_nodes) = if epsilon < 2.5e-8 {
+            (2, dc_pass1_cap_for(epsilon))
+        } else {
+            (1, 0)
+        };
+
         Self {
             epsilon,
             min_lde,
@@ -597,8 +610,8 @@ impl SynthesizerQ {
             dc_dr_filter,
             use_f64_gs,
             bkz_block_size,
-            parallel_lde_window: 1,
-            parallel_lde_trigger_nodes: 0,
+            parallel_lde_window,
+            parallel_lde_trigger_nodes,
             optimize_cost: false,
             optimal_m_sweep: Vec::new(),
             optimal_budget_multiplier: 4,
@@ -977,7 +990,7 @@ impl SynthesizerQ {
             use std::sync::Mutex;
             let pass2_collector: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
-            // ε > 1.6e-8: simple sequential loop, zero parallel-LDE
+            // window == 1: simple sequential loop, zero parallel-LDE
             // machinery (no thread::scope, no shared atomics, no
             // consumed-counter increments in the SE walker's hot path).
             // Atomic fetch_add on a 14-thread-shared counter costs ~25 ns
@@ -985,8 +998,10 @@ impl SynthesizerQ {
             // ε≥1e-7 that's a 30-50% wall regression for zero benefit
             // (parallel-LDE speculation only helps when hard targets
             // overshoot the predicted LDE, which doesn't happen at
-            // shallow ε).
-            if self.epsilon > 1.6e-8 {
+            // shallow ε). `new()` enables a window of 2 with a budget
+            // trigger below ε = 2.5e-8, where no-solution lde levels burn
+            // tens of seconds and speculation pays for itself.
+            if self.parallel_lde_window <= 1 {
                 for k in (m_split + 1).max(lattice_start)..=self.max_lde {
                     let t_k = std::time::Instant::now();
                     let (result, budget_hit) = self.dc_search_q(
@@ -1032,7 +1047,7 @@ impl SynthesizerQ {
                 return None;
             }
 
-            // ε ≤ 1.6e-8: parallel-LDE speculation. For k > m_split, run
+            // window ≥ 2: parallel-LDE speculation. For k > m_split, run
             // a window of LDE levels concurrently. The first task to find
             // sets `cross_lde_abort`; in-flight peer walkers see it at
             // their next recurse-entry and abort. Hard-target wall drops
