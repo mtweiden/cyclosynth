@@ -1557,11 +1557,49 @@ impl SynthesizerQ {
             }
         }
 
-        // Stage 2: screen via the production first-hit path.
-        let mut first_hit = self.clone();
-        first_hit.optimize_cost = false;
+        // Stage 2: √T first-hit screen and the Clifford+T baseline, in
+        // parallel. Every Clifford+T circuit is a valid Clifford+√T
+        // circuit (T is in both alphabets) and the T-only solutions live
+        // at lde ≈ T-count — far above the lde window enumerated below —
+        // so the only way to cover them is to synthesize them directly.
+        // The baseline makes the hybrid result **never more expensive
+        // than Clifford+T by construction**, and its cost tightens the
+        // shared prefix-prune seed, which speeds up stage 3.
         let t_s = std::time::Instant::now();
-        let first = first_hit.synthesize(target)?;
+        let (first, t_baseline) = std::thread::scope(|s| {
+            let baseline_handle = std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn_scoped(s, || {
+                    crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
+                        .synthesize(target)
+                })
+                .expect("spawn clifford_t baseline thread");
+            let mut first_hit = self.clone();
+            first_hit.optimize_cost = false;
+            let first = first_hit.synthesize(target);
+            (first, baseline_handle.join().unwrap())
+        });
+        // Convert the baseline to a √T-shaped candidate. Its gate string
+        // contains no Q, so its cost is exactly 2·T_count half-units.
+        let baseline: Option<(usize, SynthResultQ)> = t_baseline.and_then(|r| {
+            let dist = r.distance;
+            if !(dist < self.epsilon) {
+                return None;
+            }
+            r.gates.map(|g| {
+                let c = gates_cost(&g, self.q_cost_x2);
+                (c, SynthResultQ { gates: Some(g), lde: r.lde, distance: dist })
+            })
+        });
+        let baseline_cost = baseline.as_ref().map(|(c, _)| *c).unwrap_or(usize::MAX);
+
+        // If the √T screen found nothing, the baseline (if any) is the
+        // result; if both failed, give up.
+        let first = match (first, &baseline) {
+            (Some(f), _) => f,
+            (None, Some(_)) => return baseline.map(|(_, r)| r),
+            (None, None) => return None,
+        };
         let fl = first.lde;
         let first_cost = first
             .gates
@@ -1569,13 +1607,15 @@ impl SynthesizerQ {
             .map(|g| gates_cost(g, self.q_cost_x2))
             .unwrap_or(usize::MAX);
         if trace {
-            eprintln!("[zeta] optimal screen (first-hit) lde={fl} cost={first_cost}  t={:.0}ms",
+            eprintln!(
+                "[zeta] optimal screen lde={fl} cost={first_cost} baseline(T)={baseline_cost}  t={:.0}ms",
                 t_s.elapsed().as_secs_f64() * 1000.0);
         }
 
         // Stage 3: parallel enum over the (lde, m) grid with a shared,
         // pre-seeded best-cost tracker.
-        let shared_best = std::sync::atomic::AtomicUsize::new(first_cost);
+        let shared_best =
+            std::sync::atomic::AtomicUsize::new(first_cost.min(baseline_cost));
         let tasks: Vec<(u32, u32)> = (0..=self.optimal_lde_window)
             .map(|i| fl + i)
             .filter(|&k| k <= self.max_lde)
@@ -1612,6 +1652,11 @@ impl SynthesizerQ {
                 tasks, t_w.elapsed().as_secs_f64() * 1000.0);
         }
         let mut best: (usize, SynthResultQ) = (first_cost, first);
+        if let Some((bc, br)) = baseline {
+            if bc < best.0 {
+                best = (bc, br);
+            }
+        }
         for r in task_results.into_iter().flatten() {
             if trace {
                 eprintln!("[zeta]   enum  lde={:>2}  cost={} m={} dist={:.3e}",
@@ -1801,6 +1846,37 @@ mod tests {
 
     /// Multi-target benchmark: average D&C-with-filter vs single across
     /// random U3 targets at fixed ε.
+    /// The optimize-cost hybrid runs a Clifford+T baseline and returns
+    /// the min, so its weighted cost can never exceed the Clifford+T
+    /// result on the same target. Guard that invariant.
+    #[test]
+    fn optimal_cost_never_exceeds_clifford_t() {
+        fn rz(t: f64) -> Mat2 {
+            [
+                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
+            ]
+        }
+        for &(theta, eps) in &[(0.3_f64, 1e-3_f64), (1.1, 1e-3), (2.37, 1e-4)] {
+            let target = rz(theta);
+            let rt = crate::synthesis::clifford_t::SynthesizerT::new(eps)
+                .synthesize(target)
+                .expect("clifford_t baseline should synthesize");
+            let t_cost = gates_cost(rt.gates.as_deref().unwrap_or(""), 7);
+            let rq = SynthesizerQ::new(eps)
+                .with_optimize_cost(true)
+                .with_optimal_lde_window(2)
+                .synthesize(target)
+                .expect("hybrid optimal should synthesize");
+            assert!(rq.distance < eps);
+            let q_cost = gates_cost(rq.gates.as_deref().unwrap_or(""), 7);
+            assert!(
+                q_cost <= t_cost,
+                "hybrid cost {q_cost} > clifford_t cost {t_cost} at θ={theta}, ε={eps:e}"
+            );
+        }
+    }
+
     #[test]
     #[ignore]
     fn z1_dc_dr_filter_random_targets() {
