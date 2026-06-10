@@ -149,6 +149,40 @@ impl U2<ZZeta> {
     pub fn q() -> Self {
         Self::new(ZZeta::ONE, ZZeta::ZERO, ZZeta::ZERO, ZZeta::ZETA, 0)
     }
+
+    /// Fully reduce the denominator exponent: repeatedly divide every
+    /// entry by √2 = ζ² − ζ⁶ while all four stay in Z[ζ₁₆], decrementing
+    /// `k` each time. `Mul` accumulates `k` without reducing, so `k` of
+    /// a product is only an upper bound on the true lde until this is
+    /// called. Uses: x is divisible by √2 ⟺ all coefficients of x·√2
+    /// are even (then x/√2 = (x·√2)/2).
+    pub fn reduced(self) -> Self {
+        let z2 = ZZeta::ZETA * ZZeta::ZETA;
+        let z6 = z2 * z2 * z2;
+        let sqrt2 = z2 - z6;
+        let mut m = self;
+        while m.k > 0 {
+            let y11 = m.u11 * sqrt2;
+            let y12 = m.u12 * sqrt2;
+            let y21 = m.u21 * sqrt2;
+            let y22 = m.u22 * sqrt2;
+            let divisible = y11.gcd_power_of_2() >= 1
+                && y12.gcd_power_of_2() >= 1
+                && y21.gcd_power_of_2() >= 1
+                && y22.gcd_power_of_2() >= 1;
+            if !divisible {
+                break;
+            }
+            m = Self {
+                u11: y11.div2(1),
+                u12: y12.div2(1),
+                u21: y21.div2(1),
+                u22: y22.div2(1),
+                k: m.k - 1,
+            };
+        }
+        m
+    }
 }
 
 // ─── Multiplication (matrix product) ─────────────────────────────────────────
