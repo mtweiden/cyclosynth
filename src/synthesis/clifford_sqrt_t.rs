@@ -404,6 +404,12 @@ pub struct SynthesizerQ {
     /// lde-vs-cost relationship is not monotone). Builder:
     /// [`Self::with_optimal_lde_window`].
     pub optimal_lde_window: u32,
+    /// Enum-stage d_R filter override: when true, the (lde, m) enum
+    /// tasks run with an open det-phase filter (all 16 classes) instead
+    /// of `default_dc_dr_filter(m)`. The defaults were tuned for
+    /// first-hit speed and may exclude classes containing the cost
+    /// optimum. Default false. Builder: [`Self::with_optimal_open_dr_filter`].
+    pub optimal_open_dr_filter: bool,
     /// Q-gate cost weight in **half-units of a T gate**: the cost model
     /// is `cost = T_count + (q_cost_x2 / 2)·Q_count`, computed internally
     /// as integer `2·T + q_cost_x2·Q` so it stays exactly comparable (and
@@ -641,6 +647,7 @@ impl SynthesizerQ {
             optimal_budget_multiplier: 2,
             optimal_prefix_prune: true,
             optimal_lde_window: 2,
+            optimal_open_dr_filter: false,
             q_cost_x2: 7,
         }
     }
@@ -759,6 +766,12 @@ impl SynthesizerQ {
     /// lde `f+1..=f+N` and return the global min-cost candidate.
     pub fn with_optimal_lde_window(mut self, window: u32) -> Self {
         self.optimal_lde_window = window;
+        self
+    }
+
+    /// Lift the enum-stage d_R det-phase filters (see the field doc).
+    pub fn with_optimal_open_dr_filter(mut self, on: bool) -> Self {
+        self.optimal_open_dr_filter = on;
         self
     }
 
@@ -1714,12 +1727,22 @@ impl SynthesizerQ {
             let mut local_scratch: Option<Box<IntScratch16>> = None;
             self.run_single_optimal(&target, d, v, k, cap, &mut local_scratch, cost_min)
         } else if m < k {
-            let filter = default_dc_dr_filter(m);
+            // The d_R filters were tuned for first-hit *speed*; in enum
+            // mode they may exclude det-phase classes containing the
+            // cost optimum. `optimal_open_dr_filter` lifts them.
+            let filter = if self.optimal_open_dr_filter {
+                Vec::new()
+            } else {
+                default_dc_dr_filter(m)
+            };
             let cap = dc_pass1_cap_for(self.epsilon).saturating_mul(budget_mult);
-            let (r, _) = self.dc_search_q(
+            let (r, budget_hit) = self.dc_search_q(
                 &target, k, m, Some(&filter), cap, None, None, Some(cost_min),
                 shared_best_cost,
             );
+            if budget_hit && crate::synthesis::diag::trace_enabled() {
+                eprintln!("[zeta]   enum (k={k}, m={m}) BUDGET-HIT — level truncated");
+            }
             r.map(|res| {
                 let c = gates_cost(res.gates.as_deref().unwrap_or(""), self.q_cost_x2);
                 (c, res)
