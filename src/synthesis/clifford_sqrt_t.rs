@@ -351,6 +351,34 @@ pub struct SynthResultQ {
     pub distance: f64,
 }
 
+/// Optimality certificate from [`SynthesizerQ::synthesize_certified`].
+///
+/// `OPT ∈ [lower_half_units, upper_half_units]` is guaranteed, where
+/// costs are in half-units (`2T + 7Q`). `certified_optimal` is true
+/// when the interval closes: the returned circuit is provably the
+/// cheapest ε-approximation over the whole gate set.
+///
+/// Soundness rests on: (1) one full (unbudgeted) enumeration at shell
+/// `k_searched` covers every circuit with reduced lde ≤ k_searched —
+/// lower-lde circuits appear as √2-scaled lattice points on the shell;
+/// (2) both det-phase parity branches are searched (q ≡ d mod 2 and
+/// the ζ₁₆-automorphism collapse mean two branches are complete);
+/// (3) anything beyond the horizon costs ≥ `cost_lb_half_units(k+1)`
+/// (verified staircase, cost_bound.rs). The certificate inherits the
+/// pipeline's numeric trust boundary (f64+dd distance checks, cap
+/// margin `bound_sq`), like every other result of this crate.
+#[derive(Debug, Clone, Copy)]
+pub struct CostCertificate {
+    /// Cost of the returned circuit (half-units).
+    pub upper_half_units: usize,
+    /// Proven lower bound on the optimum (half-units).
+    pub lower_half_units: usize,
+    /// Horizon: every circuit with lde ≤ this was enumerated.
+    pub k_searched: u32,
+    /// `upper ≤ L(k_searched + 1)`: nothing beyond the horizon can win.
+    pub certified_optimal: bool,
+}
+
 /// Clifford+√T synthesizer over `Z[ζ_16]`.
 ///
 /// Field names match `crate::synthesis::clifford_t::SynthesizerT`'s
@@ -1537,6 +1565,115 @@ impl SynthesizerQ {
     /// `(cost, SynthResultQ)` under the current `optimize_cost` mode.
     /// Mirrors the `try_lattice_k` + `check_sols` closures in
     /// [`Self::synthesize`] but as a method so it can be reused by the
+    /// Tier-1 certified synthesis: exhaustively enumerate every
+    /// Clifford+√T circuit with reduced lde ≤ `k_max` (single
+    /// unbudgeted shell enumeration per parity branch — see
+    /// [`CostCertificate`] for the covering argument), floor with the
+    /// Clifford+T baseline, and report a proven optimality interval.
+    ///
+    /// Wall time grows exponentially with `k_max`; `certified_optimal`
+    /// requires `upper ≤ cost_lb_half_units(k_max + 1)` ≈ k_max, so
+    /// closing the certificate for a cost-C circuit needs k_max ≳ C
+    /// half-units under the current (slope-1/2) staircase. Tightening
+    /// the staircase (design doc P1') shrinks the required horizon
+    /// proportionally without touching this code.
+    pub fn synthesize_certified(
+        &self,
+        target: Mat2,
+        k_max: u32,
+    ) -> Option<(SynthResultQ, CostCertificate)> {
+        let target = project_det_to_zeta_coset(&target);
+        let g = Complex64::from_polar(1.0, PI / 16.0);
+        let target_odd: Mat2 = [
+            [target[0][0] * g, target[0][1] * g],
+            [target[1][0] * g, target[1][1] * g],
+        ];
+
+        // T-baseline floor — only when the target's det class is even:
+        // Clifford+T determinants are even ζ₁₆ powers, so an odd-class
+        // target makes the baseline sweep its whole lde range rejecting
+        // every prefix (trace-diagnosed: 100% mat_uv_rej, minutes of
+        // futile work).
+        let d_even = det_phase_of(&target) % 2 == 0;
+        let baseline: Option<(usize, SynthResultQ)> = if !d_even { None } else {
+            crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
+                .synthesize(target)
+                .and_then(|r| {
+                    if !(r.distance < self.epsilon) {
+                        return None;
+                    }
+                    r.gates.map(|gs| {
+                        let c = gates_cost(&gs, self.q_cost_x2);
+                        (c, SynthResultQ { gates: Some(gs), lde: r.lde, distance: r.distance })
+                    })
+                })
+        };
+
+        // One full enumeration per parity branch at shell k_max. The
+        // lattice pipeline (LLL + SE) is only well-behaved for
+        // k > BRUTE_LIMIT — at tiny shells it degenerates (that's why
+        // the production path brute-forces k ≤ 3) — so small horizons
+        // route to the exact brute enumerator instead.
+        let trace = crate::synthesis::diag::trace_enabled();
+        let mut best: Option<(usize, SynthResultQ)> = baseline;
+        for (label, t) in [("even", &target), ("odd", &target_odd)] {
+            let t_branch = std::time::Instant::now();
+            let d = det_phase_of(t);
+            let found: Option<(usize, SynthResultQ)> = if k_max <= BRUTE_LIMIT {
+                let mut branch_best: Option<(usize, SynthResultQ)> = None;
+                for sol in &phase1_brute(k_max) {
+                    // Shells above the minimum contain √2-scaled images
+                    // of lower-lde circuits (that's the covering
+                    // mechanism); reduce before decomposing — the
+                    // decomposer expects primitive denominators.
+                    let cand: U2Q = solution_to_u2q_d(sol, k_max, d).reduced();
+                    let dist = diamond_distance_u2q_float(&cand, t);
+                    if dist < self.epsilon {
+                        let gates = BlochDecomposer.decompose(&cand);
+                        let c = gates_cost(&gates, self.q_cost_x2);
+                        match &branch_best {
+                            Some((bc, _)) if *bc <= c => {}
+                            _ => branch_best = Some((c, SynthResultQ {
+                                gates: Some(gates), lde: k_max, distance: dist,
+                            })),
+                        }
+                    }
+                }
+                branch_best
+            } else {
+                let v = unitary_to_uv_zeta(t);
+                let mut scratch: Option<Box<IntScratch16>> = None;
+                self.run_single_optimal(
+                    t, d, v, k_max, u64::MAX, &mut scratch, /*cost_min=*/true,
+                )
+            };
+            if trace {
+                eprintln!(
+                    "[zeta] certified branch={label} k={k_max} d={d} {} t={:.0}ms",
+                    found.as_ref().map(|(c, _)| format!("cost={c}"))
+                        .unwrap_or_else(|| "none".into()),
+                    t_branch.elapsed().as_secs_f64() * 1000.0,
+                );
+            }
+            if let Some((c, r)) = found {
+                match &best {
+                    Some((bc, _)) if *bc <= c => {}
+                    _ => best = Some((c, r)),
+                }
+            }
+        }
+
+        let (upper, result) = best?;
+        let beyond = crate::synthesis::cost_bound::cost_lb_half_units(k_max + 1);
+        let cert = CostCertificate {
+            upper_half_units: upper,
+            lower_half_units: upper.min(beyond),
+            k_searched: k_max,
+            certified_optimal: upper <= beyond,
+        };
+        Some((result, cert))
+    }
+
     /// Stage-2/4 m-sweep and called concurrently from `thread::scope`.
     #[allow(clippy::too_many_arguments)]
     fn run_single_optimal(
@@ -1717,6 +1854,9 @@ impl SynthesizerQ {
         // than Clifford+T by construction**, and its cost tightens the
         // shared prefix-prune seed, which speeds up stage 3.
         let t_s = std::time::Instant::now();
+        // Clifford+T dets are even ζ₁₆ powers — odd-class targets make
+        // the baseline burn its whole lde sweep finding nothing.
+        let with_baseline = with_baseline && det_phase_of(&target) % 2 == 0;
         let (first, t_baseline) = std::thread::scope(|s| {
             let baseline_handle = if with_baseline {
                 Some(
@@ -2041,6 +2181,71 @@ mod tests {
                 "hybrid cost {q_cost} > clifford_t cost {t_cost} at θ={theta}, ε={eps:e}"
             );
         }
+    }
+
+    /// Tier-1 closing certificate at the cheapest scale: a T gate costs
+    /// 2 half-units and the beyond-horizon floor L(3) = 2 matches, so
+    /// k_max = 2 must CLOSE the certificate. (Unbudgeted shell walks
+    /// grow fast with k — a k=8 closure test ran minutes; keep tests at
+    /// the smallest k that exercises the logic.)
+    #[test]
+    fn certificate_closes_on_t_target() {
+        let t_f = U2Q::t().to_float();
+        let g = Complex64::from_polar(1.0, -PI / 8.0); // det(T)=ζ₁₆² → g²=ζ₁₆⁻²
+        let target: Mat2 = [
+            [t_f[0][0] * g, t_f[0][1] * g],
+            [t_f[1][0] * g, t_f[1][1] * g],
+        ];
+        let (r, cert) = SynthesizerQ::new(1e-3)
+            .synthesize_certified(target, 2)
+            .expect("certified synthesis should succeed");
+        assert!(r.distance < 1e-3);
+        assert_eq!(cert.upper_half_units, 2, "T circuit costs 2 HU");
+        assert!(cert.certified_optimal,
+            "upper {} vs floor {} at k=2",
+            cert.upper_half_units, cert.lower_half_units);
+        assert_eq!(cert.lower_half_units, cert.upper_half_units);
+    }
+
+    /// Tier-1 gap certificate on a generic target at a small horizon:
+    /// interval well-formed, does not close.
+    #[test]
+    fn certificate_gap_on_generic_target() {
+        fn rzm(t: f64) -> Mat2 {
+            [
+                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
+            ]
+        }
+        let (r, cert) = SynthesizerQ::new(1e-2)
+            .synthesize_certified(rzm(0.7), 4)
+            .expect("certified synthesis should succeed");
+        assert!(r.distance < 1e-2);
+        assert!(cert.lower_half_units <= cert.upper_half_units);
+        assert_eq!(cert.k_searched, 4);
+        // A 1e-2 approximation of a generic angle costs well over
+        // L(5) = 4 HU, so the interval stays open.
+        assert!(!cert.certified_optimal,
+            "unexpected closure: upper {} lower {}",
+            cert.upper_half_units, cert.lower_half_units);
+    }
+
+    /// k = 8 closure on the single-Q target (cost 7 HU needs the L(9)=8
+    /// floor). Minutes-scale unbudgeted walk — milestone runs only.
+    #[test]
+    #[ignore = "unbudgeted k=8 shell walk; run with --ignored"]
+    fn certificate_closes_on_single_q_target_slow() {
+        let g = Complex64::from_polar(1.0, -PI / 16.0);
+        let hqh = (U2Q::h() * U2Q::q() * U2Q::h()).reduced().to_float();
+        let target: Mat2 = [
+            [hqh[0][0] * g, hqh[0][1] * g],
+            [hqh[1][0] * g, hqh[1][1] * g],
+        ];
+        let (_, cert) = SynthesizerQ::new(1e-3)
+            .synthesize_certified(target, 8)
+            .expect("certified synthesis should succeed");
+        assert_eq!(cert.upper_half_units, 7);
+        assert!(cert.certified_optimal);
     }
 
     /// The odd-parity branch must reach circuits the single-target
