@@ -193,7 +193,7 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
 ///
 /// Size after dedup: |L_0|=1, |L_n| = O(2^n) (much less than 3·2^{n-1}·24
 /// due to many Clifford products being phase-equivalent).
-fn build_l(t_prime: u32) -> Arc<Vec<U2T>> {
+pub fn build_l(t_prime: u32) -> Arc<Vec<U2T>> {
     // Check cache first; clone of `Arc` is just a refcount bump.
     {
         let cache = BUILD_L_CACHE.lock().unwrap();
