@@ -93,6 +93,30 @@ pub fn solution_to_u2q_d(sol: &[i64; 16], k: u32, det_phase: u32) -> U2Q {
 ///
 /// Z[ζ_16] analog of [`super::synthesizer`]'s `det_zeta_parity` (which
 /// returns just a parity bit for Z[ω]).
+/// Rotate `target` by a global phase so its det lands exactly on the
+/// nearest ζ₁₆ power. Diamond distance is phase-invariant, so this is
+/// lossless — but without it, a U(2) input whose det is NOT a 16th root
+/// (e.g. a generic u3 matrix) carries a residual phase that no
+/// completion can absorb: every candidate would sit ≳ residual/2 away
+/// and the search burns to max_lde finding nothing (while the
+/// Clifford+T baseline, which projects via √det, succeeds).
+fn project_det_to_zeta_coset(target: &Mat2) -> Mat2 {
+    let det = target[0][0] * target[1][1] - target[0][1] * target[1][0];
+    let d = det_phase_of(target) as f64;
+    let mut residual = det.arg() - d * PI / 8.0;
+    while residual > PI {
+        residual -= 2.0 * PI;
+    }
+    while residual <= -PI {
+        residual += 2.0 * PI;
+    }
+    let g = Complex64::from_polar(1.0, -residual / 2.0);
+    [
+        [target[0][0] * g, target[0][1] * g],
+        [target[1][0] * g, target[1][1] * g],
+    ]
+}
+
 pub fn det_phase_of(target: &Mat2) -> u32 {
     let det = target[0][0] * target[1][1] - target[0][1] * target[1][0];
     let arg = det.arg();
@@ -252,6 +276,18 @@ fn build_l_q_inner(m: u32) -> Vec<U2Q> {
     enumerate_bodies(m, 3, U2Q::eye(), &syllables, &mut bodies);
 
     // Append every Clifford suffix to every body.
+    //
+    // NOTE on `k` semantics (2026-06-10): the stored `k` here is the
+    // UNREDUCED accumulation — a *peel-depth* coordinate matching the
+    // inner-LLL+SE shell split (`k_inner = k_total − u_l.k`), NOT the
+    // prefix's reduced matrix lde. Reducing here (tried) makes z-axis
+    // and Clifford-heavy prefixes drop to k ≈ 0-1, so their suffix
+    // searches run at nearly full depth — a ~30× wall explosion — while
+    // only partially fixing the coverage gap it was meant to address
+    // (canonical routes clipped by heterogeneous inflation; see the
+    // critic review in docs/design_certified_optimal_cost.md). The
+    // right fix needs a dual-coordinate design: reduced lde for cost
+    // accounting, peel depth for shell selection.
     let mut candidates: Vec<U2Q> = Vec::with_capacity(bodies.len() * cliffords_q.len());
     for body in &bodies {
         for c in &cliffords_q {
@@ -404,6 +440,11 @@ pub struct SynthesizerQ {
     /// lde-vs-cost relationship is not monotone). Builder:
     /// [`Self::with_optimal_lde_window`].
     pub optimal_lde_window: u32,
+    /// Search both det-phase parity branches (target and e^{iπ/16}·target).
+    /// The single-target pipeline can only reach circuits with
+    /// Q-count ≡ d(target) (mod 2) — half the pool. Default true in
+    /// optimize-cost mode; ~2× wall. Builder: [`Self::with_odd_parity_branch`].
+    pub odd_parity_branch: bool,
     /// Enum-stage d_R filter override: when true, the (lde, m) enum
     /// tasks run with an open det-phase filter (all 16 classes) instead
     /// of `default_dc_dr_filter(m)`. The closed defaults were tuned for
@@ -654,6 +695,7 @@ impl SynthesizerQ {
             // cost left behind (ε ≤ 1e-5); keep them closed at shallow
             // ε where opening costs 6× wall for ~nothing.
             optimal_open_dr_filter: epsilon <= 1e-5,
+            odd_parity_branch: true,
             q_cost_x2: 7,
         }
     }
@@ -775,6 +817,12 @@ impl SynthesizerQ {
         self
     }
 
+    /// Toggle the odd-Q-parity branch (see the field doc).
+    pub fn with_odd_parity_branch(mut self, on: bool) -> Self {
+        self.odd_parity_branch = on;
+        self
+    }
+
     /// Lift the enum-stage d_R det-phase filters (see the field doc).
     pub fn with_optimal_open_dr_filter(mut self, on: bool) -> Self {
         self.optimal_open_dr_filter = on;
@@ -804,6 +852,11 @@ impl SynthesizerQ {
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
         use crate::synthesis::diag;
         use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
+
+        // Land the det exactly on a ζ₁₆ power first (lossless, see
+        // `project_det_to_zeta_coset`) — generic U(2) inputs otherwise
+        // carry a residual phase no completion can absorb.
+        let target = project_det_to_zeta_coset(&target);
 
         // Cost-optimal mode: locate the smallest feasible lde with the
         // production first-hit path (which carries the deep-ε
@@ -1347,14 +1400,17 @@ impl SynthesizerQ {
                 // form syllable costs are additive, and any U cheaper
                 // than `best` is reachable through its canonical
                 // m-syllable prefix P* with cost(P*) = cost(U) −
-                // cost(suffix) ≤ best − LB. The suffix bound is the max
-                // of the lde staircase L(k_inner) and the det-phase
-                // Q-parity bound (odd d_r forces ≥ 1 Q in the suffix).
-                // Strictly tighter than the old `cost(P) > best`
-                // heuristic, and sound modulo the canonical-split
-                // covering argument (design doc §5, precondition P3).
-                let suffix_lb = crate::synthesis::cost_bound::cost_lb_half_units(k_inner)
-                    .max(crate::synthesis::cost_bound::class_cost_lb_half_units(d_r));
+                // cost(suffix) ≤ best − LB. The suffix bound is the
+                // det-phase Q-parity bound only (odd d_r forces ≥ 1 Q in
+                // the suffix). NOTE: `cost_lb_half_units(k_inner)` is
+                // NOT a sound suffix bound here — the shell at k_inner
+                // contains √2-scaled images of every lower-lde suffix
+                // (that scaling is exactly how lower-level solutions
+                // reappear in an up-only level sweep), and those can
+                // cost far less than L(k_inner). A sound L-term needs
+                // primitivity-stratified enumeration (design doc §5).
+                let suffix_lb =
+                    crate::synthesis::cost_bound::class_cost_lb_half_units(d_r);
                 if u_l_cost.saturating_add(suffix_lb) > cur_best {
                     return None;
                 }
@@ -1550,6 +1606,53 @@ impl SynthesizerQ {
     ///    cost. The screen candidate is the floor for the final min, so
     ///    this stage can only improve it.
     fn synthesize_optimal(&self, target: Mat2) -> Option<SynthResultQ> {
+        if !self.odd_parity_branch {
+            return self.synthesize_optimal_inner(target, /*with_baseline=*/true);
+        }
+        // ── Parity branches (the √T analogue of Clifford+T's U / U·T†
+        // branches). The pipeline pins every candidate's det to
+        // ζ₁₆^{d(target)}, and Q-count ≡ d (mod 2), so a single target
+        // only ever reaches HALF the circuit pool (observed: 80/80
+        // benchmark results with even Q). Rotating the target by
+        // e^{iπ/16} shifts d by 1 and opens the odd-Q pool; diamond
+        // distance is global-phase invariant, so odd-branch finds are
+        // valid approximations of the original target. The Clifford+T
+        // baseline is skipped on the odd branch — T-circuit dets are
+        // even ζ₁₆ powers, so it would burn max_lde finding nothing.
+        let r_even = self.synthesize_optimal_inner(target, /*with_baseline=*/true);
+        let g = Complex64::from_polar(1.0, PI / 16.0);
+        let target_odd: Mat2 = [
+            [target[0][0] * g, target[0][1] * g],
+            [target[1][0] * g, target[1][1] * g],
+        ];
+        // The odd branch only matters if it can BEAT the even result,
+        // and any circuit with cost < c̃ half-units has lde ≤ c̃ + 1
+        // (staircase premise: lde ≤ 2·n_xy + 1 ≤ 2·cost_T-units + 1).
+        // Capping its max_lde accordingly is sound and prevents deep
+        // futile sweeps when the even branch already found a cheap or
+        // exact circuit (e.g. gate-like targets: cost 7 → cap lde 8).
+        let mut odd_self = self.clone();
+        if let Some(r) = &r_even {
+            let even_cost =
+                gates_cost(r.gates.as_deref().unwrap_or(""), self.q_cost_x2) as u32;
+            odd_self.max_lde = odd_self.max_lde.min(even_cost.saturating_add(1));
+        }
+        let r_odd = odd_self.synthesize_optimal_inner(target_odd, /*with_baseline=*/false);
+        match (r_even, r_odd) {
+            (Some(a), Some(b)) => {
+                let ca = gates_cost(a.gates.as_deref().unwrap_or(""), self.q_cost_x2);
+                let cb = gates_cost(b.gates.as_deref().unwrap_or(""), self.q_cost_x2);
+                Some(if cb < ca { b } else { a })
+            }
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn synthesize_optimal_inner(
+        &self,
+        target: Mat2,
+        with_baseline: bool,
+    ) -> Option<SynthResultQ> {
         use crate::synthesis::diag;
         use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
         let trace = diag::trace_enabled();
@@ -1615,17 +1718,24 @@ impl SynthesizerQ {
         // shared prefix-prune seed, which speeds up stage 3.
         let t_s = std::time::Instant::now();
         let (first, t_baseline) = std::thread::scope(|s| {
-            let baseline_handle = std::thread::Builder::new()
-                .stack_size(16 * 1024 * 1024)
-                .spawn_scoped(s, || {
-                    crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
-                        .synthesize(target)
-                })
-                .expect("spawn clifford_t baseline thread");
+            let baseline_handle = if with_baseline {
+                Some(
+                    std::thread::Builder::new()
+                        .stack_size(16 * 1024 * 1024)
+                        .spawn_scoped(s, || {
+                            crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
+                                .synthesize(target)
+                        })
+                        .expect("spawn clifford_t baseline thread"),
+                )
+            } else {
+                None
+            };
             let mut first_hit = self.clone();
             first_hit.optimize_cost = false;
+            first_hit.odd_parity_branch = false;
             let first = first_hit.synthesize(target);
-            (first, baseline_handle.join().unwrap())
+            (first, baseline_handle.and_then(|h| h.join().unwrap()))
         });
         // Convert the baseline to a √T-shaped candidate. Its gate string
         // contains no Q, so its cost is exactly 2·T_count half-units.
@@ -1931,6 +2041,33 @@ mod tests {
                 "hybrid cost {q_cost} > clifford_t cost {t_cost} at θ={theta}, ε={eps:e}"
             );
         }
+    }
+
+    /// The odd-parity branch must reach circuits the single-target
+    /// pipeline cannot: V = e^{-iπ/16}·(H·Q·H) has det 1 (even class),
+    /// but its physical optimum is the single-Q circuit (odd class,
+    /// cost 3.5). Without the branch the search can only offer even-Q
+    /// approximations.
+    #[test]
+    fn odd_parity_branch_finds_single_q() {
+        let g = Complex64::from_polar(1.0, -PI / 16.0);
+        let hqh = {
+            let u = (U2Q::h() * U2Q::q() * U2Q::h()).reduced();
+            u.to_float()
+        };
+        let target: Mat2 = [
+            [hqh[0][0] * g, hqh[0][1] * g],
+            [hqh[1][0] * g, hqh[1][1] * g],
+        ];
+        let r = SynthesizerQ::new(1e-3)
+            .synthesize(target)
+            .expect("should synthesize");
+        let gates = r.gates.expect("gates");
+        let q = gates.chars().filter(|&c| c == 'Q').count();
+        let t = gates.chars().filter(|&c| c == 'T').count();
+        assert!(r.distance < 1e-3);
+        assert_eq!((t, q), (0, 1),
+            "odd branch should find the exact single-Q circuit, got {gates}");
     }
 
     #[test]
@@ -2263,7 +2400,7 @@ mod tests {
             [Complex64::new(c, 0.0), -i * s],
             [-i * s, Complex64::new(c, 0.0)],
         ];
-        let synth = SynthesizerQ::new(1e-8).with_max_lde(2);
+        let synth = SynthesizerQ::new(1e-8).with_optimize_cost(false).with_max_lde(2);
         let result = synth.synthesize(target);
         assert!(result.is_none(),
             "Rx(π/16) should not be reachable in Clifford+√T at k≤2 with ε=1e-8");
@@ -2301,7 +2438,9 @@ mod tests {
             U2Q::h() * U2Q::q() * U2Q::h(),
             U2Q::q() * U2Q::h() * U2Q::q(),
         ];
-        let synth = SynthesizerQ::new(1e-7);
+        // First-hit: this tests gate-string reconstruction, not the
+        // cost-optimal pipeline.
+        let synth = SynthesizerQ::new(1e-7).with_optimize_cost(false);
         for u in targets {
             let target = u.to_float();
             let result = synth.synthesize(target).expect("should synthesize");
@@ -2338,7 +2477,7 @@ mod tests {
             [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
             [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
         ];
-        let synth = SynthesizerQ::new(1e-3).with_max_lde(15);
+        let synth = SynthesizerQ::new(1e-3).with_optimize_cost(false).with_max_lde(15);
         let t0 = std::time::Instant::now();
         let result = synth.synthesize(target).expect("Rz(0.3) at ε=1e-3 should land");
         eprintln!(
