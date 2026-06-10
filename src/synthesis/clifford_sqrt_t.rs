@@ -628,7 +628,16 @@ impl SynthesizerQ {
             // target. First-hit (min-lde, ~10× faster, Q-heavy output)
             // remains available via `with_optimize_cost(false)`.
             optimize_cost: true,
-            optimal_m_sweep: default_optimal_m_sweep(epsilon),
+            // Deep ε (< 1e-7) gets "hybrid-lite" (empty m-sweep → no enum
+            // stage): full per-level enumeration has no early exit and
+            // measured 17-20+ min/target at ε=1e-8 even at 1× budget ×
+            // window 1, vs ~13 s for first-hit. The Clifford+T baseline
+            // floor still applies, so the cost guarantee is kept.
+            optimal_m_sweep: if epsilon < 1e-7 {
+                Vec::new()
+            } else {
+                default_optimal_m_sweep(epsilon)
+            },
             optimal_budget_multiplier: 2,
             optimal_prefix_prune: true,
             optimal_lde_window: 2,
@@ -711,15 +720,12 @@ impl SynthesizerQ {
     /// the configured cost model (default `T + 3.5·Q`). Off by default;
     /// see the `optimize_cost` field doc.
     ///
-    /// When turning on, also auto-populates `optimal_m_sweep` based on
-    /// ε if the user has not configured one. Shallower ε gets single-
-    /// search (m=0) and m=1; deeper ε uses m=1 + m=2; very deep is
-    /// m=2 only (m=0 single-search at deep lde would be far too slow).
+    /// The enum-stage m-sweep is owned by the constructor defaults
+    /// (empty at ε < 1e-7 = "hybrid-lite"); this only toggles the flag.
+    /// To force the full enum at deep ε, set `with_optimal_m_sweep`
+    /// explicitly — and expect tens of minutes per target.
     pub fn with_optimize_cost(mut self, on: bool) -> Self {
         self.optimize_cost = on;
-        if on && self.optimal_m_sweep.is_empty() {
-            self.optimal_m_sweep = default_optimal_m_sweep(self.epsilon);
-        }
         self
     }
 
@@ -784,7 +790,10 @@ impl SynthesizerQ {
         // production first-hit path (which carries the deep-ε
         // speculation machinery and 2-pass completeness), then
         // enumerate candidates only at `[find_lde, find_lde+window]`.
-        if self.optimize_cost && !self.optimal_m_sweep.is_empty() {
+        // With an empty m-sweep this degrades to "hybrid-lite": no enum
+        // stage, just first-hit floored by the Clifford+T baseline —
+        // the never-worse-than-Clifford+T guarantee at first-hit speed.
+        if self.optimize_cost {
             return self.synthesize_optimal(target);
         }
 
