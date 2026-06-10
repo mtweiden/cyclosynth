@@ -8,6 +8,9 @@
 //!   B: alternating R_x(T)·R_z(T)·…           (z contributes lde 0)
 //!   C: alternating R_x(Q)·R_y(Q)·…           (Q chains, cost 3.5/syll)
 //!
+//! Each product is fully reduced via `U2Q::reduced()` (Mul alone only
+//! accumulates an upper bound on lde).
+//!
 //! Prints s, reduced lde k, realized cost, and cost/lde — the minimum
 //! observed cost/lde across chains upper-bounds the true L(k)/k slope.
 
@@ -35,7 +38,7 @@ fn main() {
         println!("--- chain {label} (cost/syllable = {cost_per_syll}) ---");
         let mut u = U2Q::eye();
         for s in 1..=max_s {
-            u = u * *pair[(s - 1) % 2];
+            u = (u * *pair[(s - 1) % 2]).reduced();
             let k = u.k;
             let cost = *cost_per_syll * s as f64;
             if s % 4 == 0 || s == 1 || s == max_s {

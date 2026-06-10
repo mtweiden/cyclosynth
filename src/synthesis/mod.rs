@@ -1,6 +1,7 @@
 pub mod clifford_sqrt_t;
 pub mod clifford_t;
 pub mod cliffords;
+pub mod cost_bound;
 pub mod decomposer;
 pub mod diag;
 pub mod distance;
