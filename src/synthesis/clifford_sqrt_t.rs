@@ -406,9 +406,12 @@ pub struct SynthesizerQ {
     pub optimal_lde_window: u32,
     /// Enum-stage d_R filter override: when true, the (lde, m) enum
     /// tasks run with an open det-phase filter (all 16 classes) instead
-    /// of `default_dc_dr_filter(m)`. The defaults were tuned for
-    /// first-hit speed and may exclude classes containing the cost
-    /// optimum. Default false. Builder: [`Self::with_optimal_open_dr_filter`].
+    /// of `default_dc_dr_filter(m)`. The closed defaults were tuned for
+    /// first-hit speed and exclude classes containing cost optima:
+    /// 2026-06-09 audit measured √T/T 0.975→0.944 at ε=1e-6 and
+    /// 0.875→0.849 at 1e-5 from opening them (3-5× enum wall), but only
+    /// 0.863→0.859 at 1e-4 (6× wall). Default: true for ε ≤ 1e-5,
+    /// false above. Builder: [`Self::with_optimal_open_dr_filter`].
     pub optimal_open_dr_filter: bool,
     /// Q-gate cost weight in **half-units of a T gate**: the cost model
     /// is `cost = T_count + (q_cost_x2 / 2)·Q_count`, computed internally
@@ -647,7 +650,10 @@ impl SynthesizerQ {
             optimal_budget_multiplier: 2,
             optimal_prefix_prune: true,
             optimal_lde_window: 2,
-            optimal_open_dr_filter: false,
+            // Open the det-phase filters where the audit showed real
+            // cost left behind (ε ≤ 1e-5); keep them closed at shallow
+            // ε where opening costs 6× wall for ~nothing.
+            optimal_open_dr_filter: epsilon <= 1e-5,
             q_cost_x2: 7,
         }
     }
