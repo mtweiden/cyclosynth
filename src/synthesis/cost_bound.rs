@@ -74,6 +74,24 @@ pub fn cost_lb_half_units(k: u32) -> usize {
     MIN_SYLLABLE_COST_HALF_UNITS * n_xy
 }
 
+/// Per-det-phase-class cost lower bound, in half-units. Each Q syllable
+/// contributes ζ₁₆ to det(U) and each T contributes ζ₁₆², while
+/// Cliffords contribute powers of ζ₁₆⁴ — but a circuit equals a target
+/// matrix only **up to a global phase ζ₁₆ʲ**, which shifts the det
+/// class by 2j. Only the parity of `d` survives that freedom:
+///
+///     q ≡ d (mod 2)
+///
+/// so an odd det-phase class forces at least one Q gate (7 half-units);
+/// even classes get no information. Combine with
+/// [`cost_lb_half_units`] via `max`. Verified against brute shells in
+/// [`tests::class_bound_holds_on_brute_shells`] (which also pins the
+/// parity congruence — a stronger mod-4 bound is NOT sound, observed
+/// counterexample: a k=0 completion with d=0 decomposing to `ZST`).
+pub fn class_cost_lb_half_units(d: u32) -> usize {
+    if d % 2 == 1 { 7 } else { 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +190,40 @@ mod tests {
         for k in 0..200u32 {
             assert!(cost_lb_half_units(k) <= cost_lb_half_units(k + 1));
         }
+    }
+
+    /// Semantics check for [`class_cost_lb_half_units`]: every unitary
+    /// on the brute shells must respect its det-phase class bound. A
+    /// failure here means the det convention (`det_phase_of`) and the
+    /// congruence derivation disagree.
+    #[test]
+    fn class_bound_holds_on_brute_shells() {
+        use crate::synthesis::clifford_sqrt_t::{det_phase_of, solution_to_u2q};
+        use crate::synthesis::decomposer::BlochDecomposer;
+        use crate::synthesis::search_zeta::phase1_brute;
+
+        let mut checked = 0usize;
+        for k in 0..=3u32 {
+            for sol in &phase1_brute(k) {
+                let u = solution_to_u2q(sol, k);
+                let d = det_phase_of(&u.to_float());
+                let gates = BlochDecomposer.decompose(&u);
+                let t = gates.chars().filter(|&c| c == 'T').count();
+                let q = gates.chars().filter(|&c| c == 'Q').count();
+                assert_eq!(
+                    q % 2,
+                    (d as usize) % 2,
+                    "Q-parity congruence violated at k={k}: d={d}, t={t}, q={q}, gates={gates}"
+                );
+                assert!(
+                    2 * t + 7 * q >= class_cost_lb_half_units(d),
+                    "class bound violated at k={k}: d={d}, cost={}",
+                    2 * t + 7 * q
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "expected to check many shell unitaries");
     }
 
     /// E2 (small-k anchor): brute-enumerate full shells at k ≤ 3 via

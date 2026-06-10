@@ -1334,33 +1334,35 @@ impl SynthesizerQ {
                           entry: &(&U2Q, usize)|
          -> Option<(usize, SynthResultQ)> {
             let (u_l, u_l_cost) = (entry.0, entry.1);
-            if optimize_cost && prefix_prune {
-                let cur_best = best_cost.load(std::sync::atomic::Ordering::Relaxed);
-                // Prune `P` when cost(P) + L(k_inner) > best: in normal
-                // form syllable costs are additive, and any U cheaper
-                // than `best` is reachable through its canonical
-                // m-syllable prefix P* with cost(P*) = cost(U) −
-                // cost(suffix) ≤ best − L(k_inner). Strictly tighter
-                // than the old `cost(P) > best` heuristic, and sound
-                // modulo the canonical-split covering argument (design
-                // doc §5, precondition P3).
-                let k_inner_lb = crate::synthesis::cost_bound::cost_lb_half_units(
-                    k_total.saturating_sub(u_l.k),
-                );
-                if u_l_cost.saturating_add(k_inner_lb) > cur_best {
-                    return None;
-                }
-            }
             let k_prefix = u_l.k;
             let k_inner = k_total - k_prefix;
-
-            // m_inner = U_L† · target as a continuous Mat2.
-            let m_inner = u2q_dag_times_mat2(u_l, target);
-            let v_inner = unitary_to_uv_zeta(&m_inner);
 
             // d_L from prefix's float det.
             let d_l = det_phase_of(&u_l.to_float());
             let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+
+            if optimize_cost && prefix_prune {
+                let cur_best = best_cost.load(std::sync::atomic::Ordering::Relaxed);
+                // Prune `P` when cost(P) + LB(suffix) > best: in normal
+                // form syllable costs are additive, and any U cheaper
+                // than `best` is reachable through its canonical
+                // m-syllable prefix P* with cost(P*) = cost(U) −
+                // cost(suffix) ≤ best − LB. The suffix bound is the max
+                // of the lde staircase L(k_inner) and the det-phase
+                // Q-parity bound (odd d_r forces ≥ 1 Q in the suffix).
+                // Strictly tighter than the old `cost(P) > best`
+                // heuristic, and sound modulo the canonical-split
+                // covering argument (design doc §5, precondition P3).
+                let suffix_lb = crate::synthesis::cost_bound::cost_lb_half_units(k_inner)
+                    .max(crate::synthesis::cost_bound::class_cost_lb_half_units(d_r));
+                if u_l_cost.saturating_add(suffix_lb) > cur_best {
+                    return None;
+                }
+            }
+
+            // m_inner = U_L† · target as a continuous Mat2.
+            let m_inner = u2q_dag_times_mat2(u_l, target);
+            let v_inner = unitary_to_uv_zeta(&m_inner);
 
             let y = uv_to_xy_zeta(v_inner, k_inner);
             let budget_hit = AtomicBool::new(false);
