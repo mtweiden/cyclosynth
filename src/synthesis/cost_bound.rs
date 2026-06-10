@@ -64,14 +64,31 @@ const MIN_SYLLABLE_COST_HALF_UNITS: usize = 2;
 /// Certified lower bound, in half-units (`2T + 7Q`), on the weighted
 /// cost of any Clifford+√T unitary with reduced lde `k`.
 ///
-/// Sound for every `k`; tight up to the additive Clifford constant
-/// (see module docs). Monotone non-decreasing in `k`, which the
+/// **Slope-2 floor (2026-06-10, P-a + P-b)**: `c̃ ≥ 4k − 6` from the
+/// chain
+///
+///   c̃ = 2t + 7q ≥ 2·(t + 2q) ≥ 2·N ≥ 2·(2k − 3),
+///
+/// where N is the reduced Bloch/SO(3) denominator exponent:
+///   * `t + 2q ≥ N` — Bloch-exponent subadditivity plus the
+///     machine-verified per-gate constants N(T) = 1, N(Q) = 2,
+///     N(Clifford) = 0 (docs/proof_pa_peel_exactness.md; holds for
+///     EVERY circuit, not just canonical words);
+///   * `N ≥ 2k − 3` — analytic adjugate argument + exhaustively
+///     verified √2/λ conversion lemma (docs/proof_pb_valuation.md);
+///     tight, deficit 3 realized at every k ≥ 3 (250k-word corpus to
+///     k = 19, zero violations).
+///
+/// The older syllable-count staircase (≈ k − 1, kept as the `max` arm)
+/// only matters at k ≤ 2. Monotone non-decreasing in `k`, which the
 /// certified sweep cutoff relies on.
 pub fn cost_lb_half_units(k: u32) -> usize {
     let excess = k.saturating_sub(CLIFFORD_LDE_MAX);
     // n_xy ≥ ⌈excess / XY_SYLLABLE_LDE⌉, each costing ≥ 2 half-units.
     let n_xy = excess.div_ceil(XY_SYLLABLE_LDE) as usize;
-    MIN_SYLLABLE_COST_HALF_UNITS * n_xy
+    let syllable_floor = MIN_SYLLABLE_COST_HALF_UNITS * n_xy;
+    let slope2_floor = (4 * k as usize).saturating_sub(6);
+    syllable_floor.max(slope2_floor)
 }
 
 /// Per-det-phase-class cost lower bound, in half-units. Each Q syllable
