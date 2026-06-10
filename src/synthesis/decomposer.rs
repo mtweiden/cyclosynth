@@ -1102,6 +1102,244 @@ mod tests {
         }
     }
 
+    // ── P-a: per-peel Bloch-denominator drop (docs/proof_pa_peel_exactness.md) ─
+    //
+    // Verifies the loop invariant of `decompose_so3_canonical_q` that the
+    // slope-2 certificate floor (docs/certificate_validity.md §4, obligation
+    // P-a) rests on. Two unit systems are in play:
+    //
+    //   * N  = `SO3Q::maximum_denominator_exponent()` — the √2-denominator
+    //     exponent of the reduced Bloch matrix (the code's `max_exp`).
+    //   * Nγ = the γ-denominator exponent, γ = √(2+√2) = 2cos(π/8) — the
+    //     unit FGKM's Theorem 4.1 (arXiv:1501.04944) is stated in.
+    //
+    // Conversion: √2 = γ²·(√2−1) (unit), so a reduced entry w/√2^e has
+    // γ-exponent 2e − min(v_γ(w), 1) and N = ⌈Nγ/2⌉ matrix-wide.
+    //
+    // FGKM Theorem 4.1 (n = 8): each canonical syllable R_p(a·π/8)
+    // contributes exactly q_a to Nγ, with q = {a=1 (Q): 3, a=2 (T): 2,
+    // a=3 (TQ): 3}. So the exact per-peel invariant is in γ-units:
+    //
+    //     Nγ drops by exactly q_a per peel.
+    //
+    // In the code's √2-units the drop is NOT a constant per syllable type:
+    // a T-peel always drops N by 1, while a Q- or TQ-peel drops N by 2 when
+    // the pre-peel Nγ is odd and by 1 when it is even (ceiling division).
+    // The originally claimed table δ = {T:1, Q:2, TQ:3} is therefore false
+    // for TQ (drop 3 is impossible) and only half-true for Q. Cost-per-peel
+    // still dominates the drop: T = 1 ≥ 1, Q = 3.5 ≥ 2, TQ = 4.5 ≥ 2
+    // (T-units), and the drops telescope to N(U), so cost ≥ N survives.
+
+    /// γ-denominator exponent of a reduced SO3Q (max over non-zero entries).
+    ///
+    /// Entry w/√2^e (reduced: √2 ∤ w or e = 0) equals w·u^e/γ^{2e} with
+    /// u = √2−1 a unit, so its γ-exponent is 2e − v_γ(w). After √2-reduction
+    /// v_γ(w) ∈ {0, 1}: v_γ(w) ≥ 2 would mean γ² | w, i.e. √2 | w.
+    fn so3q_gamma_exponent(m: &SO3Q) -> u32 {
+        m.e.iter()
+            .filter(|r| r.num != R4::ZERO)
+            .map(|r| {
+                if r.exp == 0 {
+                    0
+                } else {
+                    let v = r.num.gamma_valuation();
+                    assert!(v <= 1, "entry not √2-reduced: v_γ(num) = {v}, exp = {}", r.exp);
+                    2 * r.exp - v
+                }
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// One FGKM syllable R_p(a·π/8) as a reduced U2Q (same construction as
+    /// src/bin/probe_e4_identity.rs).
+    fn fgkm_syllable(axis: usize, a: u32) -> U2Q {
+        let mut d = U2Q::eye();
+        for _ in 0..a {
+            d = d * U2Q::q();
+        }
+        match axis {
+            0 => (U2Q::h() * d * U2Q::h()).reduced(),
+            1 => (U2Q::s() * U2Q::h() * d * U2Q::h() * U2Q::s().dagger()).reduced(),
+            _ => d,
+        }
+    }
+
+    /// Deterministic splitmix64 (same generator as probe_e4_identity).
+    struct Xs(u64);
+    impl Xs {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        }
+    }
+
+    /// P-a companion: per-gate Bloch-denominator constants. With N
+    /// subadditive under matrix products (Ratio exps add in Mul, Add takes
+    /// max — same argument as the B2 U(2)-lde constants), N(T) = 1,
+    /// N(Q) = 2, N(Clifford) = 0 give cost(W) = t + 3.5q ≥ t + 2q ≥ N(U)
+    /// in T-units for EVERY gate word W, not just canonical ones. This is
+    /// the exhaustive finite check those constants rest on.
+    #[test]
+    fn test_pa_per_gate_bloch_n_constants() {
+        let n_of = |u: &U2Q| {
+            let mut m = SO3Q::from_u2(u);
+            m.reduce();
+            m.maximum_denominator_exponent()
+        };
+        assert_eq!(n_of(&U2Q::t()), 1, "N(T) ≠ 1");
+        assert_eq!(n_of(&U2Q::q()), 2, "N(Q) ≠ 2");
+        // For the record: a whole TQ syllable also has N = 2, not 3 — the
+        // single-syllable refutation of the claimed δ = 3.
+        assert_eq!(n_of(&(U2Q::t() * U2Q::q())), 2, "N(TQ) ≠ 2");
+        for (name, _) in CLIFFORD_TABLE_T {
+            let g: U2Q = name.chars().fold(U2Q::eye(), |acc, ch| {
+                acc * if ch == 'I' { U2Q::eye() } else { gate_to_u2q(ch) }
+            });
+            assert_eq!(n_of(&g), 0, "Clifford {name} has nonzero Bloch N");
+        }
+    }
+
+    #[test]
+    fn test_pa_peel_n_drop_exactness() {
+        const N_WORDS: usize = 600;
+        const M_MAX: u64 = 6;
+        // FGKM Theorem 4.1 γ-exponent contributions per syllable amount a.
+        const Q_GAMMA: [u32; 3] = [3, 2, 3];
+
+        let candidates = canonical_candidates();
+        let mut rng = Xs(0xBA5E_0FA1);
+        // (a, √2-drop) → count, for the report table.
+        let mut drop_hist: std::collections::BTreeMap<(u8, i64), usize> =
+            std::collections::BTreeMap::new();
+        let mut total_peels = 0usize;
+
+        for word_idx in 0..N_WORDS {
+            // Random reduced FGKM word: m syllables, consecutive axes differ.
+            let m = 1 + (rng.next() % M_MAX) as u32;
+            let mut u = U2Q::eye();
+            let mut prev_axis = 3usize;
+            for _ in 0..m {
+                let mut axis = (rng.next() % 3) as usize;
+                while axis == prev_axis {
+                    axis = (rng.next() % 3) as usize;
+                }
+                prev_axis = axis;
+                let a = 1 + (rng.next() % 3) as u32;
+                u = (u * fgkm_syllable(axis, a)).reduced();
+            }
+            // Half the corpus: append a random Clifford word — must not
+            // perturb N (Clifford Bloch matrices are signed permutations)
+            // or any per-peel drop.
+            if word_idx % 2 == 1 {
+                for _ in 0..(rng.next() % 4) {
+                    let g = match rng.next() % 2 {
+                        0 => U2Q::h(),
+                        _ => U2Q::s(),
+                    };
+                    u = (u * g).reduced();
+                }
+            }
+
+            // Replicate decompose_so3_canonical_q's peel loop exactly
+            // (same candidate order, same strict-< argmin), instrumented
+            // with N and Nγ before/after each peel.
+            let mut so3 = SO3Q::from_u2(&u);
+            so3.reduce(); // entries are already simplified; explicit per claim wording
+            let max_steps = (so3.max_exp() as usize) * 4 + 32;
+
+            for _ in 0..max_steps {
+                let n_before = so3.maximum_denominator_exponent();
+                let ng_before = so3q_gamma_exponent(&so3);
+                // Unit-system conversion invariant: N = ⌈Nγ/2⌉.
+                assert_eq!(
+                    n_before,
+                    ng_before.div_ceil(2),
+                    "N ≠ ⌈Nγ/2⌉ (N={n_before}, Nγ={ng_before})"
+                );
+                if n_before == 0 {
+                    break;
+                }
+
+                let mut best_idx: usize = 0;
+                let mut best_so3 = so3.clone();
+                best_so3.left_mul(&candidates[0].so3_neg);
+                let mut best_exp = best_so3.max_exp();
+                for (idx, cand) in candidates.iter().enumerate().skip(1) {
+                    let mut trial = so3.clone();
+                    trial.left_mul(&cand.so3_neg);
+                    let trial_exp = trial.max_exp();
+                    if trial_exp < best_exp {
+                        best_exp = trial_exp;
+                        best_idx = idx;
+                        best_so3 = trial;
+                    }
+                }
+                let a = candidates[best_idx].a;
+                so3 = best_so3;
+                so3.reduce();
+
+                let n_after = so3.maximum_denominator_exponent();
+                let ng_after = so3q_gamma_exponent(&so3);
+                total_peels += 1;
+
+                // ── The exact invariant, γ-units: Nγ drops by exactly q_a. ──
+                let gamma_drop = ng_before as i64 - ng_after as i64;
+                assert_eq!(
+                    gamma_drop,
+                    Q_GAMMA[(a - 1) as usize] as i64,
+                    "γ-drop ≠ q_a: a={a}, Nγ {ng_before}→{ng_after} (word {word_idx})"
+                );
+
+                // ── Derived √2-unit drop table. ──
+                let drop = n_before as i64 - n_after as i64;
+                let expected = match a {
+                    2 => 1,                                    // T-peel: always 1
+                    _ => if ng_before % 2 == 1 { 2 } else { 1 }, // Q/TQ: parity of Nγ
+                };
+                assert_eq!(
+                    drop, expected,
+                    "√2-drop off-table: a={a}, N {n_before}→{n_after}, Nγ_before={ng_before}"
+                );
+
+                // ── Cost-per-peel dominates the drop (T-units ×2 = half-units):
+                //    cost(a=1)=7 HU, cost(a=2)=2 HU, cost(a=3)=9 HU ≥ 2·drop. ──
+                let cost_hu = match a { 1 => 7, 2 => 2, _ => 9 };
+                assert!(
+                    2 * drop <= cost_hu,
+                    "peel cost < N-drop: a={a}, drop={drop}"
+                );
+
+                *drop_hist.entry((a, drop)).or_insert(0) += 1;
+                if so3.max_exp() == 0 {
+                    break;
+                }
+            }
+            assert_eq!(
+                so3.max_exp(),
+                0,
+                "peel loop did not reach a Clifford residual (word {word_idx})"
+            );
+        }
+
+        // Report the observed drop table (visible with --nocapture).
+        eprintln!("P-a drop table over {total_peels} peels ({N_WORDS} words):");
+        for ((a, drop), count) in &drop_hist {
+            let name = match a { 1 => "Q ", 2 => "T ", _ => "TQ" };
+            eprintln!("  syllable {name} (a={a}): N-drop {drop}  ×{count}");
+        }
+        // Every syllable type must actually occur for the table to be meaningful.
+        for a in 1..=3u8 {
+            assert!(
+                drop_hist.keys().any(|(ka, _)| *ka == a),
+                "corpus never peeled syllable a={a}"
+            );
+        }
+    }
+
     #[test]
     fn test_zzeta_roundtrip_random_hstq() {
         // Random strings over the full {H, S, T, Q} alphabet — verifies T
