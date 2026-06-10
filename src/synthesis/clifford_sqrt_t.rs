@@ -1317,7 +1317,18 @@ impl SynthesizerQ {
             let (u_l, u_l_cost) = (entry.0, entry.1);
             if optimize_cost && prefix_prune {
                 let cur_best = best_cost.load(std::sync::atomic::Ordering::Relaxed);
-                if u_l_cost > cur_best {
+                // Prune `P` when cost(P) + L(k_inner) > best: in normal
+                // form syllable costs are additive, and any U cheaper
+                // than `best` is reachable through its canonical
+                // m-syllable prefix P* with cost(P*) = cost(U) −
+                // cost(suffix) ≤ best − L(k_inner). Strictly tighter
+                // than the old `cost(P) > best` heuristic, and sound
+                // modulo the canonical-split covering argument (design
+                // doc §5, precondition P3).
+                let k_inner_lb = crate::synthesis::cost_bound::cost_lb_half_units(
+                    k_total.saturating_sub(u_l.k),
+                );
+                if u_l_cost.saturating_add(k_inner_lb) > cur_best {
                     return None;
                 }
             }
