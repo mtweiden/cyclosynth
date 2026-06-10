@@ -468,6 +468,15 @@ pub struct SynthesizerQ {
     /// lde-vs-cost relationship is not monotone). Builder:
     /// [`Self::with_optimal_lde_window`].
     pub optimal_lde_window: u32,
+    /// Certificate mode: add m = 0 full-level tasks to the enum grid
+    /// (the only variant that proves a level fully enumerated) and run
+    /// the floor-driven level extension. Default false (the m = 0 tasks
+    /// cost extra wall); `synthesize_with_certificate` turns it on for
+    /// one call. Builder: [`Self::with_certify`].
+    pub certify: bool,
+    /// Wall budget (ms) for the certify extension loop above the
+    /// window. 0 = no extension. Builder: [`Self::with_certify_extra_ms`].
+    pub certify_extra_ms: u64,
     /// Search both det-phase parity branches (target and e^{iπ/16}·target).
     /// The single-target pipeline can only reach circuits with
     /// Q-count ≡ d(target) (mod 2) — half the pool. Default true in
@@ -724,6 +733,8 @@ impl SynthesizerQ {
             // ε where opening costs 6× wall for ~nothing.
             optimal_open_dr_filter: epsilon <= 1e-5,
             odd_parity_branch: true,
+            certify: false,
+            certify_extra_ms: 2_000,
             q_cost_x2: 7,
         }
     }
@@ -842,6 +853,18 @@ impl SynthesizerQ {
     /// lde `f+1..=f+N` and return the global min-cost candidate.
     pub fn with_optimal_lde_window(mut self, window: u32) -> Self {
         self.optimal_lde_window = window;
+        self
+    }
+
+    /// Toggle certificate mode (see the `certify` field doc).
+    pub fn with_certify(mut self, on: bool) -> Self {
+        self.certify = on;
+        self
+    }
+
+    /// Set the certify extension wall budget in milliseconds.
+    pub fn with_certify_extra_ms(mut self, ms: u64) -> Self {
+        self.certify_extra_ms = ms;
         self
     }
 
@@ -1453,8 +1476,19 @@ impl SynthesizerQ {
             let u_l_local = *u_l;
             let target_local = *target;
             let capture = diag::capture_enabled();
+            let suffix_floor =
+                crate::synthesis::cost_bound::class_cost_lb_half_units(d_r);
             let should_stop = |x: &[i64; 16]| -> bool {
-                if optimize_cost { return false; }
+                if optimize_cost {
+                    // Incumbent-abort: once the shared best drops to (or
+                    // below) this prefix's floor, no candidate through
+                    // this prefix can improve — stop its walk. Sound
+                    // truncation: it only skips candidates that cost ≥
+                    // the incumbent, which is exactly the certificate's
+                    // claim. (Checked at leaf hits only — free.)
+                    return best_cost.load(std::sync::atomic::Ordering::Relaxed)
+                        <= u_l_cost.saturating_add(suffix_floor);
+                }
                 let u_r = solution_to_u2q_d(x, k_inner, d_r);
                 let u_full = u_l_local * u_r;
                 let hit = diamond_distance_u2q_float(&u_full, &target_local) < epsilon;
@@ -1646,6 +1680,7 @@ impl SynthesizerQ {
                 self.run_single_optimal(
                     t, d, v, k_max, u64::MAX, &mut scratch, /*cost_min=*/true,
                 )
+                .0
             };
             if trace {
                 eprintln!(
@@ -1685,7 +1720,7 @@ impl SynthesizerQ {
         budget: u64,
         scratch: &mut Option<Box<IntScratch16>>,
         cost_min: bool,
-    ) -> Option<(usize, SynthResultQ)> {
+    ) -> (Option<(usize, SynthResultQ)>, bool) {
         let epsilon = self.epsilon;
         let s = scratch.get_or_insert_with(|| {
             let mut sb = Box::new(IntScratch16::new(epsilon));
@@ -1703,6 +1738,7 @@ impl SynthesizerQ {
         let sols = phase1_with_stop(
             s.as_mut(), &y, k, epsilon, budget, &budget_hit, should_stop, None, None,
         );
+        let hit = budget_hit.load(std::sync::atomic::Ordering::Relaxed);
         let mut best: Option<(usize, SynthResultQ)> = None;
         for sol in &sols {
             let cand: U2Q = solution_to_u2q_d(sol, k, d);
@@ -1716,7 +1752,7 @@ impl SynthesizerQ {
                     distance: dist,
                 };
                 if !cost_min {
-                    return Some((cost, result));
+                    return (Some((cost, result)), hit);
                 }
                 match &best {
                     Some((bcost, _)) if *bcost <= cost => {}
@@ -1724,7 +1760,7 @@ impl SynthesizerQ {
                 }
             }
         }
-        best
+        (best, hit)
     }
 
     /// Cost-optimal synthesis. Three stages:
@@ -1743,8 +1779,56 @@ impl SynthesizerQ {
     ///    cost. The screen candidate is the floor for the final min, so
     ///    this stage can only improve it.
     fn synthesize_optimal(&self, target: Mat2) -> Option<SynthResultQ> {
+        self.synthesize_optimal_certified(target).map(|(r, _)| r)
+    }
+
+    /// Production search + certificate: same hybrid search, with the
+    /// truncation ledger folded into a [`CostCertificate`]. The lower
+    /// bound comes from the coverage horizon: per parity branch, the
+    /// largest level whose m = 0 task completed WITHOUT budget
+    /// truncation (one full level covers all lower lde via √2-scaled
+    /// points); anything above the smaller branch horizon costs at
+    /// least `cost_lb_half_units(horizon + 1)`. With `certify` off no
+    /// m = 0 tasks run and the certificate is vacuous (lower = 0).
+    pub fn synthesize_with_certificate(
+        &self,
+        target: Mat2,
+    ) -> Option<(SynthResultQ, CostCertificate)> {
+        let mut certified = self.clone();
+        certified.certify = true;
+        certified.synthesize_optimal_certified(target)
+    }
+
+    fn synthesize_optimal_certified(
+        &self,
+        target: Mat2,
+    ) -> Option<(SynthResultQ, CostCertificate)> {
+        let branch_horizon = |ledger: &[(u32, u32, bool)]| -> u32 {
+            ledger
+                .iter()
+                .filter(|(_, m, truncated)| *m == 0 && !truncated)
+                .map(|(k, _, _)| *k)
+                .max()
+                .unwrap_or(0)
+        };
+        let finish = |r: SynthResultQ, horizon: u32, q_cost_x2: usize| {
+            let upper = gates_cost(r.gates.as_deref().unwrap_or(""), q_cost_x2);
+            let beyond = crate::synthesis::cost_bound::cost_lb_half_units(horizon + 1);
+            let cert = CostCertificate {
+                upper_half_units: upper,
+                lower_half_units: upper.min(beyond),
+                k_searched: horizon,
+                certified_optimal: upper <= beyond,
+            };
+            (r, cert)
+        };
+
         if !self.odd_parity_branch {
-            return self.synthesize_optimal_inner(target, /*with_baseline=*/true);
+            let mut ledger = Vec::new();
+            let r = self.synthesize_optimal_inner(target, /*with_baseline=*/true, &mut ledger)?;
+            // Single-branch search covers only one parity class: the
+            // other class is unsearched, so the horizon is vacuous.
+            return Some(finish(r, 0, self.q_cost_x2));
         }
         // ── Parity branches (the √T analogue of Clifford+T's U / U·T†
         // branches). The pipeline pins every candidate's det to
@@ -1756,7 +1840,9 @@ impl SynthesizerQ {
         // valid approximations of the original target. The Clifford+T
         // baseline is skipped on the odd branch — T-circuit dets are
         // even ζ₁₆ powers, so it would burn max_lde finding nothing.
-        let r_even = self.synthesize_optimal_inner(target, /*with_baseline=*/true);
+        let mut ledger_even = Vec::new();
+        let r_even =
+            self.synthesize_optimal_inner(target, /*with_baseline=*/true, &mut ledger_even);
         let g = Complex64::from_polar(1.0, PI / 16.0);
         let target_odd: Mat2 = [
             [target[0][0] * g, target[0][1] * g],
@@ -1774,14 +1860,20 @@ impl SynthesizerQ {
                 gates_cost(r.gates.as_deref().unwrap_or(""), self.q_cost_x2) as u32;
             odd_self.max_lde = odd_self.max_lde.min(even_cost.saturating_add(1));
         }
-        let r_odd = odd_self.synthesize_optimal_inner(target_odd, /*with_baseline=*/false);
+        let mut ledger_odd = Vec::new();
+        let r_odd = odd_self.synthesize_optimal_inner(
+            target_odd, /*with_baseline=*/false, &mut ledger_odd,
+        );
+        // Coverage holds only up to the SMALLER branch horizon: a level
+        // is closed only when both parity worlds enumerated it fully.
+        let horizon = branch_horizon(&ledger_even).min(branch_horizon(&ledger_odd));
         match (r_even, r_odd) {
             (Some(a), Some(b)) => {
                 let ca = gates_cost(a.gates.as_deref().unwrap_or(""), self.q_cost_x2);
                 let cb = gates_cost(b.gates.as_deref().unwrap_or(""), self.q_cost_x2);
-                Some(if cb < ca { b } else { a })
+                Some(finish(if cb < ca { b } else { a }, horizon, self.q_cost_x2))
             }
-            (a, b) => a.or(b),
+            (a, b) => a.or(b).map(|r| finish(r, horizon, self.q_cost_x2)),
         }
     }
 
@@ -1789,6 +1881,7 @@ impl SynthesizerQ {
         &self,
         target: Mat2,
         with_baseline: bool,
+        ledger_out: &mut Vec<(u32, u32, bool)>,
     ) -> Option<SynthResultQ> {
         use crate::synthesis::diag;
         use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
@@ -1909,16 +2002,29 @@ impl SynthesizerQ {
         }
 
         // Stage 3: parallel enum over the (lde, m) grid with a shared,
-        // pre-seeded best-cost tracker.
+        // pre-seeded best-cost tracker. When `certify` is on, each
+        // window level also gets an m = 0 single-shot task — the only
+        // variant whose completion (without budget truncation) proves
+        // the level fully enumerated, which is what moves the
+        // certificate's coverage horizon (one full level covers all
+        // lower lde via √2-scaled points).
         let shared_best =
             std::sync::atomic::AtomicUsize::new(first_cost.min(baseline_cost));
-        let tasks: Vec<(u32, u32)> = (0..=self.optimal_lde_window)
+        let mut tasks: Vec<(u32, u32)> = (0..=self.optimal_lde_window)
             .map(|i| fl + i)
             .filter(|&k| k <= self.max_lde)
             .flat_map(|k| self.optimal_m_sweep.iter().map(move |&m| (k, m)))
             .collect();
+        if self.certify {
+            for i in 0..=self.optimal_lde_window {
+                let k = fl + i;
+                if k <= self.max_lde && !tasks.contains(&(k, 0)) {
+                    tasks.push((k, 0));
+                }
+            }
+        }
         let t_w = std::time::Instant::now();
-        let task_results: Vec<Option<(usize, SynthResultQ, u32)>> =
+        let task_results: Vec<(u32, u32, bool, Option<(usize, SynthResultQ)>)> =
             std::thread::scope(|s| {
                 let shared_best = &shared_best;
                 let handles: Vec<_> = tasks
@@ -1932,11 +2038,11 @@ impl SynthesizerQ {
                         std::thread::Builder::new()
                             .stack_size(16 * 1024 * 1024)
                             .spawn_scoped(s, move || {
-                                self.try_optimal_variant(
+                                let (r, truncated) = self.try_optimal_variant(
                                     target, d, v, k, m, /*cost_min=*/true,
                                     Some(shared_best),
-                                )
-                                .map(|(c, r)| (c, r, m))
+                                );
+                                (k, m, truncated, r)
                             })
                             .expect("spawn lde-window thread")
                     })
@@ -1953,15 +2059,53 @@ impl SynthesizerQ {
                 best = (bc, br);
             }
         }
-        for r in task_results.into_iter().flatten() {
-            if trace {
-                eprintln!("[zeta]   enum  lde={:>2}  cost={} m={} dist={:.3e}",
-                    r.1.lde, r.0, r.2, r.1.distance);
-            }
-            if r.0 < best.0 {
-                best = (r.0, r.1);
+        // Truncation ledger: (level, m, truncated) for every enum task.
+        let mut ledger: Vec<(u32, u32, bool)> = Vec::new();
+        for (k, m, truncated, r) in task_results {
+            ledger.push((k, m, truncated));
+            if let Some((c, res)) = r {
+                if trace {
+                    eprintln!("[zeta]   enum  lde={:>2}  cost={c} m={m} dist={:.3e}",
+                        res.lde, res.distance);
+                }
+                if c < best.0 {
+                    best = (c, res);
+                }
             }
         }
+
+        // Floor-driven extension (certify mode): keep running full m=0
+        // levels above the window while the proven beyond-horizon floor
+        // is still below the incumbent and the extension time budget
+        // lasts. Every completed (untruncated) level raises the
+        // certificate's lower bound by 4 half-units.
+        if self.certify && self.certify_extra_ms > 0 {
+            let t_ext = std::time::Instant::now();
+            let mut k = fl + self.optimal_lde_window + 1;
+            while k <= self.max_lde
+                && crate::synthesis::cost_bound::cost_lb_half_units(k) < best.0
+                && (t_ext.elapsed().as_millis() as u64) < self.certify_extra_ms
+            {
+                let (r, truncated) =
+                    self.try_optimal_variant(target, d, v, k, 0, true, Some(&shared_best));
+                ledger.push((k, 0, truncated));
+                if trace {
+                    eprintln!("[zeta] certify-extend k={k} truncated={truncated} t={:.0}ms",
+                        t_ext.elapsed().as_secs_f64() * 1000.0);
+                }
+                if let Some((c, res)) = r {
+                    if c < best.0 {
+                        best = (c, res);
+                    }
+                }
+                if truncated {
+                    break; // deeper levels will only be bigger
+                }
+                k += 1;
+            }
+        }
+
+        *ledger_out = ledger;
         Some(best.1)
     }
 
@@ -1978,12 +2122,23 @@ impl SynthesizerQ {
         m: u32,
         cost_min: bool,
         shared_best_cost: Option<&std::sync::atomic::AtomicUsize>,
-    ) -> Option<(usize, SynthResultQ)> {
+    ) -> (Option<(usize, SynthResultQ)>, bool) {
         let budget_mult = self.optimal_budget_multiplier.max(1);
         if m == 0 {
-            let cap = PASS1_CAP.saturating_mul(budget_mult);
+            // In certify mode the m = 0 tasks are the coverage proof —
+            // a truncated one contributes nothing to the horizon, so
+            // give them room (32×) to actually finish the level.
+            let cert_boost: u64 = if self.certify { 32 } else { 1 };
+            let cap = PASS1_CAP
+                .saturating_mul(budget_mult)
+                .saturating_mul(cert_boost);
             let mut local_scratch: Option<Box<IntScratch16>> = None;
-            self.run_single_optimal(&target, d, v, k, cap, &mut local_scratch, cost_min)
+            let (r, hit) =
+                self.run_single_optimal(&target, d, v, k, cap, &mut local_scratch, cost_min);
+            if hit && crate::synthesis::diag::trace_enabled() {
+                eprintln!("[zeta]   enum (k={k}, m=0) BUDGET-HIT — coverage lost");
+            }
+            (r, hit)
         } else if m < k {
             // The d_R filters were tuned for first-hit *speed*; in enum
             // mode they may exclude det-phase classes containing the
@@ -2001,12 +2156,12 @@ impl SynthesizerQ {
             if budget_hit && crate::synthesis::diag::trace_enabled() {
                 eprintln!("[zeta]   enum (k={k}, m={m}) BUDGET-HIT — level truncated");
             }
-            r.map(|res| {
+            (r.map(|res| {
                 let c = gates_cost(res.gates.as_deref().unwrap_or(""), self.q_cost_x2);
                 (c, res)
-            })
+            }), budget_hit)
         } else {
-            None
+            (None, false)
         }
     }
 }
@@ -2181,6 +2336,34 @@ mod tests {
                 "hybrid cost {q_cost} > clifford_t cost {t_cost} at θ={theta}, ε={eps:e}"
             );
         }
+    }
+
+    /// Production-path certificate (items 1+2): the hybrid search with
+    /// `certify` on must return a well-formed interval, and at coarse ε
+    /// the floor-driven extension should CLOSE it on a generic target.
+    #[test]
+    fn production_certificate_well_formed_and_closes_at_coarse_eps() {
+        fn rzm(t: f64) -> Mat2 {
+            [
+                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
+            ]
+        }
+        let (r, cert) = SynthesizerQ::new(3e-2)
+            .with_certify_extra_ms(20_000)
+            .synthesize_with_certificate(rzm(0.7))
+            .expect("should synthesize");
+        assert!(r.distance < 3e-2);
+        assert!(cert.lower_half_units <= cert.upper_half_units);
+        assert_eq!(
+            cert.upper_half_units,
+            gates_cost(r.gates.as_deref().unwrap(), 7)
+        );
+        // At 3e-2 the optimum costs ~19 HU; the extension reaches the
+        // closing horizon (k ≈ 6) within the budget.
+        assert!(cert.certified_optimal,
+            "expected closure at coarse ε: upper {} lower {} k {}",
+            cert.upper_half_units, cert.lower_half_units, cert.k_searched);
     }
 
     /// Tier-1 closing certificate at the cheapest scale: a T gate costs
