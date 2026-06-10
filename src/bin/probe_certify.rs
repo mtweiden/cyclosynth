@@ -27,6 +27,32 @@ fn main() {
         _ => scale(U2Q::t().to_float(), -PI/16.0),
     };
 
+    if which == "prod" {
+        // Production-path certificate: hybrid search + ledger/extension
+        // (synthesize_with_certificate), not the exhaustive Tier-1 mode.
+        // Here k_max arg is reused as certify_extra_ms/1000 (seconds).
+        for theta in [0.35f64, 0.7, 1.1] {
+            let v: Mat2 = [
+                [Complex::from_polar(1.0, -theta/2.0), Complex::new(0.0, 0.0)],
+                [Complex::new(0.0, 0.0), Complex::from_polar(1.0, theta/2.0)],
+            ];
+            let t0 = Instant::now();
+            match SynthesizerQ::new(eps)
+                .with_certify_extra_ms(k_max as u64 * 1000)
+                .synthesize_with_certificate(v)
+            {
+                Some((r, c)) => println!(
+                    "prod θ={theta} eps={eps:e} → cost={} in [{}, {}] gap={} certified={} k={} t={:.1}s",
+                    c.upper_half_units, c.lower_half_units, c.upper_half_units,
+                    c.upper_half_units - c.lower_half_units,
+                    c.certified_optimal, c.k_searched, t0.elapsed().as_secs_f64()
+                ),
+                None => println!("prod θ={theta} → None t={:.1}s", t0.elapsed().as_secs_f64()),
+            }
+        }
+        return;
+    }
+
     let t0 = Instant::now();
     match SynthesizerQ::new(eps).synthesize_certified(target, k_max) {
         Some((r, c)) => println!(
