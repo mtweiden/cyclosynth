@@ -83,6 +83,9 @@ fn run_q(target: Mat2, eps: f64, optimize: bool, lde_window: u32, m_sweep: Optio
             synth = synth.with_optimal_budget_multiplier(m);
         }
     }
+    if std::env::var("CYCLOSYNTH_OPEN_FILTER").as_deref() == Ok("1") {
+        synth = synth.with_optimal_open_dr_filter(true);
+    }
     if let Some(ms) = m_sweep {
         synth = synth.with_optimal_m_sweep(ms);
     }
