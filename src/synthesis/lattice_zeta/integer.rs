@@ -744,6 +744,81 @@ mod tests {
         eprintln!("max |frac(lu_x)| = {frac_err:.4}");
     }
 
+    /// Telemetry (ignored): geometric Q-norm² distribution of ε-close
+    /// solutions across a θ × ε × k grid, enumerated at bound 4 (wide
+    /// enough to observe anything up to the geometric max 2.75 of
+    /// docs/bound_sq_soundness.md). Decides whether the observed 1.75
+    /// ceiling is structural (cap part ≤ 1 in implemented scaling → sound
+    /// bound 2.0) or just an unpopulated rim (max → 2.75 → keep 3.0).
+    /// Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn q_telemetry_sweep() {
+        use crate::synthesis::distance::diamond_distance_float;
+        use num_complex::Complex;
+
+        unsafe { std::env::set_var("CYCLOSYNTH_BOUND_SQ", "4") };
+        let mut global_max_close = 0.0f64;
+        let mut global_max_all = 0.0f64;
+        let mut total_close = 0usize;
+
+        for &theta in &[0.3f64, 0.55, 0.8, 1.05, 1.3] {
+            let target: crate::synthesis::Mat2 = [
+                [Complex::from_polar(1.0, -theta / 2.0), Complex::new(0.0, 0.0)],
+                [Complex::new(0.0, 0.0), Complex::from_polar(1.0, theta / 2.0)],
+            ];
+            let v = unitary_to_uv_zeta(&target);
+            let d = det_phase_of(&target);
+            for &(eps, k_lo, k_hi) in &[(3e-2f64, 5u32, 7u32), (1e-3, 9, 10)] {
+                for k in k_lo..=k_hi {
+                    let y = uv_to_xy_zeta(v, k);
+                    let mut s = IntScratch16::new(eps);
+                    let abort = AtomicBool::new(false);
+                    let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
+                    if sols.is_empty() {
+                        continue;
+                    }
+                    let q = crate::synthesis::lattice_zeta::q_metric::build_q_zzeta_lattice(
+                        v, k, eps,
+                    );
+                    let c: [f64; 16] = std::array::from_fn(|i| s.c[i].to_f64());
+                    let mut max_close = 0.0f64;
+                    let mut max_all = 0.0f64;
+                    let mut n_close = 0usize;
+                    for sol in &sols {
+                        let dvec: [f64; 16] =
+                            std::array::from_fn(|i| sol[i] as f64 - c[i]);
+                        let mut qn = 0.0;
+                        for i in 0..16 {
+                            for j in 0..16 {
+                                qn += dvec[i] * q[i][j] * dvec[j];
+                            }
+                        }
+                        max_all = max_all.max(qn);
+                        let cand = solution_to_u2q_d(sol, k, d);
+                        if diamond_distance_float(&cand.to_float(), &target) <= eps {
+                            max_close = max_close.max(qn);
+                            n_close += 1;
+                        }
+                    }
+                    if n_close > 0 {
+                        eprintln!(
+                            "θ={theta:<4} ε={eps:.0e} k={k:<2} sols={:<5} close={n_close:<4} maxQ_close={max_close:.4} maxQ_all={max_all:.4}",
+                            sols.len()
+                        );
+                    }
+                    global_max_close = global_max_close.max(max_close);
+                    global_max_all = global_max_all.max(max_all);
+                    total_close += n_close;
+                }
+            }
+        }
+        unsafe { std::env::remove_var("CYCLOSYNTH_BOUND_SQ") };
+        eprintln!(
+            "GLOBAL: eps-close sols={total_close}  maxQ_close={global_max_close:.4}  maxQ_all={global_max_all:.4}"
+        );
+    }
+
     /// Round-trip at a moderate k=2. Pick a brute solution, derive `v` from
     /// its reconstructed unitary, run phase1, verify the *exact* same
     /// solution (after symmetry / det-phase rotation) is among phase1's
