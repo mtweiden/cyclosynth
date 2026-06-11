@@ -51,6 +51,18 @@ pub fn set_bypass_norm_prune(value: bool) {
     BYPASS_NORM_PRUNE.store(value, Ordering::Relaxed);
 }
 
+/// W1 kill-switch: `CYCLOSYNTH_FLAT_WALK=0` disables the multi-level
+/// frontier flattening in [`schnorr_euchner_16d_par_norm_pruned`],
+/// restoring the legacy per-z[15]-only parallel sharding. Default ON.
+/// Read once (A/B benchmarking aid; not a hot-path read).
+static FLAT_WALK_DISABLED: OnceLock<bool> = OnceLock::new();
+
+fn flat_walk_disabled() -> bool {
+    *FLAT_WALK_DISABLED.get_or_init(|| {
+        std::env::var("CYCLOSYNTH_FLAT_WALK").ok().as_deref() == Some("0")
+    })
+}
+
 // Depth-1 Q-filter (phase 3). DEFAULT OFF.
 //
 // Sound: rejects only z[1] candidates with no integer z[0] making
@@ -1332,6 +1344,275 @@ pub enum LeafAction {
 /// `Fn + Sync`. Returns a [`LeafAction`]: `Take`/`Skip`/`TakeAndStop`.
 ///
 /// Returns `(solutions, budget_hit)`.
+/// Budget-pool chunk size. Also the `consumed`-counter flush granularity,
+/// matching the legacy `budget_prior & 4095` batching.
+const BUDGET_CHUNK: u64 = 4096;
+
+/// Per-worker budget cache (W1). The legacy walk charged the shared budget
+/// atomic with one `fetch_sub(1)` per recurse-enter — including leaf enters —
+/// which was harmless while the walk was effectively serial, but serializes
+/// the whole walk once 14 workers actually run: ~374M contended RMWs on one
+/// cache line at (ε=1e-3, k=9) measured 35× CPU inflation (10.5 s → 366 s).
+/// This cache reserves `BUDGET_CHUNK`-unit chunks from the SAME shared pool,
+/// charges nodes locally, returns the unused remainder on item completion,
+/// and flushes the shared `consumed` progress counter once per refill (≈ per
+/// 4096 nodes — the same observable granularity as the legacy
+/// `budget_prior & 4095` batching). Budget exhaustion aborts at chunk
+/// granularity (`prior <= BUDGET_CHUNK` mirrors the per-node `prior <= 1`),
+/// so admitted work can deviate from the legacy walk by at most
+/// ±workers × 4096 nodes — noise against the ≥1M production caps.
+struct BudgetCache {
+    remaining: u64,
+    used_since_flush: u64,
+}
+
+impl BudgetCache {
+    #[inline]
+    fn new() -> Self {
+        Self { remaining: 0, used_since_flush: 0 }
+    }
+
+    /// Charge `n` (≤ BUDGET_CHUNK) budget units. Returns `false` iff the
+    /// shared pool is exhausted — the caller must set `aborted` and stop,
+    /// mirroring the legacy `budget_prior <= 1` path.
+    #[inline]
+    fn charge(&mut self, n: u64, budget: &AtomicU64, consumed: Option<&AtomicU64>) -> bool {
+        if self.remaining >= n {
+            self.remaining -= n;
+            self.used_since_flush += n;
+            return true;
+        }
+        let prior = budget.fetch_sub(BUDGET_CHUNK, Ordering::Relaxed);
+        if prior <= BUDGET_CHUNK {
+            // Pool exhausted. Don't bother restoring the pool value: the
+            // `aborted` flag (set by the caller) is what stops all
+            // workers, exactly as in the legacy per-node scheme.
+            self.flush_consumed(consumed);
+            return false;
+        }
+        self.remaining += BUDGET_CHUNK;
+        self.flush_consumed(consumed);
+        self.remaining -= n;
+        self.used_since_flush += n;
+        true
+    }
+
+    #[inline]
+    fn flush_consumed(&mut self, consumed: Option<&AtomicU64>) {
+        if let Some(c) = consumed {
+            if self.used_since_flush > 0 {
+                c.fetch_add(self.used_since_flush, Ordering::Relaxed);
+            }
+        }
+        self.used_since_flush = 0;
+    }
+
+    /// Item teardown: flush progress and return the unused reservation to
+    /// the shared pool (keeps total accounting exact across work items).
+    #[inline]
+    fn finish(mut self, budget: &AtomicU64, consumed: Option<&AtomicU64>) {
+        self.flush_consumed(consumed);
+        if self.remaining > 0 {
+            budget.fetch_add(self.remaining, Ordering::Relaxed);
+        }
+    }
+}
+
+/// One sequential work item for the parallel norm-pruned SE walk: a fixed
+/// coordinate prefix `z[start_depth+1 ..= 15]` together with the incremental
+/// `(x, w, partial_q, partial_eucl)` state [`recurse_collect_norm_pruned`]
+/// expects on entry at `start_depth`. Mirrors the per-thread state the old
+/// per-z[15] closure built, generalized to prefixes of arbitrary length.
+#[derive(Clone)]
+struct SePrefixItem {
+    z: [i64; 16],
+    x: [i64; 16],
+    w: [f64; 16],
+    partial_q: f64,
+    partial_eucl: f64,
+}
+
+/// Expand one frontier item at coordinate depth `d` into its surviving
+/// depth-`d−1` children (W1 parallel-utilization fix). This is an exact
+/// replica of the depth-`d` node body of [`recurse_collect_norm_pruned`]
+/// — node-entry budget consumption (`fetch_sub` + abort on exhaustion),
+/// batched `consumed` counter flush, trace counters, degenerate-diagonal
+/// branch, Q-bracket child loop in zig-zag order, incremental x/w
+/// maintenance, and the norm-shell prune including the integer-exact
+/// short-circuit and the dd verify — except that surviving children are
+/// pushed as new work items instead of recursed into. Only used at
+/// d ≥ 4, so the depth-1 Q-filter and leaf handling never apply here.
+#[allow(clippy::too_many_arguments)]
+fn expand_se_prefix_node(
+    d: usize,
+    mut item: SePrefixItem,
+    out: &mut Vec<SePrefixItem>,
+    l: &[[f64; 16]; 16],
+    z_c: &[i64; 16],
+    bound_sq: f64,
+    r_eucl: &[[f64; 16]; 16],
+    r_eucl_dd: &[[(f64, f64); 16]; 16],
+    target_norm_sq: f64,
+    target_norm_sq_i64: i64,
+    basis: &[[i64; 16]; 16],
+    budget: &AtomicU64,
+    aborted: &AtomicBool,
+    consumed: Option<&AtomicU64>,
+    bcache: &mut BudgetCache,
+) {
+    // Node-entry bookkeeping — mirrors recurse_collect_norm_pruned exactly
+    // (one budget unit per recurse-enter, charged via the chunked cache).
+    if !bcache.charge(1, budget, consumed) {
+        aborted.store(true, Ordering::Relaxed);
+        return;
+    }
+    let trace = crate::synthesis::diag::trace_enabled();
+    if trace && d < 16 {
+        crate::synthesis::diag::N_RECURSE_ENTER_AT_DEPTH[d].fetch_add(1, Ordering::Relaxed);
+    }
+    let l_dd = l[d][d];
+    if l_dd.abs() < 1e-30 {
+        // Degenerate diagonal: z[d] is forced to z_c[d] (mirror of the
+        // recursion's degenerate branch; partial_q unchanged).
+        let new_zd = z_c[d];
+        let delta = new_zd - item.z[d];
+        if delta != 0 {
+            update_x_for_z_change(&mut item.x, basis, d, delta);
+            let delta_f = delta as f64;
+            for i in 0..=d {
+                item.w[i] += delta_f * r_eucl[i][d];
+            }
+        }
+        item.z[d] = new_zd;
+        let level_eucl = item.w[d];
+        let new_partial_eucl = item.partial_eucl + level_eucl * level_eucl;
+        if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
+            item.partial_eucl = new_partial_eucl;
+            out.push(item);
+        }
+        return;
+    }
+    // SE bracket for z[d] given the fixed z[d+1..16] prefix — same math
+    // as the recursion body.
+    let mut tail = 0.0_f64;
+    for j in (d + 1)..16 {
+        tail += l[d][j] * ((item.z[j] - z_c[j]) as f64);
+    }
+    let rem = bound_sq - item.partial_q;
+    if rem < 0.0 {
+        return;
+    }
+    let rem_sqrt = rem.sqrt();
+    let center_off = -tail / l_dd;
+    let span = rem_sqrt / l_dd.abs();
+    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
+    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
+    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
+    let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
+
+    for raw in 0..=(2 * max_off + 1) {
+        if aborted.load(Ordering::Relaxed) {
+            return;
+        }
+        let off = if raw == 0 {
+            0
+        } else if raw % 2 == 1 {
+            (raw + 1) / 2
+        } else {
+            -(raw / 2)
+        };
+        let zd = z_mid + off;
+        if zd < z_low || zd > z_high {
+            continue;
+        }
+        let level = l_dd * ((zd - z_c[d]) as f64) + tail;
+        let new_partial_q = item.partial_q + level * level;
+        if new_partial_q > bound_sq + 1e-9 * bound_sq.abs() {
+            continue;
+        }
+        // Update z[d], x = B·z, and w = R·z incrementally (same delta
+        // scheme as the recursion — the item state persists across the
+        // zig-zag siblings).
+        let delta = zd - item.z[d];
+        if delta != 0 {
+            update_x_for_z_change(&mut item.x, basis, d, delta);
+            let delta_f = delta as f64;
+            for i in 0..=d {
+                item.w[i] += delta_f * r_eucl[i][d];
+            }
+        }
+        item.z[d] = zd;
+
+        let level_eucl = item.w[d];
+        let new_partial_eucl = item.partial_eucl + level_eucl * level_eucl;
+        let threshold = target_norm_sq * (1.0 + 1e-9);
+        let prune_fires = new_partial_eucl > threshold; // d ≥ 4 > 0 here
+        let bypass = bypass_norm_prune();
+        let depth = d as i32;
+        if trace && prune_fires && !bypass {
+            crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
+            if d < 16 {
+                crate::synthesis::diag::N_PRUNE_FIRES_AT_DEPTH[d]
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            let ratio = new_partial_eucl / threshold;
+            if ratio <= 1.10 {
+                crate::synthesis::diag::N_PRUNE_FIRES_NEAR.fetch_add(1, Ordering::Relaxed);
+            }
+            if ratio <= 1.01 {
+                crate::synthesis::diag::N_PRUNE_FIRES_VERY_NEAR.fetch_add(1, Ordering::Relaxed);
+            }
+            crate::synthesis::diag::sample_prune_event(depth, &item.z, new_partial_eucl, threshold);
+            if crate::synthesis::diag::watch_path_match_at_depth(&item.z, depth) {
+                crate::synthesis::diag::watch_record(crate::synthesis::diag::WatchHit {
+                    depth, z_at_prune: item.z,
+                    partial_eucl_f64: new_partial_eucl,
+                    threshold,
+                    partial_q_f64: new_partial_q,
+                    r_eucl_diag_d: r_eucl[d][d],
+                    w_d: item.w[d],
+                });
+            }
+        }
+        // Same prune-verification ladder as the recursion: integer-exact
+        // short-circuit first, then dd verify (when enabled and near).
+        const VERIFY_RATIO_CAP: f64 = 5.0;
+        let actually_prune = if !bypass && prune_fires {
+            let x_norm_sq: i64 = item.x.iter().map(|&v| v.wrapping_mul(v)).sum();
+            if x_norm_sq <= target_norm_sq_i64 {
+                false
+            } else if verify_prune_mpfr() && new_partial_eucl <= threshold * VERIFY_RATIO_CAP {
+                let t_v = if trace { Some(std::time::Instant::now()) } else { None };
+                let dd_prune = verify_partial_dd_exceeds(r_eucl_dd, &item.z, d, threshold);
+                if let Some(t) = t_v {
+                    crate::synthesis::diag::T_VERIFY_DD_NS
+                        .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    if !dd_prune {
+                        crate::synthesis::diag::N_VERIFY_PRUNE_CORRECTED.fetch_add(1, Ordering::Relaxed);
+                    }
+                    crate::synthesis::diag::N_VERIFY_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
+                }
+                dd_prune
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+        if actually_prune {
+            if trace && d < 16 {
+                crate::synthesis::diag::N_PRUNE_ACTUAL_AT_DEPTH[d]
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            continue;
+        }
+        let mut child = item.clone();
+        child.partial_q = new_partial_q;
+        child.partial_eucl = new_partial_eucl;
+        out.push(child);
+    }
+}
+
 /// Parallel SE walker with norm-shell prune. `external_abort` is an
 /// optional cross-task abort signal (set by a peer LDE task that found
 /// first under parallel speculation). `consumed` is an optional shared
@@ -1372,18 +1653,124 @@ where
     let z_high = z_c[15].saturating_add(span_q.floor() as i64);
     let z_mid = z_c[15];
 
-    // Closest-to-center first ordering at the outermost level. Tried
-    // sharding at (z[15], z[14]) for finer-grained parallelism, but
-    // rayon-scheduling overhead and a sort key that doesn't track the
-    // true SE "closest-to-center" (z[14]'s center depends on z[15] via
-    // tail) made it 2-4× slower at deep ε. Single-level z[15] sharding
-    // wins: each worker walks one z[15] subtree in its native SE order.
+    // Closest-to-center first ordering at the outermost level.
     let mut prefixes: Vec<i64> = (z_low..=z_high).collect();
     prefixes.sort_by_key(|&z| (z - z_mid).abs());
 
-    let solutions: Vec<[i64; 16]> = prefixes
+    // ── Stage 1: seed the work-item frontier from the z[15] candidates ──
+    // Same checks the old per-z[15] closure made; no budget consumption at
+    // this level (matching the old code, where the depth-15 loop lived
+    // outside the budgeted recursion).
+    let mut frontier: Vec<SePrefixItem> = Vec::with_capacity(prefixes.len());
+    for z_15 in prefixes {
+        // Q-bound contribution at depth 15.
+        let level_q = l_15 * ((z_15 - z_c[15]) as f64);
+        let partial_q = level_q * level_q;
+        if partial_q > bound_sq + 1e-9 * bound_sq.abs() {
+            continue;
+        }
+        let mut z = [0i64; 16];
+        z[15] = z_15;
+        let mut x = [0i64; 16];
+        if z_15 != 0 {
+            let row = &basis[15];
+            for c in 0..16 {
+                x[c] = z_15 * row[c];
+            }
+        }
+        // Incremental w = R_eucl · z. Initialize from z[15] only:
+        //   w[i] = z_15 · R[i][15]   for i ≤ 15
+        // (z[0..15] are zero on entry).
+        let mut w = [0f64; 16];
+        let z_15_f = z_15 as f64;
+        for i in 0..=15 {
+            w[i] = z_15_f * r_eucl[i][15];
+        }
+        let level_eucl = w[15];
+        let partial_eucl = level_eucl * level_eucl;
+        if !bypass_norm_prune() && partial_eucl > target_norm_sq * (1.0 + 1e-9) {
+            continue;
+        }
+        frontier.push(SePrefixItem { z, x, w, partial_q, partial_eucl });
+    }
+
+    // ── Stage 2: flatten more coordinate levels into the frontier ──
+    // W1 fix: at fine ε the z[15] bracket holds only 1-3 values, so
+    // single-level sharding serialized the whole walk (measured util
+    // 1.08× on 14 threads at ε=1e-5). Expand the frontier one coordinate
+    // at a time — (z15) → (z15,z14) → … — until there are enough
+    // independent items to keep every worker busy. Each expansion step
+    // replicates the recursion's depth-d node semantics exactly (see
+    // `expand_se_prefix_node`), so the visited node set, budget
+    // consumption, and trace counters are identical to the recursive
+    // walk's. The earlier (z15,z14) sharding attempt failed on a bad
+    // sort key (per-z[14] |offset| ignores the z[15]-dependent center);
+    // sorting by accumulated partial_q — the true SE distance — fixes
+    // that. The budget guard keeps tiny-budget walks from spending a
+    // meaningful budget fraction on breadth-first frontier expansion
+    // before any leaf is reached (sequential semantics are depth-first).
+    let threads = rayon::current_num_threads().max(1);
+    let frontier_target: usize = if flat_walk_disabled() {
+        0 // legacy behavior: shard on z[15] only
+    } else {
+        (threads * 128).min((budget.load(Ordering::Relaxed) / 256).max(1) as usize)
+    };
+    let mut start_depth: i32 = 14;
+    {
+        let mut bcache = BudgetCache::new();
+        while !frontier.is_empty()
+            && frontier.len() < frontier_target
+            && start_depth >= 4
+            && !aborted.load(Ordering::Relaxed)
+        {
+            let d = start_depth as usize;
+            let cur = std::mem::take(&mut frontier);
+            frontier.reserve(cur.len().saturating_mul(2));
+            for item in cur {
+                if aborted.load(Ordering::Relaxed) {
+                    break;
+                }
+                if external_abort.is_some_and(|e| e.load(Ordering::Relaxed)) {
+                    aborted.store(true, Ordering::Relaxed);
+                    break;
+                }
+                expand_se_prefix_node(
+                    d, item, &mut frontier, l, z_c, bound_sq, r_eucl, r_eucl_dd,
+                    target_norm_sq, target_norm_sq_i64, basis, budget, &aborted,
+                    consumed, &mut bcache,
+                );
+            }
+            start_depth -= 1;
+            if std::env::var("CYCLOSYNTH_W1_DEBUG").ok().as_deref() == Some("1") {
+                eprintln!(
+                    "[w1] frontier at start_depth {}: {} items (target {})",
+                    start_depth, frontier.len(), frontier_target
+                );
+            }
+        }
+        bcache.finish(budget, consumed);
+    }
+
+    // Closest-first ordering generalized to multi-coordinate prefixes:
+    // ascending accumulated Q-distance. For the unbudgeted exhaustive walk
+    // this only affects scheduling; under a budget it preserves the SE
+    // "most promising subtree first" preference of the old per-z[15] sort.
+    frontier.sort_by(|a, b| a.partial_q.total_cmp(&b.partial_q));
+
+    // ── Stage 3: walk the items in parallel ──
+    let w1_debug_skew = std::env::var("CYCLOSYNTH_W1_DEBUG").ok().as_deref() == Some("2");
+    let t_stage3 = if w1_debug_skew { Some(std::time::Instant::now()) } else { None };
+    let item_times: std::sync::Mutex<Vec<(f64, i64)>> = std::sync::Mutex::new(Vec::new());
+    // `with_max_len(1)` lets idle workers steal single items: rayon's
+    // default split budget (~2 splits/thread) otherwise freezes the vec
+    // into ~64 fixed chunks, and the head chunk — the fattest, given the
+    // closest-first sort — pinned one thread for 1.0 s of a 1.27 s walk
+    // (measured at ε=1e-5, k=13). Splits stay steal-driven, so this adds
+    // no overhead while all workers are busy.
+    let solutions: Vec<[i64; 16]> = frontier
         .into_par_iter()
-        .flat_map_iter(|z_15| {
+        .with_max_len(1)
+        .flat_map_iter(|mut item| {
             if aborted.load(Ordering::Relaxed) {
                 return Vec::new().into_iter();
             }
@@ -1391,44 +1778,49 @@ where
                 aborted.store(true, Ordering::Relaxed);
                 return Vec::new().into_iter();
             }
-            // Q-bound contribution at depth 15.
-            let level_q = l_15 * ((z_15 - z_c[15]) as f64);
-            let partial_q = level_q * level_q;
-            if partial_q > bound_sq + 1e-9 * bound_sq.abs() {
-                return Vec::new().into_iter();
-            }
-            // Per-thread state.
-            let mut z = [0i64; 16];
-            z[15] = z_15;
-            let mut x = [0i64; 16];
-            if z_15 != 0 {
-                let row = &basis[15];
-                for c in 0..16 {
-                    x[c] = z_15 * row[c];
-                }
-            }
-            // Incremental w = R_eucl · z. Initialize from z[15] only:
-            //   w[i] = z_15 · R[i][15]   for i ≤ 15
-            // (z[0..15] are zero on entry).
-            let mut w = [0f64; 16];
-            let z_15_f = z_15 as f64;
-            for i in 0..=15 {
-                w[i] = z_15_f * r_eucl[i][15];
-            }
-            let level_eucl = w[15];
-            let partial_eucl = level_eucl * level_eucl;
-            if !bypass_norm_prune() && partial_eucl > target_norm_sq * (1.0 + 1e-9) {
-                return Vec::new().into_iter();
-            }
+            let t0 = if w1_debug_skew { Some(std::time::Instant::now()) } else { None };
             let mut local: Vec<[i64; 16]> = Vec::new();
+            let mut bcache = BudgetCache::new();
             recurse_collect_norm_pruned(
-                14, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
-                partial_q, partial_eucl, &mut z, &mut x, &mut w, basis,
-                &leaf_filter, budget, &aborted, external_abort, consumed, &mut local,
+                start_depth, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq,
+                target_norm_sq_i64, item.partial_q, item.partial_eucl,
+                &mut item.z, &mut item.x, &mut item.w, basis,
+                &leaf_filter, budget, &aborted, external_abort, consumed,
+                &mut bcache, &mut local,
             );
+            bcache.finish(budget, consumed);
+            if let Some(t) = t0 {
+                let tid = rayon::current_thread_index().map(|i| i as i64).unwrap_or(-1);
+                item_times.lock().unwrap().push((t.elapsed().as_secs_f64(), tid));
+            }
             local.into_iter()
         })
         .collect();
+    if w1_debug_skew {
+        let mut times = item_times.into_inner().unwrap();
+        times.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let total: f64 = times.iter().map(|t| t.0).sum();
+        let top: Vec<String> = times.iter().take(10).map(|t| format!("{:.3}", t.0)).collect();
+        let mut per_thread: std::collections::HashMap<i64, (f64, usize)> =
+            std::collections::HashMap::new();
+        for &(t, tid) in &times {
+            let e = per_thread.entry(tid).or_insert((0.0, 0));
+            e.0 += t;
+            e.1 += 1;
+        }
+        let mut pt: Vec<_> = per_thread.into_iter().collect();
+        pt.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
+        let pts: Vec<String> = pt.iter()
+            .map(|(tid, (t, n))| format!("t{tid}:{t:.2}s/{n}"))
+            .collect();
+        eprintln!(
+            "[w1] skew: {} items, Σ {:.3} s, stage3 wall {:.3} s, top10 [{}]\n[w1] threads: {}",
+            times.len(), total,
+            t_stage3.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0),
+            top.join(", "),
+            pts.join(" ")
+        );
+    }
 
     let budget_hit = aborted.load(Ordering::Relaxed);
     (solutions, budget_hit)
@@ -1455,6 +1847,7 @@ fn recurse_collect_norm_pruned<F>(
     aborted: &std::sync::atomic::AtomicBool,
     external_abort: Option<&std::sync::atomic::AtomicBool>,
     consumed: Option<&AtomicU64>,
+    bcache: &mut BudgetCache,
     results: &mut Vec<[i64; 16]>,
 ) where
     F: Fn(&[i64; 16]) -> LeafAction,
@@ -1469,7 +1862,7 @@ fn recurse_collect_norm_pruned<F>(
         aborted.store(true, Ordering::Relaxed);
         return;
     }
-    // Per-node budget (phase 1): decrement on every recurse-enter so the
+    // Per-node budget (phase 1): charge on every recurse-enter so the
     // budget bounds total tree-traversal work, not just leaf checks. This
     // is the prerequisite for depth-1 / depth-0 analytical filters whose
     // gain is "skip subtrees" — under a per-leaf budget those filters
@@ -1477,22 +1870,17 @@ fn recurse_collect_norm_pruned<F>(
     // nodes within the same budget (full recursion-from-depth-15 each
     // time). Bounding nodes makes the budget proportional to traversal
     // cost. PASS{1,2}_CAP are calibrated empirically (see
-    // clifford_sqrt_t.rs); the new units are nodes, not leaves.
-    let budget_prior = budget.fetch_sub(1, Ordering::Relaxed);
-    if budget_prior <= 1 {
+    // clifford_sqrt_t.rs); the units are nodes, not leaves.
+    //
+    // W1: charged through the per-worker chunked BudgetCache (one shared
+    // fetch_sub per 4096 nodes) instead of a per-node fetch_sub — the
+    // per-node RMW on one shared cache line serialized the now-truly-
+    // parallel walk. The cache also flushes the `consumed` progress
+    // counter once per refill, the same observable batching the legacy
+    // `budget_prior & 4095` trick provided.
+    if !bcache.charge(1, budget, consumed) {
         aborted.store(true, Ordering::Relaxed);
         return;
-    }
-    // Shared consumed-node counter for budget-triggered speculation,
-    // batched to kill cross-core contention: `fetch_sub` hands out unique
-    // consecutive budget values across all rayon workers, so exactly one
-    // worker observes each multiple of 4096 and flushes the whole batch.
-    // A second contended fetch_add per node here costs 3× wall at
-    // ε ≤ 1e-8 (measured 15.9 s → 47 s on the θ=1.1 instance).
-    if let Some(c) = consumed {
-        if budget_prior & 4095 == 0 {
-            c.fetch_add(4096, Ordering::Relaxed);
-        }
     }
     let trace = crate::synthesis::diag::trace_enabled();
     if trace && depth >= 0 && (depth as usize) < 16 {
@@ -1557,7 +1945,7 @@ fn recurse_collect_norm_pruned<F>(
             recurse_collect_norm_pruned(
                 depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
                 partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
-                budget, aborted, external_abort, consumed, results,
+                budget, aborted, external_abort, consumed, bcache, results,
             );
         }
         return;
@@ -1745,9 +2133,7 @@ fn recurse_collect_norm_pruned<F>(
                 // making the filter ~10× slower at no-solution lde levels
                 // despite being correct.
                 const PHANTOM_PER_REJECT: u64 = 8;
-                if budget.fetch_sub(PHANTOM_PER_REJECT, Ordering::Relaxed)
-                    <= PHANTOM_PER_REJECT
-                {
+                if !bcache.charge(PHANTOM_PER_REJECT, budget, consumed) {
                     aborted.store(true, Ordering::Relaxed);
                     return;
                 }
@@ -1758,7 +2144,7 @@ fn recurse_collect_norm_pruned<F>(
         recurse_collect_norm_pruned(
             depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
             new_partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
-            budget, aborted, external_abort, consumed, results,
+            budget, aborted, external_abort, consumed, bcache, results,
         );
     }
 }
@@ -1843,6 +2229,117 @@ mod par_tests {
             serial_set.len(), par_set.len());
     }
 
+}
+
+/// W1 timing harness (trace-OFF, unlike probe_walk_bench which force-enables
+/// CYCLOSYNTH_TRACE): one unbudgeted m=0 level walk, configured via env vars
+/// `W1_THETA` / `W1_EPS` / `W1_K` / `W1_PARITY`. Run with
+///   cargo test --release --lib w1_walk_bench -- --ignored --nocapture
+/// Combine with `CYCLOSYNTH_FLAT_WALK=0` for the legacy-sharding baseline.
+#[cfg(test)]
+mod w1_bench {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Instant;
+
+    use num_complex::Complex64;
+    use std::f64::consts::PI;
+
+    type Mat2 = crate::synthesis::distance::Mat2;
+
+    #[repr(C)]
+    struct Timespec {
+        tv_sec: i64,
+        tv_nsec: i64,
+    }
+    extern "C" {
+        fn clock_gettime(clk_id: i32, tp: *mut Timespec) -> i32;
+    }
+    /// Darwin `_CLOCK_PROCESS_CPUTIME_ID` (sums CPU time of all threads).
+    fn cpu_time_s() -> f64 {
+        let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+        let rc = unsafe { clock_gettime(12, &mut ts) };
+        assert_eq!(rc, 0, "clock_gettime failed");
+        ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+    }
+
+    fn rz(theta: f64) -> Mat2 {
+        let z = Complex64::new(0.0, 0.0);
+        [
+            [Complex64::from_polar(1.0, -theta / 2.0), z],
+            [z, Complex64::from_polar(1.0, theta / 2.0)],
+        ]
+    }
+
+    fn scale(m: &Mat2, g: Complex64) -> Mat2 {
+        [[m[0][0] * g, m[0][1] * g], [m[1][0] * g, m[1][1] * g]]
+    }
+
+    fn project_det_to_zeta_coset(target: &Mat2) -> Mat2 {
+        let det = target[0][0] * target[1][1] - target[0][1] * target[1][0];
+        let d = crate::synthesis::clifford_sqrt_t::det_phase_of(target) as f64;
+        let mut residual = det.arg() - d * PI / 8.0;
+        while residual > PI {
+            residual -= 2.0 * PI;
+        }
+        while residual <= -PI {
+            residual += 2.0 * PI;
+        }
+        scale(target, Complex64::from_polar(1.0, -residual / 2.0))
+    }
+
+    fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
+    }
+
+    #[test]
+    #[ignore]
+    fn w1_walk_bench() {
+        let theta: f64 = env_or("W1_THETA", 0.7);
+        let eps: f64 = env_or("W1_EPS", 1e-3);
+        let k: u32 = env_or("W1_K", 9);
+        let parity: u32 = env_or("W1_PARITY", 0);
+
+        let mut target = project_det_to_zeta_coset(&rz(theta));
+        if parity == 1 {
+            target = scale(&target, Complex64::from_polar(1.0, PI / 16.0));
+        }
+        let v = crate::synthesis::clifford_sqrt_t::unitary_to_uv_zeta(&target);
+        let y = crate::synthesis::search_zeta::uv_to_xy_zeta(v, k);
+
+        // Mirror SynthesizerQ::new scratch defaults (as probe_walk_bench does).
+        let mut scratch = Box::new(crate::synthesis::lattice_zeta::IntScratch16::new(eps));
+        scratch.use_f64_gs = eps > 1e-8;
+        scratch.bkz_block_size = if eps <= 1e-7 { 4 } else { 0 };
+
+        let budget_hit = AtomicBool::new(false);
+        let cpu0 = cpu_time_s();
+        let t0 = Instant::now();
+        let sols = crate::synthesis::lattice_zeta::phase1_with_stop(
+            scratch.as_mut(),
+            &y,
+            k,
+            eps,
+            u64::MAX,
+            &budget_hit,
+            |_| false, // cost-min mode: full level walk, never early-exit
+            None,
+            None,
+        );
+        let wall = t0.elapsed().as_secs_f64();
+        let cpu = cpu_time_s() - cpu0;
+        eprintln!(
+            "w1_walk_bench: rz({theta}) eps={eps:e} k={k} p={parity} flat={} trace={} | \
+             wall {:.3} s | util {:.2}x | sols {}",
+            !super::flat_walk_disabled(),
+            crate::synthesis::diag::trace_enabled(),
+            wall,
+            if wall > 0.0 { cpu / wall } else { 0.0 },
+            sols.len(),
+        );
+    }
 }
 
 #[cfg(test)]
