@@ -33,8 +33,8 @@ use crate::rings::types::Int;
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2q_float, Mat2};
-use crate::synthesis::lattice_zeta::{phase1_with_stop, IntScratch16};
-use crate::synthesis::search_zeta::{phase1_brute, uv_to_xy_zeta};
+use crate::synthesis::lattice_zeta::{phase1_with_stop, phase1_with_stop_mpfr, IntScratch16};
+use crate::synthesis::search_zeta::{phase1_brute, uv_to_xy_zeta, uv_to_xy_zeta_mpfr};
 use num_complex::Complex64;
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -694,6 +694,112 @@ fn gates_tq(gates: &str) -> (usize, usize) {
     (t, q)
 }
 
+/// MPFR-precision column-1 of `U_L† · target` as the alignment vector
+/// `v_inner` — the deep-ε replacement for the f64
+/// `u2q_dag_times_mat2` → `unitary_to_uv_zeta` chain. `U_L` is exact
+/// ring data (ZZeta coefficients over √2^k) and `target` is exact f64
+/// data, so the product carries full `prec` precision. The f64 chain's
+/// ~1e-16 product error is comparable to the radial cap width ε² at
+/// ε = 1e-8 and DISPLACES the constructed cap — and no enumeration
+/// bound recovers a solution the cap no longer contains (the lost
+/// lde=22 cost-71 find, 2026-06-11; its bound-3.0-era discovery was a
+/// differently-displaced cap that happened to contain it).
+fn u2q_dag_v_inner_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [rug::Float; 4] {
+    use rug::ops::Pow;
+    use rug::Float as RF;
+    // ζ^i = e^{iπ/8}: cos/sin tables at prec.
+    let pi = RF::with_val(prec, rug::float::Constant::Pi);
+    let cosv: [RF; 8] = std::array::from_fn(|i| {
+        (RF::with_val(prec, &pi * (i as u32)) / 8u32).cos()
+    });
+    let sinv: [RF; 8] = std::array::from_fn(|i| {
+        (RF::with_val(prec, &pi * (i as u32)) / 8u32).sin()
+    });
+    // (re, im) of a ZZeta numerator at prec. Prefix coefficients are
+    // far inside i64 at any production lde; debug-guarded.
+    let zz = |z: &crate::rings::ZZeta| -> (RF, RF) {
+        let mut re = RF::with_val(prec, 0.0);
+        let mut im = RF::with_val(prec, 0.0);
+        for i in 0..8 {
+            let c = crate::synthesis::lattice::lll::i256_to_f64(z.coeff(i));
+            if c != 0.0 {
+                re += RF::with_val(prec, &cosv[i] * c);
+                im += RF::with_val(prec, &sinv[i] * c);
+            }
+        }
+        (re, im)
+    };
+    // 1/√2^k at prec.
+    let scale = RF::with_val(prec, RF::with_val(prec, 2.0).sqrt().pow(u_l.k)).recip();
+    // U†'s row i is [conj(U[0][i]), conj(U[1][i])]; m_inner column 1:
+    // mᵢ = Σⱼ conj(U[j][i])·t[j][0]. (a − bi)(c + di) = (ac+bd) + (ad−bc)i.
+    let col = |z1: (RF, RF), z2: (RF, RF)| -> (RF, RF) {
+        let (a1, b1) = z1;
+        let (a2, b2) = z2;
+        let (c1, d1) = (target[0][0].re, target[0][0].im);
+        let (c2, d2) = (target[1][0].re, target[1][0].im);
+        let re = RF::with_val(prec, &a1 * c1) + RF::with_val(prec, &b1 * d1)
+            + RF::with_val(prec, &a2 * c2) + RF::with_val(prec, &b2 * d2);
+        let im = RF::with_val(prec, &a1 * d1) - RF::with_val(prec, &b1 * c1)
+            + RF::with_val(prec, &a2 * d2) - RF::with_val(prec, &b2 * c2);
+        (re, im)
+    };
+    let (m00_re, m00_im) = col(zz(&u_l.u11), zz(&u_l.u21));
+    let (m10_re, m10_im) = col(zz(&u_l.u12), zz(&u_l.u22));
+    [
+        m00_re * &scale,
+        m00_im * &scale,
+        m10_re * &scale,
+        m10_im * &scale,
+    ]
+}
+
+/// Deep-ε-aware phase1 router. At ε ≤ 2e-8 the f64 y-chain quantizes
+/// the cap below resolution — the radial width ε²/4 ≈ 2.5e-17 sits
+/// under the f64 ULP at unit scale, so Q, the cap center, and the SE
+/// Cholesky factor built from an f64 `y` carry errors larger than the
+/// enumeration bound's slack, and an f64 PREFIX PRODUCT additionally
+/// displaces the cap itself (see [`u2q_dag_v_inner_mpfr`]). Route
+/// those ε through the MPFR entry; derive `v` from `deep_v_src`
+/// (exact ring prefix × exact f64 target) when given, else promote
+/// the f64 `v` losslessly (single-search sites: `v` IS exact target
+/// data). Above 2e-8 the f64 path is precision-safe and ~free.
+#[allow(clippy::too_many_arguments)]
+fn phase1_deep_aware<F>(
+    scratch: &mut IntScratch16,
+    v: [f64; 4],
+    deep_v_src: Option<(&U2Q, &Mat2)>,
+    k: u32,
+    eps: f64,
+    max_phase2_calls: u64,
+    budget_hit: &std::sync::atomic::AtomicBool,
+    should_stop: F,
+    external_abort: Option<&std::sync::atomic::AtomicBool>,
+    consumed: Option<&std::sync::atomic::AtomicU64>,
+) -> Vec<[i64; 16]>
+where
+    F: Fn(&[i64; 16]) -> bool + Sync,
+{
+    if eps <= 2e-8 {
+        let prec = scratch.prec_q;
+        let v_mpfr: [rug::Float; 4] = match deep_v_src {
+            Some((u_l, target)) => u2q_dag_v_inner_mpfr(u_l, target, prec),
+            None => std::array::from_fn(|i| rug::Float::with_val(prec, v[i])),
+        };
+        let y_mpfr = uv_to_xy_zeta_mpfr(&v_mpfr, k, prec);
+        phase1_with_stop_mpfr(
+            scratch, &y_mpfr, &v_mpfr, k, eps, max_phase2_calls, budget_hit,
+            should_stop, external_abort, consumed,
+        )
+    } else {
+        let y = uv_to_xy_zeta(v, k);
+        phase1_with_stop(
+            scratch, &y, k, eps, max_phase2_calls, budget_hit, should_stop,
+            external_abort, consumed,
+        )
+    }
+}
+
 /// Two-pass leaf-budget strategy: pass 1 bails fast on doomed lde levels;
 /// budget-hit lde levels are queued for pass 2 with a much larger cap.
 /// Preserves completeness — a budget-hit lde is never skipped.
@@ -1240,15 +1346,14 @@ impl SynthesizerQ {
                     sb.bkz_block_size = bkz_block_size;
                     sb
                 });
-            let y = uv_to_xy_zeta(v, k);
             let budget_hit = AtomicBool::new(false);
             let should_stop = |x: &[i64; 16]| -> bool {
                 if optimize_cost { return false; }
                 let cand = solution_to_u2q_d(x, k, d);
                 diamond_distance_u2q_float(&cand, &target) < epsilon
             };
-            let sols = phase1_with_stop(
-                s.as_mut(), &y, k, epsilon, budget, &budget_hit, should_stop, None, None,
+            let sols = phase1_deep_aware(
+                s.as_mut(), v, None, k, epsilon, budget, &budget_hit, should_stop, None, None,
             );
             (sols, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
         };
@@ -1907,7 +2012,6 @@ impl SynthesizerQ {
             let m_inner = u2q_dag_times_mat2(u_l, target);
             let v_inner = unitary_to_uv_zeta(&m_inner);
 
-            let y = uv_to_xy_zeta(v_inner, k_inner);
             let budget_hit = AtomicBool::new(false);
             let u_l_local = *u_l;
             let target_local = *target;
@@ -1948,8 +2052,8 @@ impl SynthesizerQ {
                 external_abort
             };
 
-            let sols = phase1_with_stop(
-                scratch, &y, k_inner, epsilon,
+            let sols = phase1_deep_aware(
+                scratch, v_inner, Some((u_l, target)), k_inner, epsilon,
                 per_prefix_cap, &budget_hit, should_stop,
                 walk_abort, consumed,
             );
@@ -2262,7 +2366,6 @@ impl SynthesizerQ {
             let k_inner = u.k_total - u.u_l.k;
             let m_inner = u2q_dag_times_mat2(u.u_l, target);
             let v_inner = unitary_to_uv_zeta(&m_inner);
-            let y = uv_to_xy_zeta(v_inner, k_inner);
             let budget_hit = AtomicBool::new(false);
             let u_l_local = *u.u_l;
             let floor = u.floor;
@@ -2275,8 +2378,8 @@ impl SynthesizerQ {
             };
             let w = &watches[idx];
             w.active.store(true, Ordering::Relaxed);
-            let sols = phase1_with_stop(
-                scratch, &y, k_inner, epsilon,
+            let sols = phase1_deep_aware(
+                scratch, v_inner, Some((u.u_l, target)), k_inner, epsilon,
                 per_prefix_cap, &budget_hit, should_stop,
                 Some(&w.abort), None,
             );
@@ -2527,15 +2630,14 @@ impl SynthesizerQ {
             sb.bkz_block_size = self.bkz_block_size;
             sb
         });
-        let y = uv_to_xy_zeta(v, k);
         let budget_hit = AtomicBool::new(false);
         let should_stop = |x: &[i64; 16]| -> bool {
             if cost_min { return false; }
             let cand = solution_to_u2q_d(x, k, d);
             diamond_distance_u2q_float(&cand, target) < epsilon
         };
-        let sols = phase1_with_stop(
-            s.as_mut(), &y, k, epsilon, budget, &budget_hit, should_stop, None, None,
+        let sols = phase1_deep_aware(
+            s.as_mut(), v, None, k, epsilon, budget, &budget_hit, should_stop, None, None,
         );
         let hit = budget_hit.load(std::sync::atomic::Ordering::Relaxed);
         let mut best: Option<(usize, SynthResultQ)> = None;
