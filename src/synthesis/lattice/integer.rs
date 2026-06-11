@@ -50,7 +50,7 @@ use rug::{Assign, Float as RFloat};
 use std::sync::atomic::AtomicBool;
 
 use super::cholesky_lu::{cholesky_f64_8, lu_solve_int_inplace};
-use super::lll::{lll_l2_8, LllResult};
+use super::lll::LllResult;
 use super::q_metric::{build_q_int, build_q_mpfr};
 use super::scratch::{rfv, IntScratch};
 use crate::rings::Float;
@@ -155,9 +155,37 @@ pub fn phase1(
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // Step 2: L²-LLL (f64 GS over exact i256 Gram + INSERT semantics).
+    // Step 1.5: per-(k, ε) warm seed for the L²-LLL. The Q_base part of
+    // the metric is prefix-independent and carries most of the shared
+    // reduction work (the per-prefix rank-1 term holds ~half the
+    // anisotropy bits); seeding every prefix's LLL with Q_base's reduced
+    // basis cuts iterations ~40% (warm/cold ≈ 0.60 on 400-prefix
+    // captures, `warm_lll_gate`). Computed lazily once per scratch per
+    // (k, ε): reduce a pure-Q_base problem, capture the basis, restore
+    // the real prefix Q (a q_base cache hit).
+    let seed_key = (k, eps.to_bits());
+    if scratch.q_base_seed_key != Some(seed_key) {
+        for i in 0..8 {
+            for j in 0..8 {
+                scratch.q_mpfr[i][j].assign(&scratch.q_base[i][j]);
+            }
+        }
+        build_q_int(scratch);
+        let (res, _) = super::lll::lll_l2_8_seeded(scratch, None);
+        scratch.q_base_seed = match res {
+            LllResult::Converged => Some(scratch.basis),
+            _ => None, // overflow/cap: fall back to cold starts at this key
+        };
+        scratch.q_base_seed_key = Some(seed_key);
+        build_q_mpfr(scratch, y, k, eps);
+        build_q_int(scratch);
+    }
+
+    // Step 2: L²-LLL (f64 GS over exact i256 Gram + INSERT semantics),
+    // warm-seeded when the Q_base reduction converged.
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
-    let lll_result = lll_l2_8(scratch);
+    let seed = scratch.q_base_seed;
+    let (lll_result, _) = super::lll::lll_l2_8_seeded(scratch, seed.as_ref());
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_LLL_NS
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);

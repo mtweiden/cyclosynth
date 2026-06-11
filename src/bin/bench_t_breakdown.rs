@@ -17,12 +17,14 @@
 //!   bench_t_breakdown [--threads N] [--n-targets N] [--seed HEX]
 //!                     [--eps CSV] [--trials N]
 //!                     [--coset 0|1] [--two-sweep 0|1] [--sweep1 even|odd]
+//!                     [--tp-offset N]
 //! Defaults: 8 threads, 3 targets, seed 0xC0FFEEBAADD0E,
 //!           eps 1e-4,1e-5,1e-6,1e-7,1e-8, 1 trial.
-//! `--coset/--two-sweep/--sweep1` forward to the CYCLOSYNTH_L_COSET /
-//! CYCLOSYNTH_TWO_SWEEP / CYCLOSYNTH_SWEEP1 env gates via set_var (the
-//! sandboxed harness cannot always pass env prefixes); they must therefore
-//! be trusted only for THIS process (the gates are LazyLock-once).
+//! `--coset/--two-sweep/--sweep1/--tp-offset` forward to the
+//! CYCLOSYNTH_L_COSET / CYCLOSYNTH_TWO_SWEEP / CYCLOSYNTH_SWEEP1 /
+//! CYCLOSYNTH_TP_OFFSET env gates via set_var (the sandboxed harness
+//! cannot always pass env prefixes); they must therefore be trusted only
+//! for THIS process (the gates are LazyLock-once).
 
 use cyclosynth::synthesis::clifford_t::SynthesizerT;
 use num_complex::Complex;
@@ -81,6 +83,7 @@ fn main() {
             "--coset"     => { i += 1; std::env::set_var("CYCLOSYNTH_L_COSET", &args[i]); }
             "--two-sweep" => { i += 1; std::env::set_var("CYCLOSYNTH_TWO_SWEEP", &args[i]); }
             "--sweep1"    => { i += 1; std::env::set_var("CYCLOSYNTH_SWEEP1", &args[i]); }
+            "--tp-offset" => { i += 1; std::env::set_var("CYCLOSYNTH_TP_OFFSET", &args[i]); }
             _ => {}
         }
         i += 1;
@@ -104,10 +107,11 @@ fn main() {
 
     println!(
         "[m0] threads={n_threads} targets={n_targets} seed={seed:#018x} trials={n_trials} \
-         eps={eps_list:?} L_COSET={} TWO_SWEEP={} SWEEP1={}",
+         eps={eps_list:?} L_COSET={} TWO_SWEEP={} SWEEP1={} TP_OFFSET={}",
         std::env::var("CYCLOSYNTH_L_COSET").unwrap_or_else(|_| "default".into()),
         std::env::var("CYCLOSYNTH_TWO_SWEEP").unwrap_or_else(|_| "default".into()),
         std::env::var("CYCLOSYNTH_SWEEP1").unwrap_or_else(|_| "default".into()),
+        std::env::var("CYCLOSYNTH_TP_OFFSET").unwrap_or_else(|_| "default".into()),
     );
 
     for &eps in &eps_list {

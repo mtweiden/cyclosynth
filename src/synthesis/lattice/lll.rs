@@ -334,7 +334,25 @@ fn gram_overflow_check(scratch: &IntScratch) -> bool {
 /// enough; running CFA on an unreduced basis would suffer catastrophic
 /// cancellation at deep ε.
 pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
-    scratch.reset_basis();
+    lll_l2_8_seeded(scratch, None).0
+}
+
+/// `lll_l2_8` with an optional warm-start basis (stage 4 of
+/// docs/plan_8d_prefix_rework.md, lever C). `seed` must be unimodular
+/// (e.g. the LLL-reduced basis of the prefix-independent `Q_base` metric
+/// for the same `(k, ε)`): starting from any unimodular basis of ℤ⁸
+/// instead of the identity yields a reduced basis of the SAME lattice, so
+/// downstream (det ±1 check, Cholesky, LU, SE) is unaffected. Returns the
+/// iteration count for the warm-LLL gate measurement (≥25% reduction
+/// required by the plan before production adoption).
+pub fn lll_l2_8_seeded(
+    scratch: &mut IntScratch,
+    seed: Option<&super::scratch::IMat8>,
+) -> (LllResult, usize) {
+    match seed {
+        Some(b) => scratch.basis = *b,
+        None => scratch.reset_basis(),
+    }
     let max_iter: usize = 10_000;
     let mut iters: usize = 0;
 
@@ -343,7 +361,7 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
         if crate::synthesis::diag::trace_enabled() {
             crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
         }
-        return LllResult::GramOverflow;
+        return (LllResult::GramOverflow, iters);
     }
 
     // Step 2: initialize r̄_{0,0} = ‖b_0‖² (CFA on row 0).
@@ -361,7 +379,7 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
             if crate::synthesis::diag::trace_enabled() {
                 crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
             }
-            return LllResult::GramOverflow;
+            return (LllResult::GramOverflow, iters);
         }
 
         // Step 4: Lovász cascade. Find deepest position κ_insert where the
@@ -394,9 +412,10 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
     if crate::synthesis::diag::trace_enabled() {
         crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
     }
-    if iters >= max_iter {
+    let res = if iters >= max_iter {
         LllResult::IterCap
     } else {
         LllResult::Converged
-    }
+    };
+    (res, iters)
 }

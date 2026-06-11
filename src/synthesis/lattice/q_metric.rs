@@ -18,7 +18,68 @@ use crate::rings::Float;
 /// `scratch.q_mpfr`. Also computes the cap center into `scratch.c`.
 /// Q is the metric used by the LLL; the cap center is the projection of
 /// the target onto the alignment direction, used by the post-LLL LU solve.
+///
+/// Stage-4 Q_base hoist (docs/plan_8d_prefix_rework.md lever C): the
+/// algebraic split
+///
+///   Q = inv_dy_sq·ŷŷᵀ + inv_dp_sq·(P_u − ŷŷᵀ) + inv_r_sq·P_•
+///     = Q_base(k, ε) + (inv_dy_sq − inv_dp_sq)/‖y‖² · y·yᵀ
+///
+/// makes everything except the rank-1 `y·yᵀ` term prefix-independent.
+/// `build_q_base` computes the scalars + `q_base` + `cap_mid` once per
+/// `(k, ε)` (cached via `scratch.q_base_key`); the per-prefix remainder is
+/// 36 mul + 36 add (symmetric upper triangle, mirrored) + the ‖y‖² and
+/// cap-center loops — versus ~580 MPFR ops per call before the hoist.
 pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float) {
+    let prec = scratch.prec_q;
+
+    let key = (k, eps.to_bits());
+    if scratch.q_base_key != Some(key) {
+        build_q_base(scratch, k, eps);
+        scratch.q_base_key = Some(key);
+    }
+
+    // ── Per-prefix part: rank-1 term + cap center ──
+    for i in 0..8 {
+        scratch.y_rf[i].assign(rfv(prec, y[i]));
+    }
+    scratch.y_norm_sq.assign(0.0_f64);
+    for i in 0..8 {
+        r_mul!(scratch.tmp, scratch.y_rf[i], scratch.y_rf[i]);
+        let acc_clone = scratch.y_norm_sq.clone();
+        r_add!(scratch.y_norm_sq, acc_clone, scratch.tmp);
+    }
+    r_div!(scratch.inv_y_norm_sq, scratch.one, scratch.y_norm_sq);
+
+    // s = coef_y / ‖y‖² ; Q[i][j] = q_base[i][j] + s·y_i·y_j.
+    // Q is exactly symmetric (identical expressions), so compute the lower
+    // triangle and mirror.
+    r_mul!(scratch.tmp3, scratch.coef_y, scratch.inv_y_norm_sq);
+    for i in 0..8 {
+        for j in 0..=i {
+            r_mul!(scratch.tmp, scratch.y_rf[i], scratch.y_rf[j]);
+            r_mul!(scratch.tmp2, scratch.tmp, scratch.tmp3);
+            r_add!(scratch.q_mpfr[i][j], scratch.q_base[i][j], scratch.tmp2);
+            if i != j {
+                // Mirror (split borrow: rows i and j are distinct).
+                let (lo, hi) = scratch.q_mpfr.split_at_mut(i);
+                lo[j][i].assign(&hi[0][j]);
+            }
+        }
+    }
+
+    // Cap center: c = cap_mid · y (cap_mid is ε-only, hoisted).
+    for i in 0..8 {
+        r_mul!(scratch.c[i], scratch.y_rf[i], scratch.cap_mid);
+    }
+}
+
+/// Prefix-independent part of `build_q_mpfr`: the (k, ε) scalars, the
+/// `q_base = inv_dp_sq·P_u + inv_r_sq·P_•` matrix, the rank-1 weight
+/// `coef_y = inv_dy_sq − inv_dp_sq`, and the ε-only `cap_mid`.
+/// `p_u`/`p_ub` themselves are Σ-constants filled once in
+/// `IntScratch::new`.
+fn build_q_base(scratch: &mut IntScratch, k: u32, eps: Float) {
     let prec = scratch.prec_q;
 
     // R² = 2^k. For k ≥ 64, `1u64 << k` is UB — build via f64 powi (f64 exp
@@ -45,49 +106,28 @@ pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
     r_div!(scratch.inv_dp_sq, scratch.one, scratch.tmp);
     r_div!(scratch.inv_r_sq, scratch.one, scratch.r_sq);
 
+    // coef_y = inv_dy_sq − inv_dp_sq (the terms differ by ≈ (4/ε)², so no
+    // cancellation), q_base = inv_dp_sq·P_u + inv_r_sq·P_• (symmetric).
+    r_sub!(scratch.coef_y, scratch.inv_dy_sq, scratch.inv_dp_sq);
     for i in 0..8 {
-        scratch.y_rf[i].assign(rfv(prec, y[i]));
-    }
-    scratch.y_norm_sq.assign(0.0_f64);
-    for i in 0..8 {
-        r_mul!(scratch.tmp, scratch.y_rf[i], scratch.y_rf[i]);
-        let acc_clone = scratch.y_norm_sq.clone();
-        r_add!(scratch.y_norm_sq, acc_clone, scratch.tmp);
-    }
-    r_div!(scratch.inv_y_norm_sq, scratch.one, scratch.y_norm_sq);
-
-    for i in 0..8 {
-        for j in 0..8 {
-            r_mul!(scratch.tmp, scratch.y_rf[i], scratch.y_rf[j]);
-            r_mul!(scratch.yhat_yhat_t[i][j], scratch.tmp, scratch.inv_y_norm_sq);
+        for j in 0..=i {
+            r_mul!(scratch.tmp, scratch.inv_dp_sq, scratch.p_u[i][j]);
+            r_mul!(scratch.tmp2, scratch.inv_r_sq, scratch.p_ub[i][j]);
+            r_add!(scratch.q_base[i][j], scratch.tmp, scratch.tmp2);
+            if i != j {
+                // Mirror (split borrow: rows i and j are distinct).
+                let (lo, hi) = scratch.q_base.split_at_mut(i);
+                lo[j][i].assign(&hi[0][j]);
+            }
         }
     }
 
-    // p_u and p_ub depend only on the constant Σ matrix and are populated
-    // once by `fill_p_u_p_ub` in `IntScratch::new` — nothing to recompute here.
-
-    for i in 0..8 {
-        for j in 0..8 {
-            r_mul!(scratch.tmp, scratch.inv_dy_sq, scratch.yhat_yhat_t[i][j]);
-            r_sub!(scratch.tmp2, scratch.p_u[i][j], scratch.yhat_yhat_t[i][j]);
-            r_mul!(scratch.tmp3, scratch.inv_dp_sq, scratch.tmp2);
-            r_mul!(scratch.acc, scratch.inv_r_sq, scratch.p_ub[i][j]);
-            let tmp_clone = scratch.tmp.clone();
-            r_add!(scratch.tmp, tmp_clone, scratch.tmp3);
-            r_add!(scratch.q_mpfr[i][j], scratch.tmp, scratch.acc);
-        }
-    }
-
-    // Cap center
+    // cap_mid = (1 + √(1−ε²))/2 — ε-only, reused by every per-prefix call.
     r_mul!(scratch.tmp, scratch.eps_rf, scratch.eps_rf);
     r_sub!(scratch.tmp2, scratch.one, scratch.tmp);
     let sqrt_1m = scratch.tmp2.clone().sqrt();
     r_add!(scratch.tmp, scratch.one, sqrt_1m);
     r_div!(scratch.cap_mid, scratch.tmp, scratch.two);
-    for i in 0..8 {
-        scratch.tmp.assign(rfv(prec, y[i]));
-        r_mul!(scratch.c[i], scratch.tmp, scratch.cap_mid);
-    }
 }
 
 // ─── build_q_int: snapshot MPFR Q to scaled i256 ────────────────────────────
@@ -98,16 +138,17 @@ pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
 /// Strategy: find max |Q_mpfr[i][j]|, choose B = TARGET_BITS − ⌈log₂(max)⌉,
 /// then round each `S·Q[i][j]` to i256 with `S = 2^B`.
 pub fn build_q_int(scratch: &mut IntScratch) {
-    // Find max magnitude.
+    // Find max magnitude (lower triangle suffices — Q is symmetric).
     let mut max_log2: i32 = i32::MIN;
     for i in 0..8 {
-        for j in 0..8 {
-            let v = scratch.q_mpfr[i][j].clone().abs();
+        for j in 0..=i {
+            let v = &scratch.q_mpfr[i][j];
             if v.is_zero() {
                 continue;
             }
             // log2(|v|) — RFloat exposes the binary exponent directly via
-            // get_exp(): |v| ∈ [2^(e-1), 2^e).
+            // get_exp(): |v| ∈ [2^(e-1), 2^e). Sign does not affect the
+            // exponent, so no abs() needed.
             let e = v.get_exp().unwrap_or(0);
             if e > max_log2 {
                 max_log2 = e;
@@ -122,9 +163,13 @@ pub fn build_q_int(scratch: &mut IntScratch) {
     }
     let b = compute_scale_bits(max_log2);
     scratch.scale_bits = b;
+    // Q is exactly symmetric (build_q_mpfr mirrors the triangle), so
+    // convert the lower triangle once and mirror the i256 (Copy) value.
     for i in 0..8 {
-        for j in 0..8 {
-            scratch.q_int[i][j] = rug_to_i256_scaled(&scratch.q_mpfr[i][j], b);
+        for j in 0..=i {
+            let v = rug_to_i256_scaled(&scratch.q_mpfr[i][j], b);
+            scratch.q_int[i][j] = v;
+            scratch.q_int[j][i] = v;
         }
     }
 }

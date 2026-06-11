@@ -152,6 +152,31 @@ pub struct IntScratch {
     pub inv_y_norm_sq: RFloat,
     pub cap_mid: RFloat,
 
+    // ── Q_base hoist (stage 4, docs/plan_8d_prefix_rework.md lever C) ──
+    /// Prefix-independent part of the Q metric:
+    /// `q_base[i][j] = inv_dp_sq·p_u[i][j] + inv_r_sq·p_ub[i][j]`.
+    /// Valid for the `(k, eps)` recorded in `q_base_key`; rebuilt by
+    /// `build_q_mpfr` only when the key changes (within one `dc_search`
+    /// level k is fixed, so this runs once per worker per level).
+    pub q_base: [[RFloat; 8]; 8],
+    /// Scalar weight of the prefix-dependent rank-1 term:
+    /// `coef_y = inv_dy_sq − inv_dp_sq` (no cancellation — the terms
+    /// differ by a factor ≈ (4/ε)²), so
+    /// `Q = q_base + (coef_y/‖y‖²)·y·yᵀ`.
+    pub coef_y: RFloat,
+    /// `(k, eps.to_bits())` the cached q_base/coef_y/cap_mid were built
+    /// for; `None` until the first build_q_mpfr call.
+    pub q_base_key: Option<(u32, u64)>,
+    /// LLL-reduced unimodular basis of `q_base` alone, used to warm-seed
+    /// every per-prefix LLL at the same `(k, ε)`: the prefix-dependent
+    /// rank-1 term carries ~half the anisotropy bits, so the Q_base
+    /// reduction is most of the shared work (measured warm/cold iters
+    /// ≈ 0.60 on 400-prefix captures, `warm_lll_gate` test). Keyed
+    /// separately from `q_base_key`: computed lazily by `phase1` (it
+    /// needs an LLL run, which `build_q_mpfr` must not recurse into).
+    pub q_base_seed: Option<IMat8>,
+    pub q_base_seed_key: Option<(u32, u64)>,
+
     // ── Integer LLL buffers ──
     pub q_int: Mat256,
     pub basis: IMat8,
@@ -326,6 +351,11 @@ impl IntScratch {
             y_norm_sq: rfz(prec_q),
             inv_y_norm_sq: rfz(prec_q),
             cap_mid: rfz(prec_q),
+            q_base: rmat_zero(prec_q),
+            coef_y: rfz(prec_q),
+            q_base_key: None,
+            q_base_seed: None,
+            q_base_seed_key: None,
             q_int: imat_zero(),
             basis: identity_basis(),
             gram: imat_zero(),
