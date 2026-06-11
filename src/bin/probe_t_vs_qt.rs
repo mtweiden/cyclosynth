@@ -15,6 +15,10 @@
 //!
 //! 6th arg: comma-separated m-sweep override (e.g. "1,2"). Empty/unset
 //! → use auto-default `default_optimal_m_sweep(eps)`.
+//!
+//! 7th arg: anytime-frontier deadline override — integer ms, or "none"
+//! to force the legacy per-arm-budget task grid. Empty/unset → builder
+//! default. (Also settable via env CYCLOSYNTH_DEADLINE_MS.)
 
 use cyclosynth::synthesis::clifford_t::SynthesizerT;
 use cyclosynth::synthesis::clifford_sqrt_t::SynthesizerQ;
@@ -73,11 +77,18 @@ fn gate_cost(g: Option<&str>) -> (usize, usize, usize, usize) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode { First, Optimal, Compare }
 
-fn run_q(target: Mat2, eps: f64, optimize: bool, lde_window: u32, m_sweep: Option<Vec<u32>>) -> (Option<String>, f64, u32) {
+fn run_q(target: Mat2, eps: f64, optimize: bool, lde_window: u32, m_sweep: Option<Vec<u32>>, deadline: Option<&str>) -> (Option<String>, f64, u32) {
     let t0 = Instant::now();
     let mut synth = SynthesizerQ::new(eps)
         .with_optimize_cost(optimize)
         .with_optimal_lde_window(lde_window);
+    if let Some(dl) = deadline {
+        if dl == "none" {
+            synth = synth.with_optimal_deadline_ms(None);
+        } else if let Ok(ms) = dl.parse::<u64>() {
+            synth = synth.with_optimal_deadline_ms(Some(ms));
+        }
+    }
     if let Ok(mult) = std::env::var("CYCLOSYNTH_BUDGET_MULT") {
         if let Ok(m) = mult.parse::<u64>() {
             synth = synth.with_optimal_budget_multiplier(m);
@@ -111,6 +122,11 @@ fn main() {
             Some(s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
         }
     });
+    let deadline_override: Option<String> = args
+        .get(6)
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .or_else(|| std::env::var("CYCLOSYNTH_DEADLINE_MS").ok());
     let mode_label = match mode {
         Mode::First => "first-hit",
         Mode::Optimal => "optimal",
@@ -126,18 +142,19 @@ fn main() {
     )).collect();
 
     let verbose = n <= 20;
-    println!("ε={eps:e}, n={n} U3 targets, seed=0x{seed:X}, cost = T + 3.5·Q, √T mode={mode_label}, lde_window={lde_window}, m_sweep={}\n",
-        m_sweep_override.as_ref().map(|v| format!("{:?}", v)).unwrap_or_else(|| "auto".to_string()));
+    println!("ε={eps:e}, n={n} U3 targets, seed=0x{seed:X}, cost = T + 3.5·Q, √T mode={mode_label}, lde_window={lde_window}, m_sweep={}, deadline={}\n",
+        m_sweep_override.as_ref().map(|v| format!("{:?}", v)).unwrap_or_else(|| "auto".to_string()),
+        deadline_override.as_deref().unwrap_or("auto"));
 
     if mode == Mode::Compare {
-        run_compare(&targets, eps, verbose, lde_window, m_sweep_override);
+        run_compare(&targets, eps, verbose, lde_window, m_sweep_override, deadline_override);
     } else {
         let optimize = mode == Mode::Optimal;
-        run_single(&targets, eps, optimize, verbose, lde_window, m_sweep_override);
+        run_single(&targets, eps, optimize, verbose, lde_window, m_sweep_override, deadline_override);
     }
 }
 
-fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bool, lde_window: u32, m_sweep: Option<Vec<u32>>) {
+fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bool, lde_window: u32, m_sweep: Option<Vec<u32>>, deadline: Option<String>) {
     use std::io::Write;
     let n = targets.len();
     if verbose {
@@ -167,7 +184,7 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
             eprint!("{t_wall:>5.1}s √T... ");
             let _ = std::io::stderr().flush();
         }
-        let (qg, q_wall, q_lde) = run_q(target, eps, optimize, lde_window, m_sweep.clone());
+        let (qg, q_wall, q_lde) = run_q(target, eps, optimize, lde_window, m_sweep.clone(), deadline.as_deref());
         q_total_wall += q_wall;
         let (q_t, q_q, _q_h, q_len) = gate_cost(qg.as_deref());
         let q_cost = q_t as f64 + 3.5 * q_q as f64;
@@ -205,7 +222,7 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
     println!("  cost(√T) / cost(T) = {ratio:.3}");
 }
 
-fn run_compare(targets: &[(f64, f64, f64)], eps: f64, verbose: bool, lde_window: u32, m_sweep: Option<Vec<u32>>) {
+fn run_compare(targets: &[(f64, f64, f64)], eps: f64, verbose: bool, lde_window: u32, m_sweep: Option<Vec<u32>>, deadline: Option<String>) {
     use std::io::Write;
     let n = targets.len();
     if verbose {
@@ -231,14 +248,14 @@ fn run_compare(targets: &[(f64, f64, f64)], eps: f64, verbose: bool, lde_window:
         t_costs.push(t_cost);
 
         if verbose { eprint!("Q_first... "); let _ = std::io::stderr().flush(); }
-        let (qg1, qw1, _) = run_q(target, eps, false, 0, None);
+        let (qg1, qw1, _) = run_q(target, eps, false, 0, None, deadline.as_deref());
         let (q_t1, q_q1, _, _) = gate_cost(qg1.as_deref());
         let q_first_cost = q_t1 as f64 + 3.5 * q_q1 as f64;
         q_first_costs.push(q_first_cost);
         q_first_walls.push(qw1);
 
         if verbose { eprint!("Q_opt... "); let _ = std::io::stderr().flush(); }
-        let (qg2, qw2, _) = run_q(target, eps, true, lde_window, m_sweep.clone());
+        let (qg2, qw2, _) = run_q(target, eps, true, lde_window, m_sweep.clone(), deadline.as_deref());
         let (q_t2, q_q2, _, _) = gate_cost(qg2.as_deref());
         let q_opt_cost = q_t2 as f64 + 3.5 * q_q2 as f64;
         q_opt_costs.push(q_opt_cost);
