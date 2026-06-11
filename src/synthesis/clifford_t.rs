@@ -555,6 +555,11 @@ impl SynthesizerT {
     /// - ε = 1e-7: 0.15–2 s
     /// - ε = 1e-8: ~20 s
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultT> {
+        // First-touch rayon init with 16 MiB worker stacks — the 8D path
+        // races the ζ₁₆ entries for global-pool initialisation, and a
+        // 2 MiB-stack pool installed here overflows later deep walks
+        // (see ensure_rayon_stack).
+        crate::synthesis::ensure_rayon_stack();
         let raw_uv = unitary_to_uv(&target);
         let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
 
