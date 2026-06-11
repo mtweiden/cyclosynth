@@ -450,6 +450,16 @@ pub struct SynthesizerQ {
     /// Default 2 (4 gave the same cost at ~2× the wall on the ε=1e-5
     /// suite). Builder: [`Self::with_optimal_budget_multiplier`].
     pub optimal_budget_multiplier: u64,
+    /// Cross-parity shared incumbent (cost in half-units). Set by
+    /// `synthesize_optimal` on its two concurrently-running parity
+    /// branches: (a) stage-3 prefix prunes in BOTH branches share one
+    /// best-cost atomic, and (b) the first-hit screen's lde loops poll
+    /// it as a dynamic `max_lde` clamp — any circuit cheaper than cost
+    /// c̃ half-units has lde ≤ c̃ + 1 (staircase premise), so levels
+    /// above incumbent+1 cannot improve the result. Replaces the static
+    /// odd-branch `max_lde ≤ even_cost + 1` cap, which forced the
+    /// branches to run serially.
+    global_best_cost: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     /// Stage-3 prefix-cost prune: in `optimize_cost` mode, sort prefixes
     /// by the precomputed weighted prefix cost ascending and skip any
     /// prefix whose own cost already exceeds the best total cost found
@@ -519,12 +529,19 @@ fn lattice_lde_estimate(epsilon: f64) -> u32 {
 /// Default Stage-2 m-sweep for `optimize_cost` mode. Empirically m=0
 /// (single-search) is **6-7× slower** than m=[1,2] for only ~0.5-2%
 /// cheaper mean cost at ε ∈ [1e-5, 1e-3]; the trade is overwhelmingly
-/// worth making, so we standardise on [1,2] everywhere except the
-/// deepest regime.
-/// * ε ≥ 1e-7: vec![1, 2]
+/// worth making. At ε ≥ 1e-5 the m=2 arms are pure dead weight:
+/// attribution over 16 parity blocks found ZERO unique m=2 wins, and
+/// the N=30 A/B (2026-06-10, seed 12648430, window=2) measured
+/// bit-identical total cost (1159.0 vs 1159.0) at 1.40× less wall
+/// (198.7 s → 141.9 s). m=2 still earns its keep at 1e-6/1e-7
+/// (Stage-2 m-sweep findings).
+/// * ε ≥ 1e-5: vec![1]
+/// * 1e-7 ≤ ε < 1e-5: vec![1, 2]
 /// * ε < 1e-7: vec![2] only (m=1 is too noisy at this depth).
 fn default_optimal_m_sweep(epsilon: f64) -> Vec<u32> {
-    if epsilon >= 1e-7 {
+    if epsilon >= 1e-5 {
+        vec![1]
+    } else if epsilon >= 1e-7 {
         vec![1, 2]
     } else {
         vec![2]
@@ -755,6 +772,7 @@ impl SynthesizerQ {
                 default_optimal_m_sweep(epsilon)
             },
             optimal_budget_multiplier: 2,
+            global_best_cost: None,
             optimal_prefix_prune: true,
             optimal_lde_window: 2,
             // Open the det-phase filters where the audit showed real
@@ -933,6 +951,21 @@ impl SynthesizerQ {
         self.synthesize_with_unclear(target, None)
     }
 
+    /// `max_lde` clamped by the live cross-parity incumbent when present
+    /// (lde ≤ cost + 1 staircase bound). Polled per level — the incumbent
+    /// tightens concurrently as the peer branch finds circuits.
+    fn effective_max_lde(&self) -> u32 {
+        let mut m = self.max_lde;
+        if let Some(best) = &self.global_best_cost {
+            let c = best.load(std::sync::atomic::Ordering::Relaxed);
+            if c != usize::MAX {
+                let c32 = c.min(u32::MAX as usize - 1) as u32;
+                m = m.min(c32.saturating_add(1));
+            }
+        }
+        m
+    }
+
     /// [`Self::synthesize`] with an optional truncation out-param
     /// (mirrors `synthesize_optimal_inner`'s `ledger_out` pattern).
     ///
@@ -951,6 +984,7 @@ impl SynthesizerQ {
     ) -> Option<SynthResultQ> {
         use crate::synthesis::diag;
         use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
+        crate::synthesis::ensure_rayon_stack();
 
         // Land the det exactly on a ζ₁₆ power first (lossless, see
         // `project_det_to_zeta_coset`) — generic U(2) inputs otherwise
@@ -1143,6 +1177,9 @@ impl SynthesizerQ {
             // tens of seconds and speculation pays for itself.
             if self.parallel_lde_window <= 1 {
                 for k in (m_split + 1).max(lattice_start)..=self.max_lde {
+                    if k > self.effective_max_lde() {
+                        break;
+                    }
                     let t_k = std::time::Instant::now();
                     let (result, budget_hit) = self.dc_search_q(
                         &target, k, m_split, None, dc_pass1_cap_for(self.epsilon),
@@ -1175,6 +1212,9 @@ impl SynthesizerQ {
                 // without finding: still not exhaustively walked.
                 let mut still_truncated: Vec<u32> = Vec::new();
                 for k in pass2_queue {
+                    if k > self.effective_max_lde() {
+                        break;
+                    }
                     let t_k = std::time::Instant::now();
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
@@ -1217,7 +1257,7 @@ impl SynthesizerQ {
             let mut k_cursor = (m_split + 1).max(lattice_start);
 
             let parallel_result: Option<SynthResultQ> = 'outer: loop {
-                if k_cursor > self.max_lde { break 'outer None; }
+                if k_cursor > self.effective_max_lde() { break 'outer None; }
                 if cross_lde_abort.load(Ordering::Relaxed) { break 'outer None; }
 
                 let window_end = (k_cursor + lde_window_size - 1).min(self.max_lde);
@@ -1346,6 +1386,9 @@ impl SynthesizerQ {
             // exhausted at pass 1 (no solution exists at that lde).
             let mut still_truncated: Vec<u32> = Vec::new();
             for k in pass2_queue {
+                if k > self.effective_max_lde() {
+                    break;
+                }
                 let t_k = std::time::Instant::now();
                 if trace {
                     eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
@@ -1377,6 +1420,9 @@ impl SynthesizerQ {
         // budget without finding a sol get queued for Pass 2.
         let mut pass2_queue: Vec<u32> = Vec::new();
         for k in lattice_start..=self.max_lde {
+            if k > self.effective_max_lde() {
+                break;
+            }
             let t_k = std::time::Instant::now();
             let (sols, budget_was_hit) = try_lattice_k(k, PASS1_CAP, &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
@@ -1409,6 +1455,9 @@ impl SynthesizerQ {
         // exhaustive.
         let mut still_truncated: Vec<u32> = Vec::new();
         for k in pass2_queue {
+            if k > self.effective_max_lde() {
+                break;
+            }
             let t_k = std::time::Instant::now();
             let (sols, budget_hit2) = try_lattice_k(k, PASS2_CAP, &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
@@ -2061,30 +2110,55 @@ impl SynthesizerQ {
         // valid approximations of the original target. The Clifford+T
         // baseline is skipped on the odd branch — T-circuit dets are
         // even ζ₁₆ powers, so it would burn max_lde finding nothing.
-        let mut ledger_even = Vec::new();
-        let r_even =
-            self.synthesize_optimal_inner(target, /*with_baseline=*/true, &mut ledger_even);
         let g = Complex64::from_polar(1.0, PI / 16.0);
         let target_odd: Mat2 = [
             [target[0][0] * g, target[0][1] * g],
             [target[1][0] * g, target[1][1] * g],
         ];
-        // The odd branch only matters if it can BEAT the even result,
-        // and any circuit with cost < c̃ half-units has lde ≤ c̃ + 1
-        // (staircase premise: lde ≤ 2·n_xy + 1 ≤ 2·cost_T-units + 1).
-        // Capping its max_lde accordingly is sound and prevents deep
-        // futile sweeps when the even branch already found a cheap or
-        // exact circuit (e.g. gate-like targets: cost 7 → cap lde 8).
+        // The branches run CONCURRENTLY with one shared incumbent.
+        // A branch only matters where it can BEAT the other's best, and
+        // any circuit with cost < c̃ half-units has lde ≤ c̃ + 1
+        // (staircase premise: lde ≤ 2·n_xy + 1 ≤ 2·cost_T-units + 1) —
+        // so instead of the old static `odd.max_lde ≤ even_cost + 1` cap
+        // (which forced the branches serial), each branch polls the
+        // shared incumbent as a dynamic lde clamp (`effective_max_lde`)
+        // and aborts levels that cannot improve it. Costs are directly
+        // comparable across parities (same half-unit currency; diamond
+        // distance is phase-invariant), so one atomic serves both
+        // worlds, and every find in either branch tightens the other's
+        // stage-3 prefix prune as well. 16 MiB stacks for the same
+        // reason as the baseline thread (deep SE recursion).
+        let global_best =
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+        let mut even_self = self.clone();
+        even_self.global_best_cost = Some(global_best.clone());
         let mut odd_self = self.clone();
-        if let Some(r) = &r_even {
-            let even_cost =
-                gates_cost(r.gates.as_deref().unwrap_or(""), self.q_cost_x2) as u32;
-            odd_self.max_lde = odd_self.max_lde.min(even_cost.saturating_add(1));
-        }
+        odd_self.global_best_cost = Some(global_best.clone());
+        let mut ledger_even = Vec::new();
         let mut ledger_odd = Vec::new();
-        let r_odd = odd_self.synthesize_optimal_inner(
-            target_odd, /*with_baseline=*/false, &mut ledger_odd,
-        );
+        let (r_even, r_odd) = std::thread::scope(|s| {
+            let even_ledger = &mut ledger_even;
+            let odd_ledger = &mut ledger_odd;
+            let even_ref = &even_self;
+            let odd_ref = &odd_self;
+            let h_even = std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn_scoped(s, move || {
+                    even_ref.synthesize_optimal_inner(
+                        target, /*with_baseline=*/ true, even_ledger,
+                    )
+                })
+                .expect("spawn even parity branch");
+            let h_odd = std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn_scoped(s, move || {
+                    odd_ref.synthesize_optimal_inner(
+                        target_odd, /*with_baseline=*/ false, odd_ledger,
+                    )
+                })
+                .expect("spawn odd parity branch");
+            (h_even.join().unwrap(), h_odd.join().unwrap())
+        });
         // Coverage holds only up to the SMALLER branch horizon: a level
         // is closed only when both parity worlds enumerated it fully.
         let horizon = branch_horizon(&ledger_even).min(branch_horizon(&ledger_odd));
@@ -2154,7 +2228,15 @@ impl SynthesizerQ {
                     }
                 }
             }
-            if let Some((_, r)) = best {
+            if let Some((c, r)) = best {
+                // Publish the brute win to the cross-parity incumbent
+                // before returning — without this, gate-like targets
+                // (which resolve here at k ≤ BRUTE_LIMIT) would leave
+                // the peer branch's dynamic lde clamp unseeded and let
+                // its screen sweep to max_lde for nothing.
+                if let Some(g) = &self.global_best_cost {
+                    g.fetch_min(c, std::sync::atomic::Ordering::Relaxed);
+                }
                 return Some(r);
             }
         }
@@ -2234,8 +2316,18 @@ impl SynthesizerQ {
         // the level fully enumerated, which is what moves the
         // certificate's coverage horizon (one full level covers all
         // lower lde via √2-scaled points).
-        let shared_best =
-            std::sync::atomic::AtomicUsize::new(first_cost.min(baseline_cost));
+        // The prune incumbent: per-branch local unless `synthesize_optimal`
+        // installed the cross-parity atomic — then both branches' stage-3
+        // prefix prunes (and the peer's screen lde clamp) tighten from
+        // every find in either parity world. Seed with min via fetch_min
+        // so a peer's earlier, cheaper find is never overwritten.
+        let local_best = std::sync::atomic::AtomicUsize::new(usize::MAX);
+        let shared_best: &std::sync::atomic::AtomicUsize =
+            self.global_best_cost.as_deref().unwrap_or(&local_best);
+        shared_best.fetch_min(
+            first_cost.min(baseline_cost),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let mut tasks: Vec<(u32, u32)> = (0..=self.optimal_lde_window)
             .map(|i| fl + i)
             .filter(|&k| k <= self.max_lde)
@@ -2276,7 +2368,7 @@ impl SynthesizerQ {
         let t_w = std::time::Instant::now();
         let task_results: Vec<(u32, u32, bool, Option<(usize, SynthResultQ)>)> =
             std::thread::scope(|s| {
-                let shared_best = &shared_best;
+                let shared_best = shared_best;
                 let handles: Vec<_> = tasks
                     .iter()
                     .map(|&(k, m)| {
@@ -2337,7 +2429,7 @@ impl SynthesizerQ {
                 && (t_ext.elapsed().as_millis() as u64) < self.certify_extra_ms
             {
                 let (r, truncated) =
-                    self.try_optimal_variant(target, d, v, k, 0, true, Some(&shared_best));
+                    self.try_optimal_variant(target, d, v, k, 0, true, Some(shared_best));
                 ledger.push((k, 0, truncated));
                 if trace {
                     eprintln!("[zeta] certify-extend k={k} truncated={truncated} t={:.0}ms",
