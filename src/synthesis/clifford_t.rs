@@ -501,6 +501,30 @@ static SWEEP1_ODD_OVERRIDE: LazyLock<Option<bool>> = LazyLock::new(|| {
     }
 });
 
+/// Stage-3 t'-split offset (docs/plan_8d_prefix_rework.md lever B2):
+/// `CYCLOSYNTH_TP_OFFSET=<i32>` shifts the Prop 3.13 optimum,
+/// `t' = clamp(opt + offset, 1, t)` whenever `opt > 0` (levels where the
+/// formula says `opt == 0` keep t' = 0 — `dc_search`'s level-skip behavior
+/// must stay identical, only the split point of SEARCHED levels moves).
+/// Each −1 roughly halves the prefix count and grows `t_inner` (hence the
+/// inner walk) by one.
+///
+/// PARITY CAVEAT (why odd offsets are expected to fail the FOUND/none
+/// gate): `parity(det U_L) = t' mod 2` (each MA syllable contributes
+/// det = −ζ; Cliffords are ζ-even), and the `det_zeta_parity` /
+/// `mat_to_uv` filter rejects every prefix whose parity mismatches the
+/// target's. For det-even targets (e.g. the det-1 u3 bench targets) a
+/// level is searchable only when its t' is EVEN — an odd offset flips the
+/// t' parity of every level, wiping out previously-FOUND levels. Offsets
+/// to sweep are therefore effectively the even ones (−2); −1/−3 are swept
+/// for the record. Default 0. Read once per process (LazyLock).
+static TP_OFFSET: LazyLock<i32> = LazyLock::new(|| {
+    std::env::var("CYCLOSYNTH_TP_OFFSET")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+});
+
 /// LLL-based aligned search for a right factor `U_R` of given lde `k`
 /// matching the alignment vector `v`. Finds integer 8-vectors satisfying
 /// the norm-shell, bilinear-form, and alignment constraints.
@@ -565,7 +589,17 @@ fn optimal_t_prime(t: u32, eps: Float) -> u32 {
     } else {
         // ceil(t - threshold)
         let raw = t as Float - threshold;
-        raw.ceil() as u32
+        let opt = raw.ceil() as u32;
+        // Stage-3 lever B2: shift the split while preserving WHICH levels
+        // are searched (opt == 0 stays 0 — handled above by the early
+        // return paths; here opt ≥ 1). Clamp to [1, t]: t' = 0 would turn
+        // a searched level into a skipped one, t' > t is meaningless.
+        let off = *TP_OFFSET;
+        if off == 0 {
+            opt
+        } else {
+            (opt as i64 + off as i64).clamp(1, t as i64) as u32
+        }
     }
 }
 
@@ -2278,6 +2312,119 @@ mod tests {
             sols.len(),
             hit.load(std::sync::atomic::Ordering::Relaxed),
         );
+    }
+
+    /// Stage-4 warm-LLL gate experiment (docs/plan_8d_prefix_rework.md
+    /// lever C): on a captured set of production prefixes (bench
+    /// target_00, found/empty levels at 1e-7 and 1e-8), compare
+    /// `lll_l2_8` iteration counts between the identity start and a seed
+    /// = the LLL-reduced basis of the prefix-independent Q_base(k, ε).
+    /// Adoption gate: ≥25% total iteration reduction, else kill (16D
+    /// precedent).
+    /// Env: WARM_N (prefix cap per level, default 400).
+    /// Run: `cargo test --release --lib warm_lll_gate -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn warm_lll_gate() {
+        use crate::synthesis::lattice::lll::{lll_l2_8_seeded, LllResult};
+        use crate::synthesis::lattice::q_metric::{build_q_int, build_q_mpfr};
+        use crate::synthesis::lattice::scratch::IntScratch;
+        use rug::Assign;
+
+        fn xorshift64(s: &mut u64) -> u64 {
+            *s ^= *s << 13;
+            *s ^= *s >> 7;
+            *s ^= *s << 17;
+            *s
+        }
+        fn rand_angle(s: &mut u64) -> f64 {
+            let b = xorshift64(s) >> 11;
+            (b as f64) / ((1u64 << 53) as f64) * 2.0 * PI
+        }
+        let mut state: u64 = 0xC0FFEE_BAADD0E_u64 | 1;
+        let a = rand_angle(&mut state);
+        let b = rand_angle(&mut state);
+        let c = rand_angle(&mut state);
+        let target = u3(a, b, c);
+        let n_cap: usize = std::env::var("WARM_N")
+            .ok().and_then(|s| s.parse().ok()).unwrap_or(400);
+
+        // (eps, t): found levels 66@1e-7 / 76@1e-8 plus the expensive
+        // empty level 74@1e-8 (M0-refresh structure, fixed pipeline).
+        for &(eps, t) in &[(1e-7f64, 66u32), (1e-8, 74), (1e-8, 76)] {
+            let t_prime = optimal_t_prime(t, eps);
+            let t_inner = t - t_prime;
+            let k_inner: u32 = if t_inner % 2 == 1 {
+                (t_inner - 1) / 2 + 1
+            } else {
+                t_inner / 2 + 1
+            };
+            let prefixes = build_l_mode(t_prime, coset_mode_for(eps));
+            let target_parity = det_zeta_parity(&target);
+
+            // Capture surviving prefixes' y vectors (both inner branches,
+            // like production).
+            let mut ys: Vec<[Float; 8]> = Vec::new();
+            for u_l in prefixes.iter() {
+                if ys.len() >= n_cap {
+                    break;
+                }
+                if let Some(tp) = target_parity {
+                    if det_zeta_parity(&u_l.to_float()) != Some(tp) {
+                        continue;
+                    }
+                }
+                let m_inner = u2t_dag_times_mat2(u_l, &target);
+                let Some(v_inner) = mat_to_uv(&m_inner) else { continue };
+                ys.push(uv_to_xy(v_inner, k_inner));
+                if t_inner > 0 && ys.len() < n_cap {
+                    ys.push(uv_to_xy(apply_t_dag_to_uv(v_inner), k_inner));
+                }
+            }
+            if ys.is_empty() {
+                eprintln!("eps={eps:e} t={t}: no surviving prefixes (parity-dead level), skipping");
+                continue;
+            }
+
+            let mut s = IntScratch::new(eps);
+            // Warm seed: LLL-reduce Q_base itself. Populate q_base via one
+            // build_q_mpfr call, copy it into q_mpfr, snapshot, reduce.
+            build_q_mpfr(&mut s, &ys[0], k_inner, eps);
+            for i in 0..8 {
+                for j in 0..8 {
+                    s.q_mpfr[i][j].assign(&s.q_base[i][j]);
+                }
+            }
+            build_q_int(&mut s);
+            let (res_base, it_base) = lll_l2_8_seeded(&mut s, None);
+            let warm = s.basis;
+            eprintln!(
+                "eps={eps:e} t={t} t'={t_prime} k_inner={k_inner} captured={} \
+                 | q_base LLL: {res_base:?} iters={it_base}",
+                ys.len()
+            );
+
+            let (mut tot_cold, mut tot_warm) = (0u64, 0u64);
+            let mut nonconv = 0usize;
+            for y in &ys {
+                build_q_mpfr(&mut s, y, k_inner, eps);
+                build_q_int(&mut s);
+                let (rc, ic) = lll_l2_8_seeded(&mut s, None);
+                let (rw, iw) = lll_l2_8_seeded(&mut s, Some(&warm));
+                if !matches!(rc, LllResult::Converged)
+                    || !matches!(rw, LllResult::Converged)
+                {
+                    nonconv += 1;
+                }
+                tot_cold += ic as u64;
+                tot_warm += iw as u64;
+            }
+            eprintln!(
+                "  cold_iters={tot_cold} warm_iters={tot_warm} \
+                 warm/cold={:.3} (gate: <=0.75) nonconverged={nonconv}",
+                tot_warm as f64 / tot_cold.max(1) as f64
+            );
+        }
     }
 
 }
