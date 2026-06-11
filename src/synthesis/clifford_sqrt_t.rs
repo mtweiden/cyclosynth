@@ -2675,21 +2675,20 @@ impl SynthesizerQ {
         let mut ledger_odd = Vec::new();
         let trace = crate::synthesis::diag::trace_enabled();
         let t_branches = std::time::Instant::now();
-        // Deep-ε guard: below the parallel-LDE speculation trigger
-        // (ε < 2.5e-8) each branch's screen runs its own speculation
-        // thread-scopes against the global rayon pool; two branches'
-        // speculation scopes blocking on the pool simultaneously
-        // DEADLOCKS it (observed at ε=1e-8: main thread joining, every
-        // pool worker and both branch threads parked in condvars, 0%
-        // CPU). Concurrency buys nothing there anyway — speculation
-        // already saturates the pool — so run the branches
-        // SEQUENTIALLY in that regime. The shared incumbent still
-        // flows: the even branch publishes into `global_best`, and the
-        // odd branch's screen loops poll `effective_max_lde`, which
-        // subsumes the old static `max_lde ≤ even_cost + 1` cap. The
-        // handshake flags are set for form (no frontier runs without a
-        // deadline at deep ε, but the invariant stays uniform).
-        if self.epsilon < 2.5e-8 {
+        // Deep-ε sequential parities — kept by MEASUREMENT, not fear:
+        // the ε=1e-8 deadlock this once mitigated was root-fixed in the
+        // speculation gate (finished-flags, f7cff2a), and a re-test with
+        // concurrency enabled showed NO deadlock (9 min sustained ~1350%
+        // CPU on the old repro) — but a ~2× wall REGRESSION (target 0:
+        // >540 s concurrent vs 266 s sequential). Below the speculation
+        // trigger each branch's machinery saturates the pool alone; two
+        // branches dilute each other and stretch the screen critical
+        // path. `CYCLOSYNTH_SEQ_PARITY=0` enables concurrency for
+        // re-testing if the screen economics change (e.g. post
+        // Q-bracket). The shared incumbent flows identically either way.
+        let force_sequential = self.epsilon < 2.5e-8
+            && std::env::var("CYCLOSYNTH_SEQ_PARITY").as_deref() != Ok("0");
+        if force_sequential {
             let r_e = even_self.synthesize_optimal_inner(
                 target, /*with_baseline=*/ true, &mut ledger_even,
             );
