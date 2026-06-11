@@ -65,16 +65,55 @@ pub struct PhaseOneOutcome {
     pub should_escalate: bool,
 }
 
+/// SE walk bound (squared Q-norm from the cap center). The structural band
+/// for valid in-cap solutions is [0.75, 1.5] (½-embedding factor, one
+/// pinned bullet block; see docs/w_zomega_fixes_notes.md): waist 0.75,
+/// apex (exact solutions) 1.0, rim 1.5. The default 1.51 is rim + 0.7% —
+/// the SE distance arithmetic is MPFR-128 from the MPFR LU center, so
+/// there is no f64-drift slack to budget for (unlike the 16D walk's 20%).
+/// Env override `CYCLOSYNTH_SE_BOUND_8D` is for telemetry/retention
+/// experiments only.
+fn se_bound_8d() -> f64 {
+    static BOUND: std::sync::LazyLock<f64> = std::sync::LazyLock::new(|| {
+        std::env::var("CYCLOSYNTH_SE_BOUND_8D")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.51)
+    });
+    *BOUND
+}
+
 /// Run the full Lenstra 8D pipeline for one MA-prefix's `(y, k, eps)` setup.
-/// Returns at most one valid 8-vector solution; the caller can request more
-/// by raising `max_phase2_calls`.
+///
+/// Collects up to `max_solutions` valid 8-vector solutions (production
+/// passes 1: the walk stops at the first hit, preserving the historical
+/// first-hit behavior; telemetry passes `usize::MAX` to enumerate the whole
+/// region).
+///
+/// Budgets — both set `budget_hit` when they bind, so the caller's 2-pass
+/// requeue can retry the level:
+///   - `max_phase2_calls`: leaf-callback budget (historical semantics).
+///     Now also ABORTS the walk when it trips (previously the walk kept
+///     running with the callback rejecting everything).
+///   - `max_nodes`: TRUE node budget, one unit per SE recurse-entry. This
+///     is what bounds no-solution levels, where almost nothing reaches a
+///     leaf and the leaf budget never binds (observed: 46 min on one empty
+///     level at ε=1e-3, t=27).
+///
+/// `external_abort`: cross-branch abort signal, checked per recurse-entry;
+/// set by a peer branch that already found a solution (read-only here).
+/// An externally-aborted walk does NOT set `budget_hit`.
+#[allow(clippy::too_many_arguments)]
 pub fn phase1(
     scratch: &mut IntScratch,
     y: &[Float; 8],
     k: u32,
     eps: Float,
+    max_solutions: usize,
     max_phase2_calls: u64,
+    max_nodes: u64,
     budget_hit: &AtomicBool,
+    external_abort: Option<&AtomicBool>,
 ) -> PhaseOneOutcome {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -194,21 +233,30 @@ pub fn phase1(
     let r_eucl = super::se::euclidean_cholesky(&basis);
     let target_norm_f = target_norm as f64;
     let count = AtomicU64::new(0);
-    let abort = AtomicBool::new(false);
-    let bound_se = RFloat::with_val(super::se::SE_PREC, 1.51_f64);
+    let no_abort = AtomicBool::new(false);
+    let abort = external_abort.unwrap_or(&no_abort);
+    let node_budget = AtomicU64::new(max_nodes);
+    // Set when either budget (node or leaf) binds; aborts the walk.
+    let truncated = AtomicBool::new(false);
+    let bound_se = RFloat::with_val(super::se::SE_PREC, se_bound_8d());
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
 
+    let mut solutions: Vec<[i64; 8]> = Vec::new();
     let result = super::se::schnorr_euchner_8d(
         &r_chol_se,
         &z_c_se,
         &bound_se,
         r_eucl.as_ref(),
         target_norm_f,
-        &abort,
+        abort,
+        &node_budget,
+        &truncated,
         |z: &[i64; 8]| {
             let n_so_far = count.load(Ordering::Relaxed);
             if n_so_far >= max_phase2_calls {
-                budget_hit.store(true, Ordering::Relaxed);
+                // Leaf budget exhausted: abort the walk (the flag is the
+                // walker's budget_exhausted input) without taking a leaf.
+                truncated.store(true, Ordering::Relaxed);
                 return None;
             }
             count.fetch_add(1, Ordering::Relaxed);
@@ -246,9 +294,20 @@ pub fn phase1(
             if tmp < threshold_xy_mpfr {
                 return None;
             }
-            Some(x)
+            solutions.push(x);
+            if solutions.len() >= max_solutions {
+                // Returning Some stops the walk (first-hit production path).
+                Some(x)
+            } else {
+                None
+            }
         },
     );
+    let _ = result; // last solution is already in `solutions`
+
+    if truncated.load(Ordering::Relaxed) {
+        budget_hit.store(true, Ordering::Relaxed);
+    }
 
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_SE_NS
@@ -256,11 +315,11 @@ pub fn phase1(
     }
     crate::synthesis::diag::N_SE_CALLBACKS
         .fetch_add(count.load(Ordering::Relaxed), Ordering::Relaxed);
+    let nodes_used = max_nodes.saturating_sub(node_budget.load(Ordering::Relaxed));
+    crate::synthesis::diag::N_SE_NODES.fetch_add(nodes_used, Ordering::Relaxed);
+    crate::synthesis::diag::record_se_nodes_max(nodes_used);
 
-    match result {
-        Some(x) => PhaseOneOutcome { solutions: vec![x], should_escalate: false },
-        None => PhaseOneOutcome { solutions: Vec::new(), should_escalate: false },
-    }
+    PhaseOneOutcome { solutions, should_escalate: false }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

@@ -125,6 +125,30 @@ pub static N_MAT_TO_UV_REJECTED: AtomicU64 = AtomicU64::new(0);
 /// whose ellipsoid is "fat" relative to alignment requirements.
 pub static N_SE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 
+/// Total 8D SE recurse-entries (true node count) summed across all phase1
+/// calls since the last reset. Always accumulated (one fetch_add per
+/// phase1 call, not per node) — used to size the PASS1/PASS2 node caps.
+pub static N_SE_NODES: AtomicU64 = AtomicU64::new(0);
+
+/// Max 8D SE recurse-entries consumed by any single phase1 call (one
+/// prefix × one branch walk) since the last reset. The per-prefix node
+/// caps must sit well above this on solution-bearing levels.
+pub static N_SE_NODES_MAX: AtomicU64 = AtomicU64::new(0);
+
+/// Record a per-walk node count into [`N_SE_NODES_MAX`] (relaxed cmpxchg
+/// max loop; called once per phase1, not per node).
+pub fn record_se_nodes_max(nodes: u64) {
+    let mut cur = N_SE_NODES_MAX.load(Ordering::Relaxed);
+    while nodes > cur {
+        match N_SE_NODES_MAX.compare_exchange_weak(
+            cur, nodes, Ordering::Relaxed, Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(c) => cur = c,
+        }
+    }
+}
+
 /// SE candidates that satisfied the integer constraints (norm shell,
 /// bilinear form, alignment) but produced a unitary whose diamond
 /// distance to the target exceeded ε. Should be 0 in steady state;
@@ -481,6 +505,8 @@ pub fn reset_all() {
         &N_PREFIXES,
         &N_MAT_TO_UV_REJECTED,
         &N_SE_CALLBACKS,
+        &N_SE_NODES,
+        &N_SE_NODES_MAX,
         &N_DIST_REJECTED,
         &T_BUILD_NS,
         &T_LLL_NS,
@@ -539,6 +565,8 @@ pub struct Snapshot {
     pub prefixes: u64,
     pub mat_to_uv_rejected: u64,
     pub se_callbacks: u64,
+    pub se_nodes: u64,
+    pub se_nodes_max: u64,
     pub dist_rejected: u64,
     pub t_build_ms: f64,
     pub t_lll_ms: f64,
@@ -569,6 +597,8 @@ pub fn snapshot() -> Snapshot {
         prefixes: N_PREFIXES.load(Ordering::Relaxed),
         mat_to_uv_rejected: N_MAT_TO_UV_REJECTED.load(Ordering::Relaxed),
         se_callbacks: N_SE_CALLBACKS.load(Ordering::Relaxed),
+        se_nodes: N_SE_NODES.load(Ordering::Relaxed),
+        se_nodes_max: N_SE_NODES_MAX.load(Ordering::Relaxed),
         dist_rejected: N_DIST_REJECTED.load(Ordering::Relaxed),
         t_build_ms: T_BUILD_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
         t_lll_ms: T_LLL_NS.load(Ordering::Relaxed) as f64 / 1.0e6,
