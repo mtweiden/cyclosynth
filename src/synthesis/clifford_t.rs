@@ -1332,26 +1332,58 @@ mod tests {
         let mut global_min_close = f64::INFINITY;
         let mut total_close = 0usize;
 
-        // t (lde) scan ranges per ε: first solutions appear near
-        // 3·log₂(1/ε); scan a window around it and stop after two
-        // solution-bearing levels per (θ, ε) to keep the sweep minutes.
+        // t (lde) scan ranges per ε. CAUTION (learned the 46-minute way,
+        // twice): `max_phase2_calls` caps CANDIDATE COMPLETIONS, not raw
+        // nodes — on a no-solution level almost nothing reaches
+        // candidacy, so the walk runs effectively unbudgeted and a
+        // single below-first-hit level burns tens of minutes on one
+        // core. Per-θ first-hit levels can't be reliably guessed, so
+        // scan DOWNWARD from t_hi: every level at-or-above first-hit is
+        // solution-dense and returns fast, and the two-level early-stop
+        // fires before the scan can descend into empty territory.
         for &theta in &[0.3f64, 0.55, 0.8, 1.05, 1.3] {
             let target = rz(theta);
             let raw_uv = unitary_to_uv(&target);
             let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
-            for &(eps, t_lo, t_hi) in &[(3e-2f64, 6u32, 14u32), (1e-3, 22, 32)] {
+            for &(eps, t_lo, t_hi) in &[(3e-2f64, 8u32, 14u32), (1e-3, 27, 34)] {
                 let mut levels_with_sols = 0;
-                for t in t_lo..=t_hi {
+                'levels: for t in (t_lo..=t_hi).rev() {
                     if levels_with_sols >= 2 {
                         break;
                     }
-                    let y = uv_to_xy(v, t);
-                    let mut s = IntScratch::new(eps);
-                    let hit = AtomicBool::new(false);
-                    let out = phase1(&mut s, &y, t, eps, budget, &hit);
-                    if out.solutions.is_empty() {
-                        continue;
+                    // Single-branch levels can be parity-EMPTY (the U/UT†
+                    // branch structure exists precisely because solutions
+                    // alternate branches with lde parity) — and an empty
+                    // level walks unbudgeted for minutes-to-hours. Probe
+                    // the same first three branches production uses; at
+                    // any t ≥ first-hit one of them finds fast. Q/c are
+                    // built in the FOUND branch's own frame — that is the
+                    // geometry the walk enumerates, and phase1 sols have
+                    // already passed the alignment-cap leaf check, which
+                    // is exactly the in-cap criterion the bound governs
+                    // (so no diamond-distance reclassification against
+                    // the unrotated target is needed for rotated
+                    // branches).
+                    let t_level = std::time::Instant::now();
+                    let mut found: Option<([Float; 4], Vec<[i64; 8]>)> = None;
+                    for v_s in [v, apply_t_dag_to_uv(v), apply_t_to_uv(v)] {
+                        let y = uv_to_xy(v_s, t);
+                        let mut s = IntScratch::new(eps);
+                        let hit = AtomicBool::new(false);
+                        let out = phase1(&mut s, &y, t, eps, budget, &hit);
+                        if !out.solutions.is_empty() {
+                            found = Some((v_s, out.solutions));
+                            break;
+                        }
+                        // Circuit breaker: one slow empty branch means
+                        // this level (and everything below) is expensive
+                        // territory — stop the whole (θ, ε) scan.
+                        if t_level.elapsed().as_secs() > 60 {
+                            break 'levels;
+                        }
                     }
+                    let Some((v_s, sols)) = found else { continue };
+                    let y = uv_to_xy(v_s, t);
                     // Fresh scratch for Q + cap center: phase1's LLL may
                     // have mutated downstream state; build_q alone is
                     // cheap and sets exactly q_mpfr and c.
@@ -1363,11 +1395,7 @@ mod tests {
                     let mut max_close = 0.0f64;
                     let mut min_close = f64::INFINITY;
                     let mut n_close = 0usize;
-                    for sol in &out.solutions {
-                        let cand = solution_to_u2t(sol, t);
-                        if !(diamond_distance_float(&cand.to_float(), &target) <= eps) {
-                            continue;
-                        }
+                    for sol in &sols {
                         let dvec: [f64; 8] =
                             std::array::from_fn(|i| sol[i] as f64 - c[i]);
                         let mut qn = 0.0;
@@ -1384,7 +1412,7 @@ mod tests {
                         levels_with_sols += 1;
                         eprintln!(
                             "θ={theta:<4} ε={eps:.0e} t={t:<2} sols={:<4} close={n_close:<4} Q∈[{min_close:.4}, {max_close:.4}]",
-                            out.solutions.len()
+                            sols.len()
                         );
                         global_max_close = global_max_close.max(max_close);
                         global_min_close = global_min_close.min(min_close);
@@ -1405,7 +1433,10 @@ mod tests {
     /// motivated the W1 flat-frontier parallelization (~10×). Whether
     /// the port pays here depends on the T-baseline's wall at deep ε.
     /// Run: `cargo test --release --lib w1_telemetry_8d -- --ignored --nocapture`
-    /// Env: T8_THETA (0.7), T8_EPS (1e-3), T8_LDE (26), T8_BUDGET (500M).
+    /// Env: T8_THETA (0.7), T8_EPS (1e-3), T8_LDE (30), T8_BUDGET (500M).
+    /// Pick a SOLUTION-BEARING lde (≥ first-hit, ≈30 at 1e-3): the budget
+    /// caps candidate completions, so it only binds where candidates
+    /// exist — an empty level runs unbudgeted and unbounded.
     #[test]
     #[ignore]
     fn w1_telemetry_8d() {
@@ -1416,7 +1447,7 @@ mod tests {
         }
         let theta = envf("T8_THETA", 0.7);
         let eps = envf("T8_EPS", 1e-3);
-        let t = envf("T8_LDE", 26.0) as u32;
+        let t = envf("T8_LDE", 30.0) as u32;
         let budget = envf("T8_BUDGET", 500_000_000.0) as u64;
 
         // CLOCK_PROCESS_CPUTIME_ID = 12 on macOS (same constant the 16D
