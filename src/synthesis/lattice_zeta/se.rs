@@ -778,6 +778,62 @@ pub fn euclidean_cholesky_16(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]>
 
 // ─── 16D Schnorr-Euchner enumeration ─────────────────────────────────────────
 
+/// SE walk center, split into an exact integer part and a small fractional
+/// remainder. This is the deep-ε-safe representation of the FRACTIONAL cap
+/// center (mirroring the 8D walk, which walks around a fractional MPFR
+/// center — src/synthesis/lattice/se.rs):
+///
+///   - `int[i]`: MPFR `round_mut` → `to_integer` of the LU solution
+///     `lu_x[i]`. Magnitudes can exceed 2^53 at deep ε (observed 5e16 at
+///     ε=1e-8, lde≥18); i64 carries them exactly. This is precisely the
+///     legacy rounded `z_c`.
+///   - `frac[i]`: `lu_x[i] − int[i]` computed in MPFR (exact at full
+///     precision) then extracted to f64. |frac| ≤ 0.5, so the f64
+///     extraction is precise regardless of |lu_x| — unlike `lu_x.to_f64()`,
+///     which quantizes with ULP up to 2 lattice units at deep ε (the
+///     original center bug).
+///
+/// The walk's true per-coordinate center is `int[i] + frac[i]`; all walker
+/// arithmetic keeps the integer part separate so deltas stay small-magnitude
+/// f64. Measuring Q from this true center (instead of the rounded one)
+/// removes the center-rounding inflation documented in
+/// docs/bound_sq_soundness.md: a valid solution's measured Q now equals its
+/// geometric Q (band [0.75, 2.75]) at every k.
+#[derive(Clone, Copy, Debug)]
+pub struct SeCenter16 {
+    pub int: [i64; 16],
+    pub frac: [f64; 16],
+}
+
+impl SeCenter16 {
+    /// Center with zero fractional part (the legacy rounded-center
+    /// convention; used by tests with integer centers).
+    pub fn from_int(int: [i64; 16]) -> Self {
+        Self { int, frac: [0.0; 16] }
+    }
+
+    /// Build the center from the MPFR LU solution `lu_x` (`Bᵀ·z_c = c`).
+    /// `int` = MPFR round → i64 (full precision — **never** through
+    /// `to_f64()`, which quantizes above 2^53); `frac` = `lu_x − int`
+    /// computed in MPFR then extracted to f64 (|frac| ≤ 0.5, always
+    /// f64-precise). NaN/∞ coordinates map to (0, 0.0) — the SE walk will
+    /// return empty, matching the legacy convention.
+    pub fn from_lu_x(lu_x: &[rug::Float; 16]) -> Self {
+        let mut int = [0i64; 16];
+        let mut frac = [0.0f64; 16];
+        for i in 0..16 {
+            let mut rounded = lu_x[i].clone();
+            rounded.round_mut();
+            if let Some(r_int) = rounded.to_integer() {
+                int[i] = r_int.to_i64_wrapping();
+                let diff = rug::Float::with_val(lu_x[i].prec(), &lu_x[i] - &rounded);
+                frac[i] = diff.to_f64();
+            }
+        }
+        Self { int, frac }
+    }
+}
+
 /// Run the Schnorr-Euchner walk over ℤ¹⁶, visiting every integer point `z`
 /// with `‖l·(z − z_c)‖² ≤ bound_sq`, in distance-from-center order at each
 /// recursion level. Calls `callback(&z)` at every leaf; the callback returns
@@ -786,9 +842,9 @@ pub fn euclidean_cholesky_16(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]>
 /// `l` is the **upper-triangular** Cholesky factor of the post-LLL Q-metric
 /// Gram on the basis coordinates: `lᵀ · l = G`. For each level i, the walk
 /// computes `level_i = l[i][i] · (z[i] − z_c[i]) + Σ_{j > i} l[i][j] · (z[j]
-/// − z_c[j])` and prunes branches whose partial sum-of-squares exceeds
-/// `bound_sq`. Visiting closest-to-center first (`z_c[i]` rounded to i64)
-/// allows early termination.
+/// − z_c[j])` against the fractional center `z_c[i] = z_c.int[i] +
+/// z_c.frac[i]` and prunes branches whose partial sum-of-squares exceeds
+/// `bound_sq`. Visiting closest-to-center first allows early termination.
 ///
 /// `budget` is decremented once per leaf callback. When it reaches zero the
 /// walk aborts and returns the leaf count visited so far.
@@ -796,7 +852,7 @@ pub fn euclidean_cholesky_16(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]>
 /// Returns the total number of leaf callbacks made.
 pub fn schnorr_euchner_16d<F>(
     l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
+    z_c: &SeCenter16,
     bound_sq: f64,
     mut callback: F,
     budget: &AtomicU64,
@@ -826,7 +882,7 @@ where
 fn recurse_16<F>(
     depth: i32,
     l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
+    z_c: &SeCenter16,
     bound_sq: f64,
     partial: f64,
     z: &mut [i64; 16],
@@ -857,7 +913,7 @@ fn recurse_16<F>(
     // Degenerate diagonal guard (positive-definiteness should exclude this,
     // but tolerate gracefully).
     if l_dd.abs() < 1e-30 {
-        z[d] = z_c[d];
+        z[d] = z_c.int[d];
         recurse_16(
             depth - 1, l, z_c, bound_sq, partial, z, callback, budget, leaves,
             aborted,
@@ -868,7 +924,7 @@ fn recurse_16<F>(
     // tail = Σ_{j > d} l[d][j] · (z[j] − z_c[j])
     let mut tail = 0.0_f64;
     for j in (d + 1)..16 {
-        tail += l[d][j] * ((z[j] - z_c[j]) as f64);
+        tail += l[d][j] * ((z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
     }
 
     // Remaining budget for this level.
@@ -878,21 +934,24 @@ fn recurse_16<F>(
     }
     let rem_sqrt = rem.sqrt();
 
-    // The level value at offset Δ from z_c[d] is l_dd · Δ + tail; minimized at
-    // Δ = -tail / l_dd. Bound: |l_dd · Δ + tail| ≤ rem_sqrt → Δ ∈
-    // [(-tail − rem_sqrt)/l_dd, (-tail + rem_sqrt)/l_dd].
+    // The level value at integer offset Δ from z_c.int[d] is
+    // l_dd · (Δ − frac[d]) + tail; minimized at Δ = frac[d] − tail/l_dd.
+    // Bound: |level| ≤ rem_sqrt → Δ ∈ center_off ± span.
     //
-    // **Precision**: at deep ε (1e-8) `z_c[d]` can exceed 2^53 (the f64
-    // exact-integer ceiling). Casting `z_c[d] as f64` and adding a small
+    // **Precision**: at deep ε (1e-8) the center can exceed 2^53 (the f64
+    // exact-integer ceiling). Casting it to f64 and adding a small
     // continuous offset would lose 1-2 ULP, mis-bracketing the integer
-    // search range. Compute the ranged offsets in f64 then add to `z_c[d]`
-    // as i64 — exact whenever |center_off ± span| < 2^53 (always for our
-    // bound_sq).
-    let center_off = -tail / l_dd;
+    // search range. Compute the ranged offsets in f64 (small magnitude:
+    // frac + span) then add to the i64 integer part — exact whenever
+    // |center_off ± span| < 2^53 (always for our bound_sq).
+    // Offset of the true center from int[d]: the level value at integer
+    // offset Δ = zd − int[d] is l_dd·(Δ − frac[d]) + tail, minimized at
+    // Δ = frac[d] − tail/l_dd.
+    let center_off = z_c.frac[d] - tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
-    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
-    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
-    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
+    let z_low = z_c.int[d].saturating_add((center_off - span).ceil() as i64);
+    let z_high = z_c.int[d].saturating_add((center_off + span).floor() as i64);
+    let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
     // Walk offsets in distance-from-center order: 0, +1, -1, +2, -2, …
@@ -911,7 +970,7 @@ fn recurse_16<F>(
         if zd < z_low || zd > z_high {
             continue;
         }
-        let level = l_dd * ((zd - z_c[d]) as f64) + tail;
+        let level = l_dd * ((zd - z_c.int[d]) as f64 - z_c.frac[d]) + tail;
         let new_partial = partial + level * level;
         // Slack for f64 round-off at the bound check: 1e-9 * bound_sq matches
         // the 8D "10⁻⁹ tolerance" semantics.
@@ -942,7 +1001,7 @@ fn recurse_16<F>(
 /// Mirrors [`schnorr_euchner_16d`]'s interface; same callback semantics.
 pub fn schnorr_euchner_16d_norm_pruned<F>(
     l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
+    z_c: &SeCenter16,
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
     target_norm_sq: f64,
@@ -985,7 +1044,7 @@ where
 fn recurse_16_norm_pruned<F>(
     depth: i32,
     l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
+    z_c: &SeCenter16,
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
     target_norm_sq: f64,
@@ -1020,7 +1079,7 @@ fn recurse_16_norm_pruned<F>(
     let l_dd = l[d][d];
 
     if l_dd.abs() < 1e-30 {
-        let new_zd = z_c[d];
+        let new_zd = z_c.int[d];
         let delta = new_zd - z[d];
         if delta != 0 {
             update_x_for_z_change(x, basis, d, delta);
@@ -1046,19 +1105,22 @@ fn recurse_16_norm_pruned<F>(
     // Q-bound: tail and span as in recurse_16.
     let mut tail = 0.0_f64;
     for j in (d + 1)..16 {
-        tail += l[d][j] * ((z[j] - z_c[j]) as f64);
+        tail += l[d][j] * ((z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
     }
     let rem = bound_sq - partial_q;
     if rem < 0.0 {
         return;
     }
     let rem_sqrt = rem.sqrt();
-    let center_off = -tail / l_dd;
+    // Offset of the true center from int[d]: the level value at integer
+    // offset Δ = zd − int[d] is l_dd·(Δ − frac[d]) + tail, minimized at
+    // Δ = frac[d] − tail/l_dd.
+    let center_off = z_c.frac[d] - tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
     // See recurse_16 above for the deep-ε precision rationale.
-    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
-    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
-    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
+    let z_low = z_c.int[d].saturating_add((center_off - span).ceil() as i64);
+    let z_high = z_c.int[d].saturating_add((center_off + span).floor() as i64);
+    let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
     for raw in 0..=(2 * max_off + 1) {
@@ -1076,7 +1138,7 @@ fn recurse_16_norm_pruned<F>(
         if zd < z_low || zd > z_high {
             continue;
         }
-        let level = l_dd * ((zd - z_c[d]) as f64) + tail;
+        let level = l_dd * ((zd - z_c.int[d]) as f64 - z_c.frac[d]) + tail;
         let new_partial_q = partial_q + level * level;
         if new_partial_q > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
@@ -1170,7 +1232,7 @@ fn update_x_for_z_change(
 /// leaf should be collected. Used by [`super::phase1`].
 pub fn schnorr_euchner_16d_par<F>(
     l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
+    z_c: &SeCenter16,
     bound_sq: f64,
     leaf_filter: F,
     budget: &AtomicU64,
@@ -1187,9 +1249,11 @@ where
         return (Vec::new(), false);
     }
     let span = bound_sq.sqrt() / l_15.abs();
-    let z_low = ((z_c[15] as f64) - span).ceil() as i64;
-    let z_high = ((z_c[15] as f64) + span).floor() as i64;
-    let z_mid = z_c[15];
+    // Bracket relative to int[15] (saturating form — deep-ε safe), centered
+    // on the true fractional center int[15] + frac[15].
+    let z_low = z_c.int[15].saturating_add((z_c.frac[15] - span).ceil() as i64);
+    let z_high = z_c.int[15].saturating_add((z_c.frac[15] + span).floor() as i64);
+    let z_mid = z_c.int[15].saturating_add(z_c.frac[15].round() as i64);
 
     // Schnorr-Euchner ordering at the outermost level: closest-to-center
     // first. Doesn't change correctness (same SET visited) but lets early
@@ -1204,7 +1268,7 @@ where
                 return Vec::new().into_iter();
             }
             // Contribution of z[15] to the partial accumulator.
-            let level = l_15 * ((z_15 - z_c[15]) as f64);
+            let level = l_15 * ((z_15 - z_c.int[15]) as f64 - z_c.frac[15]);
             let partial = level * level;
             if partial > bound_sq + 1e-9 * bound_sq.abs() {
                 return Vec::new().into_iter();
@@ -1236,7 +1300,7 @@ where
 fn recurse_collect<F>(
     depth: i32,
     l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
+    z_c: &SeCenter16,
     bound_sq: f64,
     partial: f64,
     z: &mut [i64; 16],
@@ -1264,7 +1328,7 @@ fn recurse_collect<F>(
     let d = depth as usize;
     let l_dd = l[d][d];
     if l_dd.abs() < 1e-30 {
-        z[d] = z_c[d];
+        z[d] = z_c.int[d];
         recurse_collect(
             depth - 1, l, z_c, bound_sq, partial, z, leaf_filter, budget,
             aborted, results,
@@ -1273,18 +1337,21 @@ fn recurse_collect<F>(
     }
     let mut tail = 0.0_f64;
     for j in (d + 1)..16 {
-        tail += l[d][j] * ((z[j] - z_c[j]) as f64);
+        tail += l[d][j] * ((z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
     }
     let rem = bound_sq - partial;
     if rem < 0.0 {
         return;
     }
     let rem_sqrt = rem.sqrt();
-    let center_off = -tail / l_dd;
+    // Offset of the true center from int[d]: the level value at integer
+    // offset Δ = zd − int[d] is l_dd·(Δ − frac[d]) + tail, minimized at
+    // Δ = frac[d] − tail/l_dd.
+    let center_off = z_c.frac[d] - tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
-    let z_low = ((z_c[d] as f64) + center_off - span).ceil() as i64;
-    let z_high = ((z_c[d] as f64) + center_off + span).floor() as i64;
-    let z_mid = ((z_c[d] as f64) + center_off).round() as i64;
+    let z_low = z_c.int[d].saturating_add((center_off - span).ceil() as i64);
+    let z_high = z_c.int[d].saturating_add((center_off + span).floor() as i64);
+    let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
     for raw in 0..=(2 * max_off + 1) {
         if aborted.load(Ordering::Relaxed) {
@@ -1301,7 +1368,7 @@ fn recurse_collect<F>(
         if zd < z_low || zd > z_high {
             continue;
         }
-        let level = l_dd * ((zd - z_c[d]) as f64) + tail;
+        let level = l_dd * ((zd - z_c.int[d]) as f64 - z_c.frac[d]) + tail;
         let new_partial = partial + level * level;
         if new_partial > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
@@ -1448,7 +1515,7 @@ fn expand_se_prefix_node(
     mut item: SePrefixItem,
     out: &mut Vec<SePrefixItem>,
     l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
+    z_c: &SeCenter16,
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
     r_eucl_dd: &[[(f64, f64); 16]; 16],
@@ -1474,7 +1541,7 @@ fn expand_se_prefix_node(
     if l_dd.abs() < 1e-30 {
         // Degenerate diagonal: z[d] is forced to z_c[d] (mirror of the
         // recursion's degenerate branch; partial_q unchanged).
-        let new_zd = z_c[d];
+        let new_zd = z_c.int[d];
         let delta = new_zd - item.z[d];
         if delta != 0 {
             update_x_for_z_change(&mut item.x, basis, d, delta);
@@ -1496,18 +1563,21 @@ fn expand_se_prefix_node(
     // as the recursion body.
     let mut tail = 0.0_f64;
     for j in (d + 1)..16 {
-        tail += l[d][j] * ((item.z[j] - z_c[j]) as f64);
+        tail += l[d][j] * ((item.z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
     }
     let rem = bound_sq - item.partial_q;
     if rem < 0.0 {
         return;
     }
     let rem_sqrt = rem.sqrt();
-    let center_off = -tail / l_dd;
+    // Offset of the true center from int[d]: the level value at integer
+    // offset Δ = zd − int[d] is l_dd·(Δ − frac[d]) + tail, minimized at
+    // Δ = frac[d] − tail/l_dd.
+    let center_off = z_c.frac[d] - tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
-    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
-    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
-    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
+    let z_low = z_c.int[d].saturating_add((center_off - span).ceil() as i64);
+    let z_high = z_c.int[d].saturating_add((center_off + span).floor() as i64);
+    let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
     for raw in 0..=(2 * max_off + 1) {
@@ -1525,7 +1595,7 @@ fn expand_se_prefix_node(
         if zd < z_low || zd > z_high {
             continue;
         }
-        let level = l_dd * ((zd - z_c[d]) as f64) + tail;
+        let level = l_dd * ((zd - z_c.int[d]) as f64 - z_c.frac[d]) + tail;
         let new_partial_q = item.partial_q + level * level;
         if new_partial_q > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
@@ -1622,7 +1692,7 @@ fn expand_se_prefix_node(
 #[allow(clippy::too_many_arguments)]
 pub fn schnorr_euchner_16d_par_norm_pruned<F>(
     l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
+    z_c: &SeCenter16,
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
     r_eucl_dd: &[[(f64, f64); 16]; 16],
@@ -1646,12 +1716,13 @@ where
         return (Vec::new(), false);
     }
 
-    // z[15] range from the Q-bound. Keep z_c[15] as i64 to avoid the
-    // deep-ε f64 quantization issue (same fix as recurse_16).
+    // z[15] range from the Q-bound. Keep the integer part as i64 to avoid
+    // the deep-ε f64 quantization issue (same fix as recurse_16); the
+    // fractional part shifts the bracket onto the true center.
     let span_q = bound_sq.sqrt() / l_15.abs();
-    let z_low = z_c[15].saturating_add((-span_q).ceil() as i64);
-    let z_high = z_c[15].saturating_add(span_q.floor() as i64);
-    let z_mid = z_c[15];
+    let z_low = z_c.int[15].saturating_add((z_c.frac[15] - span_q).ceil() as i64);
+    let z_high = z_c.int[15].saturating_add((z_c.frac[15] + span_q).floor() as i64);
+    let z_mid = z_c.int[15].saturating_add(z_c.frac[15].round() as i64);
 
     // Closest-to-center first ordering at the outermost level.
     let mut prefixes: Vec<i64> = (z_low..=z_high).collect();
@@ -1663,8 +1734,8 @@ where
     // outside the budgeted recursion).
     let mut frontier: Vec<SePrefixItem> = Vec::with_capacity(prefixes.len());
     for z_15 in prefixes {
-        // Q-bound contribution at depth 15.
-        let level_q = l_15 * ((z_15 - z_c[15]) as f64);
+        // Q-bound contribution at depth 15 (measured from the true center).
+        let level_q = l_15 * ((z_15 - z_c.int[15]) as f64 - z_c.frac[15]);
         let partial_q = level_q * level_q;
         if partial_q > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
@@ -1830,7 +1901,7 @@ where
 fn recurse_collect_norm_pruned<F>(
     depth: i32,
     l: &[[f64; 16]; 16],
-    z_c: &[i64; 16],
+    z_c: &SeCenter16,
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
     r_eucl_dd: &[[(f64, f64); 16]; 16],
@@ -1929,7 +2000,7 @@ fn recurse_collect_norm_pruned<F>(
     let d = depth as usize;
     let l_dd = l[d][d];
     if l_dd.abs() < 1e-30 {
-        let new_zd = z_c[d];
+        let new_zd = z_c.int[d];
         let delta = new_zd - z[d];
         if delta != 0 {
             update_x_for_z_change(x, basis, d, delta);
@@ -1953,20 +2024,23 @@ fn recurse_collect_norm_pruned<F>(
     // SE bracket [z_low, z_high] for the current depth's z[d] enumeration.
     let mut tail = 0.0_f64;
     for j in (d + 1)..16 {
-        tail += l[d][j] * ((z[j] - z_c[j]) as f64);
+        tail += l[d][j] * ((z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
     }
     let rem = bound_sq - partial_q;
     if rem < 0.0 {
         return;
     }
     let rem_sqrt = rem.sqrt();
-    let center_off = -tail / l_dd;
+    // Offset of the true center from int[d]: the level value at integer
+    // offset Δ = zd − int[d] is l_dd·(Δ − frac[d]) + tail, minimized at
+    // Δ = frac[d] − tail/l_dd.
+    let center_off = z_c.frac[d] - tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
-    // Keep z_c[d] as i64 to avoid f64 quantization at deep ε where z_c can
-    // exceed 2^53.
-    let z_low = z_c[d].saturating_add((center_off - span).ceil() as i64);
-    let z_high = z_c[d].saturating_add((center_off + span).floor() as i64);
-    let z_mid = z_c[d].saturating_add(center_off.round() as i64);
+    // Keep the center's integer part as i64 to avoid f64 quantization at
+    // deep ε where it can exceed 2^53; frac rides in center_off.
+    let z_low = z_c.int[d].saturating_add((center_off - span).ceil() as i64);
+    let z_high = z_c.int[d].saturating_add((center_off + span).floor() as i64);
+    let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
     // NOTE: a depth-0 analytical shell-equation elimination is available via
@@ -1996,7 +2070,7 @@ fn recurse_collect_norm_pruned<F>(
         if zd < z_low || zd > z_high {
             continue;
         }
-        let level = l_dd * ((zd - z_c[d]) as f64) + tail;
+        let level = l_dd * ((zd - z_c.int[d]) as f64 - z_c.frac[d]) + tail;
         let new_partial_q = partial_q + level * level;
         if new_partial_q > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
@@ -2205,7 +2279,7 @@ mod par_tests {
         for i in 0..16 {
             l[i][i] = 1.0;
         }
-        let z_c = [0_i64; 16];
+        let z_c = SeCenter16::from_int([0_i64; 16]);
         let bound_sq = 4.0;
 
         // Serial walk: collect all leaves.
@@ -2560,7 +2634,7 @@ mod tests {
         for i in 0..16 {
             l[i][i] = 1.0;
         }
-        let z_c = [0_i64; 16];
+        let z_c = SeCenter16::from_int([0_i64; 16]);
         let budget = AtomicU64::new(10_000);
         let mut visited: HashSet<[i64; 16]> = HashSet::new();
         let leaves = schnorr_euchner_16d(&l, &z_c, 1.0, |z| {
@@ -2588,7 +2662,7 @@ mod tests {
         for i in 0..16 {
             l[i][i] = 1.0;
         }
-        let z_c = [0_i64; 16];
+        let z_c = SeCenter16::from_int([0_i64; 16]);
         let budget = AtomicU64::new(10);
         let leaves = schnorr_euchner_16d(&l, &z_c, 4.0, |_z| true, &budget);
         assert_eq!(leaves, 10, "budget should cap leaves at 10");
@@ -2616,13 +2690,9 @@ mod tests {
                 l_upper[i][j] = s.l_f64[j][i];
             }
         }
-        // LU solve: cap-center in basis coords. Round to i64 (SE's z_c
-        // convention is integer).
+        // LU solve: cap-center in basis coords → fractional SE center.
         assert!(lu_solve_int_inplace_16(&mut s));
-        let mut z_c = [0_i64; 16];
-        for i in 0..16 {
-            z_c[i] = s.lu_x[i].to_f64().round() as i64;
-        }
+        let z_c = SeCenter16::from_lu_x(&s.lu_x);
 
         // Brute solutions at k=2.
         let brute_set: HashSet<[i64; 16]> = phase1_brute(2).into_iter().collect();
@@ -2675,10 +2745,7 @@ mod tests {
             }
         }
         assert!(lu_solve_int_inplace_16(&mut s));
-        let mut z_c = [0_i64; 16];
-        for i in 0..16 {
-            z_c[i] = s.lu_x[i].to_f64().round() as i64;
-        }
+        let z_c = SeCenter16::from_lu_x(&s.lu_x);
 
         // Pick a bound a few times the smallest diagonal² of the upper
         // factor: this scales the ellipsoid to cover ~1-10 leaves in the

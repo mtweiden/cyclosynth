@@ -69,7 +69,7 @@ pub use scratch::IntScratch16;
 pub use se::{
     beta_1, beta_2, beta_3, bilinear_forms, det16_exact, euclidean_cholesky_16,
     reconstruct_x, schnorr_euchner_16d, set_bypass_norm_prune, set_verify_prune_mpfr,
-    verify_prune_mpfr,
+    verify_prune_mpfr, SeCenter16,
 };
 
 // ─── Tests preserving the previous flat-module test suite ────────────────────

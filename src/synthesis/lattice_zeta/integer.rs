@@ -11,7 +11,8 @@
 //!     post-LLL Gram (LLL invariant κ(G) ≤ (4/3)^15 ≈ 240 keeps f64 safe).
 //!     Transposed to upper-triangular at the SE call site.
 //!  4. **LU solve** ([`lu_solve_int_inplace_16`]) — Bᵀ · z_c = c at MPFR
-//!     `lu_prec` bits. Solution rounded to i64 for SE's z_c convention.
+//!     `lu_prec` bits. Solution split into SE's fractional-center pair
+//!     (i64 integer part + f64 fractional part, [`SeCenter16`]).
 //!  5. **Schnorr-Euchner** ([`schnorr_euchner_16d`]) — walk integer
 //!     16-tuples within the Q-bounded ellipsoid; for each leaf, reconstruct
 //!     `x = B·z` and validate the four leaf checks.
@@ -52,7 +53,7 @@ use super::q_metric::build_q_int_zeta;
 use super::scratch::{rfv, IntScratch16};
 use super::se::{
     bilinear_forms, euclidean_cholesky_16_mpfr_dual,
-    schnorr_euchner_16d_par_norm_pruned, LeafAction,
+    schnorr_euchner_16d_par_norm_pruned, LeafAction, SeCenter16,
 };
 use crate::rings::Float;
 use crate::synthesis::diag;
@@ -347,37 +348,29 @@ where
         return Vec::new();
     }
 
-    // Round lu_x → i64 for SE's z_c convention. **Crucial at deep ε**:
-    // `lu_x[i]` (MPFR) can have magnitude > 2^53 (the f64 exact-integer
-    // ceiling) at ε=1e-8, lde≥18 — observed up to 5×10¹⁶. Going through
-    // `to_f64()` first quantizes to the nearest f64 representable
-    // integer (ULP up to 2 at this magnitude), then `round()` is a
-    // no-op. This introduces up to 2-lattice-unit error per coord; with
-    // LLL's Hermite factor in 16D (~100), the SE walk's center is
-    // shifted by up to ||B·e||²_Q ~ 10⁴ Q-units, vastly exceeding
-    // `bound_sq=8`. The walk explores the wrong region and the cap
-    // appears empty even when valid solutions exist.
+    // Split lu_x into the SE center's (int, frac) pair. **Crucial at deep
+    // ε**: `lu_x[i]` (MPFR) can have magnitude > 2^53 (the f64
+    // exact-integer ceiling) at ε=1e-8, lde≥18 — observed up to 5×10¹⁶.
+    // Going through `to_f64()` quantizes to the nearest f64-representable
+    // integer (ULP up to 2 at this magnitude); with LLL's Hermite factor
+    // in 16D (~100), that shifts the SE center by up to ||B·e||²_Q ~ 10⁴
+    // Q-units and the cap appears empty even when valid solutions exist.
     //
-    // Fix: round the MPFR value to integer in MPFR (full precision),
-    // then extract via i64 truncation. The fractional rounding error
-    // is bounded by 0.5 lattice-units regardless of magnitude.
-    let z_c: [i64; 16] = std::array::from_fn(|i| {
-        let mut rounded = scratch.lu_x[i].clone();
-        rounded.round_mut();
-        match rounded.to_integer() {
-            Some(int) => int.to_i64_wrapping(),
-            None => 0, // NaN/infinity — treat as zero; SE walk will return empty.
-        }
-    });
+    // So: `int` = MPFR round → i64 (full precision), `frac` = MPFR
+    // (lu_x − int) → f64 (|frac| ≤ 0.5, f64-precise at any magnitude).
+    // The SE walk measures Q from the TRUE center int + frac, eliminating
+    // the center-rounding inflation of the legacy integer-z_c convention
+    // (docs/bound_sq_soundness.md).
+    let z_c = SeCenter16::from_lu_x(&scratch.lu_x);
 
     if trace {
         // Compare MPFR-direct round vs the legacy f64 path to expose the
         // discrepancy in the trace (zero at moderate ε; up to ULP at deep ε).
         let max_diff = (0..16).fold(0i64, |acc, i| {
             let f64_path = scratch.lu_x[i].to_f64().round() as i64;
-            (f64_path - z_c[i]).abs().max(acc)
+            (f64_path - z_c.int[i]).abs().max(acc)
         });
-        let max_z = (0..16).fold(0i64, |acc, i| z_c[i].abs().max(acc));
+        let max_z = (0..16).fold(0i64, |acc, i| z_c.int[i].abs().max(acc));
         eprintln!(
             "[zeta diag] phase1 k={k} eps={eps:.0e} z_c max_|z|={} mpfr_vs_f64_diff={}",
             max_z, max_diff,
@@ -388,39 +381,32 @@ where
     let l_upper: [[f64; 16]; 16] =
         std::array::from_fn(|i| std::array::from_fn(|j| scratch.l_f64[j][i]));
 
-    // Step 5: SE bound. Every valid solution has *geometric* Q-norm²
-    // (measured from the true fractional cap center) in [0.75, 2.75] —
-    // see docs/bound_sq_soundness.md: the unitarity norm equation
-    // a·ā + c·c̄ = 2^k holds at all four real embeddings of Z[λ], so each
-    // of the 3 bullet blocks lies exactly ON its sphere; with the 1/4
-    // embedding factor of this lattice convention (cf. the alignment
-    // threshold derivation below) each contributes exactly 1/4 — a hard
-    // 0.75 floor — while the σ₁ cap part adds up to 2 (cap-rim points
-    // have radial offset Δ_y AND tangential offset Δ_⊥ simultaneously).
+    // Step 5: SE bound. Every point of the enumeration cap — hence every
+    // valid solution — has geometric Q-norm² in [0.875, 1.25], with both
+    // endpoints attained (docs/bound_sq_soundness.md v3): the 1/4
+    // Σ-embedding factor (cf. the alignment threshold derivation below)
+    // puts EVERY block at lattice radius ρ = R/2, so the 3 bullet blocks
+    // pinned on their spheres contribute exactly 0.75 total, and the σ₁
+    // cap offsets are halved against the Δ_y/Δ_⊥ scales: apex (exact
+    // solutions) +1/4 → Q = 1.0 exactly, rim +1/2 → Q = 1.25 exactly.
+    // Measured: QHQ@k=1 exact solution Q = 1.0000
+    // (qhq_q_decomposition_diagnostic); 7,041 ε-close solutions max at
+    // 1.2500 (q_telemetry_sweep); retention cliff at (1.20, 1.26]
+    // post-fractional-center (was (1.6, 1.75] with the rounded center —
+    // the difference was rounding inflation, removed by SeCenter16).
     //
-    // SE, however, measures Q from the i64-ROUNDED center z_c, and the
-    // rounding inflates measured Q by an amount that scales with the
-    // basis Q-norms — enormous when the lattice is coarse relative to
-    // the cap (the QHQ@k=1 exact solution: geometric Q = 1.00, measured
-    // Q = 6.28; see qhq_q_decomposition_diagnostic), unmeasurable at
-    // k ≥ 5 (retention experiments at θ∈{0.35, 0.7, 1.1},
-    // ε∈{3e-2, 1e-3, 1e-5}, k∈{5, 6, 9, 13}, both parities: every
-    // ε-close solution and min cost preserved down to bound 1.75-2).
-    //
-    // Hence the k-dependent default: 3.0 (= geometric max 2.75 + slack)
-    // for k ≥ 5 — ~11-60× fewer tree nodes than the historical 8 with
-    // identical ε-close output — and 8.0 below (rounding-dominated
-    // regime; production brute-forces k ≤ BRUTE_LIMIT anyway, so the
-    // small-k lattice path only serves tests/probes and its cost is
-    // irrelevant). Removing the center rounding (fractional-center SE
-    // walk, as the 8D path does) would make ~2.75+δ sound at ALL k and
-    // is the proper root-cause fix — tracked as follow-up. The
-    // norm-shell prune plus the integer-exact leaf check filter the
-    // false positives the slack admits. Override via env var.
+    // Default 1.5 = tight 1.25 + 20% slack for f64 drift in the
+    // incremental partial-Q. Deep ε (≤ 2e-8) keeps 3.0: the incremental
+    // f64 partial sums historically overshoot up to ~1.8× in that regime
+    // (the ε=1.5e-8 cliff; dd-verify covers the norm prune but not the
+    // Q bracket) — 1.25 · 1.8 < 3.0 absorbs it; revisit if a dd-verified
+    // Q bracket lands. The norm-shell prune plus the integer-exact leaf
+    // check filter the false positives the slack admits. Override via
+    // env var.
     let bound_sq = std::env::var("CYCLOSYNTH_BOUND_SQ")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(if k <= 4 { 8.0 } else { 3.0 });
+        .unwrap_or(if eps <= 2e-8 { 3.0 } else { 1.5 });
 
     // Pre-compute alignment threshold and y at MPFR-128.
     //
@@ -687,10 +673,46 @@ mod tests {
         assert!(min_dist < 1e-9, "min dist to QHQ at k=1: {min_dist:.3e}");
     }
 
+    /// Gate (ignored): the QHQ@k=1 lattice search must succeed at
+    /// CYCLOSYNTH_BOUND_SQ=2 now that SE measures Q from the fractional
+    /// center (the solution's geometric Q is 1.00; the legacy rounded
+    /// center inflated it to 6.28, forcing the k≤4 bound-8 escape).
+    /// Ignored because it mutates the process-global env var — run alone:
+    /// `cargo test --release --lib qhq_at_bound_2 -- --ignored`.
+    #[test]
+    #[ignore]
+    fn phase1_finds_qhq_at_k_1_bound_2() {
+        use crate::matrix::u2::U2Q;
+        use crate::synthesis::distance::diamond_distance_float;
+
+        unsafe { std::env::set_var("CYCLOSYNTH_BOUND_SQ", "2") };
+        let qhq: U2Q = U2Q::q() * U2Q::h() * U2Q::q();
+        let target = qhq.to_float();
+        let v = unitary_to_uv_zeta(&target);
+        let d = det_phase_of(&target);
+        let k = qhq.k;
+        let y = uv_to_xy_zeta(v, k);
+
+        let eps = 0.1_f64;
+        let mut s = IntScratch16::new(eps);
+        let abort = AtomicBool::new(false);
+        let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
+        unsafe { std::env::remove_var("CYCLOSYNTH_BOUND_SQ") };
+
+        assert!(!sols.is_empty(), "phase1@bound2 found no solutions for QHQ at k=1");
+        let min_dist = sols.iter().map(|sol| {
+            let cand = solution_to_u2q_d(sol, k, d);
+            diamond_distance_float(&cand.to_float(), &target)
+        }).fold(f64::INFINITY, f64::min);
+        assert!(min_dist < 1e-9, "min dist to QHQ at k=1 (bound 2): {min_dist:.3e}");
+    }
+
     /// Diagnostic (ignored): decompose the QHQ@k=1 solution's Q-norm into
-    /// geometric Q (from the true fractional cap center) vs SE-measured Q
-    /// (from the i64-rounded z_c center). Explains why the QHQ test needs
-    /// bound_sq > 6 while the geometric theory says Q ≤ 2.75
+    /// geometric Q (from the true fractional cap center), legacy SE-measured
+    /// Q (from the i64-rounded z_c center), and Q_se_effective (from the
+    /// fractional SeCenter16 the walk now uses — should match Q_geometric
+    /// to ~1e-6). The rounded column explains why the QHQ test historically
+    /// needed bound_sq > 6 while the geometric theory says Q ≤ 2.75
     /// (docs/bound_sq_soundness.md). Run with --ignored --nocapture.
     #[test]
     #[ignore]
@@ -712,13 +734,22 @@ mod tests {
         assert!(!sols.is_empty(), "phase1@bound8 must find QHQ");
 
         let q = crate::synthesis::lattice_zeta::q_metric::build_q_zzeta_lattice(v, k, eps);
-        // True cap center (ambient) and rounded-z_c effective center.
+        // True cap center (ambient), legacy rounded-z_c effective center,
+        // and the fractional SE center (int + frac pair) the walk now uses.
         let c_true: [f64; 16] = std::array::from_fn(|i| s.c[i].to_f64());
         let mut c_rounded = [0.0f64; 16];
         for i in 0..16 {
             let zi = s.lu_x[i].to_f64().round();
             for j in 0..16 {
                 c_rounded[j] += zi * s.basis[i][j] as f64;
+            }
+        }
+        let se_center = SeCenter16::from_lu_x(&s.lu_x);
+        let mut c_se = [0.0f64; 16];
+        for i in 0..16 {
+            let zi = se_center.int[i] as f64 + se_center.frac[i];
+            for j in 0..16 {
+                c_se[j] += zi * s.basis[i][j] as f64;
             }
         }
         let q_norm = |x: &[i64; 16], c: &[f64; 16]| -> f64 {
@@ -733,9 +764,10 @@ mod tests {
         };
         for (n, sol) in sols.iter().enumerate() {
             eprintln!(
-                "sol {n}: Q_geometric={:.4}  Q_se_rounded_center={:.4}",
+                "sol {n}: Q_geometric={:.6}  Q_se_rounded_center={:.4}  Q_se_effective={:.6}",
                 q_norm(sol, &c_true),
-                q_norm(sol, &c_rounded)
+                q_norm(sol, &c_rounded),
+                q_norm(sol, &c_se)
             );
         }
         let frac_err: f64 = (0..16)
