@@ -2791,14 +2791,21 @@ impl SynthesizerQ {
         let force_sequential = self.epsilon < 2.5e-8
             && std::env::var("CYCLOSYNTH_SEQ_PARITY").as_deref() != Ok("0");
         if force_sequential {
+            // Sequential mode has no peer to synchronize frontier starts
+            // with — pre-set BOTH handshake flags, or the running
+            // branch's frontier dead-sleeps its full 4×deadline bound
+            // waiting for a screen that hasn't started (audit find,
+            // 2026-06-11: a 1e-8 enum run with a 30 s deadline paid
+            // 120 s of pure sleep per target; the earlier "ambiguous"
+            // m1+10 s probe was likewise measuring mostly sleep).
+            even_screen_done.store(true, Ordering::Release);
+            odd_screen_done.store(true, Ordering::Release);
             let r_e = even_self.synthesize_optimal_inner(
                 target, /*with_baseline=*/ true, &mut ledger_even,
             );
-            even_screen_done.store(true, Ordering::Release);
             let r_o = odd_self.synthesize_optimal_inner(
                 target_odd, /*with_baseline=*/ false, &mut ledger_odd,
             );
-            odd_screen_done.store(true, Ordering::Release);
             let horizon =
                 branch_horizon(&ledger_even).min(branch_horizon(&ledger_odd));
             return match (r_e, r_o) {
@@ -4043,5 +4050,129 @@ mod tests {
         assert!(result.distance < 0.05,
             "diamond distance {:.3e} exceeds ε=0.05", result.distance);
         assert!(result.gates.is_some());
+    }
+
+    /// ζ coset census (audit 2026-06-11, mirrors clifford_t's M1
+    /// `l_coset_census`): how much of `build_l_q(m)` is right-coset
+    /// duplicate work under the 8-element lde-0 Clifford subgroup ⟨S,X⟩,
+    /// and how much of that dedup SURVIVES the d_R class filtering.
+    ///
+    /// Soundness premise (same as 8D B1): for lde-0 C, U_L·C ↦ same
+    /// shell, same lde, and (U_L·C)·U_R = U_L·(C·U_R) with C·U_R on the
+    /// rep's shell — the rep's SE search (at the rep's own d_R) covers
+    /// every mate's solutions with IDENTICAL total unitaries, hence
+    /// identical decomposed costs. det(C) ∈ {1, i, −1, −i} = ζ^{0,4,8,12},
+    /// so coset-mates' d_R values differ by multiples of 4: a strict
+    /// filter keeps exactly one det class per orbit; the OPEN filter
+    /// (production at ε ≤ 1e-5 via `optimal_open_dr_filter`) keeps the
+    /// whole orbit = full-orbit duplicate work.
+    /// Run: `cargo test --release --lib zeta_coset_census -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zeta_coset_census() {
+        use crate::synthesis::cliffords::CLIFFORD_LDE0_IDX;
+        use std::collections::{HashMap, HashSet};
+
+        // lde-0 Clifford subgroup as U2Q (rebuilt from table names, the
+        // same route build_l_q_inner uses for its Clifford suffixes).
+        let lde0: Vec<U2Q> = CLIFFORD_LDE0_IDX
+            .iter()
+            .map(|&i| {
+                let (name, _) = &CLIFFORD_TABLE_T[i];
+                name.chars().fold(U2Q::eye(), |acc, ch| {
+                    acc * match ch {
+                        'H' => U2Q::h(),
+                        'S' => U2Q::s(),
+                        'X' => U2Q::x(),
+                        'Y' => U2Q::y(),
+                        'Z' => U2Q::z(),
+                        _ => U2Q::eye(),
+                    }
+                })
+            })
+            .collect();
+        for c in &lde0 {
+            assert_eq!(c.k, 0, "lde-0 Clifford has k != 0 as U2Q");
+        }
+
+        for m in 1..=3u32 {
+            let prefixes = build_l_q(m);
+            let n = prefixes.len();
+            let key_of: Vec<[i64; 8]> = prefixes.iter().map(canonical_key_q).collect();
+            let idx_of: HashMap<[i64; 8], usize> =
+                key_of.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+
+            // Right-coset orbits: orbit(u) = {u·c} is exactly the coset
+            // u·⟨S,X⟩, so one multiplication sweep finds the whole orbit.
+            // Orbit id = min member index. `missing` counts mates whose
+            // canonical key is absent from L (float-key rounding or a
+            // genuine coverage hole — must stay ~0 for the dedup claim).
+            let mut orbit_id: Vec<usize> = (0..n).collect();
+            let mut missing = 0usize;
+            for i in 0..n {
+                let mut mn = i;
+                for c in &lde0 {
+                    let key = canonical_key_q(&(prefixes[i] * *c));
+                    match idx_of.get(&key) {
+                        Some(&j) => mn = mn.min(j),
+                        None => missing += 1,
+                    }
+                }
+                orbit_id[i] = mn;
+            }
+            let orbits: HashSet<usize> = orbit_id.iter().copied().collect();
+            eprintln!(
+                "\nm={m}: |L|={n}  orbits={}  full-orbit ratio={:.2}x  (missing mate keys: {missing})",
+                orbits.len(),
+                n as f64 / orbits.len() as f64
+            );
+
+            // d_R-respecting census per filter. For each d_target the
+            // usable set is {u : (d_target − d_L) mod 16 ∈ filter}; the
+            // dedup that survives = |usable| / |orbits among usable|.
+            let d_l: Vec<u32> = prefixes
+                .iter()
+                .map(|u| det_phase_of(&u.to_float()))
+                .collect();
+            for (fname, filter) in [
+                ("strict [0]   (m=2 1st-hit default)", vec![0u32]),
+                ("relaxed [0,1,15] (m=1 default)", vec![0u32, 1, 15]),
+                ("OPEN (optimal_open_dr_filter, prod at eps<=1e-5)", vec![]),
+            ] {
+                let mut tot_usable = 0usize;
+                let mut tot_orbits = 0usize;
+                let mut per_d: Vec<(u32, usize, usize)> = Vec::new();
+                for d_target in 0..16u32 {
+                    let usable: Vec<usize> = (0..n)
+                        .filter(|&i| {
+                            if filter.is_empty() {
+                                return true;
+                            }
+                            let d_r = ((d_target as i32 - d_l[i] as i32)
+                                .rem_euclid(16)) as u32;
+                            filter.contains(&d_r)
+                        })
+                        .collect();
+                    let uorb: HashSet<usize> =
+                        usable.iter().map(|&i| orbit_id[i]).collect();
+                    tot_usable += usable.len();
+                    tot_orbits += uorb.len();
+                    per_d.push((d_target, usable.len(), uorb.len()));
+                }
+                eprintln!(
+                    "  filter {fname}: avg usable {:.1} -> orbits {:.1}  surviving dedup {:.2}x",
+                    tot_usable as f64 / 16.0,
+                    tot_orbits as f64 / 16.0,
+                    tot_usable as f64 / tot_orbits.max(1) as f64
+                );
+                if m == 2 {
+                    let row: Vec<String> = per_d
+                        .iter()
+                        .map(|(d, u, o)| format!("d{d}:{u}/{o}"))
+                        .collect();
+                    eprintln!("    per-d usable/orbits: {}", row.join(" "));
+                }
+            }
+        }
     }
 }
