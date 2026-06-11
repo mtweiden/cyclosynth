@@ -15,10 +15,12 @@
 //! with a no-op stop predicate (cost-min mode never early-exits), and
 //! reconstruct/score every returned solution.
 //!
-//! Args: probe_walk_bench <theta> <eps> <k> [<parity: 0|1>]
+//! Args: probe_walk_bench <theta> <eps> <k> [<parity: 0|1>] [<bound_sq>]
 //!   parity 0 = even branch (target as-is, after det projection)
 //!   parity 1 = odd branch (target rotated by e^{iπ/16} first)
 //!   omitted  = run both branches.
+//!   bound_sq = optional SE bound override (sets CYCLOSYNTH_BOUND_SQ —
+//!   convenience for retention sweeps; same effect as the env var).
 
 use cyclosynth::matrix::U2Q;
 use cyclosynth::synthesis::clifford_sqrt_t::{
@@ -236,13 +238,17 @@ fn main() {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        eprintln!("usage: probe_walk_bench <theta> <eps> <k> [<parity: 0|1>]");
+        eprintln!("usage: probe_walk_bench <theta> <eps> <k> [<parity: 0|1>] [<bound_sq>]");
         std::process::exit(2);
     }
     let theta: f64 = args[0].parse().expect("theta");
     let eps: f64 = args[1].parse().expect("eps");
     let k: u32 = args[2].parse().expect("k");
     let parity: Option<u32> = args.get(3).map(|s| s.parse().expect("parity"));
+    if let Some(bound) = args.get(4) {
+        let _: f64 = bound.parse().expect("bound_sq");
+        std::env::set_var("CYCLOSYNTH_BOUND_SQ", bound);
+    }
 
     let target = project_det_to_zeta_coset(&rz(theta));
     let target_odd = scale(&target, Complex64::from_polar(1.0, PI / 16.0));
