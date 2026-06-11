@@ -1420,6 +1420,22 @@ impl SynthesizerQ {
                     (0..lde_window.len())
                         .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
                         .collect();
+                // Per-task completion flags for the speculation gate.
+                // LIVENESS: the gate below must ALSO wake when its
+                // predecessor FINISHES — not only on consumed-trigger or
+                // abort. Pre-bound-arc this was unobservable: deep-ε
+                // no-solution levels always burned ≥ trigger_nodes before
+                // ending. The bound arc (4b87711+) lets them complete
+                // cleanly at ~57× fewer nodes than the 3×-cap trigger,
+                // which left successors sleep-polling a counter that had
+                // permanently stopped — the ε=1e-8 full-process deadlock
+                // (scope-exit park, all workers idle; see memory
+                // deep-eps-deadlock and the bisect 3890884/7e90577 ok →
+                // 4b87711 hung).
+                let finished_flags: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+                    (0..lde_window.len())
+                        .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+                        .collect();
                 let results: Mutex<Vec<(u32, Option<SynthResultQ>, bool)>> =
                     Mutex::new(Vec::new());
                 std::thread::scope(|s| {
@@ -1428,16 +1444,33 @@ impl SynthesizerQ {
                         let abort_ref = &cross_lde_abort;
                         let pass2_ref = &pass2_collector;
                         let my_consumed = consumed_counters[i].clone();
+                        let my_finished = finished_flags[i].clone();
                         let predecessor_consumed: Option<std::sync::Arc<std::sync::atomic::AtomicU64>> =
                             if i > 0 { Some(consumed_counters[i - 1].clone()) } else { None };
+                        let predecessor_finished: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+                            if i > 0 { Some(finished_flags[i - 1].clone()) } else { None };
                         s.spawn(move || {
+                            // RAII: mark this task finished on EVERY exit
+                            // path (normal, abort early-return, panic) so
+                            // a successor's gate can never be stranded.
+                            struct FinishedGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+                            impl Drop for FinishedGuard {
+                                fn drop(&mut self) {
+                                    self.0.store(true, Ordering::Release);
+                                }
+                            }
+                            let _finished_guard = FinishedGuard(my_finished);
                             // Wait for predecessor to consume `trigger_nodes`
-                            // search-tree nodes (or for cross-LDE abort).
+                            // search-tree nodes, FINISH (a clean empty
+                            // completion below the trigger means this level
+                            // should start immediately), or cross-LDE abort.
                             if i > 0 && trigger_nodes > 0 {
                                 let pred = predecessor_consumed.as_ref().unwrap();
+                                let pred_done = predecessor_finished.as_ref().unwrap();
                                 loop {
                                     if abort_ref.load(Ordering::Relaxed) { return; }
                                     if pred.load(Ordering::Relaxed) >= trigger_nodes { break; }
+                                    if pred_done.load(Ordering::Acquire) { break; }
                                     std::thread::sleep(std::time::Duration::from_millis(50));
                                 }
                                 if abort_ref.load(Ordering::Relaxed) { return; }
@@ -2596,6 +2629,42 @@ impl SynthesizerQ {
         let mut ledger_odd = Vec::new();
         let trace = crate::synthesis::diag::trace_enabled();
         let t_branches = std::time::Instant::now();
+        // Deep-ε guard: below the parallel-LDE speculation trigger
+        // (ε < 2.5e-8) each branch's screen runs its own speculation
+        // thread-scopes against the global rayon pool; two branches'
+        // speculation scopes blocking on the pool simultaneously
+        // DEADLOCKS it (observed at ε=1e-8: main thread joining, every
+        // pool worker and both branch threads parked in condvars, 0%
+        // CPU). Concurrency buys nothing there anyway — speculation
+        // already saturates the pool — so run the branches
+        // SEQUENTIALLY in that regime. The shared incumbent still
+        // flows: the even branch publishes into `global_best`, and the
+        // odd branch's screen loops poll `effective_max_lde`, which
+        // subsumes the old static `max_lde ≤ even_cost + 1` cap. The
+        // handshake flags are set for form (no frontier runs without a
+        // deadline at deep ε, but the invariant stays uniform).
+        if self.epsilon < 2.5e-8 {
+            let r_e = even_self.synthesize_optimal_inner(
+                target, /*with_baseline=*/ true, &mut ledger_even,
+            );
+            even_screen_done.store(true, Ordering::Release);
+            let r_o = odd_self.synthesize_optimal_inner(
+                target_odd, /*with_baseline=*/ false, &mut ledger_odd,
+            );
+            odd_screen_done.store(true, Ordering::Release);
+            let horizon =
+                branch_horizon(&ledger_even).min(branch_horizon(&ledger_odd));
+            return match (r_e, r_o) {
+                (Some(a), Some(b)) => {
+                    let ca =
+                        gates_cost(a.gates.as_deref().unwrap_or(""), self.q_cost_x2);
+                    let cb =
+                        gates_cost(b.gates.as_deref().unwrap_or(""), self.q_cost_x2);
+                    Some(finish(if cb < ca { b } else { a }, horizon, self.q_cost_x2))
+                }
+                (a, b) => a.or(b).map(|r| finish(r, horizon, self.q_cost_x2)),
+            };
+        }
         let (r_even, r_odd) = std::thread::scope(|s| {
             let even_ledger = &mut ledger_even;
             let odd_ledger = &mut ledger_odd;
