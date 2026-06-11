@@ -388,31 +388,39 @@ where
     let l_upper: [[f64; 16]; 16] =
         std::array::from_fn(|i| std::array::from_fn(|j| scratch.l_f64[j][i]));
 
-    // Step 5: SE bound. The 8D path uses `bound_sq = 1.51` — slightly above
-    // the unit cap-radial Q-radius — and relies on the leaf checks to filter
-    // false positives. We mirror that here. The Q-metric inside SE has the
-    // cap normalised to radius ≈ 1 in the `1/Δ_y²` direction, so this bound
-    // covers a small Q-shell around the cap center.
+    // Step 5: SE bound. Every valid solution has *geometric* Q-norm²
+    // (measured from the true fractional cap center) in [0.75, 2.75] —
+    // see docs/bound_sq_soundness.md: the unitarity norm equation
+    // a·ā + c·c̄ = 2^k holds at all four real embeddings of Z[λ], so each
+    // of the 3 bullet blocks lies exactly ON its sphere; with the 1/4
+    // embedding factor of this lattice convention (cf. the alignment
+    // threshold derivation below) each contributes exactly 1/4 — a hard
+    // 0.75 floor — while the σ₁ cap part adds up to 2 (cap-rim points
+    // have radial offset Δ_y AND tangential offset Δ_⊥ simultaneously).
     //
-    // **At d=16**: Q has 1 eigenvalue at 1/Δ_y² (cap radial), 3 at 1/Δ_⊥²
-    // (cap tangential), and 12 at 1/R² (bullet balls). At full extent in
-    // every direction, the cap × ball region has Q-norm² = 1 + 3 + 12 = 16.
-    // Empirically (Q at k=0/1, T at k=0, lattice round-trips at k=2-4) the
-    // valid lattice points sit in a Q-shell with Q-norm² in [1, 16]; the
-    // cap-tangential and bullet-ball directions dominate over the (very
-    // narrow) cap-radial direction. We enumerate the full feasible region
-    // by setting `bound_sq` to cover all 16 eigenvalue contributions plus
-    // slack for the i64 rounding of `z_c`. Tightening the bound risks
-    // missing exact solutions that sit at the edge of σ_5/σ_9/σ_13.
-    // Empirical sweep at ε=1e-3..1e-6 found bound_sq=8 always-correct and
-    // ~1.6× faster than the conservative bound_sq=16. The norm-shell prune
-    // (via the Euclidean Cholesky) plus the integer-exact leaf check
-    // catch any false positives the smaller bound lets through.
-    // Override via env var for further empirical exploration.
+    // SE, however, measures Q from the i64-ROUNDED center z_c, and the
+    // rounding inflates measured Q by an amount that scales with the
+    // basis Q-norms — enormous when the lattice is coarse relative to
+    // the cap (the QHQ@k=1 exact solution: geometric Q = 1.00, measured
+    // Q = 6.28; see qhq_q_decomposition_diagnostic), unmeasurable at
+    // k ≥ 5 (retention experiments at θ∈{0.35, 0.7, 1.1},
+    // ε∈{3e-2, 1e-3, 1e-5}, k∈{5, 6, 9, 13}, both parities: every
+    // ε-close solution and min cost preserved down to bound 1.75-2).
+    //
+    // Hence the k-dependent default: 3.0 (= geometric max 2.75 + slack)
+    // for k ≥ 5 — ~11-60× fewer tree nodes than the historical 8 with
+    // identical ε-close output — and 8.0 below (rounding-dominated
+    // regime; production brute-forces k ≤ BRUTE_LIMIT anyway, so the
+    // small-k lattice path only serves tests/probes and its cost is
+    // irrelevant). Removing the center rounding (fractional-center SE
+    // walk, as the 8D path does) would make ~2.75+δ sound at ALL k and
+    // is the proper root-cause fix — tracked as follow-up. The
+    // norm-shell prune plus the integer-exact leaf check filter the
+    // false positives the slack admits. Override via env var.
     let bound_sq = std::env::var("CYCLOSYNTH_BOUND_SQ")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(8.0_f64);
+        .unwrap_or(if k <= 4 { 8.0 } else { 3.0 });
 
     // Pre-compute alignment threshold and y at MPFR-128.
     //
@@ -677,6 +685,63 @@ mod tests {
             diamond_distance_float(&cand.to_float(), &target)
         }).fold(f64::INFINITY, f64::min);
         assert!(min_dist < 1e-9, "min dist to QHQ at k=1: {min_dist:.3e}");
+    }
+
+    /// Diagnostic (ignored): decompose the QHQ@k=1 solution's Q-norm into
+    /// geometric Q (from the true fractional cap center) vs SE-measured Q
+    /// (from the i64-rounded z_c center). Explains why the QHQ test needs
+    /// bound_sq > 6 while the geometric theory says Q ≤ 2.75
+    /// (docs/bound_sq_soundness.md). Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn qhq_q_decomposition_diagnostic() {
+        use crate::matrix::u2::U2Q;
+
+        unsafe { std::env::set_var("CYCLOSYNTH_BOUND_SQ", "8") };
+        let qhq: U2Q = U2Q::q() * U2Q::h() * U2Q::q();
+        let target = qhq.to_float();
+        let v = unitary_to_uv_zeta(&target);
+        let k = qhq.k;
+        let y = uv_to_xy_zeta(v, k);
+        let eps = 0.1_f64;
+
+        let mut s = IntScratch16::new(eps);
+        let abort = AtomicBool::new(false);
+        let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
+        unsafe { std::env::remove_var("CYCLOSYNTH_BOUND_SQ") };
+        assert!(!sols.is_empty(), "phase1@bound8 must find QHQ");
+
+        let q = crate::synthesis::lattice_zeta::q_metric::build_q_zzeta_lattice(v, k, eps);
+        // True cap center (ambient) and rounded-z_c effective center.
+        let c_true: [f64; 16] = std::array::from_fn(|i| s.c[i].to_f64());
+        let mut c_rounded = [0.0f64; 16];
+        for i in 0..16 {
+            let zi = s.lu_x[i].to_f64().round();
+            for j in 0..16 {
+                c_rounded[j] += zi * s.basis[i][j] as f64;
+            }
+        }
+        let q_norm = |x: &[i64; 16], c: &[f64; 16]| -> f64 {
+            let d: [f64; 16] = std::array::from_fn(|i| x[i] as f64 - c[i]);
+            let mut acc = 0.0;
+            for i in 0..16 {
+                for j in 0..16 {
+                    acc += d[i] * q[i][j] * d[j];
+                }
+            }
+            acc
+        };
+        for (n, sol) in sols.iter().enumerate() {
+            eprintln!(
+                "sol {n}: Q_geometric={:.4}  Q_se_rounded_center={:.4}",
+                q_norm(sol, &c_true),
+                q_norm(sol, &c_rounded)
+            );
+        }
+        let frac_err: f64 = (0..16)
+            .map(|i| (s.lu_x[i].to_f64() - s.lu_x[i].to_f64().round()).abs())
+            .fold(0.0, f64::max);
+        eprintln!("max |frac(lu_x)| = {frac_err:.4}");
     }
 
     /// Round-trip at a moderate k=2. Pick a brute solution, derive `v` from
