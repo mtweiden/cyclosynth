@@ -37,7 +37,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use crate::matrix::U2T;
 use crate::rings::types::{Float, Int};
 use crate::rings::ZOmega;
-use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
+use crate::synthesis::cliffords::{CLIFFORD_LDE0_IDX, CLIFFORD_TABLE_T};
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2t_float, Mat2};
 use crate::synthesis::search::{
@@ -45,10 +45,11 @@ use crate::synthesis::search::{
     normalize4,
 };
 
-/// Global cache for `build_l` results, keyed by `t_prime`. Values are wrapped
-/// in `Arc` so cache hits return an `O(1)` refcount bump rather than cloning
-/// the full prefix list (at t'=14 that vector holds ~329 k U2T values, ~32 MB).
-static BUILD_L_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<U2T>>>>> =
+/// Global cache for `build_l` results, keyed by `(t_prime, coset_dedup)`.
+/// Values are wrapped in `Arc` so cache hits return an `O(1)` refcount bump
+/// rather than cloning the full prefix list (at t'=14 that vector holds
+/// ~329 k U2T values, ~32 MB).
+static BUILD_L_CACHE: LazyLock<Mutex<HashMap<(u32, bool), Arc<Vec<U2T>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Extract uv = [Re(u1), Im(u1), Re(u2), Im(u2)] from a 2×2 unitary matrix.
@@ -182,6 +183,41 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
         .try_into().unwrap()
 }
 
+/// Right-coset dedup gate for `build_l` (stage 1 of
+/// docs/plan_8d_prefix_rework.md, lever B1). Tri-state:
+/// `CYCLOSYNTH_L_COSET=0` forces plain phase-dedup, `=1` forces coset
+/// dedup at every ε, unset defers to the [`COSET_EPS_FLOOR`] rule.
+/// Read once per process (LazyLock).
+static L_COSET_DEDUP: LazyLock<Option<bool>> = LazyLock::new(|| {
+    match std::env::var("CYCLOSYNTH_L_COSET").as_deref() {
+        Ok("0") => Some(false),
+        Ok("1") => Some(true),
+        _ => None,
+    }
+});
+
+/// ε floor for default-on right-coset dedup. Below it (deep ε) the radial
+/// cap half-width h = (1 − √(1−ε²))/2 ≈ ε²/4 falls under the f64
+/// quantization noise of the alignment chain (`u2t_dag_times_mat2` →
+/// `mat_to_uv` → `uv_to_xy`, relative ~1e-16): each prefix frame's cap
+/// center is radially misplaced by SEVERAL h, true solutions' Q-norms
+/// scatter far outside the 1.51 walk bound (observed Q ≈ 14.8 at ε=1e-8
+/// for a verified ε-close image with exact shell norm and a passing MPFR
+/// alignment margin — probe_coset_flip_t78), and only the 8× coset-mate
+/// redundancy of the plain prefix set lets SOME frame land inside the
+/// bound. Removing the redundancy there flips per-level FOUND→none
+/// (lde 78→80 on all three bench targets at 1e-8). Until the y chain is
+/// rebuilt above f64 (MPFR matrix ops — the 8D sibling of the 16D
+/// "precision in w[d]" cliff fix), coset dedup stays off below this
+/// floor. At ε ≥ 1e-7 the ratio h/(y-noise) ≥ ~100 and the per-level
+/// FOUND/none parity gate passes (docs/w_8d_rework_notes.md).
+const COSET_EPS_FLOOR: Float = 1e-7;
+
+/// Resolve the dedup mode for a given ε (env override first).
+fn coset_mode_for(eps: Float) -> bool {
+    (*L_COSET_DEDUP).unwrap_or(eps >= COSET_EPS_FLOOR)
+}
+
 /// Build L_{t'}: the Matsumoto–Amano prefix set with Clifford postmultiplication.
 ///
 /// Matches Python's `build_L`:
@@ -189,31 +225,55 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
 ///   L_n (n≥1):
 ///     even branch: (HS^{b_n}T)·…·(HS^{b_1}T) · C  for b_i ∈ {0,1}, C ∈ C_1
 ///     odd  branch: T · (HS^{b_{n-1}}T)·…·(HS^{b_1}T) · C
-///   deduplicated up to global U(1) phase.
+///   deduplicated up to global U(1) phase, then (in coset mode — used by
+///   production at ε ≥ [`COSET_EPS_FLOOR`], see [`coset_mode_for`]) up to
+///   RIGHT cosets of the lde-0 Clifford subgroup ⟨S,X⟩: for lde-0 `C`,
+///   prefix `U_L·C`'s subproblem is a Q-isometric bijection of `U_L`'s
+///   with identical total unitaries (`(U_L·C)·U_R = U_L·(C·U_R)`, with
+///   `C·U_R` on the same norm shell at the same lde), so one
+///   representative per coset preserves completeness exactly — PROVIDED
+///   the per-frame SE walk is itself complete, which currently holds for
+///   ε ≥ the floor only (see COSET_EPS_FLOOR's doc). The 24 Cliffords
+///   form 3 right cosets of the 8-element subgroup, so this removes the
+///   ~2/3+ duplicated work the plain phase-dedup misses.
 ///
-/// Size after dedup: |L_0|=1, |L_n| = O(2^n) (much less than 3·2^{n-1}·24
-/// due to many Clifford products being phase-equivalent).
+/// Size after plain dedup: |L_0|=1, |L_n| = O(2^n) (much less than
+/// 3·2^{n-1}·24 due to many Clifford products being phase-equivalent);
+/// coset dedup shrinks it a further ~4.5-8× (M1 census in
+/// docs/w_8d_rework_notes.md).
 pub fn build_l(t_prime: u32) -> Arc<Vec<U2T>> {
+    // Legacy entry point (probes/tests): plain phase-dedup unless the env
+    // forces coset mode. Production (`dc_search` + the prewarm) goes
+    // through `build_l_mode` with `coset_mode_for(eps)`.
+    build_l_mode(t_prime, (*L_COSET_DEDUP).unwrap_or(false))
+}
+
+/// `build_l` with an explicit dedup mode; results cached per
+/// `(t_prime, coset_dedup)`.
+pub fn build_l_mode(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
+    let key = (t_prime, coset_dedup);
     // Check cache first; clone of `Arc` is just a refcount bump.
     {
         let cache = BUILD_L_CACHE.lock().unwrap();
-        if let Some(v) = cache.get(&t_prime) {
+        if let Some(v) = cache.get(&key) {
             return Arc::clone(v);
         }
     }
 
-    let result = Arc::new(build_l_inner(t_prime));
+    let result = Arc::new(build_l_inner_with(t_prime, coset_dedup));
 
     // Race-tolerant insert: another thread may have populated this entry while
     // we were computing; either copy is identical so an overwrite is harmless.
     BUILD_L_CACHE
         .lock()
         .unwrap()
-        .insert(t_prime, Arc::clone(&result));
+        .insert(key, Arc::clone(&result));
     result
 }
 
-fn build_l_inner(t_prime: u32) -> Vec<U2T> {
+/// `build_l_inner` with an explicit dedup mode (the M1 census probe
+/// compares both modes in one process, bypassing the env gate + cache).
+fn build_l_inner_with(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
     if t_prime == 0 {
         return vec![U2T::eye()];
     }
@@ -252,13 +312,26 @@ fn build_l_inner(t_prime: u32) -> Vec<U2T> {
         }
     }
 
-    // Deduplicate up to global phase
+    // Deduplicate up to global phase (and, in coset mode, up to the right
+    // coset u·⟨S,X⟩). Coset mode inserts the canonical key of every orbit
+    // member u·c when a representative u is KEPT, so later coset-mates hit
+    // `contains` with a single key computation each — ~2.3n keys total vs
+    // 8n for a min-over-orbit key.
     let mut seen: std::collections::HashSet<[i64; 8]> = std::collections::HashSet::new();
     let mut unique: Vec<U2T> = Vec::new();
     for u in candidates {
         let key = canonical_key(&u);
-        if seen.insert(key) {
-            unique.push(u);
+        if seen.contains(&key) {
+            continue;
+        }
+        unique.push(u);
+        if coset_dedup {
+            // c = I is CLIFFORD_LDE0_IDX[0], which re-inserts `key` itself.
+            for &ci in CLIFFORD_LDE0_IDX.iter() {
+                seen.insert(canonical_key(&(u * CLIFFORD_TABLE_T[ci].1)));
+            }
+        } else {
+            seen.insert(key);
         }
     }
     unique
@@ -302,9 +375,9 @@ fn trace_dump_pass(
 ) {
     eprintln!(
         "[trace] lde={:>2} pass{} t'={:>2} prefixes={:>6} mat_uv_rej={:>6} \
-         se_cb={:>9} se_nodes={:>11} (max/walk {:>9}) budget={} {:>9.1}ms result={}",
+         se_cb={:>9} se_nodes={:>11} (max/walk {:>9}) dist_rej={} budget={} {:>9.1}ms result={}",
         t, pass, t_prime, s.prefixes, s.mat_to_uv_rejected, s.se_callbacks,
-        s.se_nodes, s.se_nodes_max, budget_hit as u8, pass_ms,
+        s.se_nodes, s.se_nodes_max, s.dist_rejected, budget_hit as u8, pass_ms,
         if found { "FOUND" } else { "none" }
     );
     let phase_total = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
@@ -383,6 +456,50 @@ const PASS2_CAP: u64 = u64::MAX;
 /// the accepted speed-over-completeness rule.
 const PASS1_NODE_CAP: u64 = 2_000_000;
 const PASS2_NODE_CAP: u64 = 50_000_000;
+
+/// Candidates collected per DC walk (one prefix × one branch) before the
+/// upstream ε-distance check. Historical value was 1 (pure first-hit), but
+/// the stage-1 right-coset dedup needs the walk to survive a BORDERLINE
+/// first candidate: at ε=1e-8 a candidate can pass the MPFR-128 alignment
+/// cap (sin φ ≤ ε exactly) yet fail the f64 diamond-distance check by
+/// ~1 ulp — observed live (dist_rej=1 at lde=78 flipped FOUND→none on all
+/// 3 bench targets once the dedup removed the coset-mates). Pre-dedup,
+/// each ε-close solution had up to 8 coset-mate frames = 8 independent
+/// first-hit draws; the dedup collapses them to one frame, so that frame
+/// must yield up to 8 candidates to preserve the same robustness (every
+/// mate's solution maps into the representative's cap region, so they ARE
+/// reachable in this one walk). The dist-check loop still returns on the
+/// FIRST passing candidate, so behavior is identical to max_solutions=1
+/// whenever the first candidate is good.
+const DC_WALK_MAX_SOLUTIONS: usize = 8;
+
+/// Stage-2 branch two-sweep gate (docs/plan_8d_prefix_rework.md lever 3):
+/// when on, `dc_search` runs ONE inner branch across all prefixes first and
+/// the second branch only if the first sweep found nothing, instead of
+/// paying both branch pipelines per prefix up front. `budget_hit` ORs
+/// across sweeps, so the 2-pass requeue contract is unchanged.
+///
+/// Default OFF — the plan's kill criterion fired: M2 measured branch wins
+/// at ~50/50 (revert config: 5 even / 7 odd; coset config: 6/6, with no
+/// t_inner-parity rule and mean win position 0.71-0.76 of the sweep —
+/// docs/w_8d_rework_notes.md). With no dominant branch, sweep 1 covers
+/// only ~half the finds and the other half pays a full extra sweep of
+/// parity/mat_to_uv work plus deferred discovery; expected value ≤ 1.
+/// Kept behind `CYCLOSYNTH_TWO_SWEEP=1` for future re-evaluation (e.g.
+/// if a branch-prior emerges from the t'-offset work in stage 3).
+static BRANCH_TWO_SWEEP: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("CYCLOSYNTH_TWO_SWEEP").map(|v| v == "1").unwrap_or(false)
+});
+
+/// Sweep-1 branch override for experiments: `CYCLOSYNTH_SWEEP1=odd|even`.
+/// Default (None) uses the M2-measured choice in `dc_search`.
+static SWEEP1_ODD_OVERRIDE: LazyLock<Option<bool>> = LazyLock::new(|| {
+    match std::env::var("CYCLOSYNTH_SWEEP1").as_deref() {
+        Ok("odd") => Some(true),
+        Ok("even") => Some(false),
+        _ => None,
+    }
+});
 
 /// LLL-based aligned search for a right factor `U_R` of given lde `k`
 /// matching the alignment vector `v`. Finds integer 8-vectors satisfying
@@ -627,7 +744,8 @@ impl SynthesizerT {
                     })
                     .collect()
             };
-            needed.into_par_iter().for_each(|tp| { build_l(tp); });
+            let coset = coset_mode_for(self.epsilon);
+            needed.into_par_iter().for_each(|tp| { build_l_mode(tp, coset); });
         }
 
         for t in t_dc_start..=self.max_lde {
@@ -844,23 +962,47 @@ impl SynthesizerT {
             t_inner / 2 + 1
         };
 
-        let prefixes = build_l(t_prime);
+        let prefixes = build_l_mode(t_prime, coset_mode_for(eps));
         if crate::synthesis::diag::trace_enabled() {
             crate::synthesis::diag::N_PREFIXES
                 .fetch_add(prefixes.len() as u64, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Parallel search over all left prefixes.
-        // find_map_any stops all threads as soon as any one returns Some(...).
-        // with_min_len ensures rayon distributes work evenly rather than
-        // keeping everything on one thread when items complete quickly.
+        // find_any stops scheduling new prefixes as soon as any one returns
+        // Some(...); with_min_len ensures rayon distributes work evenly
+        // rather than keeping everything on one thread when items complete
+        // quickly.
         let n_threads = rayon::current_num_threads();
-        let chunk = (prefixes.len() / n_threads).max(1);
+        let n = prefixes.len();
+        let chunk = (n / n_threads).max(1);
         let budget_hit = std::sync::atomic::AtomicBool::new(false);
         // Cross-branch winner signal: set by the first prefix that finds an
         // ε-close solution; checked at every SE recurse-entry of every
         // other in-flight walk.
         let found_abort = std::sync::atomic::AtomicBool::new(false);
+
+        // Round-robin interleave (the 16D OPTIMAL_PREFIX_INTERLEAVE
+        // pattern): deal prefix indices across n_threads strides so each
+        // rayon chunk samples the whole build_l-order space instead of one
+        // contiguous block. build_l order correlates position with
+        // structure (bit-string, then Clifford coset), so contiguous
+        // chunks concentrate structurally-similar prefixes on one worker;
+        // interleaving makes every worker's early items span the space,
+        // which lowers time-to-first-hit under find_any.
+        let order: Vec<u32> = if n > n_threads {
+            let mut v = Vec::with_capacity(n);
+            for j in 0..n_threads {
+                let mut idx = j;
+                while idx < n {
+                    v.push(idx as u32);
+                    idx += n_threads;
+                }
+            }
+            v
+        } else {
+            (0..n as u32).collect()
+        };
 
         // Algebraic parity pre-filter: `mat_to_uv(U_L† · target)` succeeds
         // iff `parity(det(U_L)) == parity(det(target))`. Skipping prefixes
@@ -872,80 +1014,113 @@ impl SynthesizerT {
         // mat_to_uv check.
         let target_parity = det_zeta_parity(target);
 
+        // Stage-2 branch two-sweep (lever 3): each "plan" is the list of
+        // inner branches (`odd` flags) one sweep runs per prefix.
+        //   - t_inner == 0: only the even branch exists (single sweep).
+        //   - two-sweep ON: sweep 1 = the M2-dominant branch across all
+        //     prefixes; sweep 2 = the other branch, only entered when
+        //     sweep 1 found nothing. On the found level this pays ~one
+        //     branch pipeline per scanned prefix instead of two; on an
+        //     empty level it does the same total work, reordered.
+        //   - two-sweep OFF (the default — M2 measured ~50/50 branch
+        //     wins, the plan's kill criterion; see BRANCH_TWO_SWEEP):
+        //     legacy single sweep running even-then-odd per prefix.
+        // Sweep 1 defaults to even (legacy order) unless overridden via
+        // CYCLOSYNTH_SWEEP1=odd.
+        let two_sweep = t_inner > 0 && *BRANCH_TWO_SWEEP;
+        let sweep1_odd = (*SWEEP1_ODD_OVERRIDE).unwrap_or(false);
+        let plans: Vec<Vec<bool>> = if t_inner == 0 {
+            vec![vec![false]]
+        } else if two_sweep {
+            vec![vec![sweep1_odd], vec![!sweep1_odd]]
+        } else {
+            vec![vec![false, true]]
+        };
+
         // Per-worker scratch: rayon's `map_init` allocates one
         // `LatticeScratch` (pre-allocated MPFR/i256 buffers at the right
         // precision for `eps`) per worker thread and reuses it across every
         // prefix that worker handles, avoiding per-op allocation in the
         // hot path.
-        let result = prefixes
-            .par_iter()
-            .with_min_len(chunk)
-            .map_init(
-                || crate::synthesis::lattice::LatticeScratch::new(eps),
-                |scratch, u_l| -> Option<SynthResultT> {
-                    if let Some(tp) = target_parity {
-                        if det_zeta_parity(&u_l.to_float()) != Some(tp) {
-                            crate::synthesis::diag::N_MAT_TO_UV_REJECTED
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            return None;
-                        }
-                    }
-                    let m_inner = u2t_dag_times_mat2(u_l, target);
-                    let v_inner = match mat_to_uv(&m_inner) {
-                        Some(v) => v,
-                        None => {
-                            crate::synthesis::diag::N_MAT_TO_UV_REJECTED
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            return None;
-                        }
-                    };
-
-                    // Even inner branch: U_L · U_R ≈ target
-                    for sol in lll_aligned_search(
-                        scratch, v_inner, k_inner, eps, 1, max_phase2_calls,
-                        max_nodes, &budget_hit, Some(&found_abort),
-                    ) {
-                        let u2t = *u_l * solution_to_u2t(&sol, k_inner);
-                        let dist = diamond_distance_u2t_float(&u2t, target);
-                        if dist < eps {
-                            found_abort.store(true, std::sync::atomic::Ordering::Relaxed);
-                            return Some(SynthResultT {
-                                gates: Some(BlochDecomposer.decompose(&u2t)),
-                                lde: t,
-                                distance: dist,
-                            });
-                        }
-                        crate::synthesis::diag::N_DIST_REJECTED
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-
-                    // Odd inner branch: U_L · U_R · T ≈ target
-                    if t_inner > 0 {
-                        let v_inner_t = apply_t_dag_to_uv(v_inner);
-                        for sol in lll_aligned_search(
-                            scratch, v_inner_t, k_inner, eps, 1, max_phase2_calls,
-                            max_nodes, &budget_hit, Some(&found_abort),
-                        ) {
-                            let u2t = *u_l * solution_to_u2t(&sol, k_inner) * U2T::t();
-                            let dist = diamond_distance_u2t_float(&u2t, target);
-                            if dist < eps {
-                                found_abort.store(true, std::sync::atomic::Ordering::Relaxed);
-                                return Some(SynthResultT {
-                                    gates: Some(BlochDecomposer.decompose(&u2t)),
-                                    lde: t,
-                                    distance: dist,
-                                });
+        //
+        // `budget_hit` and `found_abort` are shared across sweeps:
+        // budget_hit ORs (a sweep-1 budget trip must surface even when
+        // sweep 2 completes exhaustively — the 2-pass requeue depends on
+        // it), and found_abort can only be set by a winner, which ends the
+        // sweep loop anyway.
+        let mut result: Option<SynthResultT> = None;
+        for plan in &plans {
+            result = order
+                .par_iter()
+                .enumerate()
+                .with_min_len(chunk)
+                .map_init(
+                    || crate::synthesis::lattice::LatticeScratch::new(eps),
+                    |scratch, (pos, &pi)| -> Option<SynthResultT> {
+                        let u_l = &prefixes[pi as usize];
+                        if let Some(tp) = target_parity {
+                            if det_zeta_parity(&u_l.to_float()) != Some(tp) {
+                                crate::synthesis::diag::N_MAT_TO_UV_REJECTED
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                return None;
                             }
-                            crate::synthesis::diag::N_DIST_REJECTED
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
-                    }
+                        let m_inner = u2t_dag_times_mat2(u_l, target);
+                        let v_inner = match mat_to_uv(&m_inner) {
+                            Some(v) => v,
+                            None => {
+                                crate::synthesis::diag::N_MAT_TO_UV_REJECTED
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                return None;
+                            }
+                        };
 
-                    None
-                },
-            )
-            .find_any(|r| r.is_some())
-            .flatten();
+                        for &odd in plan {
+                            // Even inner branch: U_L · U_R ≈ target
+                            // Odd  inner branch: U_L · U_R · T ≈ target
+                            let v_branch = if odd {
+                                apply_t_dag_to_uv(v_inner)
+                            } else {
+                                v_inner
+                            };
+                            for sol in lll_aligned_search(
+                                scratch, v_branch, k_inner, eps,
+                                DC_WALK_MAX_SOLUTIONS, max_phase2_calls,
+                                max_nodes, &budget_hit, Some(&found_abort),
+                            ) {
+                                let u2t = if odd {
+                                    *u_l * solution_to_u2t(&sol, k_inner) * U2T::t()
+                                } else {
+                                    *u_l * solution_to_u2t(&sol, k_inner)
+                                };
+                                let dist = diamond_distance_u2t_float(&u2t, target);
+                                if dist < eps {
+                                    found_abort
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                    // M2: branch-win + sweep-position telemetry.
+                                    crate::synthesis::diag::record_branch_win(
+                                        odd, pos, n, t,
+                                    );
+                                    return Some(SynthResultT {
+                                        gates: Some(BlochDecomposer.decompose(&u2t)),
+                                        lde: t,
+                                        distance: dist,
+                                    });
+                                }
+                                crate::synthesis::diag::N_DIST_REJECTED
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+
+                        None
+                    },
+                )
+                .find_any(|r| r.is_some())
+                .flatten();
+            if result.is_some() {
+                break;
+            }
+        }
 
         (result, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
     }
@@ -1279,6 +1454,493 @@ mod tests {
                 eprint!("   {s:>8.2}");
             }
             eprintln!();
+        }
+    }
+
+    /// Stage-2 contract: `dc_search`'s `budget_hit` is shared across the
+    /// branch sweeps (OR semantics) and surfaces to the caller — the 2-pass
+    /// requeue depends on it. With a 1-node SE budget every walk in BOTH
+    /// sweeps trips immediately on an empty level → `(None, true)`; the
+    /// same level at the production pass-1 caps completes exhaustively →
+    /// `(None, false)`. Together these pin the budget-driven requeue
+    /// signal through the two-sweep restructure.
+    #[test]
+    fn budget_hit_ors_across_sweeps() {
+        // Rz(π/7) @ 1e-5 first hits around lde 51 — the DC band (t'=1 at
+        // t=42) below it is a wide stretch of cheap empty levels.
+        let target = rz(PI / 7.0);
+        let eps = 1e-5_f64;
+        let synth = SynthesizerT::new(eps);
+        let raw_uv = unitary_to_uv(&target);
+        let v = normalize4(raw_uv).unwrap();
+        // Scan UP from the DC threshold for an EMPTY level (production
+        // caps → (None, false), i.e. exhaustive) with surviving prefixes,
+        // then verify that a 1-node SE budget on that level — which trips
+        // every walk in BOTH sweeps at its first recurse-entry — surfaces
+        // through the shared budget_hit as (None, true). The scan STOPS at
+        // the first FOUND level: empty levels live below first-hit, and
+        // climbing past it would build exponentially larger L_{t'} sets
+        // for nothing.
+        let mut verified = false;
+        for t in 42..=52u32 {
+            if optimal_t_prime(t, eps) == 0 {
+                continue;
+            }
+            let (res, hit) = synth.dc_search(&target, v, t, PASS1_CAP, PASS1_NODE_CAP);
+            if res.is_some() {
+                break; // first-hit reached; no empty levels above
+            }
+            assert!(!hit, "production caps should be exhaustive at lde={t}");
+            let (res1, hit1) = synth.dc_search(&target, v, t, u64::MAX, 1);
+            assert!(res1.is_none(), "no solution reachable on a 1-node budget (lde={t})");
+            if hit1 {
+                verified = true;
+                break;
+            }
+            // else: level had no surviving prefixes (odd-t' parity
+            // wipeout) — no walk ran, keep scanning.
+        }
+        assert!(
+            verified,
+            "no empty dc level with surviving prefixes found below first-hit — \
+             budget_hit OR-across-sweeps could not be exercised"
+        );
+    }
+
+    /// Structural soundness of the right-coset dedup (stage 1, lever B1):
+    /// every plain-dedup prefix must be reachable as `rep · c` for some
+    /// kept representative `rep` and lde-0 Clifford `c` — i.e. the coset
+    /// orbits of the kept reps COVER the full prefix set, so no subproblem
+    /// is lost. Checked exactly (canonical-key equality, the same
+    /// equivalence the production dedup uses) for t' = 1..6.
+    #[test]
+    fn coset_dedup_covers_all_prefixes() {
+        for tp in 1..=6 {
+            let plain = build_l_inner_with(tp, false);
+            let coset = build_l_inner_with(tp, true);
+            assert!(coset.len() < plain.len(), "t'={tp}: coset dedup removed nothing");
+            let mut covered: std::collections::HashSet<[i64; 8]> =
+                std::collections::HashSet::new();
+            for u in &coset {
+                for &ci in CLIFFORD_LDE0_IDX.iter() {
+                    covered.insert(canonical_key(&(*u * CLIFFORD_TABLE_T[ci].1)));
+                }
+            }
+            for (i, u) in plain.iter().enumerate() {
+                assert!(
+                    covered.contains(&canonical_key(u)),
+                    "t'={tp}: plain prefix {i} not covered by any kept coset orbit"
+                );
+            }
+        }
+    }
+
+    /// Diagnostic probe (ignored): the t_identity target-2 @1e-5 FOUND→none
+    /// flip under coset dedup, reproduced at level t=47 (t'=6). Finds every
+    /// PLAIN prefix that yields an ε-valid solution, maps each winner to its
+    /// kept coset representative, reruns the rep's two branches, and checks
+    /// whether the image solution c·U_R appears — pinpointing where the
+    /// Q-isometric-bijection argument breaks in practice.
+    /// Run: `cargo test --release --lib probe_coset_flip_t47 -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_coset_flip_t47() {
+        // SplitMix64(0xC0FFEE) — t_identity_1e5's generator; target idx 2.
+        struct Xs(u64);
+        impl Xs {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                z ^ (z >> 31)
+            }
+            fn unit(&mut self) -> f64 {
+                (self.next() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+            }
+            fn range(&mut self, lo: f64, hi: f64) -> f64 {
+                lo + (hi - lo) * self.unit()
+            }
+        }
+        // Widen the SE walk bound for the WHOLE probe (LazyLock-once; must
+        // precede the first phase1 call). If the rep's missing image shows
+        // up at bound 4.0, its Q-norm in that frame is in (1.51, 4.0] and
+        // the Q-band model is frame-fragile; if it stays missing, the f64
+        // partial-eucl norm prune (the known 1.5e-8-cliff mechanism) is
+        // killing the branch.
+        std::env::set_var("CYCLOSYNTH_SE_BOUND_8D", "4.0");
+        let mut rng = Xs(0xC0FFEE);
+        let mut tri = (0.0, 0.0, 0.0);
+        for _ in 0..3 {
+            tri = (
+                rng.range(0.2, PI - 0.2),
+                rng.range(0.1, 2.0 * PI - 0.1),
+                rng.range(0.1, 2.0 * PI - 0.1),
+            );
+        }
+        let (th, ph, la) = tri;
+        // u3 with the t_identity convention (global-phase normalized).
+        let (c, s) = ((th / 2.0).cos(), (th / 2.0).sin());
+        let eilam = Complex::from_polar(1.0, la);
+        let eiphi = Complex::from_polar(1.0, ph);
+        let g = Complex::from_polar(1.0, -(ph + la) / 2.0);
+        let target: Mat2 = [
+            [Complex::new(c, 0.0) * g, -eilam * s * g],
+            [eiphi * s * g, eiphi * eilam * Complex::new(c, 0.0) * g],
+        ];
+
+        coset_flip_probe(target, 1e-5, 47);
+    }
+
+    /// Same forensic probe at the bench-suite 1e-8 flip: time_synthesis
+    /// target_00 (xorshift64, seed 0xC0FFEEBAADD0E|1), lde 78 (t'=12),
+    /// which still drifts to 80 under coset dedup after the
+    /// euclidean_cholesky trust guards.
+    /// Run: `cargo test --release --lib probe_coset_flip_t78 -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn probe_coset_flip_t78() {
+        std::env::set_var("CYCLOSYNTH_SE_BOUND_8D", "4.0");
+        fn xorshift64(s: &mut u64) -> u64 {
+            *s ^= *s << 13;
+            *s ^= *s >> 7;
+            *s ^= *s << 17;
+            *s
+        }
+        fn rand_angle(s: &mut u64) -> f64 {
+            let b = xorshift64(s) >> 11;
+            (b as f64) / ((1u64 << 53) as f64) * 2.0 * PI
+        }
+        let mut state: u64 = 0xC0FFEE_BAADD0E_u64 | 1;
+        let a = rand_angle(&mut state);
+        let b = rand_angle(&mut state);
+        let c = rand_angle(&mut state);
+        let target = u3(a, b, c);
+        coset_flip_probe(target, 1e-8, 78);
+    }
+
+    #[allow(clippy::needless_range_loop)]
+    fn coset_flip_probe(target: Mat2, eps: Float, t: u32) {
+        use std::sync::atomic::AtomicBool;
+        let t_prime = optimal_t_prime(t, eps);
+        let t_inner = t - t_prime;
+        let k_inner: u32 = if t_inner % 2 == 1 { (t_inner - 1) / 2 + 1 } else { t_inner / 2 + 1 };
+        eprintln!("t={t} t'={t_prime} t_inner={t_inner} k_inner={k_inner}");
+
+        let plain = build_l_inner_with(t_prime, false);
+        let coset = build_l_inner_with(t_prime, true);
+        eprintln!("|plain|={} |coset|={}", plain.len(), coset.len());
+
+        let run_prefix = |u_l: &U2T, max_sols: usize| -> Vec<(bool, [i64; 8], f64)> {
+            let mut out = Vec::new();
+            let m_inner = u2t_dag_times_mat2(u_l, &target);
+            let Some(v_inner) = mat_to_uv(&m_inner) else { return out };
+            let mut scratch = crate::synthesis::lattice::LatticeScratch::new(eps);
+            for odd in [false, true] {
+                let v_b = if odd { apply_t_dag_to_uv(v_inner) } else { v_inner };
+                let hit = AtomicBool::new(false);
+                for sol in lll_aligned_search(
+                    &mut scratch, v_b, k_inner, eps, max_sols, u64::MAX,
+                    50_000_000, &hit, None,
+                ) {
+                    let u2t = if odd {
+                        *u_l * solution_to_u2t(&sol, k_inner) * U2T::t()
+                    } else {
+                        *u_l * solution_to_u2t(&sol, k_inner)
+                    };
+                    let dist = diamond_distance_u2t_float(&u2t, &target);
+                    out.push((odd, sol, dist));
+                }
+            }
+            out
+        };
+
+        // 1) all plain winners.
+        let winners: Vec<(usize, bool, [i64; 8], f64)> = plain
+            .par_iter()
+            .enumerate()
+            .flat_map_iter(|(i, u_l)| {
+                run_prefix(u_l, 16)
+                    .into_iter()
+                    .filter(|&(_, _, d)| d < eps)
+                    .map(move |(odd, sol, d)| (i, odd, sol, d))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        eprintln!("plain winners: {}", winners.len());
+        for &(i, odd, sol, d) in winners.iter().take(8) {
+            eprintln!("  plain[{i}] odd={odd} sol={sol:?} dist={d:.3e}");
+        }
+
+        // 2) orbit-key → rep map for the coset set.
+        let mut rep_of: HashMap<[i64; 8], usize> = HashMap::new();
+        for (ri, r) in coset.iter().enumerate() {
+            for &ci in CLIFFORD_LDE0_IDX.iter() {
+                rep_of.entry(canonical_key(&(*r * CLIFFORD_TABLE_T[ci].1))).or_insert(ri);
+            }
+        }
+
+        for &(i, _odd, sol, d) in winners.iter().take(4) {
+            let w = &plain[i];
+            let Some(&ri) = rep_of.get(&canonical_key(w)) else {
+                eprintln!("plain[{i}]: NO REP FOUND (coverage hole!)");
+                continue;
+            };
+            let r = &coset[ri];
+            // which c maps rep -> winner? r·c ≡ w (up to phase).
+            let c_idx = CLIFFORD_LDE0_IDX.iter().copied().find(|&ci| {
+                canonical_key(&(*r * CLIFFORD_TABLE_T[ci].1)) == canonical_key(w)
+            });
+            eprintln!(
+                "plain[{i}] (dist {d:.3e}) -> rep coset[{ri}] via c={:?} (rep==winner: {})",
+                c_idx.map(|ci| CLIFFORD_TABLE_T[ci].0),
+                ri_eq(r, w),
+            );
+            // 3) rerun the rep with a deep candidate budget.
+            let rsols = run_prefix(r, 4096);
+            let n_close = rsols.iter().filter(|&&(_, _, d)| d < eps).count();
+            eprintln!(
+                "  rep sols={} eps-close={} dists(first 6)={:?}",
+                rsols.len(),
+                n_close,
+                rsols.iter().take(6).map(|&(o, _, d)| (o, d)).collect::<Vec<_>>()
+            );
+            // image solution: x_img = c · x_w (matrix-vector in the ring).
+            if let Some(ci) = c_idx {
+                let c_mat = &CLIFFORD_TABLE_T[ci].1;
+                // w ≈ r·c  ⇒  w·U(sol) = r·(c·U(sol)); image x = first col
+                // of c·U(sol). Winner was ODD branch: total = r·img·T.
+                let img_u2t = *c_mat * solution_to_u2t(&sol, k_inner);
+                eprintln!(
+                    "  image k={} (k_inner={k_inner}); in rep sols: {}",
+                    img_u2t.k,
+                    rsols.iter().any(|(_, s, _)| solution_to_u2t(s, k_inner).diamond_distance(&img_u2t) < 1e-9),
+                );
+                let img_total = *r * img_u2t * U2T::t();
+                eprintln!(
+                    "  dist(r·img·T, target) = {:.3e}",
+                    diamond_distance_u2t_float(&img_total, &target)
+                );
+                // Geometry of x_img in the rep's ODD frame.
+                let m_inner_r = u2t_dag_times_mat2(r, &target);
+                let v_inner_r = mat_to_uv(&m_inner_r).expect("rep mat_to_uv");
+                let v_odd_r = apply_t_dag_to_uv(v_inner_r);
+                let y = uv_to_xy(v_odd_r, k_inner);
+                // x_img integer coords: (u1, u2) coefficients of img_u2t.
+                let gi = |z: &crate::rings::ZOmega| -> [f64; 4] {
+                    use crate::rings::types::int_to_f64;
+                    [
+                        int_to_f64(z.a),
+                        int_to_f64(z.b),
+                        int_to_f64(z.c),
+                        int_to_f64(z.d),
+                    ]
+                };
+                let (i1, i2) = (gi(&img_u2t.u11), gi(&img_u2t.u21));
+                let x_img: [f64; 8] =
+                    [i1[0], i1[1], i1[2], i1[3], i2[0], i2[1], i2[2], i2[3]];
+                let dot: f64 = (0..8).map(|j| y[j] * x_img[j]).sum();
+                let norm_sq: f64 = x_img.iter().map(|v| v * v).sum();
+                let thresh = (1.0 - eps * eps) * 2f64.powi(2 * k_inner as i32) / 4.0;
+                eprintln!(
+                    "  x_img: |x|^2/2^k = {:.6}  dot^2/thresh - 1 = {:+.6e}",
+                    norm_sq / 2f64.powi(k_inner as i32),
+                    dot * dot / thresh - 1.0,
+                );
+                // Q-norm of x_img from the rep's odd frame, evaluated in
+                // MPFR at the scratch precision (an f64 eval of this form
+                // is garbage: Q eigenvalues reach 1/Δ_y² ~ 1e14 at 1e-5 and
+                // the form only stays O(1) through cancellation).
+                use crate::synthesis::lattice::{q_metric::build_q_mpfr, scratch::IntScratch};
+                use rug::Float as RFloat;
+                let mut qs = IntScratch::new(eps);
+                build_q_mpfr(&mut qs, &y, k_inner, eps);
+                let prec = qs.q_mpfr[0][0].prec();
+                let mut qn = RFloat::with_val(prec, 0.0);
+                for a in 0..8 {
+                    for b in 0..8 {
+                        let da = RFloat::with_val(prec, x_img[a]) - &qs.c[a];
+                        let db = RFloat::with_val(prec, x_img[b]) - &qs.c[b];
+                        qn += da * db * &qs.q_mpfr[a][b];
+                    }
+                }
+                eprintln!(
+                    "  x_img Q-norm in rep odd frame = {:.6} (walk bound 1.51; probe bound 4.0)",
+                    qn.to_f64()
+                );
+                // Call integer::phase1 directly to expose should_escalate
+                // (mod.rs's wrapper silently drops it).
+                {
+                    use std::sync::atomic::AtomicBool;
+                    let mut s2 = IntScratch::new(eps);
+                    s2.reset_basis();
+                    let hit = AtomicBool::new(false);
+                    let out = crate::synthesis::lattice::integer::phase1(
+                        &mut s2, &y, k_inner, eps, usize::MAX, u64::MAX,
+                        50_000_000, &hit, None,
+                    );
+                    eprintln!(
+                        "  rep odd frame direct phase1: sols={} should_escalate={} budget_hit={}",
+                        out.solutions.len(),
+                        out.should_escalate,
+                        hit.load(std::sync::atomic::Ordering::Relaxed),
+                    );
+                }
+                // SE-walk replay: reproduce phase1's setup, locate x_img's
+                // z-path, and print the walker's own per-depth partials to
+                // find which level excludes it.
+                {
+                    use crate::synthesis::lattice::{
+                        cholesky_lu::{cholesky_f64_8, lu_solve_int_inplace},
+                        lll::lll_l2_8,
+                        q_metric::build_q_int,
+                        se::{bilinear_b, euclidean_cholesky, reconstruct_x},
+                    };
+                    use rug::Assign;
+                    let mut s3 = IntScratch::new(eps);
+                    s3.reset_basis();
+                    build_q_mpfr(&mut s3, &y, k_inner, eps);
+                    build_q_int(&mut s3);
+                    let lll_res = lll_l2_8(&mut s3);
+                    eprintln!("  replay: lll={lll_res:?} scale_bits={}", s3.scale_bits);
+                    let basis = s3.basis;
+                    let chol_ok = cholesky_f64_8(&mut s3);
+                    for i in 0..8 {
+                        for j in 0..8 {
+                            let v = basis[j][i] as f64;
+                            s3.lu_a[i][j].assign(v);
+                        }
+                        let ci = s3.c[i].clone();
+                        s3.lu_rhs[i].assign(&ci);
+                    }
+                    let lu_ok = lu_solve_int_inplace(&mut s3);
+                    eprintln!("  replay: chol_ok={chol_ok} lu_ok={lu_ok}");
+                    let z_c: [f64; 8] = std::array::from_fn(|i| s3.lu_x[i].to_f64());
+                    // Solve B^T z = x_img EXACTLY (det ±1) with rug::Integer
+                    // adjugate (an f64 solve fails here — basis dynamic range
+                    // is huge; scale_bits=132). z = adj(A)·x / det(A).
+                    use rug::Integer as RInt;
+                    let aij = |i: usize, j: usize| RInt::from(basis[j][i]);
+                    // det via cofactor expansion is fine at 8x8 with exact
+                    // ints? Too slow (8!). Use fraction-free Bareiss.
+                    let mut m: Vec<Vec<RInt>> = (0..8)
+                        .map(|i| {
+                            let mut row: Vec<RInt> =
+                                (0..8).map(|j| aij(i, j)).collect();
+                            row.push(RInt::from(x_img[i] as i64));
+                            row
+                        })
+                        .collect();
+                    let mut sign = 1i32;
+                    let mut prev = RInt::from(1);
+                    for col in 0..8 {
+                        if m[col][col] == 0 {
+                            let p = (col + 1..8).find(|&r1| m[r1][col] != 0).unwrap();
+                            m.swap(col, p);
+                            sign = -sign;
+                        }
+                        for r2 in (col + 1)..8 {
+                            for cc in (col + 1)..9 {
+                                let t1 = RInt::from(&m[col][col] * &m[r2][cc]);
+                                let t2 = RInt::from(&m[r2][col] * &m[col][cc]);
+                                let num = t1 - t2;
+                                let (q, rem) = num.div_rem(prev.clone());
+                                assert!(rem == 0, "Bareiss exact division failed");
+                                m[r2][cc] = q;
+                            }
+                            m[r2][col] = RInt::from(0);
+                        }
+                        prev = m[col][col].clone();
+                    }
+                    // After Bareiss, m[7][7] = det·sign' and back-substitution
+                    // on the triangular system is exact.
+                    let det = RInt::from(&m[7][7] * sign);
+                    eprintln!("  replay: det(B^T) = {det}");
+                    let mut z_big: Vec<RInt> = vec![RInt::from(0); 8];
+                    for r2 in (0..8).rev() {
+                        let mut v = m[r2][8].clone();
+                        for cc in (r2 + 1)..8 {
+                            v -= RInt::from(&m[r2][cc] * &z_big[cc]);
+                        }
+                        let (q, rem) = v.div_rem(m[r2][r2].clone());
+                        assert!(rem == 0, "back-substitution not integral at {r2}");
+                        z_big[r2] = q;
+                    }
+                    let mut z_img = [0i64; 8];
+                    for (zi, zb) in z_img.iter_mut().zip(z_big.iter()) {
+                        *zi = zb.to_i64().expect("z fits i64");
+                    }
+                    let x_chk = reconstruct_x(&basis, &z_img);
+                    let x_int: [i64; 8] = std::array::from_fn(|i| x_img[i] as i64);
+                    eprintln!(
+                        "  replay: z_img={z_img:?} reconstruct==x_img: {}  bilinear_b={}",
+                        x_chk == x_int,
+                        bilinear_b(&x_int)
+                    );
+                    // Walker partials: R = l_f64^T (Q-metric), per depth d:
+                    // partial_d = sum_{i>=d} (sum_{j>=i} R[i][j] (z[j]-z_c[j]))^2.
+                    let mut rq = [[0.0f64; 8]; 8];
+                    for i in 0..8 {
+                        for j in 0..8 {
+                            rq[i][j] = s3.l_f64[j][i];
+                        }
+                    }
+                    let mut pq = [0.0f64; 9]; // pq[d] = partial entering depth d-1
+                    for d in (0..8).rev() {
+                        let mut lvl = 0.0;
+                        for j in d..8 {
+                            lvl += rq[d][j] * (z_img[j] as f64 - z_c[j]);
+                        }
+                        pq[d] = pq[d + 1] + lvl * lvl;
+                    }
+                    eprintln!("  replay: Q-partials by depth (7..0): {:?}",
+                        (0..8).rev().map(|d| (d, pq[d])).collect::<Vec<_>>());
+                    if let Some(re) = euclidean_cholesky(&basis) {
+                        let mut pe = [0.0f64; 9];
+                        for d in (0..8).rev() {
+                            let mut lvl = 0.0;
+                            for j in d..8 {
+                                lvl += re[d][j] * z_img[j] as f64;
+                            }
+                            pe[d] = pe[d + 1] + lvl * lvl;
+                        }
+                        let tgt = 2f64.powi(k_inner as i32);
+                        eprintln!(
+                            "  replay: eucl partials/2^k by depth (7..0): {:?} (cut if > 1 + 2^-k)",
+                            (0..8).rev().map(|d| (d, pe[d] / tgt)).collect::<Vec<_>>()
+                        );
+                    } else {
+                        eprintln!("  replay: euclidean_cholesky FAILED (prune disabled)");
+                    }
+                }
+            }
+        }
+
+        fn ri_eq(a: &U2T, b: &U2T) -> bool {
+            canonical_key(a) == canonical_key(b)
+        }
+    }
+
+    /// M1 census probe (stage 0 of docs/plan_8d_prefix_rework.md):
+    /// |L_{t'}| with vs without right-coset dedup, t' = 1..13. Lever B1
+    /// predicts 4.5-8×; kill if < 2×.
+    /// Run: `cargo test --release --lib l_coset_census -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn l_coset_census() {
+        eprintln!("\nM1 census: build_l plain phase-dedup vs right-coset dedup");
+        eprintln!("  t'   |L| plain   |L| coset   ratio");
+        for tp in 1..=13u32 {
+            let t0 = std::time::Instant::now();
+            let plain = build_l_inner_with(tp, false).len();
+            let t_plain = t0.elapsed().as_secs_f64() * 1000.0;
+            let t0 = std::time::Instant::now();
+            let coset = build_l_inner_with(tp, true).len();
+            let t_coset = t0.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "  {tp:>2}   {plain:>9}   {coset:>9}   {:>5.2}x   (build {t_plain:.0} / {t_coset:.0} ms)",
+                plain as f64 / coset as f64
+            );
         }
     }
 

@@ -624,6 +624,42 @@ pub fn snapshot() -> Snapshot {
     }
 }
 
+// ─── M2: 8D dc_search branch-win telemetry (prefix-rework stage 0) ───────────
+//
+// Appended 2026-06-11 (plan_8d_prefix_rework.md M2). Always-on and
+// CUMULATIVE across the process — deliberately NOT in `reset_all`: they
+// fire at most once per dc_search find (cold path), and try_at_lde's
+// per-pass reset_all would otherwise wipe them before a suite can
+// aggregate. Read at end-of-run by bench_t_breakdown / probes; a per-win
+// `[m2]` stderr line (trace-gated) carries the full distribution.
+
+/// dc_search finds that landed in the EVEN inner branch (U_L·U_R).
+pub static N_BRANCH_WIN_EVEN: AtomicU64 = AtomicU64::new(0);
+/// dc_search finds that landed in the ODD inner branch (U_L·U_R·T).
+pub static N_BRANCH_WIN_ODD: AtomicU64 = AtomicU64::new(0);
+/// Sum of winning-prefix sweep indices (mean position = sum / wins).
+pub static N_WIN_PREFIX_IDX_SUM: AtomicU64 = AtomicU64::new(0);
+/// Sum of sweep lengths at each win (mean fraction = idx_sum / len_sum).
+pub static N_WIN_PREFIX_LEN_SUM: AtomicU64 = AtomicU64::new(0);
+
+/// Record one dc_search find (M2). `idx` is the prefix's position in the
+/// sweep order actually used, `len` the sweep length.
+pub fn record_branch_win(odd: bool, idx: usize, len: usize, lde: u32) {
+    if odd {
+        N_BRANCH_WIN_ODD.fetch_add(1, Ordering::Relaxed);
+    } else {
+        N_BRANCH_WIN_EVEN.fetch_add(1, Ordering::Relaxed);
+    }
+    N_WIN_PREFIX_IDX_SUM.fetch_add(idx as u64, Ordering::Relaxed);
+    N_WIN_PREFIX_LEN_SUM.fetch_add(len as u64, Ordering::Relaxed);
+    if trace_enabled() {
+        eprintln!(
+            "[m2] lde={lde} branch={} prefix_idx={idx}/{len}",
+            if odd { "odd" } else { "even" }
+        );
+    }
+}
+
 /// Pretty-print 16D synthesis profile to stderr. Call after a full
 /// `synthesize` run with `CYCLOSYNTH_TRACE=1`.
 pub fn dump_zeta(s: &Snapshot, label: &str) {

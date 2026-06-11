@@ -43,6 +43,22 @@ pub static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
     ("ZHSH", U2T::new(ZOmega::from_i32( 0, 0, 1, 0), ZOmega::from_i32(-1, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0,-1, 0), 1)),
 ];
 
+/// Indices into [`CLIFFORD_TABLE_T`] of the 8 Cliffords with lde 0 — the
+/// subgroup ⟨S, X⟩ mod global phase: I, S, X, Y, Z, XS, YS, ZS. Exactly
+/// the Cliffords whose U2T denominator exponent `k` is 0 (entries are
+/// units of Z[ω], no 1/√2 factor).
+///
+/// Used by `build_l`'s right-coset dedup (stage 1 of
+/// docs/plan_8d_prefix_rework.md): for lde-0 `C`, the D&C subproblems of
+/// prefixes `U_L` and `U_L·C` are Q-isometric bijections with identical
+/// total unitaries (`U_L·C·U_R = U_L·(C·U_R)`, and `C·U_R` lies on the
+/// same norm shell with the same lde), so one representative per right
+/// coset `U_L·⟨S,X⟩` suffices. The 24 Cliffords fall into 3 right cosets
+/// of this subgroup, which is why `build_l`'s 24-fold Clifford
+/// postmultiplication is ~2/3+ duplicated work that plain phase-dedup
+/// misses.
+pub static CLIFFORD_LDE0_IDX: [usize; 8] = [0, 2, 3, 4, 5, 9, 10, 11];
+
 // Note on the T gate: T = Rz(π/4) = diag(e^{−iπ/8}, e^{iπ/8}). The phase
 // e^{iπ/8} is *not* in Z[ω], so T as an exact unitary needs the larger Z[ζ]
 // ring (or a base-8 DyadicComplex). For Clifford+T synthesis we never need T
@@ -118,6 +134,38 @@ mod tests {
                 }
                 let d = ci.diamond_distance(cj);
                 assert!(d > 1e-6, "Clifford {ni} and {nj} are identical (dist={d})");
+            }
+        }
+    }
+
+    /// The lde-0 subgroup table: all 8 entries have k == 0, no other
+    /// Clifford does, and the set is closed under multiplication mod
+    /// global phase (i.e. it really is the subgroup ⟨S, X⟩).
+    #[test]
+    fn test_lde0_subgroup_table() {
+        use crate::synthesis::cliffords::CLIFFORD_LDE0_IDX;
+        // Exactness: the listed entries are the k == 0 entries.
+        for (i, (name, c)) in CLIFFORD_TABLE_T.iter().enumerate() {
+            let in_table = CLIFFORD_LDE0_IDX.contains(&i);
+            assert_eq!(
+                c.k == 0,
+                in_table,
+                "Clifford {name} (idx {i}): k={} but lde0-table membership={in_table}",
+                c.k
+            );
+        }
+        // Closure mod phase: a·b matches some subgroup element.
+        for &i in &CLIFFORD_LDE0_IDX {
+            for &j in &CLIFFORD_LDE0_IDX {
+                let prod = CLIFFORD_TABLE_T[i].1 * CLIFFORD_TABLE_T[j].1;
+                let closed = CLIFFORD_LDE0_IDX.iter().any(|&m| {
+                    prod.diamond_distance(&CLIFFORD_TABLE_T[m].1) < 1e-9
+                });
+                assert!(
+                    closed,
+                    "subgroup not closed: {} * {}",
+                    CLIFFORD_TABLE_T[i].0, CLIFFORD_TABLE_T[j].0
+                );
             }
         }
     }
