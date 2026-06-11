@@ -1080,4 +1080,117 @@ mod tests {
             if hit { break; }
         }
     }
+
+    /// Serializes the two predictive-truncation tests: they share the
+    /// process-global fire counters AND the global rayon pool (a
+    /// concurrent walk shifts the other's item-completion dynamics), so
+    /// running them simultaneously under `--include-ignored` makes both
+    /// flaky. Poison-tolerant: a panic in one must not mask the other.
+    static PREDICTIVE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Predictive budget truncation must NOT fire on a walk that completes
+    /// within its budget: a budget-capped (NOT u64::MAX — the predictive
+    /// context is attached) k=2 enumeration that finishes far below the
+    /// cap. Asserts via the always-on diag counter that no predictive
+    /// abort happened and the walk did not report a budget hit. (Counter
+    /// is process-global; in the default suite NO test is expected to
+    /// fire, so a concurrent increment is itself a failure we want to see.)
+    #[test]
+    fn predictive_trunc_no_fire_on_completing_walk() {
+        use crate::synthesis::diag;
+
+        let _guard = PREDICTIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let fires_before = diag::N_PREDICTIVE_TRUNC_FIRES.load(Ordering::Relaxed);
+        let v = realistic_v();
+        let k = 2u32;
+        let eps = 0.5_f64;
+        let y = uv_to_xy_zeta(v, k);
+        let mut s = IntScratch16::new(eps);
+        let abort = AtomicBool::new(false);
+        let sols = phase1(&mut s, &y, k, eps, 10_000_000, &abort);
+        assert!(!sols.is_empty(), "k=2 budget-capped walk found nothing");
+        assert!(
+            !abort.load(Ordering::Relaxed),
+            "completing walk reported budget_hit"
+        );
+        let fires_after = diag::N_PREDICTIVE_TRUNC_FIRES.load(Ordering::Relaxed);
+        assert_eq!(
+            fires_after, fires_before,
+            "predictive truncation fired on a walk that completed in-budget"
+        );
+    }
+
+    /// Demonstration (ignored — ~2 s walk): predictive truncation fires on
+    /// a budget-capped walk that cannot complete, aborting with consumed
+    /// ≪ budget instead of burning the whole pool. Config: rz(0.7) at
+    /// ε=1e-3, k=11 — the level whose m=0 coverage walks blow through even
+    /// the 32×-boosted certify budgets (true total ≳ 100G nodes).
+    ///
+    /// Measured fire window (2026-06-10, 14 threads): completing 10% of
+    /// the 4153 frontier items costs C* ≈ 1.21G nodes, so a budget B fires
+    /// iff B ∈ (C*, C*/0.3 ≈ 4G): at B=3G it fires at consumed 1.21G
+    /// (40% of budget, projected 11.7G > 3×3G), at B=2M/100M/6.4G it
+    /// plain-exhausts (fraction_done at exhaustion 0.003/0.004/0.376 —
+    /// the last projects 17G = 2.66×B, just under MARGIN=3; see
+    /// docs/w_predictive_trunc_notes.md for the bias analysis). Asserts
+    /// the predictive counter fired, the plain-exhaust counter did NOT,
+    /// the walk surfaced as a budget hit, and consumed ≪ budget. Run:
+    /// `cargo test --release --lib predictive_trunc_fires -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn predictive_trunc_fires_on_infeasible_budget() {
+        use crate::synthesis::diag;
+        use num_complex::Complex64;
+
+        let theta = 0.7f64;
+        let target: crate::synthesis::Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let v = unitary_to_uv_zeta(&target);
+        let eps = 1e-3_f64;
+        let k = 11u32;
+        let budget = 3_000_000_000_u64; // inside the measured (1.2G, 4G) fire window
+        let y = uv_to_xy_zeta(v, k);
+
+        let _guard = PREDICTIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Walk-end `[w1] predictive: ...` progress line (items/consumed/fired).
+        unsafe { std::env::set_var("CYCLOSYNTH_W1_DEBUG", "1") };
+        let pred_before = diag::N_PREDICTIVE_TRUNC_FIRES.load(Ordering::Relaxed);
+        let exh_before = diag::N_BUDGET_EXHAUST_FIRES.load(Ordering::Relaxed);
+        let mut s = IntScratch16::new(eps);
+        let abort = AtomicBool::new(false);
+        let consumed = AtomicU64::new(0);
+        let t0 = std::time::Instant::now();
+        let _sols = crate::synthesis::lattice_zeta::phase1_with_stop(
+            &mut s, &y, k, eps, budget, &abort, |_| false, None, Some(&consumed),
+        );
+        unsafe { std::env::remove_var("CYCLOSYNTH_W1_DEBUG") };
+        let pred_fires = diag::N_PREDICTIVE_TRUNC_FIRES.load(Ordering::Relaxed) - pred_before;
+        let exh_fires = diag::N_BUDGET_EXHAUST_FIRES.load(Ordering::Relaxed) - exh_before;
+        let used = consumed.load(Ordering::Relaxed);
+        eprintln!(
+            "predictive demo: k={k} eps={eps:e} budget={budget}  consumed={used} \
+             ({:.1}% of budget)  pred_fires={pred_fires}  exhaust_fires={exh_fires}  \
+             budget_hit={}  t={:?}",
+            100.0 * used as f64 / budget as f64,
+            abort.load(Ordering::Relaxed),
+            t0.elapsed(),
+        );
+        assert!(
+            abort.load(Ordering::Relaxed),
+            "infeasible-budget walk must surface as budget hit"
+        );
+        assert_eq!(pred_fires, 1, "expected exactly one predictive fire");
+        assert_eq!(exh_fires, 0, "pool must not have been burned to zero");
+        // Fire point varies with work-stealing scheduling: measured 40%
+        // of budget on a quiet machine, up to ~78% under concurrent rayon
+        // load. The structural asserts above (predictive fired, pool NOT
+        // exhausted) are the real contract; this one just confirms budget
+        // was actually reclaimed.
+        assert!(
+            used < budget * 95 / 100,
+            "predictive abort reclaimed too little (consumed {used} of {budget})"
+        );
+    }
 }
