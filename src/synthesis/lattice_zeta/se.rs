@@ -119,6 +119,18 @@ pub fn set_qfilter_enabled(value: bool) {
     QFILTER_ENABLED.store(value, Ordering::Relaxed);
 }
 
+/// dd Q-bracket kill-switch: `CYCLOSYNTH_QBRACKET_DD=0` disables the
+/// deep-ε double-double Q-bracket (integer.rs then falls back to the
+/// legacy f64 factor + bound 3.0 at ε ≤ 2e-8 — the pre-dd behavior).
+/// A/B benchmarking + retention-reference aid. Read once.
+static QBRACKET_DD_DISABLED: OnceLock<bool> = OnceLock::new();
+
+pub fn qbracket_dd_disabled() -> bool {
+    *QBRACKET_DD_DISABLED.get_or_init(|| {
+        std::env::var("CYCLOSYNTH_QBRACKET_DD").ok().as_deref() == Some("0")
+    })
+}
+
 /// MPFR-128 verification of the f64 norm-shell prune predicate. When ON,
 /// every f64 prune-fire event is re-checked at 128-bit precision using the
 /// MPFR Cholesky factor; if MPFR says "keep" (true partial < threshold),
@@ -510,6 +522,65 @@ pub fn verify_partial_dd_exceeds(
     total.0 + total.1 > threshold
 }
 
+// ─── dd Q-bracket (deep-ε dd-verified Q pruning) ─────────────────────────────
+//
+// Double-double companion of the SE walk's incremental f64 partial-Q,
+// active only when an `l_q_dd` factor is supplied (deep-ε regime — see
+// `q_cholesky_16_mpfr_dual` and integer.rs's gating). The f64 partial-Q
+// historically overshot truth by up to ~1.8× at the ε=1.5e-8 cliff, which
+// forced the deep-ε `bound_sq` default to 3.0 against a geometric solution
+// band of [0.875, 1.25] (docs/bound_sq_soundness.md). With the dd
+// companion, every Q-prune decision on the boundary is made on a value
+// accurate to ~1e-32 — both overshoot (lost solutions) and undershoot
+// (spurious subtrees) are eliminated — so the bound default drops to the
+// tight 1.5 everywhere.
+//
+// Cost model: one dd tail per node (O(16−d) dd mul/adds, replacing the
+// f64 tail loop) + ~4 dd ops per bracket candidate. Zero cost when
+// `l_q_dd` is `None` (moderate ε): the f64 path is untouched.
+//
+// These two helpers are shared verbatim by `recurse_collect_norm_pruned`
+// and the W1 frontier `expand_se_prefix_node` (the known duplicate-ladder
+// trap) plus the stage-1 z[15] seeding, keeping all three Q-prune sites
+// in lockstep.
+
+/// Node-level dd tail: `Σ_{j > d} l_q_dd[d][j] · ((z[j] − int[j]) − frac[j])`.
+/// `z[j] − int[j]` is an exact small i64 (bracket-sized); `frac[j]` is an
+/// exact f64 — both lossless in dd.
+#[inline]
+fn q_tail_dd(
+    lq: &[[(f64, f64); 16]; 16],
+    d: usize,
+    z: &[i64; 16],
+    z_c: &SeCenter16,
+) -> (f64, f64) {
+    let mut tail = (0.0_f64, 0.0_f64);
+    for j in (d + 1)..16 {
+        let dz = dd_sub(dd_from_i64(z[j] - z_c.int[j]), (z_c.frac[j], 0.0));
+        tail = dd_add(tail, dd_mul(lq[d][j], dz));
+    }
+    tail
+}
+
+/// Per-candidate dd partial-Q: the dd companion of
+/// `new_partial_q = partial_q + (l[d][d]·(Δ − frac[d]) + tail)²`.
+/// Returns `(hi+lo projection, dd value)`; the projection replaces the f64
+/// `new_partial_q` (both for the prune decision and for threading down).
+#[inline]
+fn q_candidate_dd(
+    lq: &[[(f64, f64); 16]; 16],
+    d: usize,
+    zd: i64,
+    z_c: &SeCenter16,
+    tail_dd: (f64, f64),
+    partial_q_dd: (f64, f64),
+) -> (f64, (f64, f64)) {
+    let dz = dd_sub(dd_from_i64(zd - z_c.int[d]), (z_c.frac[d], 0.0));
+    let level_dd = dd_add(dd_mul(lq[d][d], dz), tail_dd);
+    let new_dd = dd_add(partial_q_dd, dd_mul(level_dd, level_dd));
+    (new_dd.0 + new_dd.1, new_dd)
+}
+
 // ─── Bilinear leaf checks ────────────────────────────────────────────────────
 
 /// Per-element β_1: see `clifford_sqrt_t_research.md` for derivation.
@@ -661,7 +732,6 @@ pub type CholeskyDual16 = ([[f64; 16]; 16], [[(f64, f64); 16]; 16]);
 /// dd projection of the final factor is probe-confirmed to match
 /// MPFR-192 oracle on the cliff failure instance.
 pub fn euclidean_cholesky_16_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyDual16> {
-    use rug::Float;
     const PREC: u32 = 128;
     let mut gram = [[0_i128; 16]; 16];
     for i in 0..16 {
@@ -673,14 +743,66 @@ pub fn euclidean_cholesky_16_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<Choles
             gram[i][j] = s;
         }
     }
-    let mut g: [[Float; 16]; 16] = std::array::from_fn(|_| {
-        std::array::from_fn(|_| Float::with_val(PREC, 0.0))
+    let mut g: [[rug::Float; 16]; 16] = std::array::from_fn(|_| {
+        std::array::from_fn(|_| rug::Float::with_val(PREC, 0.0))
     });
     for i in 0..16 {
         for j in 0..16 {
             g[i][j] = i128_to_mpfr(gram[i][j], PREC);
         }
     }
+    mpfr_cholesky_dual_16(&g)
+}
+
+/// MPFR-128 Cholesky of the post-LLL **Q-metric** Gram (`scratch.gram` as
+/// i256, scaled by `2^scale_bits`), returning the upper-triangular factor
+/// R (`Rᵀ·R = G`) as an f64 snapshot plus its double-double projection —
+/// the Q-side mirror of [`euclidean_cholesky_16_mpfr_dual`].
+///
+/// Consumed by the deep-ε dd-verified Q bracket: the f64 snapshot replaces
+/// the `cholesky_f64_16` factor as the SE walk's `l_upper` (strictly more
+/// accurate — the f64 Cholesky factorization error was one of the channels
+/// behind the ε=1.5e-8 partial-Q overshoot), and the dd projection drives
+/// the incremental dd partial-Q that makes the bound-1.5 prune decisions
+/// sound (docs/bound_sq_soundness.md, docs/w_q_bracket_notes.md).
+///
+/// The i256 Gram is exact through both LLL and BKZ (gram-update
+/// invariant), so this factors the same matrix `cholesky_f64_16` reads —
+/// at 128-bit precision instead of f64. Returns `None` if the Gram is not
+/// positive-definite (rank-deficient basis — upstream-bug territory).
+pub fn q_cholesky_16_mpfr_dual(
+    gram: &[[i256; 16]; 16],
+    scale_bits: i32,
+) -> Option<CholeskyDual16> {
+    const PREC: u32 = 128;
+    let mut tmp = rug::Float::with_val(PREC, 0.0);
+    let mut g: [[rug::Float; 16]; 16] = std::array::from_fn(|_| {
+        std::array::from_fn(|_| rug::Float::with_val(PREC, 0.0))
+    });
+    for i in 0..16 {
+        for j in 0..16 {
+            crate::synthesis::lattice::cholesky_lu::i256_to_rfloat(gram[i][j], &mut tmp);
+            // Divide by 2^scale_bits (exponent shift — no precision cost)
+            // to recover the natural-scale Q-metric Gram.
+            if scale_bits > 0 {
+                tmp >>= scale_bits as u32;
+            } else if scale_bits < 0 {
+                tmp <<= (-scale_bits) as u32;
+            }
+            g[i][j] = tmp.clone();
+        }
+    }
+    mpfr_cholesky_dual_16(&g)
+}
+
+/// Shared MPFR-128 Cholesky + dual projection: factor `g` (must be at
+/// 128-bit precision) into lower-triangular L (`L·Lᵀ = g`), transpose to
+/// upper-triangular R, and emit (f64 snapshot, dd projection). Op order
+/// and precision are identical for the Euclidean and Q-metric callers so
+/// the two dd factors carry the same (validated) error model.
+fn mpfr_cholesky_dual_16(g: &[[rug::Float; 16]; 16]) -> Option<CholeskyDual16> {
+    use rug::Float;
+    const PREC: u32 = 128;
     let mut l: [[Float; 16]; 16] = std::array::from_fn(|_| {
         std::array::from_fn(|_| Float::with_val(PREC, 0.0))
     });
@@ -703,8 +825,9 @@ pub fn euclidean_cholesky_16_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<Choles
         }
     }
     // R = L^T (upper-triangular). Snapshot to f64 (used by f64 prune) and
-    // project to dd (used by verify_partial_dd_exceeds). The MPFR factor
-    // itself is consumed here; the dd projection is the kept output.
+    // project to dd (used by verify_partial_dd_exceeds / the dd Q bracket).
+    // The MPFR factor itself is consumed here; the dd projection is the
+    // kept output.
     let mut r_f64 = [[0.0_f64; 16]; 16];
     let mut r_dd = [[(0.0_f64, 0.0_f64); 16]; 16];
     for i in 0..16 {
@@ -1613,6 +1736,10 @@ struct SePrefixItem {
     x: [i64; 16],
     w: [f64; 16],
     partial_q: f64,
+    /// dd companion of `partial_q` (deep-ε dd Q-bracket mode only; stays
+    /// (0, 0) when `l_q_dd` is `None`). Invariant in dd mode:
+    /// `partial_q == partial_q_dd.0 + partial_q_dd.1`.
+    partial_q_dd: (f64, f64),
     partial_eucl: f64,
 }
 
@@ -1632,6 +1759,7 @@ fn expand_se_prefix_node(
     mut item: SePrefixItem,
     out: &mut Vec<SePrefixItem>,
     l: &[[f64; 16]; 16],
+    l_q_dd: Option<&[[(f64, f64); 16]; 16]>,
     z_c: &SeCenter16,
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
@@ -1677,11 +1805,21 @@ fn expand_se_prefix_node(
         return;
     }
     // SE bracket for z[d] given the fixed z[d+1..16] prefix — same math
-    // as the recursion body.
-    let mut tail = 0.0_f64;
-    for j in (d + 1)..16 {
-        tail += l[d][j] * ((item.z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
-    }
+    // as the recursion body. In dd Q-bracket mode the tail is computed in
+    // double-double (kills the tail-cancellation error channel AND fixes
+    // the bracket center, which is derived from tail); the f64 working
+    // value is its hi+lo projection.
+    let mut tail_dd = (0.0_f64, 0.0_f64);
+    let tail = if let Some(lq) = l_q_dd {
+        tail_dd = q_tail_dd(lq, d, &item.z, z_c);
+        tail_dd.0 + tail_dd.1
+    } else {
+        let mut t = 0.0_f64;
+        for j in (d + 1)..16 {
+            t += l[d][j] * ((item.z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
+        }
+        t
+    };
     let rem = bound_sq - item.partial_q;
     if rem < 0.0 {
         return;
@@ -1713,7 +1851,18 @@ fn expand_se_prefix_node(
             continue;
         }
         let level = l_dd * ((zd - z_c.int[d]) as f64 - z_c.frac[d]) + tail;
-        let new_partial_q = item.partial_q + level * level;
+        let mut new_partial_q = item.partial_q + level * level;
+        let mut new_partial_q_dd = (0.0_f64, 0.0_f64);
+        if let Some(lq) = l_q_dd {
+            // dd Q-bracket: the boundary decision is made on the dd value
+            // (accurate to ~1e-32 — no overshoot band needed), and the dd
+            // partial is what children inherit, so f64 drift never
+            // accumulates across depths.
+            let (q_f64, q_dd) =
+                q_candidate_dd(lq, d, zd, z_c, tail_dd, item.partial_q_dd);
+            new_partial_q = q_f64;
+            new_partial_q_dd = q_dd;
+        }
         if new_partial_q > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
         }
@@ -1795,6 +1944,7 @@ fn expand_se_prefix_node(
         }
         let mut child = item.clone();
         child.partial_q = new_partial_q;
+        child.partial_q_dd = new_partial_q_dd;
         child.partial_eucl = new_partial_eucl;
         out.push(child);
     }
@@ -1809,6 +1959,7 @@ fn expand_se_prefix_node(
 #[allow(clippy::too_many_arguments)]
 pub fn schnorr_euchner_16d_par_norm_pruned<F>(
     l: &[[f64; 16]; 16],
+    l_q_dd: Option<&[[(f64, f64); 16]; 16]>,
     z_c: &SeCenter16,
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
@@ -1856,8 +2007,18 @@ where
     let mut frontier: Vec<SePrefixItem> = Vec::with_capacity(prefixes.len());
     for z_15 in prefixes {
         // Q-bound contribution at depth 15 (measured from the true center).
+        // In dd Q-bracket mode the decision value is the dd one (empty
+        // tail at the outermost level) — third copy of the per-candidate
+        // ladder, kept in lockstep with the recursion and the W1 frontier.
         let level_q = l_15 * ((z_15 - z_c.int[15]) as f64 - z_c.frac[15]);
-        let partial_q = level_q * level_q;
+        let mut partial_q = level_q * level_q;
+        let mut partial_q_dd = (0.0_f64, 0.0_f64);
+        if let Some(lq) = l_q_dd {
+            let (q_f64, q_dd) =
+                q_candidate_dd(lq, 15, z_15, z_c, (0.0, 0.0), (0.0, 0.0));
+            partial_q = q_f64;
+            partial_q_dd = q_dd;
+        }
         if partial_q > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
         }
@@ -1883,7 +2044,7 @@ where
         if !bypass_norm_prune() && partial_eucl > target_norm_sq * (1.0 + 1e-9) {
             continue;
         }
-        frontier.push(SePrefixItem { z, x, w, partial_q, partial_eucl });
+        frontier.push(SePrefixItem { z, x, w, partial_q, partial_q_dd, partial_eucl });
     }
 
     // ── Stage 2: flatten more coordinate levels into the frontier ──
@@ -1929,9 +2090,9 @@ where
                     break;
                 }
                 expand_se_prefix_node(
-                    d, item, &mut frontier, l, z_c, bound_sq, r_eucl, r_eucl_dd,
-                    target_norm_sq, target_norm_sq_i64, basis, budget, &aborted,
-                    consumed, &mut bcache,
+                    d, item, &mut frontier, l, l_q_dd, z_c, bound_sq, r_eucl,
+                    r_eucl_dd, target_norm_sq, target_norm_sq_i64, basis,
+                    budget, &aborted, consumed, &mut bcache,
                 );
             }
             start_depth -= 1;
@@ -1996,8 +2157,9 @@ where
             let mut local: Vec<[i64; 16]> = Vec::new();
             let mut bcache = BudgetCache::new(pred);
             recurse_collect_norm_pruned(
-                start_depth, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq,
-                target_norm_sq_i64, item.partial_q, item.partial_eucl,
+                start_depth, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
+                target_norm_sq, target_norm_sq_i64, item.partial_q,
+                item.partial_q_dd, item.partial_eucl,
                 &mut item.z, &mut item.x, &mut item.w, basis,
                 &leaf_filter, budget, &aborted, external_abort, consumed,
                 &mut bcache, &mut local,
@@ -2063,6 +2225,7 @@ where
 fn recurse_collect_norm_pruned<F>(
     depth: i32,
     l: &[[f64; 16]; 16],
+    l_q_dd: Option<&[[(f64, f64); 16]; 16]>,
     z_c: &SeCenter16,
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
@@ -2070,6 +2233,7 @@ fn recurse_collect_norm_pruned<F>(
     target_norm_sq: f64,
     target_norm_sq_i64: i64,
     partial_q: f64,
+    partial_q_dd: (f64, f64),
     partial_eucl: f64,
     z: &mut [i64; 16],
     x: &mut [i64; 16],
@@ -2176,18 +2340,31 @@ fn recurse_collect_norm_pruned<F>(
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
         if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_collect_norm_pruned(
-                depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
-                partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
-                budget, aborted, external_abort, consumed, bcache, results,
+                depth - 1, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
+                target_norm_sq, target_norm_sq_i64,
+                partial_q, partial_q_dd, new_partial_eucl, z, x, w, basis,
+                leaf_filter, budget, aborted, external_abort, consumed,
+                bcache, results,
             );
         }
         return;
     }
     // SE bracket [z_low, z_high] for the current depth's z[d] enumeration.
-    let mut tail = 0.0_f64;
-    for j in (d + 1)..16 {
-        tail += l[d][j] * ((z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
-    }
+    // In dd Q-bracket mode the tail is computed in double-double (see
+    // q_tail_dd — kills the tail-cancellation error channel and fixes the
+    // bracket center, which is derived from tail); the f64 working value
+    // is its hi+lo projection.
+    let mut tail_dd = (0.0_f64, 0.0_f64);
+    let tail = if let Some(lq) = l_q_dd {
+        tail_dd = q_tail_dd(lq, d, z, z_c);
+        tail_dd.0 + tail_dd.1
+    } else {
+        let mut t = 0.0_f64;
+        for j in (d + 1)..16 {
+            t += l[d][j] * ((z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
+        }
+        t
+    };
     let rem = bound_sq - partial_q;
     if rem < 0.0 {
         return;
@@ -2233,7 +2410,17 @@ fn recurse_collect_norm_pruned<F>(
             continue;
         }
         let level = l_dd * ((zd - z_c.int[d]) as f64 - z_c.frac[d]) + tail;
-        let new_partial_q = partial_q + level * level;
+        let mut new_partial_q = partial_q + level * level;
+        let mut new_partial_q_dd = (0.0_f64, 0.0_f64);
+        if let Some(lq) = l_q_dd {
+            // dd Q-bracket: decide the boundary on the dd value (truth to
+            // ~1e-32, no overshoot band needed) and thread the dd partial
+            // down so f64 drift never accumulates across depths. Kept in
+            // lockstep with expand_se_prefix_node and the stage-1 seeding.
+            let (q_f64, q_dd) = q_candidate_dd(lq, d, zd, z_c, tail_dd, partial_q_dd);
+            new_partial_q = q_f64;
+            new_partial_q_dd = q_dd;
+        }
         if new_partial_q > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
         }
@@ -2377,9 +2564,11 @@ fn recurse_collect_norm_pruned<F>(
         }
 
         recurse_collect_norm_pruned(
-            depth - 1, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq, target_norm_sq_i64,
-            new_partial_q, new_partial_eucl, z, x, w, basis, leaf_filter,
-            budget, aborted, external_abort, consumed, bcache, results,
+            depth - 1, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
+            target_norm_sq, target_norm_sq_i64,
+            new_partial_q, new_partial_q_dd, new_partial_eucl, z, x, w, basis,
+            leaf_filter, budget, aborted, external_abort, consumed, bcache,
+            results,
         );
     }
 }
@@ -2884,6 +3073,141 @@ mod tests {
         }
         eprintln!("SE at k=2: found {}/{} brute solutions within bound_sq={}",
                   se_set.len(), brute_set.len(), bound_sq);
+    }
+
+    /// The MPFR-128 Q-metric Cholesky dual must reproduce the post-LLL
+    /// Q Gram (Rᵀ·R = G at natural scale), agree with the f64 Cholesky
+    /// factor to f64 accuracy, and carry a dd projection whose hi part is
+    /// exactly the f64 snapshot (the verify path depends on this).
+    #[test]
+    fn q_cholesky_dual_matches_gram_and_f64_factor() {
+        use crate::synthesis::lattice::lll::i256_to_f64;
+        let v = realistic_v();
+        let mut s = IntScratch16::new(1e-3);
+        build_q_mpfr_zeta(&mut s, v, 6, 1e-3);
+        build_q_int_zeta(&mut s);
+        let r = run_lll_16(&mut s);
+        assert!(matches!(r, super::super::lll::LllResult::Converged));
+
+        let (snap, dd) = q_cholesky_16_mpfr_dual(&s.gram, s.scale_bits)
+            .expect("post-LLL Q Gram must be PD");
+        // dd hi part ≡ f64 snapshot, lo bounded by hi's ULP.
+        for i in 0..16 {
+            for j in 0..16 {
+                assert_eq!(dd[i][j].0, snap[i][j], "dd hi != snapshot at ({i},{j})");
+                assert!(
+                    dd[i][j].1.abs() <= snap[i][j].abs() * 1e-15 + 1e-300,
+                    "dd lo not a residual at ({i},{j}): {:?}",
+                    dd[i][j]
+                );
+            }
+        }
+        // Rᵀ·R = G (natural scale) to f64 round-off.
+        let scale = 2.0_f64.powi(-s.scale_bits);
+        for i in 0..16 {
+            for j in 0..16 {
+                let g_nat = i256_to_f64(s.gram[i][j]) * scale;
+                let mut acc = 0.0_f64;
+                for k in 0..16 {
+                    acc += snap[k][i] * snap[k][j];
+                }
+                let tol = 1e-9 * g_nat.abs().max(1.0);
+                assert!(
+                    (acc - g_nat).abs() <= tol,
+                    "RᵀR != G at ({i},{j}): {acc} vs {g_nat}"
+                );
+            }
+        }
+        // Agreement with the f64 Cholesky path (upper-tri transpose of
+        // l_f64) — the deep-ε l_upper swap must be a refinement, not a
+        // different factor.
+        assert!(cholesky_f64_16(&mut s));
+        for i in 0..16 {
+            for j in 0..16 {
+                let f64_fac = s.l_f64[j][i];
+                let tol = 1e-9 * f64_fac.abs().max(1.0);
+                assert!(
+                    (snap[i][j] - f64_fac).abs() <= tol,
+                    "MPFR vs f64 factor mismatch at ({i},{j}): {} vs {}",
+                    snap[i][j], f64_fac
+                );
+            }
+        }
+    }
+
+    /// dd Q-bracket no-regression gate: the parallel norm-pruned walk with
+    /// the dd factor attached must return exactly the same solution set as
+    /// the plain f64 walk on the same setup (moderate ε, where f64 is
+    /// already sound — geometric solutions sit at Q ≤ 1.25, far from the
+    /// 1.5(1+1e-9) boundary, so dd-vs-f64 decision flips cannot touch
+    /// them). Exercises all three lockstep ladder sites (stage-1 seeding,
+    /// W1 frontier expansion, recursion).
+    #[test]
+    fn dd_q_bracket_walk_matches_f64_walk() {
+        use super::super::scratch::rfv;
+        use crate::synthesis::search_zeta::uv_to_xy_zeta;
+        let v = realistic_v();
+        let k = 2u32;
+        let eps = 0.5_f64; // wide cap at k=2 → guaranteed non-empty walk
+        let mut s = IntScratch16::new(eps);
+        build_q_mpfr_zeta(&mut s, v, k, eps);
+        build_q_int_zeta(&mut s);
+        // Cap center c = y · cap_mid (build_q does not populate scratch.c;
+        // mirror of integer.rs's phase1 step 1).
+        let y = uv_to_xy_zeta(v, k);
+        let cap_mid = (1.0 + (1.0 - eps * eps).sqrt()) / 2.0;
+        for i in 0..16 {
+            s.c[i] = rfv(s.prec_q, y[i] * cap_mid);
+        }
+        let r = run_lll_16(&mut s);
+        assert!(matches!(r, super::super::lll::LllResult::Converged));
+        assert!(cholesky_f64_16(&mut s));
+        let l_upper_f64: [[f64; 16]; 16] =
+            std::array::from_fn(|i| std::array::from_fn(|j| s.l_f64[j][i]));
+        let (l_upper_mpfr, l_q_dd) = q_cholesky_16_mpfr_dual(&s.gram, s.scale_bits)
+            .expect("post-LLL Q Gram must be PD");
+        assert!(lu_solve_int_inplace_16(&mut s));
+        let z_c = SeCenter16::from_lu_x(&s.lu_x);
+        let (r_eucl, r_eucl_dd) =
+            euclidean_cholesky_16_mpfr_dual(&s.basis).expect("basis full-rank");
+        let basis = s.basis;
+        let target_norm_sq = 2.0_f64.powi(k as i32);
+        let target_i64 = 1_i64 << k;
+        let leaf_filter = |x: &[i64; 16]| -> LeafAction {
+            let n: i64 = x.iter().map(|&v| v * v).sum();
+            if n != target_i64 {
+                return LeafAction::Skip;
+            }
+            let (b1, b2, b3) = bilinear_forms(x);
+            if b1 == 0 && b2 == 0 && b3 == 0 {
+                LeafAction::Take
+            } else {
+                LeafAction::Skip
+            }
+        };
+        let bound_sq = 2.5_f64;
+
+        let budget_a = AtomicU64::new(u64::MAX);
+        let (sols_f64, hit_a) = schnorr_euchner_16d_par_norm_pruned(
+            &l_upper_f64, None, &z_c, bound_sq, &r_eucl, &r_eucl_dd,
+            target_norm_sq, &basis, leaf_filter, &budget_a, None, None,
+        );
+        assert!(!hit_a);
+        let budget_b = AtomicU64::new(u64::MAX);
+        let (sols_dd, hit_b) = schnorr_euchner_16d_par_norm_pruned(
+            &l_upper_mpfr, Some(&l_q_dd), &z_c, bound_sq, &r_eucl, &r_eucl_dd,
+            target_norm_sq, &basis, leaf_filter, &budget_b, None, None,
+        );
+        assert!(!hit_b);
+
+        let set_f64: HashSet<[i64; 16]> = sols_f64.into_iter().collect();
+        let set_dd: HashSet<[i64; 16]> = sols_dd.into_iter().collect();
+        assert!(!set_f64.is_empty(), "walk found no solutions — test is vacuous");
+        assert_eq!(
+            set_f64, set_dd,
+            "dd Q-bracket walk diverged from f64 walk ({} vs {} solutions)",
+            set_f64.len(), set_dd.len()
+        );
     }
 
     /// SE pruning: at a moderate bound the leaf count is finite and the walk
