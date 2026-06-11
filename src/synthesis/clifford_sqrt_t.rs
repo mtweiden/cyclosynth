@@ -478,6 +478,17 @@ pub struct SynthesizerQ {
     /// lde-vs-cost relationship is not monotone). Builder:
     /// [`Self::with_optimal_lde_window`].
     pub optimal_lde_window: u32,
+    /// Anytime enum-stage deadline (milliseconds, per parity branch).
+    /// When `Some(ms)` and `certify` is off, stage 3 runs as ONE merged
+    /// frontier of prefix work-units across all (k, m) arms, ordered by
+    /// the sound per-prefix cost floor, and stops dispatching/aborts
+    /// in-flight walks once the deadline elapses (each unit keeps a
+    /// large per-prefix node cap as a backstop). `None` = legacy
+    /// per-(k, m) task grid with per-arm node budgets. The deadline
+    /// NEVER applies in certify mode (certificates keep today's
+    /// budget-truncation semantics). Default `Some(600)` at ε ≥ 1e-5,
+    /// `None` below. Builder: [`Self::with_optimal_deadline_ms`].
+    pub optimal_deadline_ms: Option<u64>,
     /// Certificate mode: add m = 0 full-level tasks to the enum grid
     /// (the only variant that proves a level fully enumerated) and run
     /// the floor-driven level extension. Default false (the m = 0 tasks
@@ -780,6 +791,13 @@ impl SynthesizerQ {
             // ε where opening costs 6× wall for ~nothing.
             optimal_open_dr_filter: epsilon <= 1e-5,
             odd_parity_branch: true,
+            // Anytime frontier: at ε ≥ 1e-5 the merged-frontier enum
+            // stage runs under a wall deadline instead of per-arm node
+            // budgets (4× less work at equal cost — see
+            // docs/w_anytime_frontier_notes.md). Below 1e-5 the enum
+            // arms are sized differently (m=2 arms, deeper walks) and
+            // keep the legacy budget semantics.
+            optimal_deadline_ms: if epsilon >= 1e-5 { Some(600) } else { None },
             certify: false,
             certify_extra_ms: 2_000,
             q_cost_x2: 7,
@@ -900,6 +918,13 @@ impl SynthesizerQ {
     /// lde `f+1..=f+N` and return the global min-cost candidate.
     pub fn with_optimal_lde_window(mut self, window: u32) -> Self {
         self.optimal_lde_window = window;
+        self
+    }
+
+    /// Set (or clear) the anytime enum-stage deadline in milliseconds.
+    /// See the `optimal_deadline_ms` field doc.
+    pub fn with_optimal_deadline_ms(mut self, ms: Option<u64>) -> Self {
+        self.optimal_deadline_ms = ms;
         self
     }
 
@@ -1865,6 +1890,308 @@ impl SynthesizerQ {
         (result, budget_hit)
     }
 
+    /// **Anytime merged-frontier enum stage** (fast path of
+    /// `synthesize_optimal_inner`, certify off). Replaces the per-(k, m)
+    /// task grid + per-arm node budgets: the prefix work-units of EVERY
+    /// (k, m) arm in `levels` are built up front (same filter rules as
+    /// [`Self::dc_search_q`]), tagged with the sound per-prefix cost
+    /// floor `cost(U_L) + class_cost_lb_half_units(d_R)` (one half-unit
+    /// currency across arms), globally sorted floor-ascending with
+    /// k-ascending tie-break (smaller SE regions first → faster
+    /// incumbent drops), transpose-interleaved across rayon chunks (the
+    /// 1.66× cheap-prefix-parallelism effect, see
+    /// [`OPTIMAL_PREFIX_INTERLEAVE`]), and executed under TWO stop
+    /// conditions:
+    ///
+    /// (a) a global wall-clock `deadline` — checked per-unit before
+    ///     dispatch, inside `should_stop` at leaf hits, and by the 20 ms
+    ///     watcher (which aborts in-flight walks mid-tree);
+    /// (b) floor-exhaustion — a unit whose floor can no longer beat the
+    ///     shared incumbent is skipped (pre-dispatch prune) or killed
+    ///     (watcher), exactly as in `dc_search_q`. Sound: only
+    ///     candidates costing ≥ the incumbent are cut.
+    ///
+    /// Each unit keeps a LARGE per-prefix node cap
+    /// (`dc_pass2_cap_for(ε) × budget_multiplier`) as a backstop so one
+    /// pathological prefix can't eat the whole deadline.
+    ///
+    /// NOT in the floor: `cost_lb_half_units(k_inner)` — unsound here
+    /// (the shell at k_inner contains √2-scaled images of every
+    /// lower-lde suffix; see the comment in `dc_search_q`).
+    ///
+    /// Returns the min-cost find plus a per-level truncation flag
+    /// (parallel to `levels`): a level is marked truncated when any of
+    /// its units was deadline-skipped, deadline-aborted, or hit the
+    /// backstop cap. Conservative over-marking (a walk that finished
+    /// cleanly right at the deadline may be marked) keeps the ledger
+    /// honest; sound floor-kills are NOT truncation, as today.
+    fn dc_frontier_q(
+        &self,
+        target: &Mat2,
+        levels: &[(u32, u32)],
+        deadline: std::time::Duration,
+        shared_best_cost: &std::sync::atomic::AtomicUsize,
+    ) -> (Option<(usize, SynthResultQ)>, Vec<bool>) {
+        use rayon::prelude::*;
+
+        let q_cost_x2 = self.q_cost_x2;
+        let d_target = det_phase_of(target);
+        let epsilon = self.epsilon;
+        let use_f64_gs = self.use_f64_gs;
+        let bkz_block_size = self.bkz_block_size;
+        let prefix_prune = self.optimal_prefix_prune;
+        let best_cost = shared_best_cost;
+        let start = std::time::Instant::now();
+
+        // Backstop node cap per unit — generous (the deadline is the
+        // primary stop), but bounded so one pathological prefix can't
+        // monopolise the frontier.
+        let per_prefix_cap = dc_pass2_cap_for(epsilon)
+            .saturating_mul(self.optimal_budget_multiplier.max(1));
+
+        // Keep the per-m prefix caches alive for the unit borrows below.
+        let level_prefixes: Vec<Arc<Vec<U2Q>>> =
+            levels.iter().map(|&(_, m)| build_l_q(m)).collect();
+        let level_costs: Vec<Arc<Vec<(usize, usize)>>> =
+            levels.iter().map(|&(_, m)| build_l_q_tq(m)).collect();
+
+        #[derive(Clone, Copy)]
+        struct Unit<'a> {
+            u_l: &'a U2Q,
+            k_total: u32,
+            d_r: u32,
+            /// `cost(U_L) + class_cost_lb_half_units(d_R)` — the sound
+            /// per-prefix bound from `dc_search_q`, in the half-unit
+            /// currency shared by every (k, m) arm.
+            floor: usize,
+            level_idx: usize,
+        }
+
+        let truncated: Vec<AtomicBool> =
+            levels.iter().map(|_| AtomicBool::new(false)).collect();
+
+        let mut units: Vec<Unit> = Vec::new();
+        for (li, &(k_total, m)) in levels.iter().enumerate() {
+            // Mirror `try_optimal_variant`: m ≥ k arms don't run (the
+            // D&C split needs k_inner ≥ 1 for every prefix).
+            if m == 0 || m >= k_total {
+                continue;
+            }
+            // Same filter the task grid uses: open at ε ≤ 1e-5, else
+            // the per-m first-hit defaults.
+            let filter = if self.optimal_open_dr_filter {
+                Vec::new()
+            } else {
+                default_dc_dr_filter(m)
+            };
+            for (u_l, &(t, q)) in level_prefixes[li]
+                .iter()
+                .zip(level_costs[li].iter())
+            {
+                if u_l.k >= k_total {
+                    continue;
+                }
+                let d_l = det_phase_of(&u_l.to_float());
+                let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                if !filter.is_empty() && !filter.contains(&d_r) {
+                    continue;
+                }
+                let u_l_cost = 2 * t + q_cost_x2 * q;
+                let floor = u_l_cost.saturating_add(
+                    crate::synthesis::cost_bound::class_cost_lb_half_units(d_r),
+                );
+                units.push(Unit { u_l, k_total, d_r, floor, level_idx: li });
+            }
+        }
+
+        if units.is_empty() {
+            return (None, truncated.into_iter().map(|t| t.into_inner()).collect());
+        }
+
+        // Global ascending floor sort; tie-break k ascending (smaller SE
+        // regions complete sooner → incumbent drops faster). Then the
+        // cost-rank transpose-interleave across rayon's chunking.
+        units.sort_by(|a, b| a.floor.cmp(&b.floor).then(a.k_total.cmp(&b.k_total)));
+        let n_threads = rayon::current_num_threads().max(1);
+        let n = units.len();
+        if OPTIMAL_PREFIX_INTERLEAVE && n > n_threads {
+            let mut interleaved: Vec<Unit> = Vec::with_capacity(n);
+            for j in 0..n_threads {
+                let mut idx = j;
+                while idx < n {
+                    interleaved.push(units[idx]);
+                    idx += n_threads;
+                }
+            }
+            units = interleaved;
+        }
+        let chunk = (units.len() / n_threads).max(1);
+        let opt_chunk = if OPTIMAL_PAR_MIN_LEN == 0 { chunk } else { OPTIMAL_PAR_MIN_LEN };
+
+        // Per-unit watch: the watcher enforces both the sound
+        // incumbent-floor kill (as in `dc_search_q`) and the deadline
+        // abort (which additionally marks the unit's level truncated —
+        // the watcher is the only place that knows WHY it killed a walk).
+        struct PrefixWatch {
+            abort: AtomicBool,
+            active: AtomicBool,
+            floor: usize,
+        }
+        let watches: Vec<PrefixWatch> = units
+            .iter()
+            .map(|u| PrefixWatch {
+                abort: AtomicBool::new(false),
+                active: AtomicBool::new(false),
+                floor: u.floor,
+            })
+            .collect();
+
+        let per_unit = |scratch: &mut IntScratch16,
+                        idx: usize,
+                        u: &Unit|
+         -> Option<(usize, SynthResultQ)> {
+            // (a) deadline pre-dispatch: never-started units leave their
+            // level truncated (work provably remained at the cutoff).
+            if start.elapsed() >= deadline {
+                truncated[u.level_idx].store(true, Ordering::Relaxed);
+                return None;
+            }
+            // (b) floor-exhaustion: sound prune, NOT truncation.
+            if prefix_prune
+                && best_cost.load(std::sync::atomic::Ordering::Relaxed) <= u.floor
+            {
+                return None;
+            }
+
+            let k_inner = u.k_total - u.u_l.k;
+            let m_inner = u2q_dag_times_mat2(u.u_l, target);
+            let v_inner = unitary_to_uv_zeta(&m_inner);
+            let y = uv_to_xy_zeta(v_inner, k_inner);
+            let budget_hit = AtomicBool::new(false);
+            let u_l_local = *u.u_l;
+            let floor = u.floor;
+            let should_stop = |_x: &[i64; 16]| -> bool {
+                // Incumbent-abort (sound) OR deadline (anytime cutoff).
+                // Leaf hits only — a handful per walk, so the Instant
+                // read is noise.
+                best_cost.load(std::sync::atomic::Ordering::Relaxed) <= floor
+                    || start.elapsed() >= deadline
+            };
+            let w = &watches[idx];
+            w.active.store(true, Ordering::Relaxed);
+            let sols = phase1_with_stop(
+                scratch, &y, k_inner, epsilon,
+                per_prefix_cap, &budget_hit, should_stop,
+                Some(&w.abort), None,
+            );
+            w.active.store(false, Ordering::Relaxed);
+
+            // Backstop cap, or the walk ran into the deadline (whether
+            // aborted mid-tree or merely unfinished business remains
+            // indistinguishable here — mark conservatively).
+            if budget_hit.load(std::sync::atomic::Ordering::Relaxed)
+                || start.elapsed() >= deadline
+            {
+                truncated[u.level_idx].store(true, Ordering::Relaxed);
+            }
+
+            let mut best: Option<(usize, SynthResultQ)> = None;
+            for sol in &sols {
+                let u_r = solution_to_u2q_d(sol, k_inner, u.d_r);
+                let u_full = u_l_local * u_r;
+                let dist = diamond_distance_u2q_float(&u_full, target);
+                if dist < epsilon {
+                    let gates = BlochDecomposer.decompose(&u_full);
+                    let cost = gates_cost(&gates, q_cost_x2);
+                    match &best {
+                        Some((bcost, _)) if *bcost <= cost => {}
+                        _ => best = Some((cost, SynthResultQ {
+                            gates: Some(gates),
+                            lde: u.k_total,
+                            distance: dist,
+                        })),
+                    }
+                }
+            }
+            if let Some((c, _)) = &best {
+                let mut cur = best_cost.load(std::sync::atomic::Ordering::Relaxed);
+                while *c < cur {
+                    match best_cost.compare_exchange_weak(
+                        cur, *c,
+                        std::sync::atomic::Ordering::Relaxed,
+                        std::sync::atomic::Ordering::Relaxed,
+                    ) {
+                        Ok(_) => break,
+                        Err(actual) => cur = actual,
+                    }
+                }
+            }
+            best
+        };
+
+        let make_scratch = || {
+            let mut s = Box::new(IntScratch16::new(epsilon));
+            s.use_f64_gs = use_f64_gs;
+            s.bkz_block_size = bkz_block_size;
+            s
+        };
+
+        let walks_done = AtomicBool::new(false);
+        struct DoneGuard<'a>(&'a AtomicBool);
+        impl Drop for DoneGuard<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let result_pair: Option<(usize, SynthResultQ)> = std::thread::scope(|wscope| {
+            let _done_guard = DoneGuard(&walks_done);
+            let watches_ref = &watches;
+            let units_ref = &units;
+            let truncated_ref = &truncated;
+            let walks_done_ref = &walks_done;
+            wscope.spawn(move || {
+                while !walks_done_ref.load(Ordering::Relaxed) {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    let cur_best =
+                        best_cost.load(std::sync::atomic::Ordering::Relaxed);
+                    let dl = start.elapsed() >= deadline;
+                    for (i, w) in watches_ref.iter().enumerate() {
+                        if !w.active.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        if cur_best <= w.floor {
+                            // Sound incumbent-floor kill — not truncation.
+                            w.abort.store(true, Ordering::Relaxed);
+                        } else if dl {
+                            w.abort.store(true, Ordering::Relaxed);
+                            truncated_ref[units_ref[i].level_idx]
+                                .store(true, Ordering::Relaxed);
+                        }
+                    }
+                }
+            });
+            let r = units
+                .par_iter()
+                .enumerate()
+                .with_min_len(opt_chunk)
+                .map_init(make_scratch, |s, (i, u)| per_unit(s, i, u))
+                .reduce(
+                    || None,
+                    |a, b| match (a, b) {
+                        (None, x) | (x, None) => x,
+                        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+                    },
+                );
+            walks_done.store(true, Ordering::Relaxed);
+            r
+        });
+
+        (
+            result_pair,
+            truncated.into_iter().map(|t| t.into_inner()).collect(),
+        )
+    }
+
     /// Single-search lattice probe at lde `k`, returning the best
     /// `(cost, SynthResultQ)` under the current `optimize_cost` mode.
     /// Mirrors the `try_lattice_k` + `check_sols` closures in
@@ -2365,6 +2692,60 @@ impl SynthesizerQ {
                 }
             }
         }
+        // ── Anytime merged frontier (fast path) ─────────────────────
+        // With a deadline configured and certify off, all (k, m ≥ 1)
+        // arms run as ONE floor-ordered prefix frontier under a wall
+        // deadline instead of per-arm node budgets (see
+        // `dc_frontier_q`). The legacy task grid below remains the
+        // certify path (honest budget-truncation semantics) and the
+        // deep-ε path (deadline default None), and still handles
+        // m = 0 arms (single-shot probes are not prefix work-units).
+        if !self.certify
+            && !tasks.is_empty()
+            && tasks.iter().all(|&(_, m)| m >= 1)
+        {
+            if let Some(deadline_ms) = self.optimal_deadline_ms {
+                let t_w = std::time::Instant::now();
+                let (fr, level_truncated) = self.dc_frontier_q(
+                    &target,
+                    &tasks,
+                    std::time::Duration::from_millis(deadline_ms),
+                    shared_best,
+                );
+                if trace {
+                    eprintln!(
+                        "[zeta] optimal frontier {:?} deadline={}ms t={:.0}ms truncated={:?}",
+                        tasks, deadline_ms,
+                        t_w.elapsed().as_secs_f64() * 1000.0,
+                        tasks.iter().zip(level_truncated.iter())
+                            .filter(|(_, &tr)| tr).map(|(t, _)| *t)
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                let mut best: (usize, SynthResultQ) = (first_cost, first);
+                if let Some((bc, br)) = baseline {
+                    if bc < best.0 {
+                        best = (bc, br);
+                    }
+                }
+                if let Some((c, res)) = fr {
+                    if trace {
+                        eprintln!("[zeta]   frontier best lde={:>2} cost={c} dist={:.3e}",
+                            res.lde, res.distance);
+                    }
+                    if c < best.0 {
+                        best = (c, res);
+                    }
+                }
+                *ledger_out = tasks
+                    .iter()
+                    .zip(level_truncated)
+                    .map(|(&(k, m), tr)| (k, m, tr))
+                    .collect();
+                return Some(best.1);
+            }
+        }
+
         let t_w = std::time::Instant::now();
         let task_results: Vec<(u32, u32, bool, Option<(usize, SynthResultQ)>)> =
             std::thread::scope(|s| {
