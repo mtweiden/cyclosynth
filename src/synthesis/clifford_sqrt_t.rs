@@ -460,6 +460,18 @@ pub struct SynthesizerQ {
     /// odd-branch `max_lde ≤ even_cost + 1` cap, which forced the
     /// branches to run serially.
     global_best_cost: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    /// Deep-ε exact source for the parity rotation. The odd branch
+    /// searches `target_odd = target · e^{iπ/16}` — an f64 product
+    /// whose ~1e-16 error EQUALS the radial cap width ε² at ε = 1e-8,
+    /// blinding the odd branch (the 0.932 → 0.972 staircase step at
+    /// exactly 1e-8: a precision criticality, not a config flip; the
+    /// lde-74 "ties" were the baseline floor masking an empty √T
+    /// search over [18, 46]). When set (odd branch instances at any
+    /// ε; only consulted ≤ 2e-8), holds the UNROTATED target and the
+    /// ζ₃₂ power: the deep router derives v in MPFR from the exact
+    /// source and rotates exactly — the rotation commutes with the
+    /// prefix product, so v_odd = e^{iπ/16}·(U_L†·col₁(target)).
+    deep_rot_src: Option<(Mat2, u32)>,
     /// Cross-parity stage-2 handshake (fast path only). The two
     /// branches' screens are tiny when uncontended (≤ tens of ms at
     /// ε ≥ 1e-5), but a peer branch that finishes its screen first
@@ -764,11 +776,33 @@ fn u2q_dag_v_inner_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [rug::Float; 4] 
 /// (exact ring prefix × exact f64 target) when given, else promote
 /// the f64 `v` losslessly (single-search sites: `v` IS exact target
 /// data). Above 2e-8 the f64 path is precision-safe and ~free.
+/// Rotate the complex pairs (v[0]+i·v[1], v[2]+i·v[3]) by e^{iπj/16}
+/// exactly in MPFR — the parity-branch rotation, applied AFTER exact
+/// v derivation so the odd branch's cap is built from uncorrupted
+/// geometry (the scalar rotation commutes with the prefix product).
+fn rot32_mpfr(v: [rug::Float; 4], j: u32, prec: u32) -> [rug::Float; 4] {
+    use rug::Float as RF;
+    if j == 0 {
+        return v;
+    }
+    let ang = RF::with_val(prec, rug::float::Constant::Pi) * j / 16u32;
+    let c = ang.clone().cos();
+    let s = ang.sin();
+    let [a, b, x, y] = v;
+    [
+        RF::with_val(prec, &a * &c) - RF::with_val(prec, &b * &s),
+        RF::with_val(prec, &a * &s) + RF::with_val(prec, &b * &c),
+        RF::with_val(prec, &x * &c) - RF::with_val(prec, &y * &s),
+        RF::with_val(prec, &x * &s) + RF::with_val(prec, &y * &c),
+    ]
+}
+
 #[allow(clippy::too_many_arguments)]
 fn phase1_deep_aware<F>(
     scratch: &mut IntScratch16,
     v: [f64; 4],
     deep_v_src: Option<(&U2Q, &Mat2)>,
+    rot_src: Option<&(Mat2, u32)>,
     k: u32,
     eps: f64,
     max_phase2_calls: u64,
@@ -782,9 +816,25 @@ where
 {
     if eps <= 2e-8 {
         let prec = scratch.prec_q;
-        let v_mpfr: [rug::Float; 4] = match deep_v_src {
-            Some((u_l, target)) => u2q_dag_v_inner_mpfr(u_l, target, prec),
-            None => std::array::from_fn(|i| rug::Float::with_val(prec, v[i])),
+        // Derive v from the most exact source available. With a
+        // rot_src present, the caller's f64 `v` and `target` are the
+        // ROTATED (f64-corrupted) forms — rebuild from the unrotated
+        // original and rotate exactly in MPFR.
+        let v_mpfr: [rug::Float; 4] = match (deep_v_src, rot_src) {
+            (Some((u_l, _rotated)), Some((orig, j))) => {
+                rot32_mpfr(u2q_dag_v_inner_mpfr(u_l, orig, prec), *j, prec)
+            }
+            (Some((u_l, target)), None) => u2q_dag_v_inner_mpfr(u_l, target, prec),
+            (None, Some((orig, j))) => {
+                let base: [rug::Float; 4] = [
+                    rug::Float::with_val(prec, orig[0][0].re),
+                    rug::Float::with_val(prec, orig[0][0].im),
+                    rug::Float::with_val(prec, orig[1][0].re),
+                    rug::Float::with_val(prec, orig[1][0].im),
+                ];
+                rot32_mpfr(base, *j, prec)
+            }
+            (None, None) => std::array::from_fn(|i| rug::Float::with_val(prec, v[i])),
         };
         let y_mpfr = uv_to_xy_zeta_mpfr(&v_mpfr, k, prec);
         phase1_with_stop_mpfr(
@@ -1011,6 +1061,7 @@ impl SynthesizerQ {
             },
             optimal_budget_multiplier: 2,
             global_best_cost: None,
+            deep_rot_src: None,
             my_screen_done: None,
             peer_screen_done: None,
             optimal_prefix_prune: true,
@@ -1353,7 +1404,7 @@ impl SynthesizerQ {
                 diamond_distance_u2q_float(&cand, &target) < epsilon
             };
             let sols = phase1_deep_aware(
-                s.as_mut(), v, None, k, epsilon, budget, &budget_hit, should_stop, None, None,
+                s.as_mut(), v, None, self.deep_rot_src.as_ref(), k, epsilon, budget, &budget_hit, should_stop, None, None,
             );
             (sols, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
         };
@@ -2053,7 +2104,7 @@ impl SynthesizerQ {
             };
 
             let sols = phase1_deep_aware(
-                scratch, v_inner, Some((u_l, target)), k_inner, epsilon,
+                scratch, v_inner, Some((u_l, target)), self.deep_rot_src.as_ref(), k_inner, epsilon,
                 per_prefix_cap, &budget_hit, should_stop,
                 walk_abort, consumed,
             );
@@ -2379,7 +2430,7 @@ impl SynthesizerQ {
             let w = &watches[idx];
             w.active.store(true, Ordering::Relaxed);
             let sols = phase1_deep_aware(
-                scratch, v_inner, Some((u.u_l, target)), k_inner, epsilon,
+                scratch, v_inner, Some((u.u_l, target)), self.deep_rot_src.as_ref(), k_inner, epsilon,
                 per_prefix_cap, &budget_hit, should_stop,
                 Some(&w.abort), None,
             );
@@ -2637,7 +2688,7 @@ impl SynthesizerQ {
             diamond_distance_u2q_float(&cand, target) < epsilon
         };
         let sols = phase1_deep_aware(
-            s.as_mut(), v, None, k, epsilon, budget, &budget_hit, should_stop, None, None,
+            s.as_mut(), v, None, self.deep_rot_src.as_ref(), k, epsilon, budget, &budget_hit, should_stop, None, None,
         );
         let hit = budget_hit.load(std::sync::atomic::Ordering::Relaxed);
         let mut best: Option<(usize, SynthResultQ)> = None;
@@ -2765,6 +2816,7 @@ impl SynthesizerQ {
         even_self.global_best_cost = Some(global_best.clone());
         let mut odd_self = self.clone();
         odd_self.global_best_cost = Some(global_best.clone());
+        odd_self.deep_rot_src = Some((target, 1));
         // Stage-2 handshake flags (see field docs): each branch's
         // frontier dispatch waits until the peer's screen is done.
         let even_screen_done = std::sync::Arc::new(AtomicBool::new(false));
@@ -4171,6 +4223,65 @@ mod tests {
                         .map(|(d, u, o)| format!("d{d}:{u}/{o}"))
                         .collect();
                     eprintln!("    per-d usable/orbits: {}", row.join(" "));
+                }
+            }
+        }
+    }
+
+    /// H1 decisive test (audit, ignored): is the deep-ε screen blind to
+    /// non-class-0 solutions? The ε ≤ 1e-7 screen uses dc_dr_filter=[0]
+    /// (strict); at 1e-7 the enum arms' relaxed filters compensated, at
+    /// 1e-8 hybrid-lite removed the compensation. Run the 1e-8 tie
+    /// targets (seed 12648430 targets 0,1 — first-hit lde 74, T-like)
+    /// with the RELAXED filter [0,1,15]: a first-hit collapse to lde
+    /// ≈ 22-26 with a Q-bearing circuit confirms the blindness.
+    /// Run: cargo test --release --lib h1_dr_filter_blindness -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn h1_dr_filter_blindness() {
+        fn xorshift64(s: &mut u64) -> u64 { *s ^= *s << 13; *s ^= *s >> 7; *s ^= *s << 17; *s }
+        fn rand_angle(s: &mut u64) -> f64 {
+            let b = xorshift64(s) >> 11;
+            (b as f64) / ((1u64 << 53) as f64) * 2.0 * std::f64::consts::PI
+        }
+        let mut state: u64 = 12648430 | 1;
+        // probe_t_vs_qt target gen: theta in (0.2, PI-0.2), phi/lambda in (0.1, 2PI-0.1)
+        let mut angles = Vec::new();
+        for _ in 0..2 {
+            let t = 0.2 + rand_angle(&mut state) / (2.0 * std::f64::consts::PI)
+                * (std::f64::consts::PI - 0.4);
+            let p = 0.1 + rand_angle(&mut state) / (2.0 * std::f64::consts::PI)
+                * (2.0 * std::f64::consts::PI - 0.2);
+            let l = 0.1 + rand_angle(&mut state) / (2.0 * std::f64::consts::PI)
+                * (2.0 * std::f64::consts::PI - 0.2);
+            angles.push((t, p, l));
+        }
+        eprintln!("targets (must match probe rows 0,1: θ=2.37/1.17): {angles:?}");
+        for (i, &(t, p, l)) in angles.iter().enumerate() {
+            let ct = (t / 2.0).cos();
+            let st = (t / 2.0).sin();
+            let gp = Complex64::from_polar(1.0, -(p + l) / 2.0);
+            let target: Mat2 = [
+                [gp * Complex64::new(ct, 0.0), gp * (-Complex64::from_polar(st, l))],
+                [gp * Complex64::from_polar(st, p), gp * Complex64::from_polar(ct, p + l)],
+            ];
+            for (label, filt) in [("strict[0]", vec![0u32]), ("relaxed[0,1,15]", vec![0u32, 1, 15])] {
+                let synth = SynthesizerQ::new(1e-8).with_dc_dr_filter(filt);
+                let t0 = std::time::Instant::now();
+                let r = synth.synthesize(target);
+                match r {
+                    Some(r) => {
+                        let g = r.gates.as_deref().unwrap_or("");
+                        let (tc, qc) = gates_tq(g);
+                        eprintln!(
+                            "target {i} {label}: lde={} T={tc} Q={qc} cost={} dist={:.2e} t={:.1}s",
+                            r.lde,
+                            gates_cost(g, 7) as f64 / 2.0,
+                            r.distance,
+                            t0.elapsed().as_secs_f64()
+                        );
+                    }
+                    None => eprintln!("target {i} {label}: NONE t={:.1}s", t0.elapsed().as_secs_f64()),
                 }
             }
         }
