@@ -15,12 +15,15 @@
 //! with a no-op stop predicate (cost-min mode never early-exits), and
 //! reconstruct/score every returned solution.
 //!
-//! Args: probe_walk_bench <theta> <eps> <k> [<parity: 0|1>] [<bound_sq>]
+//! Args: probe_walk_bench <theta> <eps> <k> [<parity: 0|1>] [<bound_sq>] [<dd: 0|1>]
 //!   parity 0 = even branch (target as-is, after det projection)
 //!   parity 1 = odd branch (target rotated by e^{iπ/16} first)
 //!   omitted  = run both branches.
 //!   bound_sq = optional SE bound override (sets CYCLOSYNTH_BOUND_SQ —
 //!   convenience for retention sweeps; same effect as the env var).
+//!   dd       = optional dd Q-bracket switch; 0 sets
+//!   CYCLOSYNTH_QBRACKET_DD=0 (legacy deep-ε mode: f64 factor, no dd
+//!   verification — pair with bound 3.0 for the pre-dd reference).
 
 use cyclosynth::matrix::U2Q;
 use cyclosynth::synthesis::clifford_sqrt_t::{
@@ -248,6 +251,9 @@ fn main() {
     if let Some(bound) = args.get(4) {
         let _: f64 = bound.parse().expect("bound_sq");
         std::env::set_var("CYCLOSYNTH_BOUND_SQ", bound);
+    }
+    if args.get(5).map(|s| s.as_str()) == Some("0") {
+        std::env::set_var("CYCLOSYNTH_QBRACKET_DD", "0");
     }
 
     let target = project_det_to_zeta_coset(&rz(theta));

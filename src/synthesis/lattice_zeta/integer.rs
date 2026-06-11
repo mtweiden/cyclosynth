@@ -52,8 +52,9 @@ use super::lll::{run_lll_16, LllResult};
 use super::q_metric::build_q_int_zeta;
 use super::scratch::{rfv, IntScratch16};
 use super::se::{
-    bilinear_forms, euclidean_cholesky_16_mpfr_dual,
-    schnorr_euchner_16d_par_norm_pruned, LeafAction, SeCenter16,
+    bilinear_forms, euclidean_cholesky_16_mpfr_dual, q_cholesky_16_mpfr_dual,
+    qbracket_dd_disabled, schnorr_euchner_16d_par_norm_pruned,
+    verify_prune_mpfr, LeafAction, SeCenter16,
 };
 use crate::rings::Float;
 use crate::synthesis::diag;
@@ -378,9 +379,37 @@ where
         );
     }
 
-    // Transpose lower-triangular L to upper-triangular for SE.
-    let l_upper: [[f64; 16]; 16] =
-        std::array::from_fn(|i| std::array::from_fn(|j| scratch.l_f64[j][i]));
+    // Deep-ε dd Q-bracket (docs/w_q_bracket_notes.md): MPFR-128 Cholesky
+    // of the post-LLL Q-metric Gram (exact i256 through LLL and BKZ),
+    // projected to an f64 snapshot + a double-double factor. The snapshot
+    // replaces the f64-Cholesky `l_upper` (strictly more accurate); the
+    // dd factor drives the incremental dd partial-Q inside the SE walk,
+    // making every Q-prune decision sound at the tight bound. Gated on
+    // the deep-ε regime — `verify_prune_mpfr()` is the integrator's flag
+    // (set below 2e-8), and `eps <= 2e-8` mirrors that gating for direct
+    // phase1 callers (probes) — so moderate-ε hot paths pay nothing.
+    // Kill-switch `CYCLOSYNTH_QBRACKET_DD=0` restores the legacy deep-ε
+    // behavior (f64 factor + bound 3.0) for A/B and retention references.
+    let q_chol_dual = if (eps <= 2e-8 || verify_prune_mpfr()) && !qbracket_dd_disabled() {
+        let dual = q_cholesky_16_mpfr_dual(&scratch.gram, scratch.scale_bits);
+        if dual.is_none() {
+            eprintln!(
+                "[lattice_zeta] MPFR Q-Cholesky failed (non-PD Gram) at \
+                 eps={:e}, k={}; falling back to f64 factor + bound 3.0.",
+                eps, k
+            );
+        }
+        dual
+    } else {
+        None
+    };
+
+    // Transpose lower-triangular L to upper-triangular for SE (dd mode:
+    // take the MPFR snapshot instead — same factor at higher accuracy).
+    let l_upper: [[f64; 16]; 16] = match &q_chol_dual {
+        Some((snap, _)) => *snap,
+        None => std::array::from_fn(|i| std::array::from_fn(|j| scratch.l_f64[j][i])),
+    };
 
     // Step 5: SE bound. Every point of the enumeration cap — hence every
     // valid solution — has geometric Q-norm² in [0.875, 1.25], with both
@@ -396,18 +425,18 @@ where
     // post-fractional-center (was (1.6, 1.75] with the rounded center —
     // the difference was rounding inflation, removed by SeCenter16).
     //
-    // Default 1.5 = tight 1.25 + 20% slack for f64 drift in the
-    // incremental partial-Q. Deep ε (≤ 2e-8) keeps 3.0: the incremental
-    // f64 partial sums historically overshoot up to ~1.8× in that regime
-    // (the ε=1.5e-8 cliff; dd-verify covers the norm prune but not the
-    // Q bracket) — 1.25 · 1.8 < 3.0 absorbs it; revisit if a dd-verified
-    // Q bracket lands. The norm-shell prune plus the integer-exact leaf
-    // check filter the false positives the slack admits. Override via
-    // env var.
+    // Default 1.5 = tight 1.25 + 20% slack. Historically deep ε (≤ 2e-8)
+    // needed 3.0 because the incremental f64 partial-Q overshot up to
+    // ~1.8× there (the ε=1.5e-8 cliff: 1.25 · 1.8 < 3.0 absorbed it).
+    // With the dd-verified Q bracket (q_chol_dual above) the boundary
+    // decisions are made on ~1e-32-accurate values, so the tight band
+    // [0.875, 1.25] + 20% slack = 1.5 is sound at every ε; 3.0 survives
+    // only as the defensive fallback if the MPFR Q-Cholesky itself fails
+    // at deep ε. Override via env var.
     let bound_sq = std::env::var("CYCLOSYNTH_BOUND_SQ")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
-        .unwrap_or(if eps <= 2e-8 { 3.0 } else { 1.5 });
+        .unwrap_or(if eps <= 2e-8 && q_chol_dual.is_none() { 3.0 } else { 1.5 });
 
     // Pre-compute alignment threshold and y at MPFR-128.
     //
@@ -555,7 +584,8 @@ where
     };
 
     let (solutions, budget_was_hit) = schnorr_euchner_16d_par_norm_pruned(
-        &l_upper, &z_c, bound_sq, &r_eucl, &r_eucl_dd, target_norm_sq_f64, &basis,
+        &l_upper, q_chol_dual.as_ref().map(|(_, dd)| dd), &z_c, bound_sq,
+        &r_eucl, &r_eucl_dd, target_norm_sq_f64, &basis,
         leaf_filter, &budget,
         external_abort, consumed,
     );
