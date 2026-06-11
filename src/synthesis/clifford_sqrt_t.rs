@@ -644,11 +644,14 @@ fn lattice_lde_estimate(epsilon: f64) -> u32 {
 /// bit-identical total cost (1159.0 vs 1159.0) at 1.40× less wall
 /// (198.7 s → 141.9 s). m=2 still earns its keep at 1e-6/1e-7
 /// (Stage-2 m-sweep findings).
-/// * ε ≥ 1e-5: vec![1]
-/// * 1e-7 ≤ ε < 1e-5: vec![1, 2]
+/// * ε ≥ 1e-6: vec![1] — the 1e-6 N=12 A/B (2026-06-11, pinned binary,
+///   seed 12648430) matched {1,2}'s total cost EXACTLY (584.5) at
+///   1.56× less wall; m=2 alone cost +1.0%. Post-bound-arc, m=2 is
+///   dead weight at 1e-6 just as the N=30 A/B showed at 1e-5.
+/// * 1e-7 ≤ ε < 1e-6: vec![1, 2] (pending its own A/B).
 /// * ε < 1e-7: vec![2] only (m=1 is too noisy at this depth).
 fn default_optimal_m_sweep(epsilon: f64) -> Vec<u32> {
-    if epsilon >= 1e-5 {
+    if epsilon >= 1e-6 {
         vec![1]
     } else if epsilon >= 1e-7 {
         vec![1, 2]
@@ -697,13 +700,28 @@ fn gates_tq(gates: &str) -> (usize, usize) {
 const PASS1_CAP: u64 = 100_000_000;
 const PASS2_CAP: u64 = 4_000_000_000;
 
+/// TEMPORARY A/B knob (budget right-sizing sweep, 2026-06-11): divisor
+/// applied to the ε ≤ 1e-7 (but > 1e-8) dc caps. Read once per process.
+/// Remove after the sweep lands its final constants.
+fn dc_cap_div() -> u64 {
+    use std::sync::OnceLock;
+    static DIV: OnceLock<u64> = OnceLock::new();
+    *DIV.get_or_init(|| {
+        std::env::var("CYCLOSYNTH_DC_CAP_DIV")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&d| d >= 1)
+            .unwrap_or(1)
+    })
+}
+
 /// Per-prefix Z1 D&C pass-1 budget; scaled with ε since the post-LLL
 /// SE region grows exponentially in k_inner.
 fn dc_pass1_cap_for(epsilon: f64) -> u64 {
     if epsilon <= 1e-8 {
         100_000_000
     } else if epsilon <= 1e-7 {
-        25_000_000
+        25_000_000 / dc_cap_div()
     } else {
         DC_PASS1_CAP
     }
@@ -713,7 +731,7 @@ fn dc_pass2_cap_for(epsilon: f64) -> u64 {
     if epsilon <= 1e-8 {
         500_000_000
     } else if epsilon <= 1e-7 {
-        50_000_000
+        50_000_000 / dc_cap_div()
     } else {
         DC_PASS2_CAP
     }
@@ -833,7 +851,12 @@ impl SynthesizerQ {
             max_lde
         };
 
-        let bkz_block_size = if epsilon <= 1e-7 { 4 } else { 0 };
+        // TEMPORARY A/B knob (BKZ re-A/B, 2026-06-11): CYCLOSYNTH_BKZ
+        // overrides the default block size. Remove after the A/B lands.
+        let bkz_block_size = std::env::var("CYCLOSYNTH_BKZ")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(if epsilon <= 1e-7 { 4 } else { 0 });
 
         // Below ε = 2.5e-8 a no-solution lde level burns its full pass-1
         // node budget (n_prefixes × cap ≈ 9 × cap nodes, tens of seconds)
@@ -897,7 +920,23 @@ impl SynthesizerQ {
             // docs/w_anytime_frontier_notes.md). Below 1e-5 the enum
             // arms are sized differently (m=2 arms, deeper walks) and
             // keep the legacy budget semantics.
-            optimal_deadline_ms: if epsilon >= 1e-5 { Some(600) } else { None },
+            // ε-scaled anytime deadlines. 600 ms at ≥1e-5 was validated
+            // by the N=30 gate (cost 1159.0-1163, monotone sweep). The
+            // deeper defaults are conservative starting points from the
+            // Track-1 sweeps (docs/w_zzeta_deep_eps_notes.md): walls
+            // there are dominated by deadline-bound enum, so the knob
+            // trades wall for cost explicitly; certify mode and
+            // hybrid-lite (< 1e-7: empty m-sweep → no frontier) are
+            // unaffected by construction.
+            optimal_deadline_ms: if epsilon >= 1e-5 {
+                Some(600)
+            } else if epsilon >= 1e-6 {
+                Some(1500)
+            } else if epsilon >= 1e-7 {
+                Some(4000)
+            } else {
+                None
+            },
             certify: false,
             certify_extra_ms: 2_000,
             q_cost_x2: 7,
