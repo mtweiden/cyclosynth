@@ -933,7 +933,14 @@ impl SynthesizerQ {
             } else if epsilon >= 1e-6 {
                 Some(1500)
             } else if epsilon >= 1e-7 {
-                Some(4000)
+                // The 1e-7 cost/deadline curve is FLAT at ~0.90 ratio
+                // through 3000 ms, then cliffs to 0.866 between 3000
+                // and 3500 ms (the deep-arm prefix sweep's
+                // time-to-first-good-candidate); 3500 ms captures the
+                // full 4000 ms value at 12% less wall (N=8 sweep,
+                // docs/w_zzeta_deep_eps_notes.md). Sub-cliff deadlines
+                // cannot hold the ≤0.89 ratio rule.
+                Some(3500)
             } else {
                 None
             },
