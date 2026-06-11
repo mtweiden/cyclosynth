@@ -460,6 +460,21 @@ pub struct SynthesizerQ {
     /// odd-branch `max_lde ≤ even_cost + 1` cap, which forced the
     /// branches to run serially.
     global_best_cost: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    /// Cross-parity stage-2 handshake (fast path only). The two
+    /// branches' screens are tiny when uncontended (≤ tens of ms at
+    /// ε ≥ 1e-5), but a peer branch that finishes its screen first
+    /// launches its enum frontier, whose thousands of prefix-walk
+    /// tasks starve the still-running screen on the shared rayon pool
+    /// (measured 3 ms → 627 ms, ~50×, 2026-06-11). `my_screen_done`
+    /// is set when this branch's stage 2 completes (and uncondition-
+    /// ally when the branch returns, covering early exits);
+    /// `peer_screen_done` is polled before dispatching the frontier
+    /// so both branches' frontiers start together and overlap
+    /// symmetrically instead of trampling the slower screen. The wait
+    /// is bounded (4× the frontier deadline) and only armed with a
+    /// deadline configured, so legacy/certify paths are unaffected.
+    my_screen_done: Option<std::sync::Arc<AtomicBool>>,
+    peer_screen_done: Option<std::sync::Arc<AtomicBool>>,
     /// Stage-3 prefix-cost prune: in `optimize_cost` mode, sort prefixes
     /// by the precomputed weighted prefix cost ascending and skip any
     /// prefix whose own cost already exceeds the best total cost found
@@ -524,6 +539,89 @@ pub struct SynthesizerQ {
 /// k cutoff: brute-force handles `k ≤ BRUTE_LIMIT`, lattice handles the rest.
 /// At 3, brute tops out at ~10⁷ shell points (~100 ms).
 const BRUTE_LIMIT: u32 = 3;
+
+/// Process-wide cache over [`phase1_brute`] for the brute regime
+/// (`k ≤ BRUTE_LIMIT`). The shell enumeration is a pure function of
+/// `k` — completely target-independent — yet costs ~0.36 s for the
+/// full k = 0..=3 sweep; before caching, optimal mode re-ran it 4×
+/// per target (stage-1 of each parity branch + inside each branch's
+/// first-hit screen), which was ~90% of the measured "screen cost"
+/// at ε = 1e-5 (2026-06-11, docs/w_screen_retune_notes.md).
+///
+/// Alongside the integer solutions we cache their **unit-scale d = 0
+/// float matrices** `(u11, u12, u21, u22) = (u1, −u2*, u2, u1*)/√2^k`
+/// so per-target scans can run a cheap f64 distance prefilter (see
+/// [`brute_dist_est`]) instead of the ~4 µs/sol MPFR
+/// `diamond_distance_u2q_float` on all ~54 k k=3 shell solutions
+/// (~260 ms/scan → ~2 ms). The solution list and its order are
+/// exactly [`phase1_brute`]'s, so accept/reject decisions (which
+/// still go through the exact MPFR path) are bit-identical.
+struct BruteShell {
+    sols: Vec<[i64; 16]>,
+    mats: Vec<[Complex64; 4]>,
+}
+
+fn brute_shell_cached(k: u32) -> &'static BruteShell {
+    use std::sync::OnceLock;
+    const CELL: OnceLock<BruteShell> = OnceLock::new();
+    static CACHE: [OnceLock<BruteShell>; (BRUTE_LIMIT + 1) as usize] =
+        [CELL; (BRUTE_LIMIT + 1) as usize];
+    debug_assert!(k <= BRUTE_LIMIT);
+    CACHE[k as usize].get_or_init(|| {
+        let sols = phase1_brute(k);
+        let inv_scale = 1.0 / (2f64.powi(k as i32)).sqrt();
+        // ζ₁₆^j basis at unit scale.
+        let basis: [Complex64; 8] =
+            std::array::from_fn(|j| Complex64::from_polar(1.0, j as f64 * PI / 8.0));
+        let to_c = |s: &[i64]| -> Complex64 {
+            (0..8).map(|j| basis[j] * s[j] as f64).sum::<Complex64>() * inv_scale
+        };
+        let mats = sols
+            .iter()
+            .map(|sol| {
+                let u1 = to_c(&sol[0..8]);
+                let u2 = to_c(&sol[8..16]);
+                [u1, -u2.conj(), u2, u1.conj()]
+            })
+            .collect();
+        BruteShell { sols, mats }
+    })
+}
+
+/// f64 estimate of `diamond_distance_u2q_float(solution_to_u2q_d(sol,
+/// k, d), target)` from the cached unit-scale d = 0 matrix `m` and the
+/// det-phase rotation `zd = ζ₁₆^d` (which multiplies column 2). Same
+/// formula as the MPFR version — φ-optimal Frobenius, `D² = fro·(8 −
+/// fro)/16` — at f64 precision (abs error ≲ 1e-14 for these O(1)
+/// entries), used ONLY as a conservative prefilter: callers skip the
+/// exact MPFR check when the estimate clears ε by a wide margin (see
+/// [`brute_prefilter_threshold`]), so no true ε-accept is ever lost.
+#[inline]
+fn brute_dist_est(m: &[Complex64; 4], zd: Complex64, target: &Mat2) -> f64 {
+    let u = [m[0], zd * m[1], m[2], zd * m[3]];
+    let t = [target[0][0], target[0][1], target[1][0], target[1][1]];
+    let mut tr = Complex64::new(0.0, 0.0);
+    let mut su = 0.0;
+    let mut st = 0.0;
+    for i in 0..4 {
+        tr += u[i] * t[i].conj();
+        su += u[i].norm_sqr();
+        st += t[i].norm_sqr();
+    }
+    let fro = (su + st - 2.0 * tr.norm()).max(0.0);
+    let d_sq = fro * (8.0 - fro) / 16.0;
+    d_sq.max(0.0).sqrt()
+}
+
+/// Prefilter acceptance threshold: pass anything whose f64 estimate
+/// is below `1.05·ε + 1e-11` to the exact MPFR check. The slack is
+/// ~3 orders of magnitude above the estimator's error bound, and the
+/// brute regime only runs at ε > 1e-8 (below that `min_lde > 3`
+/// skips it), so candidates with true distance < ε always pass.
+#[inline]
+fn brute_prefilter_threshold(epsilon: f64) -> f64 {
+    1.05 * epsilon + 1e-11
+}
 
 /// Smallest lde where a generic SU(2) target is reachable within ε,
 /// per the Gaussian heuristic over the Minkowski-embedded Z[ζ_16]
@@ -784,6 +882,8 @@ impl SynthesizerQ {
             },
             optimal_budget_multiplier: 2,
             global_best_cost: None,
+            my_screen_done: None,
+            peer_screen_done: None,
             optimal_prefix_prune: true,
             optimal_lde_window: 2,
             // Open the det-phase filters where the audit showed real
@@ -1133,9 +1233,26 @@ impl SynthesizerQ {
         };
 
         // Brute regime: iterate every k for exact small-T Clifford+√T finds.
+        let zd = Complex64::from_polar(1.0, d as f64 * PI / 8.0);
         for k in self.min_lde..=BRUTE_LIMIT.min(self.max_lde) {
-            let sols = phase1_brute(k);
-            if let Some(r) = check_sols(&sols, k) {
+            let t_k = std::time::Instant::now();
+            let shell = brute_shell_cached(k);
+            let thr = brute_prefilter_threshold(self.epsilon);
+            let close: Vec<[i64; 16]> = shell
+                .sols
+                .iter()
+                .zip(&shell.mats)
+                .filter(|(_, m)| brute_dist_est(m, zd, &target) < thr)
+                .map(|(s, _)| *s)
+                .collect();
+            let r = check_sols(&close, k);
+            if trace {
+                eprintln!("[zeta] brute lde={k:>2}  sols={:>7} close={:>3}  {}  t={:.0}ms",
+                    shell.sols.len(), close.len(),
+                    if r.is_some() { "FOUND" } else { "none " },
+                    t_k.elapsed().as_secs_f64() * 1000.0);
+            }
+            if let Some(r) = r {
                 if trace {
                     diag::dump_zeta(&diag::snapshot(),
                         &format!("synthesize ε={:.0e} k={k}", self.epsilon));
@@ -2252,7 +2369,13 @@ impl SynthesizerQ {
             let d = det_phase_of(t);
             let found: Option<(usize, SynthResultQ)> = if k_max <= BRUTE_LIMIT {
                 let mut branch_best: Option<(usize, SynthResultQ)> = None;
-                for sol in &phase1_brute(k_max) {
+                let shell = brute_shell_cached(k_max);
+                let zd = Complex64::from_polar(1.0, d as f64 * PI / 8.0);
+                let thr = brute_prefilter_threshold(self.epsilon);
+                for (sol, m) in shell.sols.iter().zip(&shell.mats) {
+                    if brute_dist_est(m, zd, t) >= thr {
+                        continue;
+                    }
                     // Shells above the minimum contain √2-scaled images
                     // of lower-lde circuits (that's the covering
                     // mechanism); reduce before decomposing — the
@@ -2461,30 +2584,61 @@ impl SynthesizerQ {
         even_self.global_best_cost = Some(global_best.clone());
         let mut odd_self = self.clone();
         odd_self.global_best_cost = Some(global_best.clone());
+        // Stage-2 handshake flags (see field docs): each branch's
+        // frontier dispatch waits until the peer's screen is done.
+        let even_screen_done = std::sync::Arc::new(AtomicBool::new(false));
+        let odd_screen_done = std::sync::Arc::new(AtomicBool::new(false));
+        even_self.my_screen_done = Some(even_screen_done.clone());
+        even_self.peer_screen_done = Some(odd_screen_done.clone());
+        odd_self.my_screen_done = Some(odd_screen_done.clone());
+        odd_self.peer_screen_done = Some(even_screen_done.clone());
         let mut ledger_even = Vec::new();
         let mut ledger_odd = Vec::new();
+        let trace = crate::synthesis::diag::trace_enabled();
+        let t_branches = std::time::Instant::now();
         let (r_even, r_odd) = std::thread::scope(|s| {
             let even_ledger = &mut ledger_even;
             let odd_ledger = &mut ledger_odd;
             let even_ref = &even_self;
             let odd_ref = &odd_self;
+            let even_done = &even_screen_done;
+            let odd_done = &odd_screen_done;
             let h_even = std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
                 .spawn_scoped(s, move || {
-                    even_ref.synthesize_optimal_inner(
+                    let t0 = std::time::Instant::now();
+                    let r = even_ref.synthesize_optimal_inner(
                         target, /*with_baseline=*/ true, even_ledger,
-                    )
+                    );
+                    // Branch done ⇒ screen trivially "done" (covers
+                    // returns before stage 2, e.g. stage-1 brute finds)
+                    // so the peer's handshake wait can't outlive us.
+                    even_done.store(true, Ordering::Release);
+                    (r, t0.elapsed())
                 })
                 .expect("spawn even parity branch");
             let h_odd = std::thread::Builder::new()
                 .stack_size(16 * 1024 * 1024)
                 .spawn_scoped(s, move || {
-                    odd_ref.synthesize_optimal_inner(
+                    let t0 = std::time::Instant::now();
+                    let r = odd_ref.synthesize_optimal_inner(
                         target_odd, /*with_baseline=*/ false, odd_ledger,
-                    )
+                    );
+                    odd_done.store(true, Ordering::Release);
+                    (r, t0.elapsed())
                 })
                 .expect("spawn odd parity branch");
-            (h_even.join().unwrap(), h_odd.join().unwrap())
+            let (r_even, dt_even) = h_even.join().unwrap();
+            let (r_odd, dt_odd) = h_odd.join().unwrap();
+            if trace {
+                eprintln!(
+                    "[zeta] optimal branches even={:.0}ms odd={:.0}ms scope={:.0}ms",
+                    dt_even.as_secs_f64() * 1000.0,
+                    dt_odd.as_secs_f64() * 1000.0,
+                    t_branches.elapsed().as_secs_f64() * 1000.0,
+                );
+            }
+            (r_even, r_odd)
         });
         // Coverage holds only up to the SMALLER branch horizon: a level
         // is closed only when both parity worlds enumerated it fully.
@@ -2536,10 +2690,15 @@ impl SynthesizerQ {
         let v = unitary_to_uv_zeta(&target);
 
         // Stage 1: brute regime, exact min-cost at the smallest k.
+        let zd = Complex64::from_polar(1.0, d as f64 * PI / 8.0);
         for k in self.min_lde..=BRUTE_LIMIT.min(self.max_lde) {
-            let sols = phase1_brute(k);
+            let shell = brute_shell_cached(k);
+            let thr = brute_prefilter_threshold(self.epsilon);
             let mut best: Option<(usize, SynthResultQ)> = None;
-            for sol in &sols {
+            for (sol, m) in shell.sols.iter().zip(&shell.mats) {
+                if brute_dist_est(m, zd, &target) >= thr {
+                    continue;
+                }
                 let cand: U2Q = solution_to_u2q_d(sol, k, d);
                 let dist = diamond_distance_u2q_float(&cand, &target);
                 if dist < self.epsilon {
@@ -2605,6 +2764,12 @@ impl SynthesizerQ {
             let first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
             (first, unclear, baseline_handle.and_then(|h| h.join().unwrap()))
         });
+        // Stage-2 handshake: signal screen completion to the peer
+        // parity branch (see `my_screen_done` field docs). The
+        // matching wait sits just before the frontier dispatch below.
+        if let Some(flag) = &self.my_screen_done {
+            flag.store(true, Ordering::Release);
+        }
         // Convert the baseline to a √T-shaped candidate. Its gate string
         // contains no Q, so its cost is exactly 2·T_count half-units.
         let baseline: Option<(usize, SynthResultQ)> = t_baseline.and_then(|r| {
@@ -2705,6 +2870,24 @@ impl SynthesizerQ {
             && tasks.iter().all(|&(_, m)| m >= 1)
         {
             if let Some(deadline_ms) = self.optimal_deadline_ms {
+                // Stage-2 handshake wait: don't flood the shared rayon
+                // pool with frontier prefix walks while the peer
+                // branch's screen is still running (it would starve to
+                // ~50× its uncontended wall). Bounded at 4× the
+                // deadline as a safety net; the peer's branch-return
+                // store guarantees progress even on early exits.
+                if let Some(peer) = &self.peer_screen_done {
+                    let t_wait = std::time::Instant::now();
+                    let cap = std::time::Duration::from_millis(4 * deadline_ms.max(100));
+                    while !peer.load(Ordering::Acquire) && t_wait.elapsed() < cap {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    if trace {
+                        eprintln!(
+                            "[zeta] optimal frontier handshake wait={:.0}ms",
+                            t_wait.elapsed().as_secs_f64() * 1000.0);
+                    }
+                }
                 let t_w = std::time::Instant::now();
                 let (fr, level_truncated) = self.dc_frontier_q(
                     &target,
