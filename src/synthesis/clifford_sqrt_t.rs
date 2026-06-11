@@ -596,6 +596,35 @@ fn dc_pass2_cap_for(epsilon: f64) -> u64 {
 const DC_PASS1_CAP: u64 = 5_000_000;
 const DC_PASS2_CAP: u64 = 10_000_000;
 
+/// Rayon `with_min_len` for `dc_search_q`'s **optimize-mode** prefix
+/// par_iter. `0` = legacy `usable.len() / n_threads` chunking.
+///
+/// **A/B 2026-06-10 (1e-6 suite, 6 targets, seed 12648430):** `1`
+/// (every prefix independently stealable) ABORTS — per-job `map_init`
+/// scratch construction nests stolen `per_prefix` frames on rayon's
+/// 2 MiB pool workers and overflows the stack (the coarse chunking only
+/// survives because job count stays ≈ n_threads, bounding the nesting).
+/// Keep 0; the cheap-prefix serialization issue is addressed by
+/// [`OPTIMAL_PREFIX_INTERLEAVE`] instead, at unchanged job granularity.
+const OPTIMAL_PAR_MIN_LEN: usize = 0;
+
+/// Cheap-prefix serialization fix for `dc_search_q`'s optimize mode.
+/// The prefix list is sorted cost-ascending so the shared best-cost
+/// tracker drops quickly — but rayon's `len/n_threads` chunking then
+/// hands ALL the cheapest prefixes to one thread's chunk, serializing
+/// exactly the prefixes most likely to produce the incumbent. When
+/// true, the sorted list is transpose-interleaved (chunk j gets cost
+/// ranks j, j+t, j+2t, …) so every chunk leads with a near-cheapest
+/// prefix: the t cheapest prefixes run in parallel FIRST, the incumbent
+/// drops as fast as the hardware allows, and later (expensive) prefixes
+/// see maximal pruning. Stack-safe, unlike `with_min_len(1)` (above).
+///
+/// **A/B 2026-06-10 (1e-6 suite, 6 targets, seed 12648430, back-to-back
+/// on a shared machine):** legacy chunking 619.7 s total wall vs
+/// interleaved 373.4 s — 1.66× faster at bit-identical costs
+/// (mean 48.7, √T/T 0.901) on every target.
+const OPTIMAL_PREFIX_INTERLEAVE: bool = true;
+
 /// Compute `U_L† · target` as a continuous Mat2.
 /// `U_L` is exact (`U2Q`), `target` is float (`Mat2`). Mirrors the 8D
 /// helper `clifford_t::u2t_dag_times_mat2` for use by the Z1 D&C path.
@@ -901,6 +930,25 @@ impl SynthesizerQ {
     /// BKZ-reduced) and an FGKM-prefix divide-and-conquer mode (`dc_search_q`)
     /// for larger / deep k.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
+        self.synthesize_with_unclear(target, None)
+    }
+
+    /// [`Self::synthesize`] with an optional truncation out-param
+    /// (mirrors `synthesize_optimal_inner`'s `ledger_out` pattern).
+    ///
+    /// When the search finds at level `fl`, any level `k < fl` whose walk
+    /// was budget-truncated (or aborted by a parallel-LDE peer) without
+    /// being cleared by a pass-2 retry may still contain a solution —
+    /// the find at `fl` short-circuits the retry queue, biasing the
+    /// reported find-lde upward. `unclear_out`, when `Some`, receives
+    /// exactly those "truncated below fl and never cleared" levels so
+    /// the cost-optimal enum stage can add them to its (lde, m) grid.
+    /// `None` keeps the legacy behaviour bit-for-bit.
+    fn synthesize_with_unclear(
+        &self,
+        target: Mat2,
+        mut unclear_out: Option<&mut Vec<u32>>,
+    ) -> Option<SynthResultQ> {
         use crate::synthesis::diag;
         use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
 
@@ -1049,17 +1097,29 @@ impl SynthesizerQ {
         // (a budget-hit lde is never skipped) while letting easy targets
         // bail fast on NO-lde levels.
         if let Some(m_split) = self.dc_split {
+            // Levels whose walk hit a budget cap without finding AND that
+            // will never be retried (the pass-2 queue covers the main dc
+            // sweep, but not the small-k fallback, and a find aborts the
+            // queue). Reported through `unclear_out` on every successful
+            // return below — only levels < find-lde matter to the caller.
+            let mut unverified_small: Vec<u32> = Vec::new();
             // Sequential small-k pass: dc_search_q cannot help for k <= m_split
             // (k_inner ≤ 0). These are typically few levels near lattice_start.
             for k in lattice_start..=m_split.min(self.max_lde) {
                 let t_k = std::time::Instant::now();
-                let (sols, _) = try_lattice_k(k, PASS1_CAP, &mut scratch);
+                let (sols, small_budget_hit) = try_lattice_k(k, PASS1_CAP, &mut scratch);
                 if let Some(r) = check_sols(&sols, k) {
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} (single fallback)  FOUND  dist={:.3e}  t={:.0}ms",
                             r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
                     }
+                    if let Some(out) = unclear_out.as_deref_mut() {
+                        out.extend(unverified_small.iter().copied());
+                    }
                     return Some(r);
+                }
+                if small_budget_hit {
+                    unverified_small.push(k);
                 }
                 if trace {
                     eprintln!("[zeta] dc lde={k:>2} (single fallback)  none   t={:.0}ms",
@@ -1093,6 +1153,13 @@ impl SynthesizerQ {
                             eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
                                 r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
                         }
+                        // Find at k short-circuits the pass-2 retries:
+                        // every queued (budget-hit) level < k stays
+                        // unverified — report it for the enum grid.
+                        if let Some(out) = unclear_out.as_deref_mut() {
+                            out.extend(unverified_small.iter().copied());
+                            out.extend(pass2_collector.lock().unwrap().iter().copied());
+                        }
                         return Some(r);
                     }
                     if trace {
@@ -1104,12 +1171,15 @@ impl SynthesizerQ {
                 }
                 let mut pass2_queue: Vec<u32> = pass2_collector.into_inner().unwrap();
                 pass2_queue.sort_unstable();
+                // Levels retried at pass-2 cap that hit the budget AGAIN
+                // without finding: still not exhaustively walked.
+                let mut still_truncated: Vec<u32> = Vec::new();
                 for k in pass2_queue {
                     let t_k = std::time::Instant::now();
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
                     }
-                    let (result, _) = self.dc_search_q(
+                    let (result, budget_hit2) = self.dc_search_q(
                         &target, k, m_split, None, dc_pass2_cap_for(self.epsilon), None, None, None, None,
                     );
                     if let Some(r) = result {
@@ -1117,7 +1187,14 @@ impl SynthesizerQ {
                             eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
                                 r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
                         }
+                        if let Some(out) = unclear_out.as_deref_mut() {
+                            out.extend(unverified_small.iter().copied());
+                            out.extend(still_truncated.iter().copied());
+                        }
                         return Some(r);
+                    }
+                    if budget_hit2 {
+                        still_truncated.push(k);
                     }
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
@@ -1238,6 +1315,22 @@ impl SynthesizerQ {
                         eprintln!("[zeta] dc parallel-lde window wall  t={:.0}ms",
                             t_window.elapsed().as_secs_f64() * 1000.0);
                     }
+                    if let Some(out) = unclear_out.as_deref_mut() {
+                        let found_k = r.lde;
+                        out.extend(unverified_small.iter().copied());
+                        // Budget-hit levels from this and earlier windows.
+                        out.extend(
+                            pass2_collector.lock().unwrap().iter().copied()
+                                .filter(|&k| k < found_k),
+                        );
+                        // Window peers below the finder: a peer may have
+                        // been cross-LDE-aborted mid-walk (or never
+                        // launched behind the speculation trigger), which
+                        // is indistinguishable here from a clean exhaust —
+                        // conservatively report every non-finding peer
+                        // level below found_k.
+                        out.extend(lde_window.iter().copied().filter(|&k| k < found_k));
+                    }
                     break 'outer Some(r);
                 }
                 k_cursor = window_end + 1;
@@ -1251,18 +1344,26 @@ impl SynthesizerQ {
             // Pass 2 retries: only the lde levels where pass 1's prefixes
             // hit budget without finding. Other lde levels were
             // exhausted at pass 1 (no solution exists at that lde).
+            let mut still_truncated: Vec<u32> = Vec::new();
             for k in pass2_queue {
                 let t_k = std::time::Instant::now();
                 if trace {
                     eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
                 }
-                let (result, _) = self.dc_search_q(&target, k, m_split, None, dc_pass2_cap_for(self.epsilon), None, None, None, None);
+                let (result, budget_hit2) = self.dc_search_q(&target, k, m_split, None, dc_pass2_cap_for(self.epsilon), None, None, None, None);
                 if let Some(r) = result {
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
                             r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
                     }
+                    if let Some(out) = unclear_out.as_deref_mut() {
+                        out.extend(unverified_small.iter().copied());
+                        out.extend(still_truncated.iter().copied());
+                    }
                     return Some(r);
+                }
+                if budget_hit2 {
+                    still_truncated.push(k);
                 }
                 if trace {
                     eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
@@ -1285,6 +1386,11 @@ impl SynthesizerQ {
                     diag::dump_zeta(&diag::snapshot(),
                         &format!("synthesize ε={:.0e} k={k} (pass1)", self.epsilon));
                 }
+                // Queued (budget-hit) levels < k never get their pass-2
+                // retry — same upward-bias class as the dc dispatcher.
+                if let Some(out) = unclear_out.as_deref_mut() {
+                    out.extend(pass2_queue.iter().copied());
+                }
                 return Some(r);
             }
             if trace {
@@ -1301,9 +1407,10 @@ impl SynthesizerQ {
         // budget-hit. Guarantees no completeness loss vs single-pass-at-
         // PASS2_CAP, while skipping k's where Pass 1 was already
         // exhaustive.
+        let mut still_truncated: Vec<u32> = Vec::new();
         for k in pass2_queue {
             let t_k = std::time::Instant::now();
-            let (sols, _) = try_lattice_k(k, PASS2_CAP, &mut scratch);
+            let (sols, budget_hit2) = try_lattice_k(k, PASS2_CAP, &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
                     eprintln!("[zeta] pass2 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
@@ -1311,7 +1418,13 @@ impl SynthesizerQ {
                     diag::dump_zeta(&diag::snapshot(),
                         &format!("synthesize ε={:.0e} k={k} (pass2)", self.epsilon));
                 }
+                if let Some(out) = unclear_out.as_deref_mut() {
+                    out.extend(still_truncated.iter().copied());
+                }
                 return Some(r);
+            }
+            if budget_hit2 {
+                still_truncated.push(k);
             }
             if trace {
                 eprintln!("[zeta] pass2 lde={k:>2}  none   t={:.0}ms",
@@ -1414,14 +1527,66 @@ impl SynthesizerQ {
         // prefixes can be heuristically skipped. First-hit mode keeps
         // the legacy k_prefix-desc heuristic (high k → small k_inner →
         // fast bail or hit, useful when |usable| > num_cores).
+        let n_threads = rayon::current_num_threads().max(1);
         if optimize_cost {
             usable.sort_by_key(|(_, c)| *c);
+            // See `OPTIMAL_PREFIX_INTERLEAVE`: deal the cost-sorted list
+            // round-robin across ~n_threads strides so each rayon chunk
+            // covers the whole cost spectrum (cheapest first) instead of
+            // one chunk hoarding every cheap prefix.
+            let n = usable.len();
+            if OPTIMAL_PREFIX_INTERLEAVE && n > n_threads {
+                let mut interleaved: Vec<(&U2Q, usize)> = Vec::with_capacity(n);
+                for j in 0..n_threads {
+                    let mut idx = j;
+                    while idx < n {
+                        interleaved.push(usable[idx]);
+                        idx += n_threads;
+                    }
+                }
+                usable = interleaved;
+            }
         } else {
             usable.sort_by(|(a, _), (b, _)| b.k.cmp(&a.k));
         }
 
-        let n_threads = rayon::current_num_threads().max(1);
         let chunk = (usable.len() / n_threads).max(1);
+        let opt_chunk = if OPTIMAL_PAR_MIN_LEN == 0 { chunk } else { OPTIMAL_PAR_MIN_LEN };
+
+        // Node-level incumbent abort (optimize mode). Each prefix gets
+        // its own abort flag plus a STATIC cost floor — `cost(U_L) +
+        // class_cost_lb(d_R)`, the same bound the leaf-level abort in
+        // `should_stop` prunes against. A watcher thread (spawned around
+        // the par_iter below) scans in-flight prefixes every ~20 ms and
+        // flags any whose floor can no longer beat the shared incumbent;
+        // the SE walker observes the flag at recurse-entry and dies
+        // mid-tree. This catches hopeless walks that never produce an
+        // ε-close leaf (the leaf-level check only runs on leaf hits).
+        // Soundness: identical criterion to the landed leaf-level abort —
+        // only walks whose every candidate costs ≥ the incumbent are cut.
+        struct PrefixWatch {
+            abort: AtomicBool,
+            active: AtomicBool,
+            floor: usize,
+        }
+        let watches: Vec<PrefixWatch> = if optimize_cost {
+            usable
+                .iter()
+                .map(|&(u_l, c)| {
+                    let d_l = det_phase_of(&u_l.to_float());
+                    let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                    PrefixWatch {
+                        abort: AtomicBool::new(false),
+                        active: AtomicBool::new(false),
+                        floor: c.saturating_add(
+                            crate::synthesis::cost_bound::class_cost_lb_half_units(d_r),
+                        ),
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Stage-3 shared best-cost tracker. Optimal-mode workers CAS this
         // when they find a candidate; later prefixes whose precomputed
@@ -1435,6 +1600,7 @@ impl SynthesizerQ {
             shared_best_cost.unwrap_or(&local_best_cost);
 
         let per_prefix = |scratch: &mut IntScratch16,
+                          idx: usize,
                           entry: &(&U2Q, usize)|
          -> Option<(usize, SynthResultQ)> {
             let (u_l, u_l_cost) = (entry.0, entry.1);
@@ -1500,11 +1666,26 @@ impl SynthesizerQ {
                 hit
             };
 
+            // Optimize mode routes the walker's abort signal through this
+            // prefix's own flag (set by the incumbent watcher; it also
+            // mirrors `external_abort` if the caller passed one).
+            // First-hit mode passes the caller's signal straight through.
+            let walk_abort: Option<&AtomicBool> = if optimize_cost {
+                let w = &watches[idx];
+                w.active.store(true, Ordering::Relaxed);
+                Some(&w.abort)
+            } else {
+                external_abort
+            };
+
             let sols = phase1_with_stop(
                 scratch, &y, k_inner, epsilon,
                 per_prefix_cap, &budget_hit, should_stop,
-                external_abort, consumed,
+                walk_abort, consumed,
             );
+            if optimize_cost {
+                watches[idx].active.store(false, Ordering::Relaxed);
+            }
 
             if budget_hit.load(std::sync::atomic::Ordering::Relaxed) {
                 any_budget_hit.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1569,24 +1750,64 @@ impl SynthesizerQ {
 
         let result_pair: Option<(usize, SynthResultQ)> = if optimize_cost {
             // Reduce across prefixes by min cost. No early-abort across
-            // prefixes (every prefix runs to completion or its budget).
-            usable
-                .par_iter()
-                .with_min_len(chunk)
-                .map_init(make_scratch, |s, e| per_prefix(s, e))
-                .reduce(
-                    || None,
-                    |a, b| match (a, b) {
-                        (None, x) | (x, None) => x,
-                        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
-                    },
-                )
+            // prefixes for *cheaper-possible* walks — but the watcher
+            // thread below kills walks whose static floor can no longer
+            // beat the shared incumbent (see `PrefixWatch`). The watcher
+            // is scoped to this call: `walks_done` stops it as soon as
+            // the par_iter returns (≤ one 20 ms sleep of tail latency).
+            let walks_done = AtomicBool::new(false);
+            // RAII: set `walks_done` even if the par_iter panics —
+            // otherwise `thread::scope` would join a watcher that never
+            // exits (deadlock on unwind).
+            struct DoneGuard<'a>(&'a AtomicBool);
+            impl Drop for DoneGuard<'_> {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Relaxed);
+                }
+            }
+            std::thread::scope(|wscope| {
+                let _done_guard = DoneGuard(&walks_done);
+                let watches_ref = &watches;
+                let walks_done_ref = &walks_done;
+                wscope.spawn(move || {
+                    while !walks_done_ref.load(Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        let cur_best =
+                            best_cost.load(std::sync::atomic::Ordering::Relaxed);
+                        let ext = external_abort
+                            .map(|a| a.load(Ordering::Relaxed))
+                            .unwrap_or(false);
+                        for w in watches_ref {
+                            if w.active.load(Ordering::Relaxed)
+                                && (ext || cur_best <= w.floor)
+                            {
+                                w.abort.store(true, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                });
+                let r = usable
+                    .par_iter()
+                    .enumerate()
+                    .with_min_len(opt_chunk)
+                    .map_init(make_scratch, |s, (i, e)| per_prefix(s, i, e))
+                    .reduce(
+                        || None,
+                        |a, b| match (a, b) {
+                            (None, x) | (x, None) => x,
+                            (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+                        },
+                    );
+                walks_done.store(true, Ordering::Relaxed);
+                r
+            })
         } else {
             // First-hit: abort other prefixes as soon as one finds.
             usable
                 .par_iter()
+                .enumerate()
                 .with_min_len(chunk)
-                .map_init(make_scratch, |s, e| per_prefix(s, e))
+                .map_init(make_scratch, |s, (i, e)| per_prefix(s, i, e))
                 .find_map_any(|x| x)
         };
         let result = result_pair.map(|(_, r)| r);
@@ -1950,7 +2171,7 @@ impl SynthesizerQ {
         // Clifford+T dets are even ζ₁₆ powers — odd-class targets make
         // the baseline burn its whole lde sweep finding nothing.
         let with_baseline = with_baseline && det_phase_of(&target) % 2 == 0;
-        let (first, t_baseline) = std::thread::scope(|s| {
+        let (first, mut screen_unclear, t_baseline) = std::thread::scope(|s| {
             let baseline_handle = if with_baseline {
                 Some(
                     std::thread::Builder::new()
@@ -1967,8 +2188,13 @@ impl SynthesizerQ {
             let mut first_hit = self.clone();
             first_hit.optimize_cost = false;
             first_hit.odd_parity_branch = false;
-            let first = first_hit.synthesize(target);
-            (first, baseline_handle.and_then(|h| h.join().unwrap()))
+            // Collect screen levels that were budget-truncated below the
+            // find-lde and never cleared: the enum grid below must cover
+            // them or the [fl, fl+w] window silently misses candidates
+            // at those levels (find-lde upward bias).
+            let mut unclear = Vec::new();
+            let first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
+            (first, unclear, baseline_handle.and_then(|h| h.join().unwrap()))
         });
         // Convert the baseline to a √T-shaped candidate. Its gate string
         // contains no Q, so its cost is exactly 2·T_count half-units.
@@ -2019,6 +2245,30 @@ impl SynthesizerQ {
             for i in 0..=self.optimal_lde_window {
                 let k = fl + i;
                 if k <= self.max_lde && !tasks.contains(&(k, 0)) {
+                    tasks.push((k, 0));
+                }
+            }
+        }
+        // Screen pass-2 fix: levels < fl that the screen budget-truncated
+        // without ever clearing may still hold a cheaper candidate (the
+        // find at fl short-circuited their retry). Give each one the same
+        // (k, m_sweep) tasks as a window level — and a (k, 0) coverage
+        // task under certify — so the enum stage can't miss them. Levels
+        // ≥ fl are already in the window (or proven empty by the screen).
+        screen_unclear.sort_unstable();
+        screen_unclear.dedup();
+        screen_unclear.retain(|&k| k < fl && k <= self.max_lde);
+        if !screen_unclear.is_empty() {
+            if trace {
+                eprintln!("[zeta] optimal screen left levels {screen_unclear:?} unverified below fl={fl} — adding to enum grid");
+            }
+            for &k in &screen_unclear {
+                for &m in &self.optimal_m_sweep {
+                    if !tasks.contains(&(k, m)) {
+                        tasks.push((k, m));
+                    }
+                }
+                if self.certify && !tasks.contains(&(k, 0)) {
                     tasks.push((k, 0));
                 }
             }
@@ -2336,6 +2586,29 @@ mod tests {
                 "hybrid cost {q_cost} > clifford_t cost {t_cost} at θ={theta}, ε={eps:e}"
             );
         }
+    }
+
+    /// Screen-truncation out-param plumbing: on an easy coarse-ε target
+    /// no level hits a budget cap, so `synthesize_with_unclear` must
+    /// report zero unclear levels and agree with the public entry point.
+    /// (ε = 1e-2: near-z-axis diagonal targets at 1e-3 burn every
+    /// level's budget for ~5 min — known sparse-region hardness, not a
+    /// plumbing concern.)
+    #[test]
+    fn screen_unclear_empty_on_easy_target() {
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -0.35), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, 0.35)],
+        ];
+        let synth = SynthesizerQ::new(1e-2).with_optimize_cost(false);
+        let mut unclear = Vec::new();
+        let r1 = synth
+            .synthesize_with_unclear(target, Some(&mut unclear))
+            .expect("should synthesize");
+        let r2 = synth.synthesize(target).expect("should synthesize");
+        assert!(unclear.is_empty(), "unexpected unclear levels: {unclear:?}");
+        assert_eq!(r1.lde, r2.lde);
+        assert!(r1.distance < 1e-2);
     }
 
     /// Production-path certificate (items 1+2): the hybrid search with
