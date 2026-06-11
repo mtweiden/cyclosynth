@@ -105,22 +105,43 @@ pub fn det8_exact(m: &IMat8) -> Option<i64> {
 /// decomposition. Branches whose lower bound already exceeds `2^k` (the
 /// target norm shell) can be cut.
 ///
-/// Returns `None` if the Gram is not numerically positive-definite in f64
-/// (extremely rare for an LLL-output basis; would indicate a bug upstream).
+/// Returns `None` — DISABLING the (optional) prune — when the factor cannot
+/// be trusted at the prune's `target + 1.0` absolute slack:
+///
+/// - The Gram is not numerically positive-definite in f64.
+/// - A Gram diagonal exceeds 2^53 (f64 integer-exactness limit).
+/// - The Cholesky diagonal ratio exceeds 1e6 (Euclid-ill-conditioned
+///   basis). The basis is LLL-reduced in the **Q metric**, not the
+///   Euclidean one; in some frames Q-short vectors are Euclid-long with
+///   entries ~2^30+ and SE coordinates `z ~ 1e10` along true-solution
+///   paths. There the f64 partial sums carry absolute errors of 1e5+
+///   (cancellation between |re·z| ~ 1e18 terms), and the prune cuts
+///   branches containing TRUE solutions. Root-caused live 2026-06-11
+///   (docs/w_8d_rework_notes.md): the right-coset prefix dedup exposed
+///   frames whose pre-fix walk silently found nothing — masked before by
+///   the 8× coset-mate redundancy of `build_l`. (The old i64 Gram
+///   accumulation also overflowed silently at entries ≥ ~2^31; now i128.)
 pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
-    // Exact integer Gram = B·Bᵀ.
-    let mut gram = [[0_i64; 8]; 8];
+    // Exact integer Gram = B·Bᵀ in i128 (basis entries can reach ~2^33 in
+    // Euclid-pathological frames; i64 products overflowed there).
+    let mut gram = [[0_i128; 8]; 8];
     for i in 0..8 {
         for j in 0..8 {
-            let mut s = 0_i64;
+            let mut s = 0_i128;
             for k in 0..8 {
-                s += basis[i][k] * basis[j][k];
+                s += (basis[i][k] as i128) * (basis[j][k] as i128);
             }
             gram[i][j] = s;
         }
     }
-    // f64 Cholesky. For a typical LLL-output basis (entries up to ~2^15),
-    // gram entries reach ~2^33 — within f64's 15-digit margin.
+    // Trust guard 1: every Gram entry must be exactly representable in f64.
+    for row in &gram {
+        for &v in row {
+            if v.unsigned_abs() > (1u128 << 53) {
+                return None;
+            }
+        }
+    }
     let mut l = [[0.0_f64; 8]; 8];
     for i in 0..8 {
         for j in 0..=i {
@@ -137,6 +158,17 @@ pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
                 l[i][j] = s / l[j][j];
             }
         }
+    }
+    // Trust guard 2: diagonal-ratio condition estimate. Beyond ~1e6 the
+    // f64 partial sums are no longer accurate to the prune's O(1) slack.
+    let mut dmin = f64::INFINITY;
+    let mut dmax = 0.0_f64;
+    for (i, row) in l.iter().enumerate() {
+        dmin = dmin.min(row[i]);
+        dmax = dmax.max(row[i]);
+    }
+    if dmax > 1e6 * dmin {
+        return None;
     }
     // Transpose to upper-triangular R = Lᵀ.
     let mut r = [[0.0_f64; 8]; 8];
@@ -273,7 +305,12 @@ fn recurse<F>(
     // exclude this, but tolerate it gracefully).
     tmp.assign(r_dd.clone().abs());
     if tmp.to_f64() < 1e-30 {
-        z[d] = z_c[d].to_f64().round() as i64;
+        z[d] = z_c[d]
+            .clone()
+            .round()
+            .to_integer()
+            .and_then(|n| n.to_i64())
+            .unwrap_or(0);
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             partial_eucl, z, partial, abort, node_budget, budget_exhausted,
@@ -284,7 +321,12 @@ fn recurse<F>(
 
     // tail = Σ_{j > d} R[d][j] · (z[j] − z_c[j])
     for j in (d + 1)..8 {
-        diff.assign(z[j] as f64);
+        // Exact i64 → MPFR lift. `z[j] as f64` loses low bits once
+        // |z| > 2^53 — at deep ε the lattice coordinates reach ~1.6e16
+        // (ε=1e-8, k_inner=34) in Euclid-pathological frames, and a ±2-ulp
+        // error here times R[d][j] is an O(1) error in `level` against an
+        // O(1) span.
+        diff.assign(z[j]);
         diff -= &z_c[j];
         prod.assign(&r_chol[d][j] * &diff);
         tail += &prod;
@@ -297,14 +339,29 @@ fn recurse<F>(
     }
     let rem_sqrt_f = tmp.to_f64().sqrt();
 
-    // Iteration bounds in f64.
+    // Iteration bounds. The CENTER must be computed and rounded in MPFR:
+    // with |z| beyond f64's exact-integer range the old f64 center
+    // (`z_c[d].to_f64() − tail/r_dd`) was off by ±2 ulps ≈ ±4 units while
+    // the per-level span is O(1), so the branch holding a TRUE solution
+    // could fall outside [z_low, z_high] — observed live at ε=1e-8
+    // (docs/w_8d_rework_notes.md; frame-dependent FOUND→none flips that
+    // build_l's coset-mate redundancy used to mask). The span itself is
+    // O(1) and stays f64.
     let r_dd_f = r_dd.to_f64();
-    let z_c_d_f = z_c[d].to_f64();
-    let center_off = -tail.to_f64() / r_dd_f;
     let span = rem_sqrt_f / r_dd_f.abs();
-    let z_low = (z_c_d_f + center_off - span).ceil() as i64;
-    let z_high = (z_c_d_f + center_off + span).floor() as i64;
-    let z_mid = (z_c_d_f + center_off).round() as i64;
+    let center = {
+        let mut c = RFloat::with_val(SE_PREC, &tail / r_dd);
+        c = RFloat::with_val(SE_PREC, &z_c[d] - &c);
+        c
+    };
+    let to_i64 = |v: RFloat| -> Option<i64> { v.to_integer().and_then(|n| n.to_i64()) };
+    let (Some(z_low), Some(z_high), Some(z_mid)) = (
+        to_i64(RFloat::with_val(SE_PREC, &center - span).ceil()),
+        to_i64(RFloat::with_val(SE_PREC, &center + span).floor()),
+        to_i64(center.clone().round()),
+    ) else {
+        return;
+    };
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
     // Pre-compute the Euclidean tail at level d (uses fixed levels j > d).
@@ -339,7 +396,8 @@ fn recurse<F>(
         }
 
         // level = r_dd · (zd − z_c[d]) + tail; squared.
-        zd_rf.assign(zd as f64);
+        // Exact i64 → MPFR lift (see the tail-loop comment).
+        zd_rf.assign(zd);
         diff.assign(&zd_rf - &z_c[d]);
         level.assign(r_dd * &diff);
         level += &tail;
@@ -375,14 +433,19 @@ fn recurse<F>(
 
 /// Reconstruct the lattice point `x = B·z` where `B` is the LLL-reduced
 /// basis (rows are basis vectors) and `z` are the SE-output coordinates.
-/// Done in i64; for our problem the components stay within i64 by Theorem 2's
-/// L³-reduced-basis bound combined with the SE bound.
+///
+/// The FINAL components fit i64 (Theorem 2's L³-reduced-basis bound plus
+/// the SE bound), but in Euclid-pathological frames (basis entries ~2^33,
+/// `z` ~ 1e10 — see `euclidean_cholesky`) the INTERMEDIATE products and
+/// sums can exceed i64. Two's-complement wrapping arithmetic is exact mod
+/// 2^64 and the true value fits, so explicit wrapping ops give the correct
+/// result in every build profile (plain `+`/`*` would panic in debug).
 #[inline]
 pub fn reconstruct_x(b_lll: &IMat8, z: &[i64; 8]) -> [i64; 8] {
     let mut x = [0i64; 8];
     for i in 0..8 {
         for j in 0..8 {
-            x[j] += z[i] * b_lll[i][j];
+            x[j] = x[j].wrapping_add(z[i].wrapping_mul(b_lll[i][j]));
         }
     }
     x
