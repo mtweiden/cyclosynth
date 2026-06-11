@@ -230,7 +230,20 @@ pub fn phase1(
     });
 
     // Step 6: Schnorr-Euchner walk at MPFR-128.
-    let r_eucl = super::se::euclidean_cholesky(&basis);
+    // The Euclidean prune's in-walk arithmetic (`re[d][j] · z[j]`, partial
+    // squares vs `2^k + 1.0`) is f64; once the lattice coordinates exceed
+    // f64's exact-integer range the products are not even representable
+    // and the prune cuts true branches. |z| ≈ |z_c| ± O(1) along the walk,
+    // so gate on the cap-center magnitude. (euclidean_cholesky has its own
+    // Gram-size and conditioning guards — see se.rs.)
+    let zc_exceeds_f64 = z_c_se
+        .iter()
+        .any(|v| v.clone().abs().to_f64() > 9.0e15);
+    let r_eucl = if zc_exceeds_f64 {
+        None
+    } else {
+        super::se::euclidean_cholesky(&basis)
+    };
     let target_norm_f = target_norm as f64;
     let count = AtomicU64::new(0);
     let no_abort = AtomicBool::new(false);
