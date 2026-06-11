@@ -1309,4 +1309,151 @@ mod tests {
             "distance={:.6e} >= epsilon={:.6e}", result.distance, eps);
     }
 
+    /// Telemetry (ignored): geometric Q-norm² distribution of ε-close 8D
+    /// solutions, the Z[ω] mirror of the 16D `q_telemetry_sweep` that
+    /// found the ζ₁₆ band [0.875, 1.25] and dropped that bound 8 → 1.5.
+    /// The 8D SE bound is the empirical 1.51 (lattice/integer.rs); this
+    /// measures where ε-close solutions actually sit, from the TRUE cap
+    /// center (the 8D walk already uses a fractional center, so measured
+    /// ≈ geometric — no rounding-inflation step needed). If the max pins
+    /// well below 1.51, a tightened bound buys (1.51/max)⁴ fewer nodes.
+    /// Run: `cargo test --release --lib q_telemetry_sweep_8d -- --ignored --nocapture`
+    /// Env: T8_EPS (default sweeps 3e-2 and 1e-3), T8_BUDGET (default 20M).
+    #[test]
+    #[ignore]
+    fn q_telemetry_sweep_8d() {
+        use crate::synthesis::lattice::{integer::phase1, q_metric::build_q_mpfr};
+        use crate::synthesis::lattice::scratch::IntScratch;
+        use std::sync::atomic::AtomicBool;
+
+        let budget: u64 = std::env::var("T8_BUDGET").ok()
+            .and_then(|s| s.parse().ok()).unwrap_or(20_000_000);
+        let mut global_max_close = 0.0f64;
+        let mut global_min_close = f64::INFINITY;
+        let mut total_close = 0usize;
+
+        // t (lde) scan ranges per ε: first solutions appear near
+        // 3·log₂(1/ε); scan a window around it and stop after two
+        // solution-bearing levels per (θ, ε) to keep the sweep minutes.
+        for &theta in &[0.3f64, 0.55, 0.8, 1.05, 1.3] {
+            let target = rz(theta);
+            let raw_uv = unitary_to_uv(&target);
+            let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
+            for &(eps, t_lo, t_hi) in &[(3e-2f64, 6u32, 14u32), (1e-3, 22, 32)] {
+                let mut levels_with_sols = 0;
+                for t in t_lo..=t_hi {
+                    if levels_with_sols >= 2 {
+                        break;
+                    }
+                    let y = uv_to_xy(v, t);
+                    let mut s = IntScratch::new(eps);
+                    let hit = AtomicBool::new(false);
+                    let out = phase1(&mut s, &y, t, eps, budget, &hit);
+                    if out.solutions.is_empty() {
+                        continue;
+                    }
+                    // Fresh scratch for Q + cap center: phase1's LLL may
+                    // have mutated downstream state; build_q alone is
+                    // cheap and sets exactly q_mpfr and c.
+                    let mut qs = IntScratch::new(eps);
+                    build_q_mpfr(&mut qs, &y, t, eps);
+                    let q: [[f64; 8]; 8] =
+                        std::array::from_fn(|i| std::array::from_fn(|j| qs.q_mpfr[i][j].to_f64()));
+                    let c: [f64; 8] = std::array::from_fn(|i| qs.c[i].to_f64());
+                    let mut max_close = 0.0f64;
+                    let mut min_close = f64::INFINITY;
+                    let mut n_close = 0usize;
+                    for sol in &out.solutions {
+                        let cand = solution_to_u2t(sol, t);
+                        if !(diamond_distance_float(&cand.to_float(), &target) <= eps) {
+                            continue;
+                        }
+                        let dvec: [f64; 8] =
+                            std::array::from_fn(|i| sol[i] as f64 - c[i]);
+                        let mut qn = 0.0;
+                        for i in 0..8 {
+                            for j in 0..8 {
+                                qn += dvec[i] * q[i][j] * dvec[j];
+                            }
+                        }
+                        max_close = max_close.max(qn);
+                        min_close = min_close.min(qn);
+                        n_close += 1;
+                    }
+                    if n_close > 0 {
+                        levels_with_sols += 1;
+                        eprintln!(
+                            "θ={theta:<4} ε={eps:.0e} t={t:<2} sols={:<4} close={n_close:<4} Q∈[{min_close:.4}, {max_close:.4}]",
+                            out.solutions.len()
+                        );
+                        global_max_close = global_max_close.max(max_close);
+                        global_min_close = global_min_close.min(min_close);
+                        total_close += n_close;
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "GLOBAL 8D: eps-close sols={total_close}  Q∈[{global_min_close:.4}, {global_max_close:.4}]  (walk bound: 1.51)"
+        );
+        assert!(total_close > 0, "telemetry collected no eps-close solutions");
+    }
+
+    /// Telemetry (ignored): W0-style yardstick for ONE 8D level walk —
+    /// wall, CPU utilization (process cpu-time / wall), solutions. The
+    /// 16D version of this measurement (util 1.08× on 14 threads)
+    /// motivated the W1 flat-frontier parallelization (~10×). Whether
+    /// the port pays here depends on the T-baseline's wall at deep ε.
+    /// Run: `cargo test --release --lib w1_telemetry_8d -- --ignored --nocapture`
+    /// Env: T8_THETA (0.7), T8_EPS (1e-3), T8_LDE (26), T8_BUDGET (500M).
+    #[test]
+    #[ignore]
+    fn w1_telemetry_8d() {
+        use std::sync::atomic::AtomicBool;
+
+        fn envf(name: &str, default: f64) -> f64 {
+            std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+        }
+        let theta = envf("T8_THETA", 0.7);
+        let eps = envf("T8_EPS", 1e-3);
+        let t = envf("T8_LDE", 26.0) as u32;
+        let budget = envf("T8_BUDGET", 500_000_000.0) as u64;
+
+        // CLOCK_PROCESS_CPUTIME_ID = 12 on macOS (same constant the 16D
+        // w1_walk_bench uses).
+        #[repr(C)]
+        struct Timespec { tv_sec: i64, tv_nsec: i64 }
+        extern "C" {
+            fn clock_gettime(clk_id: i32, tp: *mut Timespec) -> i32;
+        }
+        fn cpu_time_s() -> f64 {
+            let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+            let rc = unsafe { clock_gettime(12, &mut ts) };
+            if rc != 0 { return f64::NAN; }
+            ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+        }
+
+        let target = rz(theta);
+        let raw_uv = unitary_to_uv(&target);
+        let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
+        let mut scratch = crate::synthesis::lattice::LatticeScratch::new(eps);
+        let hit = AtomicBool::new(false);
+
+        let cpu0 = cpu_time_s();
+        let t0 = std::time::Instant::now();
+        let sols = lll_aligned_search(&mut scratch, v, t, eps, usize::MAX, budget, &hit);
+        let wall = t0.elapsed().as_secs_f64();
+        let cpu = cpu_time_s() - cpu0;
+
+        let n_close = sols.iter().filter(|sol| {
+            diamond_distance_float(&solution_to_u2t(sol, t).to_float(), &target) <= eps
+        }).count();
+        eprintln!(
+            "8D walk: rz({theta}) ε={eps:e} t={t} | wall {wall:.3} s | cpu-util {:.2}x | sols {} (eps-close {n_close}) | budget_hit={}",
+            cpu / wall.max(1e-9),
+            sols.len(),
+            hit.load(std::sync::atomic::Ordering::Relaxed),
+        );
+    }
+
 }
