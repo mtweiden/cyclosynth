@@ -240,6 +240,25 @@ pub static N_QFILTER_PRECOMPUTE_CALLS: AtomicU64 = AtomicU64::new(0);
 /// first writer wins. Trace-only.
 pub static N_NODES_AT_FIRST_SOLUTION: AtomicU64 = AtomicU64::new(0);
 
+// ─── Budget-truncation outcome counters (predictive trunc, se.rs) ────────────
+//
+// Both count once per WALK (first-flipper dedupe inside se.rs) and are
+// always-on (not trace-gated): they fire at most once per phase1 call, so
+// the hot path never sees them, and tests assert on them without needing
+// CYCLOSYNTH_TRACE.
+
+/// Walks aborted by predictive budget truncation: the projected total node
+/// spend (consumed / fraction_of_frontier_items_done, checked at BudgetCache
+/// refill granularity) exceeded the walk's initial budget × margin. These
+/// surface upstream exactly as budget hits — same `budget_hit` flag, same
+/// ledger truncation — just without burning the remaining budget.
+pub static N_PREDICTIVE_TRUNC_FIRES: AtomicU64 = AtomicU64::new(0);
+
+/// Walks that exhausted their budget pool the plain way (burned 100% of the
+/// budget before completing). Compare against `N_PREDICTIVE_TRUNC_FIRES` to
+/// see how many truncations the projection reclaimed.
+pub static N_BUDGET_EXHAUST_FIRES: AtomicU64 = AtomicU64::new(0);
+
 // ─── Per-depth survivorship (critic Step 1) ──────────────────────────────────
 //
 // Indexed by depth 0..16. recurse-call enter, prune-fire, and prune-actual
@@ -496,6 +515,8 @@ pub fn reset_all() {
         &T_QFILTER_CLASSIFY_NS,
         &N_QFILTER_PRECOMPUTE_CALLS,
         &N_NODES_AT_FIRST_SOLUTION,
+        &N_PREDICTIVE_TRUNC_FIRES,
+        &N_BUDGET_EXHAUST_FIRES,
     ] {
         c.store(0, Ordering::Relaxed);
     }

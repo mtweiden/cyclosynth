@@ -63,6 +63,17 @@ fn flat_walk_disabled() -> bool {
     })
 }
 
+/// Predictive-budget-truncation kill-switch: `CYCLOSYNTH_PREDICTIVE_TRUNC=0`
+/// disables the projected-infeasibility abort in budget-capped flat walks
+/// (see [`PredictiveTrunc`]). Default ON. Read once.
+static PREDICTIVE_TRUNC_DISABLED: OnceLock<bool> = OnceLock::new();
+
+fn predictive_trunc_disabled() -> bool {
+    *PREDICTIVE_TRUNC_DISABLED.get_or_init(|| {
+        std::env::var("CYCLOSYNTH_PREDICTIVE_TRUNC").ok().as_deref() == Some("0")
+    })
+}
+
 // Depth-1 Q-filter (phase 3). DEFAULT OFF.
 //
 // Sound: rejects only z[1] candidates with no integer z[0] making
@@ -1428,32 +1439,55 @@ const BUDGET_CHUNK: u64 = 4096;
 /// granularity (`prior <= BUDGET_CHUNK` mirrors the per-node `prior <= 1`),
 /// so admitted work can deviate from the legacy walk by at most
 /// ±workers × 4096 nodes — noise against the ≥1M production caps.
-struct BudgetCache {
+struct BudgetCache<'a> {
     remaining: u64,
     used_since_flush: u64,
+    /// Predictive-truncation context (None for unbudgeted walks, the legacy
+    /// z15-sharded path, the frontier-expansion stage, and when disabled
+    /// via `CYCLOSYNTH_PREDICTIVE_TRUNC=0`).
+    pred: Option<&'a PredictiveTrunc>,
 }
 
-impl BudgetCache {
+impl<'a> BudgetCache<'a> {
     #[inline]
-    fn new() -> Self {
-        Self { remaining: 0, used_since_flush: 0 }
+    fn new(pred: Option<&'a PredictiveTrunc>) -> Self {
+        Self { remaining: 0, used_since_flush: 0, pred }
     }
 
     /// Charge `n` (≤ BUDGET_CHUNK) budget units. Returns `false` iff the
-    /// shared pool is exhausted — the caller must set `aborted` and stop,
-    /// mirroring the legacy `budget_prior <= 1` path.
+    /// walk must stop — shared pool exhausted (mirroring the legacy
+    /// `budget_prior <= 1` path) or predictive truncation projected the
+    /// budget infeasible. Either way `aborted` has been set; the caller
+    /// just unwinds, so both causes surface identically as a budget hit.
     #[inline]
-    fn charge(&mut self, n: u64, budget: &AtomicU64, consumed: Option<&AtomicU64>) -> bool {
+    fn charge(
+        &mut self,
+        n: u64,
+        budget: &AtomicU64,
+        consumed: Option<&AtomicU64>,
+        aborted: &AtomicBool,
+    ) -> bool {
         if self.remaining >= n {
             self.remaining -= n;
             self.used_since_flush += n;
             return true;
         }
+        // Refill slow path: runs ~once per BUDGET_CHUNK nodes — the natural
+        // zero-hot-path-cost hook for the predictive-truncation projection.
+        if self.pred.is_some_and(|p| p.should_abort(budget)) {
+            aborted.store(true, Ordering::Relaxed);
+            self.flush_consumed(consumed);
+            return false;
+        }
         let prior = budget.fetch_sub(BUDGET_CHUNK, Ordering::Relaxed);
         if prior <= BUDGET_CHUNK {
             // Pool exhausted. Don't bother restoring the pool value: the
-            // `aborted` flag (set by the caller) is what stops all
-            // workers, exactly as in the legacy per-node scheme.
+            // `aborted` flag is what stops all workers, exactly as in the
+            // legacy per-node scheme. Count the walk's plain budget-burn
+            // once (the worker that flips `aborted` wins).
+            if !aborted.swap(true, Ordering::Relaxed) {
+                crate::synthesis::diag::N_BUDGET_EXHAUST_FIRES.fetch_add(1, Ordering::Relaxed);
+            }
             self.flush_consumed(consumed);
             return false;
         }
@@ -1482,6 +1516,89 @@ impl BudgetCache {
         if self.remaining > 0 {
             budget.fetch_add(self.remaining, Ordering::Relaxed);
         }
+    }
+}
+
+/// Predictive-truncation abort threshold: abort a budget-capped walk when
+/// the projected total node spend exceeds MARGIN × the walk's initial
+/// budget. Although the frontier is SORTED closest-to-center-first
+/// (fattest items first), rayon work-stealing COMPLETES skinny items
+/// disproportionately early, so the linear projection
+/// `consumed / fraction_done` systematically UNDERestimates the true
+/// total — measured ~6× under on the (k=11, m=0) certify arm at ε=1e-3
+/// (projected 17G at 37.6% items done vs true ≳100G; see
+/// docs/w_predictive_trunc_notes.md). A false abort would need a ~2.5×
+/// OVERestimate against a ~6× UNDER bias — physically out of reach. 2.5
+/// (down from the initial conservative 3.0, which that headline arm
+/// escaped at projected 2.66× budget) catches every measured hopeless
+/// arm while retaining the full bias gap as safety. Kill switch:
+/// `CYCLOSYNTH_PREDICTIVE_TRUNC=0`.
+const PREDICTIVE_TRUNC_MARGIN: f64 = 2.5;
+/// Don't project before this fraction of frontier items has completed —
+/// earlier projections are too noisy (and maximally biased by the fat
+/// head items still in flight).
+const PREDICTIVE_TRUNC_MIN_FRAC: f64 = 0.10;
+
+/// Predictive budget truncation (shared per-walk context). Rationale: a
+/// truncated arm of the optimal/certify enum grid reaches the IDENTICAL
+/// ledger state whether it burns 100% of its node budget or aborts at 10%
+/// — completion is all that matters — yet budget-capped arms used to burn
+/// the entire pool (up to ~320M nodes for certify m=0 coverage walks)
+/// before recording the truncation. This context projects walk
+/// infeasibility from frontier-item completion progress and aborts early
+/// through the existing `aborted` plumbing, so the abort surfaces exactly
+/// like a plain budget hit.
+///
+/// Only attached to budget-capped flat walks: never when the budget is
+/// u64::MAX (certificates' coverage-complete runs and the probes must
+/// stay exhaustive), and never on the legacy z15-sharded path
+/// (`CYCLOSYNTH_FLAT_WALK=0`), whose 1-3 item frontier is too coarse to
+/// project from.
+struct PredictiveTrunc {
+    /// Flat-frontier length at stage-3 launch.
+    items_total: usize,
+    /// Work items fully walked so far (one increment per completed item).
+    items_done: std::sync::atomic::AtomicUsize,
+    /// Pool value at walk entry (= the walk's full budget: phase1 creates
+    /// a fresh pool per walk).
+    initial_budget: u64,
+    /// First-fire latch: dedupes the diag counter and short-circuits the
+    /// projection once tripped.
+    fired: AtomicBool,
+}
+
+impl PredictiveTrunc {
+    /// Projection check, called from the [`BudgetCache`] refill slow path
+    /// (~once per worker per BUDGET_CHUNK nodes). Returns `true` when the
+    /// walk is projected infeasible and must abort.
+    fn should_abort(&self, budget: &AtomicU64) -> bool {
+        if self.fired.load(Ordering::Relaxed) {
+            return true;
+        }
+        let done = self.items_done.load(Ordering::Relaxed);
+        if done == 0
+            || (done as f64) < (self.items_total as f64) * PREDICTIVE_TRUNC_MIN_FRAC
+        {
+            return false;
+        }
+        // Consumed = initial − remaining pool. This counts whole chunk
+        // reservations, i.e. true node spend plus ≤ workers × BUDGET_CHUNK
+        // of in-flight slack — noise against the ≥1M budgets this path
+        // runs under (and saturating_sub guards the post-exhaustion pool
+        // wraparound, where the projection is moot anyway).
+        let consumed = self
+            .initial_budget
+            .saturating_sub(budget.load(Ordering::Relaxed));
+        let fraction_done = done as f64 / self.items_total as f64;
+        let projected_total = consumed as f64 / fraction_done;
+        if projected_total > self.initial_budget as f64 * PREDICTIVE_TRUNC_MARGIN {
+            if !self.fired.swap(true, Ordering::Relaxed) {
+                crate::synthesis::diag::N_PREDICTIVE_TRUNC_FIRES
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            return true;
+        }
+        false
     }
 }
 
@@ -1525,12 +1642,12 @@ fn expand_se_prefix_node(
     budget: &AtomicU64,
     aborted: &AtomicBool,
     consumed: Option<&AtomicU64>,
-    bcache: &mut BudgetCache,
+    bcache: &mut BudgetCache<'_>,
 ) {
     // Node-entry bookkeeping — mirrors recurse_collect_norm_pruned exactly
-    // (one budget unit per recurse-enter, charged via the chunked cache).
-    if !bcache.charge(1, budget, consumed) {
-        aborted.store(true, Ordering::Relaxed);
+    // (one budget unit per recurse-enter, charged via the chunked cache;
+    // `charge` sets `aborted` itself on exhaustion / predictive abort).
+    if !bcache.charge(1, budget, consumed, aborted) {
         return;
     }
     let trace = crate::synthesis::diag::trace_enabled();
@@ -1710,6 +1827,10 @@ where
     use std::sync::atomic::AtomicBool;
 
     let aborted = AtomicBool::new(false);
+    // Pool value at entry = this walk's full budget (phase1 creates a
+    // fresh pool per walk). Anchor for the predictive-truncation
+    // projection; u64::MAX marks the walk unbudgeted.
+    let initial_budget = budget.load(Ordering::Relaxed);
     let l_15 = l[15][15];
     let target_norm_sq_i64 = target_norm_sq as i64;
     if l_15.abs() < 1e-30 {
@@ -1788,7 +1909,9 @@ where
     };
     let mut start_depth: i32 = 14;
     {
-        let mut bcache = BudgetCache::new();
+        // Frontier expansion runs before items_total is known — no
+        // predictive context here.
+        let mut bcache = BudgetCache::new(None);
         while !frontier.is_empty()
             && frontier.len() < frontier_target
             && start_depth >= 4
@@ -1828,6 +1951,26 @@ where
     // "most promising subtree first" preference of the old per-z[15] sort.
     frontier.sort_by(|a, b| a.partial_q.total_cmp(&b.partial_q));
 
+    // Predictive-truncation context — budget-capped flat walks only (see
+    // [`PredictiveTrunc`]). The guards: unbudgeted walks (certificates'
+    // coverage-complete runs + probes) and the legacy z15-sharded path
+    // must never fire; `CYCLOSYNTH_PREDICTIVE_TRUNC=0` is the kill switch.
+    let pred_ctx: Option<PredictiveTrunc> = if initial_budget != u64::MAX
+        && !flat_walk_disabled()
+        && !predictive_trunc_disabled()
+        && !frontier.is_empty()
+    {
+        Some(PredictiveTrunc {
+            items_total: frontier.len(),
+            items_done: std::sync::atomic::AtomicUsize::new(0),
+            initial_budget,
+            fired: AtomicBool::new(false),
+        })
+    } else {
+        None
+    };
+    let pred = pred_ctx.as_ref();
+
     // ── Stage 3: walk the items in parallel ──
     let w1_debug_skew = std::env::var("CYCLOSYNTH_W1_DEBUG").ok().as_deref() == Some("2");
     let t_stage3 = if w1_debug_skew { Some(std::time::Instant::now()) } else { None };
@@ -1851,7 +1994,7 @@ where
             }
             let t0 = if w1_debug_skew { Some(std::time::Instant::now()) } else { None };
             let mut local: Vec<[i64; 16]> = Vec::new();
-            let mut bcache = BudgetCache::new();
+            let mut bcache = BudgetCache::new(pred);
             recurse_collect_norm_pruned(
                 start_depth, l, z_c, bound_sq, r_eucl, r_eucl_dd, target_norm_sq,
                 target_norm_sq_i64, item.partial_q, item.partial_eucl,
@@ -1860,6 +2003,12 @@ where
                 &mut bcache, &mut local,
             );
             bcache.finish(budget, consumed);
+            // Predictive-truncation progress: one increment per completed
+            // work item (post-abort increments are harmless — the latch /
+            // aborted flag already decide everything).
+            if let Some(p) = pred {
+                p.items_done.fetch_add(1, Ordering::Relaxed);
+            }
             if let Some(t) = t0 {
                 let tid = rayon::current_thread_index().map(|i| i as i64).unwrap_or(-1);
                 item_times.lock().unwrap().push((t.elapsed().as_secs_f64(), tid));
@@ -1894,6 +2043,19 @@ where
     }
 
     let budget_hit = aborted.load(Ordering::Relaxed);
+    if let Some(p) = pred {
+        if std::env::var("CYCLOSYNTH_W1_DEBUG").ok().as_deref() == Some("1") {
+            eprintln!(
+                "[w1] predictive: items {}/{} consumed {}/{} fired={} budget_hit={}",
+                p.items_done.load(Ordering::Relaxed),
+                p.items_total,
+                initial_budget.saturating_sub(budget.load(Ordering::Relaxed)),
+                initial_budget,
+                p.fired.load(Ordering::Relaxed),
+                budget_hit
+            );
+        }
+    }
     (solutions, budget_hit)
 }
 
@@ -1918,7 +2080,7 @@ fn recurse_collect_norm_pruned<F>(
     aborted: &std::sync::atomic::AtomicBool,
     external_abort: Option<&std::sync::atomic::AtomicBool>,
     consumed: Option<&AtomicU64>,
-    bcache: &mut BudgetCache,
+    bcache: &mut BudgetCache<'_>,
     results: &mut Vec<[i64; 16]>,
 ) where
     F: Fn(&[i64; 16]) -> LeafAction,
@@ -1948,9 +2110,9 @@ fn recurse_collect_norm_pruned<F>(
     // per-node RMW on one shared cache line serialized the now-truly-
     // parallel walk. The cache also flushes the `consumed` progress
     // counter once per refill, the same observable batching the legacy
-    // `budget_prior & 4095` trick provided.
-    if !bcache.charge(1, budget, consumed) {
-        aborted.store(true, Ordering::Relaxed);
+    // `budget_prior & 4095` trick provided. `charge` sets `aborted` itself
+    // on pool exhaustion / predictive truncation.
+    if !bcache.charge(1, budget, consumed, aborted) {
         return;
     }
     let trace = crate::synthesis::diag::trace_enabled();
@@ -2207,8 +2369,7 @@ fn recurse_collect_norm_pruned<F>(
                 // making the filter ~10× slower at no-solution lde levels
                 // despite being correct.
                 const PHANTOM_PER_REJECT: u64 = 8;
-                if !bcache.charge(PHANTOM_PER_REJECT, budget, consumed) {
-                    aborted.store(true, Ordering::Relaxed);
+                if !bcache.charge(PHANTOM_PER_REJECT, budget, consumed, aborted) {
                     return;
                 }
                 continue;
