@@ -20,7 +20,7 @@
 // iterator combinators that thread multiple arrays in lockstep.
 #![allow(clippy::needless_range_loop)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rug::{Assign, Float as RFloat};
 
@@ -163,7 +163,22 @@ pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
 /// partial Euclidean norm already exceeds `target_norm_eucl` are cut.
 ///
 /// `abort` is checked at every recursion entry — when set, the enumeration
-/// returns `None` immediately.
+/// returns `None` immediately. It is read-only here: the caller (or a peer
+/// branch under cross-branch racing) sets it.
+///
+/// `node_budget` is a TRUE node budget: decremented once per recurse-entry
+/// (interior nodes AND leaves — the 16D walker's semantics). When it runs
+/// out, `budget_exhausted` is set and the walk unwinds. This is the fix for
+/// the "empty level walks unbudgeted to region exhaustion" failure mode:
+/// the leaf-callback budget never binds on a no-solution level because
+/// almost nothing reaches a leaf. The walk is single-threaded, so a plain
+/// decrementing atomic (no chunked reservation à la 16D `BudgetCache`) is
+/// contention-free; the per-entry `fetch_sub` is noise against the ~10 MPFR
+/// allocations each recurse-entry already performs.
+///
+/// `budget_exhausted` may also be set from inside `callback` (the leaf-cap
+/// path) to abort the walk without reporting a solution.
+#[allow(clippy::too_many_arguments)]
 pub fn schnorr_euchner_8d<F>(
     r_chol: &[[RFloat; 8]; 8],
     z_c: &[RFloat; 8],
@@ -171,6 +186,8 @@ pub fn schnorr_euchner_8d<F>(
     r_chol_eucl: Option<&[[f64; 8]; 8]>,
     target_norm_eucl: f64,
     abort: &AtomicBool,
+    node_budget: &AtomicU64,
+    budget_exhausted: &AtomicBool,
     mut callback: F,
 ) -> Option<[i64; 8]>
 where
@@ -191,6 +208,8 @@ where
         &mut z,
         &zero,
         abort,
+        node_budget,
+        budget_exhausted,
         &mut callback,
         &result,
     );
@@ -209,12 +228,24 @@ fn recurse<F>(
     z: &mut [i64; 8],
     partial: &RFloat,
     abort: &AtomicBool,
+    node_budget: &AtomicU64,
+    budget_exhausted: &AtomicBool,
     callback: &mut F,
     result: &std::cell::RefCell<Option<[i64; 8]>>,
 ) where
     F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
 {
-    if result.borrow().is_some() || abort.load(Ordering::Relaxed) {
+    if result.borrow().is_some()
+        || abort.load(Ordering::Relaxed)
+        || budget_exhausted.load(Ordering::Relaxed)
+    {
+        return;
+    }
+    // True node budget: one unit per recurse-entry (interior + leaf), the
+    // 16D walker's accounting. On exhaustion, flag and unwind — the flag
+    // (not the wrapped counter) is what stops the remaining stack levels.
+    if node_budget.fetch_sub(1, Ordering::Relaxed) <= 1 {
+        budget_exhausted.store(true, Ordering::Relaxed);
         return;
     }
     if depth < 0 {
@@ -245,7 +276,8 @@ fn recurse<F>(
         z[d] = z_c[d].to_f64().round() as i64;
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
-            partial_eucl, z, partial, abort, callback, result,
+            partial_eucl, z, partial, abort, node_budget, budget_exhausted,
+            callback, result,
         );
         return;
     }
@@ -288,7 +320,10 @@ fn recurse<F>(
 
     // Iterate offsets in distance-from-center order: 0, +1, -1, +2, -2, ...
     for raw in 0..=(2 * max_off + 1) {
-        if result.borrow().is_some() || abort.load(Ordering::Relaxed) {
+        if result.borrow().is_some()
+            || abort.load(Ordering::Relaxed)
+            || budget_exhausted.load(Ordering::Relaxed)
+        {
             return;
         }
         let off = if raw == 0 {
@@ -330,7 +365,8 @@ fn recurse<F>(
         z[d] = zd;
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
-            new_partial_eucl, z, &new_partial, abort, callback, result,
+            new_partial_eucl, z, &new_partial, abort, node_budget,
+            budget_exhausted, callback, result,
         );
     }
 }
