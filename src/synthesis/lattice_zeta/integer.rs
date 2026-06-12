@@ -57,6 +57,146 @@ const ALIGN_PREC: u32 = 128;
 ///   - LLL Gram-overflow,
 ///   - non-unimodular LLL output (algorithm bug, very unlikely),
 ///   - Cholesky / LU numerical failure.
+/// Per-(k, ε) Q_base warm seed (CYCLOSYNTH_WARM_LLL16): only the rank-1
+/// ŷŷᵀ term of the metric varies per prefix, so one Q_base reduction
+/// per scratch per (k, ε) hands every prefix's LLL the shared work
+/// pre-done. Always sound (any LLL-output basis is unimodular) — only
+/// effectiveness varies. Returns whether the caller must clear
+/// `warm_lll` after its own LLL step.
+fn warm_seed_q_base(scratch: &mut IntScratch16, k: u32, eps: Float) -> bool {
+    if !warm_lll16_enabled() || scratch.warm_lll {
+        return false;
+    }
+    let seed_key = (k, eps.to_bits());
+    if scratch.q_base_seed_key != Some(seed_key) {
+        super::q_metric::build_q_base_mpfr_zeta(scratch, k, eps);
+        build_q_int_zeta(scratch);
+        let r = run_lll_16(scratch);
+        let det_ok = matches!(
+            super::se::det16_exact(&scratch.basis),
+            Some(1) | Some(-1) | None
+        );
+        scratch.q_base_seed = if matches!(r, LllResult::Converged) && det_ok {
+            Some(scratch.basis)
+        } else {
+            None // overflow/cap: cold starts at this key
+        };
+        scratch.q_base_seed_key = Some(seed_key);
+    }
+    if let Some(seed) = scratch.q_base_seed {
+        scratch.basis = seed;
+        scratch.warm_lll = true; // cleared right after the LLL step
+        return true;
+    }
+    false
+}
+
+/// L²-LLL on the 2-step precision ladder (fplll's wrapper strategy):
+/// f64 GS first, then MPFR-80 on IterCap (GS-state cycling) or a
+/// non-unimodular det. GramOverflow is NOT escalated (i256 saturation,
+/// precision cannot help); det = None (Bareiss i128 overflow) is
+/// inconclusive-success. Returns `None` when the basis is unusable.
+fn run_lll_ladder(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> {
+    let trace = diag::trace_enabled();
+    let t_lll = if trace { Some(std::time::Instant::now()) } else { None };
+    let initial_use_f64 = scratch.use_f64_gs;
+
+    // Helper: closes over scratch via &mut, returns (LllResult, det).
+    fn run_and_check(s: &mut IntScratch16) -> (LllResult, Option<i64>) {
+        let r = if s.use_f64_gs {
+            super::lll_f64::run_lll_16_f64(s)
+        } else {
+            run_lll_16(s)
+        };
+        let det = super::se::det16_exact(&s.basis);
+        (r, det)
+    }
+
+    let lll_succeeded = |r: LllResult, det: Option<i64>| -> bool {
+        if !matches!(r, LllResult::Converged) {
+            return false;
+        }
+        // None = i128 overflow in Bareiss; treat as inconclusive-success.
+        match det { Some(d) => d == 1 || d == -1, None => true }
+    };
+
+    let (mut lll_result, mut det_check) = run_and_check(scratch);
+
+    // Escalate to MPFR if f64 was used and produced a failure result
+    // (excluding GramOverflow, which won't be helped by higher precision).
+    if initial_use_f64
+        && !matches!(lll_result, LllResult::GramOverflow)
+        && !lll_succeeded(lll_result, det_check)
+    {
+        if trace {
+            diag::N_LLL_F64_ESCALATIONS.fetch_add(1, Ordering::Relaxed);
+        }
+        // The f64 LLL may have left the basis in a partially-reduced or
+        // non-unimodular state. Force a fresh start: cancel warm_lll
+        // (so run_lll_16 calls reset_basis internally) and switch the
+        // precision flag.
+        scratch.warm_lll = false;
+        scratch.use_f64_gs = false;
+        let (r2, d2) = run_and_check(scratch);
+        lll_result = r2;
+        det_check = d2;
+        // Restore the caller's precision preference for the next call.
+        scratch.use_f64_gs = initial_use_f64;
+    }
+
+    if let Some(t) = t_lll {
+        diag::T_LLL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+    if let LllResult::GramOverflow = lll_result {
+        return None;
+    }
+    if let Some(d) = det_check {
+        if d != 1 && d != -1 {
+            eprintln!(
+                "[lattice_zeta] LLL non-unimodular even after MPFR escalation \
+                (det={}) at eps={:e}, k={}; bailing.",
+                d, eps, k
+            );
+            return None;
+        }
+    }
+    if !matches!(lll_result, LllResult::Converged | LllResult::IterCap) {
+        // Should be unreachable (only GramOverflow is left, handled above).
+        return None;
+    }
+
+    Some(())
+}
+
+/// Optional BKZ-β post-pass: replaces Lovász with β-block SVP for a
+/// tighter basis; empirically helpful at deep ε where the post-LLL SE
+/// region is large. `None` = degenerate basis from the insertion path.
+fn run_bkz_postpass(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> {
+    if scratch.bkz_block_size >= 3 {
+        let block_size = scratch.bkz_block_size as usize;
+        // BKZ reads the f64 GS state. Populate it from the current
+        // basis (works regardless of which LLL path was taken).
+        for i in 0..16 {
+            super::lll_f64::cfa_row_f64(scratch, i);
+        }
+        let _changed = super::bkz::bkz_tours(scratch, block_size, super::bkz::BKZ_MAX_LOOPS);
+        // Post-BKZ unimodularity check; bail if the insertion path
+        // somehow produced a degenerate basis.
+        match super::se::det16_exact(&scratch.basis) {
+            Some(1) | Some(-1) | None => {}
+            Some(d) => {
+                eprintln!(
+                    "[lattice_zeta] BKZ-{block_size} non-unimodular (det={d}) \
+                     at eps={eps:e}, k={k}; bailing."
+                );
+                return None;
+            }
+        }
+    }
+
+    Some(())
+}
+
 /// CYCLOSYNTH_WARM_LLL16=1 enables the per-(k, ε) Q_base warm-LLL seed
 /// (default off pending the A/B on the 1e-8 concurrent-parity config).
 fn warm_lll16_enabled() -> bool {
@@ -154,40 +294,7 @@ where
         diag::N_LATTICE_SEARCH_CALLS.fetch_add(1, Ordering::Relaxed);
     }
 
-    // Step 0.5: per-(k, ε) Q_base warm seed (the 8D transplant; gated by
-    // CYCLOSYNTH_WARM_LLL16). The metric splits as Q_base(k, ε) + a
-    // rank-1 ŷŷᵀ term — only the rank-1 part varies per prefix. Reducing
-    // a pure-Q_base problem once per scratch per (k, ε) and seeding every
-    // prefix's LLL with its basis hands LLL most of the shared reduction
-    // work pre-done. The seed runs on the MPFR ladder regardless of
-    // `use_f64_gs` (computed once; reliability over speed), and any
-    // LLL-output basis is unimodular, so seeding is always sound — only
-    // effectiveness varies.
-    let mut warm_seeded = false;
-    if warm_lll16_enabled() && !scratch.warm_lll {
-        let seed_key = (k, eps.to_bits());
-        if scratch.q_base_seed_key != Some(seed_key) {
-            super::q_metric::build_q_base_mpfr_zeta(scratch, k, eps);
-            build_q_int_zeta(scratch);
-            let r = run_lll_16(scratch);
-            let det_ok = matches!(
-                super::se::det16_exact(&scratch.basis),
-                Some(1) | Some(-1) | None
-            );
-            scratch.q_base_seed =
-                if matches!(r, LllResult::Converged) && det_ok {
-                    Some(scratch.basis)
-                } else {
-                    None // overflow/cap: cold starts at this key
-                };
-            scratch.q_base_seed_key = Some(seed_key);
-        }
-        if let Some(seed) = scratch.q_base_seed {
-            scratch.basis = seed;
-            scratch.warm_lll = true; // cleared right after the LLL step
-            warm_seeded = true;
-        }
-    }
+    let warm_seeded = warm_seed_q_base(scratch, k, eps);
 
     // Step 1: build Q in MPFR + i256 snapshot. Reset basis unless caller
     // requested warm_lll (Z1 D&C path) or the Q_base seed is installed.
@@ -215,63 +322,11 @@ where
         diag::T_BUILD_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // Step 2: L²-LLL on a 2-step precision ladder (fplll's wrapper
-    // strategy): f64 GS first — its ~50-bit requirement at d=16, eps=1e-8
-    // leaves only a 2-bit margin, so failures happen — then MPFR-80 on
-    // IterCap (GS-state cycling) or a non-unimodular det (mu-rounding
-    // corrupted a basis update). GramOverflow is NOT escalated (an i256
-    // saturation, precision cannot help); det = None (Bareiss i128
-    // overflow) is treated as inconclusive-success. Success costs a
-    // <=1 us det check; failure pays 2x LLL.
-
-    let t_lll = if trace { Some(std::time::Instant::now()) } else { None };
-    let initial_use_f64 = scratch.use_f64_gs;
-
-    // Helper: closes over scratch via &mut, returns (LllResult, det).
-    fn run_and_check(s: &mut IntScratch16) -> (LllResult, Option<i64>) {
-        let r = if s.use_f64_gs {
-            super::lll_f64::run_lll_16_f64(s)
-        } else {
-            run_lll_16(s)
-        };
-        let det = super::se::det16_exact(&s.basis);
-        (r, det)
-    }
-
-    let lll_succeeded = |r: LllResult, det: Option<i64>| -> bool {
-        if !matches!(r, LllResult::Converged) {
-            return false;
+    if run_lll_ladder(scratch, k, eps).is_none() {
+        if warm_seeded {
+            scratch.warm_lll = false;
         }
-        // None = i128 overflow in Bareiss; treat as inconclusive-success.
-        match det { Some(d) => d == 1 || d == -1, None => true }
-    };
-
-    let (mut lll_result, mut det_check) = run_and_check(scratch);
-
-    // Escalate to MPFR if f64 was used and produced a failure result
-    // (excluding GramOverflow, which won't be helped by higher precision).
-    if initial_use_f64
-        && !matches!(lll_result, LllResult::GramOverflow)
-        && !lll_succeeded(lll_result, det_check)
-    {
-        if trace {
-            diag::N_LLL_F64_ESCALATIONS.fetch_add(1, Ordering::Relaxed);
-        }
-        // The f64 LLL may have left the basis in a partially-reduced or
-        // non-unimodular state. Force a fresh start: cancel warm_lll
-        // (so run_lll_16 calls reset_basis internally) and switch the
-        // precision flag.
-        scratch.warm_lll = false;
-        scratch.use_f64_gs = false;
-        let (r2, d2) = run_and_check(scratch);
-        lll_result = r2;
-        det_check = d2;
-        // Restore the caller's precision preference for the next call.
-        scratch.use_f64_gs = initial_use_f64;
-    }
-
-    if let Some(t) = t_lll {
-        diag::T_LLL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        return Vec::new();
     }
     if warm_seeded {
         // The seed's warm_lll is per-call; a persisting flag would make
@@ -279,48 +334,8 @@ where
         scratch.warm_lll = false;
     }
 
-    if let LllResult::GramOverflow = lll_result {
+    if run_bkz_postpass(scratch, k, eps).is_none() {
         return Vec::new();
-    }
-    if let Some(d) = det_check {
-        if d != 1 && d != -1 {
-            eprintln!(
-                "[lattice_zeta] LLL non-unimodular even after MPFR escalation \
-                (det={}) at eps={:e}, k={}; bailing.",
-                d, eps, k
-            );
-            return Vec::new();
-        }
-    }
-    if !matches!(lll_result, LllResult::Converged | LllResult::IterCap) {
-        // Should be unreachable (only GramOverflow is left, handled above).
-        return Vec::new();
-    }
-
-    // Optional BKZ-β post-pass: strengthens the LLL output by replacing
-    // Lovász with β-block SVP. Off by default (`bkz_block_size = 0`);
-    // enable via `SynthesizerQ::with_bkz(β)`. Empirically helpful at
-    // deep ε where the post-LLL SE region is large.
-    if scratch.bkz_block_size >= 3 {
-        let block_size = scratch.bkz_block_size as usize;
-        // BKZ reads the f64 GS state. Populate it from the current
-        // basis (works regardless of which LLL path was taken).
-        for i in 0..16 {
-            super::lll_f64::cfa_row_f64(scratch, i);
-        }
-        let _changed = super::bkz::bkz_tours(scratch, block_size, super::bkz::BKZ_MAX_LOOPS);
-        // Post-BKZ unimodularity check; bail if the insertion path
-        // somehow produced a degenerate basis.
-        match super::se::det16_exact(&scratch.basis) {
-            Some(1) | Some(-1) | None => {}
-            Some(d) => {
-                eprintln!(
-                    "[lattice_zeta] BKZ-{block_size} non-unimodular (det={d}) \
-                     at eps={eps:e}, k={k}; bailing."
-                );
-                return Vec::new();
-            }
-        }
     }
 
     // Deep-ε dd Q-bracket: MPFR-128 Cholesky projected to an f64
