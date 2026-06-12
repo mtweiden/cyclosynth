@@ -18,16 +18,16 @@
 //!   conquer using Matsumoto–Amano left prefixes `L_{t'}`. Splits at
 //!   `t' = max(t − direct_limit, ⌈t − 5/2·log₂(1/ε)⌉)`. For each prefix
 //!   `U_L ∈ L_{t'}`, searches for the right factor via
-//!   [`lll_aligned_search`] at inner lde `k_inner` (see below).
+//!   [`lll_aligned_search`] at inner lde `lde_inner` (see below).
 //!   Tries even (U_L·U_R) and odd (U_L·U_R·T) inner branches.
 //!
 //! # Inner-lde convention
 //!
-//! [`lll_aligned_search`] uses `k_inner = T_inner/2 + 1` (norm shell
-//! `2^k_inner`), not the T-count itself:
+//! [`lll_aligned_search`] uses `lde_inner = T_inner/2 + 1` (norm shell
+//! `2^lde_inner`), not the T-count itself:
 //!
-//!   k_inner = t_inner / 2 + 1            (even t_inner)
-//!   k_inner = (t_inner - 1) / 2 + 1      (odd t_inner)
+//!   lde_inner = t_inner / 2 + 1            (even t_inner)
+//!   lde_inner = (t_inner - 1) / 2 + 1      (odd t_inner)
 
 use num_complex::Complex;
 use rayon::prelude::*;
@@ -861,7 +861,7 @@ impl SynthesizerT {
         //   even T-count: k = t_inner/2 + 1
         //   odd  T-count: k = (t_inner-1)/2 + 1
         let odd_inner = t_inner % 2 == 1;
-        let k_inner: u32 = if odd_inner {
+        let lde_inner: u32 = if odd_inner {
             (t_inner - 1) / 2 + 1
         } else {
             t_inner / 2 + 1
@@ -961,14 +961,14 @@ impl SynthesizerT {
                                 v_inner
                             };
                             for sol in lll_aligned_search(
-                                scratch, v_branch, k_inner, eps,
+                                scratch, v_branch, lde_inner, eps,
                                 DC_WALK_MAX_SOLUTIONS, max_leaf_checks,
                                 max_nodes, &budget_hit, Some(&found_abort),
                             ) {
                                 let u2t = if odd {
-                                    *u_l * solution_to_u2t(&sol, k_inner) * U2T::t()
+                                    *u_l * solution_to_u2t(&sol, lde_inner) * U2T::t()
                                 } else {
-                                    *u_l * solution_to_u2t(&sol, k_inner)
+                                    *u_l * solution_to_u2t(&sol, lde_inner)
                                 };
                                 let dist = diamond_distance_u2t_float(&u2t, target);
                                 if dist < eps {

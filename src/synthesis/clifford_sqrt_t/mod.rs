@@ -410,7 +410,7 @@ fn build_fgkm_prefix_set_inner(m: u32) -> Vec<U2Q> {
     //
     // NOTE on `k` semantics (2026-06-10): the stored `k` here is the
     // UNREDUCED accumulation — a *peel-depth* coordinate matching the
-    // inner-LLL+SE shell split (`k_inner = k_total − u_l.k`), NOT the
+    // inner-LLL+SE shell split (`lde_inner = lde_total − u_l.k`), NOT the
     // prefix's reduced matrix lde. Reducing here (tried) makes z-axis
     // and Clifford-heavy prefixes drop to k ≈ 0-1, so their suffix
     // searches run at nearly full depth — a ~30× wall explosion — while
@@ -929,7 +929,7 @@ fn screen_div() -> u64 {
 }
 
 /// Per-prefix Z1 D&C pass-1 budget; scaled with ε since the post-LLL
-/// SE region grows exponentially in k_inner.
+/// SE region grows exponentially in lde_inner.
 fn pass1_prefix_leaf_cap_for(epsilon: f64) -> u64 {
     if epsilon <= 1e-8 {
         100_000_000
@@ -1017,7 +1017,7 @@ impl SynthesizerQ {
     /// 1e-7 (where the SE region is large enough to pay for the tighter
     /// Hermite factor).
     pub fn new(epsilon: f64) -> Self {
-        // m=2 strict at deep ε (k_inner coverage); m=1 relaxed at 1e-6
+        // m=2 strict at deep ε (lde_inner coverage); m=1 relaxed at 1e-6
         // (m=2 has structural gaps at low lde); single search above.
         let (prefix_split_m, inner_det_phase_filter) = if epsilon <= 1e-7 {
             (Some(2u32), vec![0u32])
@@ -1130,9 +1130,9 @@ impl SynthesizerQ {
     }
 
     /// Z1 prototype: enable FGKM-prefix divide-and-conquer at split parameter
-    /// `m`. Splits each lattice search at lde k_total into a length-m FGKM
+    /// `m`. Splits each lattice search at lde lde_total into a length-m FGKM
     /// prefix `U_L` (enumerated from `L_m^Q`) plus an inner LLL+SE search at
-    /// k_inner = k_total − k_prefix, then composes. Off by default.
+    /// lde_inner = lde_total − k_prefix, then composes. Off by default.
     pub fn with_prefix_split_m(mut self, m: u32) -> Self {
         self.prefix_split_m = Some(m);
         self
@@ -1563,7 +1563,7 @@ impl SynthesizerQ {
             // the queue) — reported through `unclear_out`.
             let mut unverified_small: Vec<u32> = Vec::new();
             // Sequential small-k pass: prefix_split_search_q cannot help for k <= m_split
-            // (k_inner ≤ 0). These are typically few levels near lattice_start.
+            // (lde_inner ≤ 0). These are typically few levels near lattice_start.
             for k in lattice_start..=m_split.min(self.max_lde) {
                 let t_k = std::time::Instant::now();
                 let (sols, small_budget_hit) = try_lattice_k(k, self.scaled_cap(PASS1_CAP), &mut scratch);
@@ -1733,7 +1733,7 @@ impl SynthesizerQ {
     }
 
     /// Z[ζ_16] analog of Clifford+T's `prefix_split_search`: for each prefix
-    /// `U_L ∈ L_m^Q`, search the inner factor at `k_total − k_prefix` and
+    /// `U_L ∈ L_m^Q`, search the inner factor at `lde_total − k_prefix` and
     /// compose; `d_R = (d_target − d_L) mod 16` parametrises the inner
     /// reconstruction so `U_L · U_R` matches the target's det phase.
     /// The returned bool reports any budget-hit prefix so the 2-pass
@@ -1744,7 +1744,7 @@ impl SynthesizerQ {
     fn prefix_split_search_q(
         &self,
         target: &Mat2,
-        k_total: u32,
+        lde_total: u32,
         m_split: u32,
         dr_filter_override: Option<&[u32]>,
         per_prefix_cap: u64,
@@ -1773,7 +1773,7 @@ impl SynthesizerQ {
         let any_budget_hit = Arc::new(AtomicBool::new(false));
 
         // Pre-filter the prefixes once: drop those whose lde already
-        // exceeds k_total (k_inner would be ≤ 0), and drop those whose
+        // exceeds lde_total (lde_inner would be ≤ 0), and drop those whose
         // required d_R isn't in the allowed-offsets set. Each entry
         // carries its precomputed decomposed cost for Stage-3 ranking
         // + heuristic pruning.
@@ -1781,7 +1781,7 @@ impl SynthesizerQ {
         let mut cand_idx: Vec<(usize, usize)> = prefixes
             .iter()
             .enumerate()
-            .filter(|(_, u_l)| u_l.k < k_total)
+            .filter(|(_, u_l)| u_l.k < lde_total)
             .filter(|(_, u_l)| {
                 if inner_det_phase_filter.is_empty() {
                     return true;
@@ -1825,7 +1825,7 @@ impl SynthesizerQ {
         let optimize_cost = cost_min_override.unwrap_or(self.optimize_cost);
 
         // Optimal mode sorts cheapest-first so the shared incumbent
-        // drops quickly; first-hit keeps k_prefix-desc (small k_inner =
+        // drops quickly; first-hit keeps k_prefix-desc (small lde_inner =
         // fast bail or hit).
         let n_threads = rayon::current_num_threads().max(1);
         if optimize_cost {
@@ -1883,7 +1883,7 @@ impl SynthesizerQ {
          -> Option<(usize, SynthResultQ)> {
             let (u_l, u_l_cost) = (entry.0, entry.1);
             let k_prefix = u_l.k;
-            let k_inner = k_total - k_prefix;
+            let lde_inner = lde_total - k_prefix;
 
             // d_L from prefix's float det.
             let d_l = det_phase_of(&u_l.to_float());
@@ -1898,7 +1898,7 @@ impl SynthesizerQ {
                 // form: any U cheaper than `best` is reachable through
                 // its canonical prefix with cost ≤ best − LB(suffix).
                 // Only the det-phase Q-parity bound is a valid suffix
-                // LB — L(k_inner) is NOT: the k_inner shell contains
+                // LB — L(lde_inner) is NOT: the lde_inner shell contains
                 // √2-scaled images of every lower-lde suffix, which can
                 // cost far less.
                 let suffix_lb =
@@ -1926,12 +1926,12 @@ impl SynthesizerQ {
                     return best_cost.load(std::sync::atomic::Ordering::Relaxed)
                         <= u_l_cost.saturating_add(suffix_floor);
                 }
-                let u_r = solution_to_u2q_with_det_phase(x, k_inner, d_r);
+                let u_r = solution_to_u2q_with_det_phase(x, lde_inner, d_r);
                 let u_full = u_l_local * u_r;
                 let hit = diamond_distance_u2q_float(&u_full, &target_local) < epsilon;
                 if hit && capture {
                     diag::try_capture(diag::CapturedFind {
-                        x_inner: *x, k_inner, k_total, d_r, d_l,
+                        x_inner: *x, lde_inner, lde_total, d_r, d_l,
                     });
                 }
                 hit
@@ -1950,7 +1950,7 @@ impl SynthesizerQ {
             };
 
             let sols = find_aligned_lattice_points_auto_prec(
-                scratch, v_inner, Some((u_l, target)), self.deep_rot_src.as_ref(), k_inner, epsilon,
+                scratch, v_inner, Some((u_l, target)), self.deep_rot_src.as_ref(), lde_inner, epsilon,
                 per_prefix_cap, &budget_hit, should_stop,
                 walk_abort, consumed,
             );
@@ -1966,7 +1966,7 @@ impl SynthesizerQ {
             // min-cost one and publishes it for the prefix prune.
             let mut best: Option<(usize, SynthResultQ)> = None;
             for sol in &sols {
-                let u_r = solution_to_u2q_with_det_phase(sol, k_inner, d_r);
+                let u_r = solution_to_u2q_with_det_phase(sol, lde_inner, d_r);
                 let u_full = u_l_local * u_r;
                 let dist = diamond_distance_u2q_float(&u_full, target);
                 if dist < epsilon {
@@ -1974,7 +1974,7 @@ impl SynthesizerQ {
                     let cost = gates_cost(&gates, q_cost_x2);
                     let result = SynthResultQ {
                         gates: Some(gates),
-                        lde: k_total,
+                        lde: lde_total,
                         distance: dist,
                     };
                     if !optimize_cost {
@@ -2161,7 +2161,7 @@ impl SynthesizerQ {
     /// regions drop the incumbent faster), transpose-interleaved across
     /// chunks, and stopped by deadline or floor-exhaustion — both cut
     /// only candidates costing ≥ the incumbent. A large per-prefix node
-    /// cap backstops pathological prefixes. `cost_lb(k_inner)` is NOT in
+    /// cap backstops pathological prefixes. `cost_lb(lde_inner)` is NOT in
     /// the floor (unsound — see `prefix_split_search_q`).
     ///
     /// Returns the min-cost find plus a per-level truncation flag
@@ -2202,7 +2202,7 @@ impl SynthesizerQ {
         #[derive(Clone, Copy)]
         struct PrefixWorkUnit<'a> {
             u_l: &'a U2Q,
-            k_total: u32,
+            lde_total: u32,
             d_r: u32,
             /// `cost(U_L) + class_cost_lb_half_units(d_R)` — the sound
             /// per-prefix bound from `prefix_split_search_q`, in the half-unit
@@ -2215,10 +2215,10 @@ impl SynthesizerQ {
             levels.iter().map(|_| AtomicBool::new(false)).collect();
 
         let mut units: Vec<PrefixWorkUnit> = Vec::new();
-        for (li, &(k_total, m)) in levels.iter().enumerate() {
+        for (li, &(lde_total, m)) in levels.iter().enumerate() {
             // Mirror `run_enum_arm`: m ≥ k arms don't run (the
-            // D&C split needs k_inner ≥ 1 for every prefix).
-            if m == 0 || m >= k_total {
+            // D&C split needs lde_inner ≥ 1 for every prefix).
+            if m == 0 || m >= lde_total {
                 continue;
             }
             // Same filter the task grid uses: open at ε ≤ 1e-5, else
@@ -2235,7 +2235,7 @@ impl SynthesizerQ {
                 .zip(level_costs[li].iter())
                 .enumerate()
             {
-                if u_l.k >= k_total {
+                if u_l.k >= lde_total {
                     continue;
                 }
                 let d_l = det_phase_of(&u_l.to_float());
@@ -2264,7 +2264,7 @@ impl SynthesizerQ {
             for (pi, d_r, floor) in cands {
                 units.push(PrefixWorkUnit {
                     u_l: &level_prefixes[li][pi],
-                    k_total,
+                    lde_total,
                     d_r,
                     floor,
                     level_idx: li,
@@ -2279,7 +2279,7 @@ impl SynthesizerQ {
         // Global ascending floor sort; tie-break k ascending (smaller SE
         // regions complete sooner → incumbent drops faster). Then the
         // cost-rank transpose-interleave across rayon's chunking.
-        units.sort_by(|a, b| a.floor.cmp(&b.floor).then(a.k_total.cmp(&b.k_total)));
+        units.sort_by(|a, b| a.floor.cmp(&b.floor).then(a.lde_total.cmp(&b.lde_total)));
         let n_threads = rayon::current_num_threads().max(1);
         if OPTIMAL_PREFIX_INTERLEAVE {
             units = crate::synthesis::stride_interleave(&units, n_threads);
@@ -2320,7 +2320,7 @@ impl SynthesizerQ {
                 return None;
             }
 
-            let k_inner = u.k_total - u.u_l.k;
+            let lde_inner = u.lde_total - u.u_l.k;
             let m_inner = prefix_dag_times_target_q(u.u_l, target);
             let v_inner = unitary_to_uv_zeta(&m_inner);
             let budget_hit = AtomicBool::new(false);
@@ -2336,7 +2336,7 @@ impl SynthesizerQ {
             let w = &watches[idx];
             w.active.store(true, Ordering::Relaxed);
             let sols = find_aligned_lattice_points_auto_prec(
-                scratch, v_inner, Some((u.u_l, target)), self.deep_rot_src.as_ref(), k_inner, epsilon,
+                scratch, v_inner, Some((u.u_l, target)), self.deep_rot_src.as_ref(), lde_inner, epsilon,
                 per_prefix_cap, &budget_hit, should_stop,
                 Some(&w.abort), None,
             );
@@ -2353,7 +2353,7 @@ impl SynthesizerQ {
 
             let mut best: Option<(usize, SynthResultQ)> = None;
             for sol in &sols {
-                let u_r = solution_to_u2q_with_det_phase(sol, k_inner, u.d_r);
+                let u_r = solution_to_u2q_with_det_phase(sol, lde_inner, u.d_r);
                 let u_full = u_l_local * u_r;
                 let dist = diamond_distance_u2q_float(&u_full, target);
                 if dist < epsilon {
@@ -2363,7 +2363,7 @@ impl SynthesizerQ {
                         Some((bcost, _)) if *bcost <= cost => {}
                         _ => best = Some((cost, SynthResultQ {
                             gates: Some(gates),
-                            lde: u.k_total,
+                            lde: u.lde_total,
                             distance: dist,
                         })),
                     }

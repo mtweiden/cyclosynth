@@ -317,7 +317,7 @@ fn recurse<F>(
     for j in (d + 1)..8 {
         // Exact i64 → MPFR lift. `z[j] as f64` loses low bits once
         // |z| > 2^53 — at deep ε the lattice coordinates reach ~1.6e16
-        // (ε=1e-8, k_inner=34) in Euclid-pathological frames, and a ±2-ulp
+        // (ε=1e-8, lde_inner=34) in Euclid-pathological frames, and a ±2-ulp
         // error here times R[d][j] is an O(1) error in `level` against an
         // O(1) span.
         diff.assign(z[j]);

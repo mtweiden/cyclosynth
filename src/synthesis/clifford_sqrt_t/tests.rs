@@ -35,9 +35,9 @@
     }
 
     /// Back-of-envelope: under cost model C(k) = c·α^k, the D&C cost
-    /// ratio (vs single search at k_total) is
+    /// ratio (vs single search at lde_total) is
     ///   S(m, α) = Σ_k count(m, k) / α^k
-    /// and is independent of k_total (the c·α^{k_total} term cancels).
+    /// and is independent of lde_total (the c·α^{lde_total} term cancels).
     /// D&C wins at m when S(m, α) < 1.
     #[test]
     fn build_l_q_dc_cost_ratio() {
