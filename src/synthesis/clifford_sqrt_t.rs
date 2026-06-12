@@ -2060,17 +2060,7 @@ impl SynthesizerQ {
             if optimize_cost {
                 if let Some((c, _)) = &best {
                     // Relaxed is enough: the prune is a heuristic.
-                    let mut cur = best_cost.load(std::sync::atomic::Ordering::Relaxed);
-                    while *c < cur {
-                        match best_cost.compare_exchange_weak(
-                            cur, *c,
-                            std::sync::atomic::Ordering::Relaxed,
-                            std::sync::atomic::Ordering::Relaxed,
-                        ) {
-                            Ok(_) => break,
-                            Err(actual) => cur = actual,
-                        }
-                    }
+                    best_cost.fetch_min(*c, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             best
@@ -2148,6 +2138,91 @@ impl SynthesizerQ {
 
         let budget_hit = any_budget_hit.load(std::sync::atomic::Ordering::Relaxed);
         (result, budget_hit)
+    }
+
+    /// Dispatch the (k, m ≥ 1) arms to the merged frontier under the
+    /// deadline — as sequential lowest-m-first phases below 1e-7
+    /// (interleaved, m=2's ~6× fan-out starves the deep m=1 units that
+    /// hold the decisive finds; the incumbent carries forward as each
+    /// next phase's prune floor), interleaved above (measured better at
+    /// 1e-6/1e-7). Phase shares roll forward by default: a phase whose
+    /// frontier finishes early (incumbent-pruned levels) donates its
+    /// surplus to later phases — beat or tied every hand-tuned split.
+    /// Env: CYCLOSYNTH_SEQ_M (1/0 forces), CYCLOSYNTH_SEQ_M_SPLIT
+    /// (explicit per-phase ms), CYCLOSYNTH_SEQ_ROLLFWD=0.
+    fn run_frontier(
+        &self,
+        target: &Mat2,
+        tasks: &[(u32, u32)],
+        deadline_ms: u64,
+        shared_best: &std::sync::atomic::AtomicUsize,
+    ) -> (Option<(usize, SynthResultQ)>, Vec<bool>) {
+        let seq_m = match std::env::var("CYCLOSYNTH_SEQ_M").as_deref() {
+            Ok("1") => true,
+            Ok("0") => false,
+            _ => self.epsilon < 1e-7,
+        };
+        let mut m_groups: Vec<u32> = tasks.iter().map(|&(_, m)| m).collect();
+        m_groups.sort_unstable();
+        m_groups.dedup();
+        if !seq_m || m_groups.len() <= 1 {
+            return self.dc_frontier_q(
+                target,
+                tasks,
+                std::time::Duration::from_millis(deadline_ms),
+                shared_best,
+            );
+        }
+
+        let split: Vec<u64> = std::env::var("CYCLOSYNTH_SEQ_M_SPLIT")
+            .ok()
+            .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        let equal_share = (deadline_ms / m_groups.len() as u64).max(1);
+        let rollfwd = split.is_empty()
+            && std::env::var("CYCLOSYNTH_SEQ_ROLLFWD").as_deref() != Ok("0");
+        let t_phases = std::time::Instant::now();
+        let mut best_fr: Option<(usize, SynthResultQ)> = None;
+        let mut trunc_by_task: Vec<((u32, u32), bool)> = Vec::new();
+        for (gi, &mg) in m_groups.iter().enumerate() {
+            let share = if rollfwd {
+                let left = deadline_ms
+                    .saturating_sub(t_phases.elapsed().as_millis() as u64);
+                (left / (m_groups.len() - gi) as u64).max(1)
+            } else {
+                split
+                    .get(gi)
+                    .or(split.last())
+                    .copied()
+                    .unwrap_or(equal_share)
+                    .max(1)
+            };
+            let group: Vec<(u32, u32)> =
+                tasks.iter().copied().filter(|&(_, m)| m == mg).collect();
+            let (g_fr, g_tr) = self.dc_frontier_q(
+                target,
+                &group,
+                std::time::Duration::from_millis(share),
+                shared_best,
+            );
+            trunc_by_task.extend(group.iter().copied().zip(g_tr));
+            if let Some((c, r)) = g_fr {
+                if best_fr.as_ref().is_none_or(|(bc, _)| c < *bc) {
+                    best_fr = Some((c, r));
+                }
+            }
+        }
+        let truncated = tasks
+            .iter()
+            .map(|t| {
+                trunc_by_task
+                    .iter()
+                    .find(|(tt, _)| tt == t)
+                    .map(|&(_, tr)| tr)
+                    .unwrap_or(true)
+            })
+            .collect();
+        (best_fr, truncated)
     }
 
     /// Anytime merged-frontier enum stage (fast path, certify off): the
@@ -2378,17 +2453,7 @@ impl SynthesizerQ {
                 }
             }
             if let Some((c, _)) = &best {
-                let mut cur = best_cost.load(std::sync::atomic::Ordering::Relaxed);
-                while *c < cur {
-                    match best_cost.compare_exchange_weak(
-                        cur, *c,
-                        std::sync::atomic::Ordering::Relaxed,
-                        std::sync::atomic::Ordering::Relaxed,
-                    ) {
-                        Ok(_) => break,
-                        Err(actual) => cur = actual,
-                    }
-                }
+                best_cost.fetch_min(*c, std::sync::atomic::Ordering::Relaxed);
             }
             best
         };
@@ -2822,6 +2887,104 @@ impl SynthesizerQ {
         }
     }
 
+    /// Stage 1 of the optimal pipeline: exact min-cost scan of the brute
+    /// shells (k ≤ BRUTE_LIMIT). A find here is already optimal at the
+    /// smallest feasible k.
+    fn brute_min_cost(&self, target: &Mat2, d: u32) -> Option<(usize, SynthResultQ)> {
+        let zd = Complex64::from_polar(1.0, d as f64 * PI / 8.0);
+        let thr = brute_prefilter_threshold(self.epsilon);
+        for k in self.min_lde..=BRUTE_LIMIT.min(self.max_lde) {
+            let shell = brute_shell_cached(k);
+            let mut best: Option<(usize, SynthResultQ)> = None;
+            for (sol, m) in shell.sols.iter().zip(&shell.mats) {
+                if brute_dist_est(m, zd, target) >= thr {
+                    continue;
+                }
+                let cand: U2Q = solution_to_u2q_d(sol, k, d);
+                let dist = diamond_distance_u2q_float(&cand, target);
+                if dist < self.epsilon {
+                    let gates = BlochDecomposer.decompose(&cand);
+                    let cost = gates_cost(&gates, self.q_cost_x2);
+                    match &best {
+                        Some((bc, _)) if *bc <= cost => {}
+                        _ => best = Some((cost, SynthResultQ {
+                            gates: Some(gates),
+                            lde: k,
+                            distance: dist,
+                        })),
+                    }
+                }
+            }
+            if best.is_some() {
+                return best;
+            }
+        }
+        None
+    }
+
+    /// Stage 2 of the optimal pipeline: the first-hit screen and the
+    /// Clifford+T baseline, in parallel. T-only solutions live at lde ≈
+    /// T-count — far above the enum window — so covering them requires
+    /// synthesizing them directly, which also makes the result
+    /// never-worse-than-Clifford+T by construction and seeds the stage-3
+    /// prune. Returns `(screen result, unclear levels, baseline as a
+    /// √T-shaped (cost, result) candidate)`.
+    fn screen_and_baseline(
+        &self,
+        target: Mat2,
+        with_baseline: bool,
+    ) -> (Option<SynthResultQ>, Vec<u32>, Option<(usize, SynthResultQ)>) {
+        // Clifford+T dets are even ζ₁₆ powers — odd-class targets make
+        // the baseline burn its whole lde sweep finding nothing.
+        let with_baseline = with_baseline && det_phase_of(&target) % 2 == 0;
+        let (first, unclear, t_baseline) = std::thread::scope(|s| {
+            let baseline_handle = if with_baseline {
+                Some(
+                    std::thread::Builder::new()
+                        // 16 MiB: deep SE recursion.
+                        .stack_size(16 * 1024 * 1024)
+                        .spawn_scoped(s, || {
+                            crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
+                                .synthesize(target)
+                        })
+                        .expect("spawn clifford_t baseline thread"),
+                )
+            } else {
+                None
+            };
+            let mut first_hit = self.clone();
+            first_hit.optimize_cost = false;
+            first_hit.odd_parity_branch = false;
+            // Screen-lite (CYCLOSYNTH_SCREEN_DIV; see `budget_div` docs).
+            if self.epsilon < 1e-7 {
+                first_hit.budget_div = screen_div();
+            }
+            // Truncated-and-never-cleared levels below find-lde must
+            // reach the enum grid or the window silently misses them.
+            let mut unclear = Vec::new();
+            let mut first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
+            if first.is_none() && first_hit.budget_div > 1 {
+                first_hit.budget_div = 1;
+                unclear.clear();
+                first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
+            }
+            (first, unclear, baseline_handle.and_then(|h| h.join().unwrap()))
+        });
+        // The baseline's gate string contains no Q, so its cost is
+        // exactly 2·T_count half-units.
+        let baseline: Option<(usize, SynthResultQ)> = t_baseline.and_then(|r| {
+            let dist = r.distance;
+            if !(dist < self.epsilon) {
+                return None;
+            }
+            r.gates.map(|g| {
+                let c = gates_cost(&g, self.q_cost_x2);
+                (c, SynthResultQ { gates: Some(g), lde: r.lde, distance: dist })
+            })
+        });
+        (first, unclear, baseline)
+    }
+
     fn synthesize_optimal_inner(
         &self,
         target: Mat2,
@@ -2859,105 +3022,24 @@ impl SynthesizerQ {
         let v = unitary_to_uv_zeta(&target);
 
         // Stage 1: brute regime, exact min-cost at the smallest k.
-        let zd = Complex64::from_polar(1.0, d as f64 * PI / 8.0);
-        for k in self.min_lde..=BRUTE_LIMIT.min(self.max_lde) {
-            let shell = brute_shell_cached(k);
-            let thr = brute_prefilter_threshold(self.epsilon);
-            let mut best: Option<(usize, SynthResultQ)> = None;
-            for (sol, m) in shell.sols.iter().zip(&shell.mats) {
-                if brute_dist_est(m, zd, &target) >= thr {
-                    continue;
-                }
-                let cand: U2Q = solution_to_u2q_d(sol, k, d);
-                let dist = diamond_distance_u2q_float(&cand, &target);
-                if dist < self.epsilon {
-                    let gates = BlochDecomposer.decompose(&cand);
-                    let cost = gates_cost(&gates, self.q_cost_x2);
-                    match &best {
-                        Some((bc, _)) if *bc <= cost => {}
-                        _ => best = Some((cost, SynthResultQ {
-                            gates: Some(gates),
-                            lde: k,
-                            distance: dist,
-                        })),
-                    }
-                }
+        if let Some((c, r)) = self.brute_min_cost(&target, d) {
+            // Publish the brute win before returning — otherwise gate-like
+            // targets leave the peer branch's dynamic lde clamp unseeded
+            // and its screen sweeps to max_lde for nothing.
+            if let Some(g) = &self.global_best_cost {
+                g.fetch_min(c, std::sync::atomic::Ordering::Relaxed);
             }
-            if let Some((c, r)) = best {
-                // Publish the brute win to the cross-parity incumbent
-                // before returning — without this, gate-like targets
-                // (which resolve here at k ≤ BRUTE_LIMIT) would leave
-                // the peer branch's dynamic lde clamp unseeded and let
-                // its screen sweep to max_lde for nothing.
-                if let Some(g) = &self.global_best_cost {
-                    g.fetch_min(c, std::sync::atomic::Ordering::Relaxed);
-                }
-                return Some(r);
-            }
+            return Some(r);
         }
 
-        // Stage 2: first-hit screen ∥ Clifford+T baseline. T-only
-        // solutions live at lde ≈ T-count, far above the enum window, so
-        // covering them requires synthesizing them directly — which also
-        // makes the result never-worse-than-Clifford+T by construction
-        // and tightens the stage-3 prune seed.
         let t_s = std::time::Instant::now();
-        // Clifford+T dets are even ζ₁₆ powers — odd-class targets make
-        // the baseline burn its whole lde sweep finding nothing.
-        let with_baseline = with_baseline && det_phase_of(&target) % 2 == 0;
-        let (first, mut screen_unclear, t_baseline) = std::thread::scope(|s| {
-            let baseline_handle = if with_baseline {
-                Some(
-                    std::thread::Builder::new()
-                        .stack_size(16 * 1024 * 1024)
-                        .spawn_scoped(s, || {
-                            crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
-                                .synthesize(target)
-                        })
-                        .expect("spawn clifford_t baseline thread"),
-                )
-            } else {
-                None
-            };
-            let mut first_hit = self.clone();
-            first_hit.optimize_cost = false;
-            first_hit.odd_parity_branch = false;
-            // Screen-lite (CYCLOSYNTH_SCREEN_DIV; see `budget_div` docs).
-            if self.epsilon < 1e-7 {
-                first_hit.budget_div = screen_div();
-            }
-            // Truncated-and-never-cleared levels below find-lde must
-            // reach the enum grid or the window silently misses them.
-            let mut unclear = Vec::new();
-            let mut first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
-            if first.is_none() && first_hit.budget_div > 1 {
-                if trace {
-                    eprintln!("[zeta] screen-lite found nothing — full-budget retry");
-                }
-                first_hit.budget_div = 1;
-                unclear.clear();
-                first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
-            }
-            (first, unclear, baseline_handle.and_then(|h| h.join().unwrap()))
-        });
-        // Stage-2 handshake: signal screen completion to the peer
-        // parity branch (see `my_screen_done` field docs). The
+        let (first, mut screen_unclear, baseline) =
+            self.screen_and_baseline(target, with_baseline);
+        // Signal screen completion to the peer parity branch; the
         // matching wait sits just before the frontier dispatch below.
         if let Some(flag) = &self.my_screen_done {
             flag.store(true, Ordering::Release);
         }
-        // Convert the baseline to a √T-shaped candidate. Its gate string
-        // contains no Q, so its cost is exactly 2·T_count half-units.
-        let baseline: Option<(usize, SynthResultQ)> = t_baseline.and_then(|r| {
-            let dist = r.distance;
-            if !(dist < self.epsilon) {
-                return None;
-            }
-            r.gates.map(|g| {
-                let c = gates_cost(&g, self.q_cost_x2);
-                (c, SynthResultQ { gates: Some(g), lde: r.lde, distance: dist })
-            })
-        });
         let baseline_cost = baseline.as_ref().map(|(c, _)| *c).unwrap_or(usize::MAX);
 
         // If the √T screen found nothing within the configured bounds
@@ -3053,86 +3135,8 @@ impl SynthesizerQ {
                     }
                 }
                 let t_w = std::time::Instant::now();
-                // Sequential per-m phases (default on below 1e-7): the
-                // merged frontier interleaves all arms by cost floor, so
-                // m=2's ~6× fan-out starves the deep m=1 units that hold
-                // the decisive finds. Lowest-m-first phases let m=1
-                // saturate before m=2 spends a cycle, with the incumbent
-                // carried forward as each next phase's prune floor. At
-                // 1e-6/1e-7 the interleaved order measured better.
-                let seq_m = match std::env::var("CYCLOSYNTH_SEQ_M").as_deref() {
-                    Ok("1") => true,
-                    Ok("0") => false,
-                    _ => self.epsilon < 1e-7,
-                };
-                let mut m_groups: Vec<u32> = tasks.iter().map(|&(_, m)| m).collect();
-                m_groups.sort_unstable();
-                m_groups.dedup();
-                let (fr, level_truncated) = if seq_m && m_groups.len() > 1 {
-                    // Equal split unless CYCLOSYNTH_SEQ_M_SPLIT gives
-                    // explicit per-phase ms (csv, lowest m first).
-                    let split: Vec<u64> = std::env::var("CYCLOSYNTH_SEQ_M_SPLIT")
-                        .ok()
-                        .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
-                        .unwrap_or_default();
-                    let equal = (deadline_ms / m_groups.len() as u64).max(1);
-                    // Roll-forward (default on): a phase whose frontier
-                    // finishes early (incumbent-pruned levels) returns
-                    // before its share is up; recomputing shares from the
-                    // time left hands the surplus to later phases. Beat
-                    // or tied every hand-tuned split, with no constant.
-                    let rollfwd = split.is_empty()
-                        && std::env::var("CYCLOSYNTH_SEQ_ROLLFWD").as_deref() != Ok("0");
-                    let t_phases = std::time::Instant::now();
-                    let mut best_fr: Option<(usize, SynthResultQ)> = None;
-                    let mut trunc_by_task: Vec<((u32, u32), bool)> = Vec::new();
-                    for (gi, &mg) in m_groups.iter().enumerate() {
-                        let share = if rollfwd {
-                            let left = deadline_ms
-                                .saturating_sub(t_phases.elapsed().as_millis() as u64);
-                            (left / (m_groups.len() - gi) as u64).max(1)
-                        } else {
-                            split
-                                .get(gi)
-                                .or(split.last())
-                                .copied()
-                                .unwrap_or(equal)
-                                .max(1)
-                        };
-                        let group: Vec<(u32, u32)> =
-                            tasks.iter().copied().filter(|&(_, m)| m == mg).collect();
-                        let (g_fr, g_tr) = self.dc_frontier_q(
-                            &target,
-                            &group,
-                            std::time::Duration::from_millis(share),
-                            shared_best,
-                        );
-                        trunc_by_task.extend(group.iter().copied().zip(g_tr));
-                        if let Some((c, r)) = g_fr {
-                            if best_fr.as_ref().is_none_or(|(bc, _)| c < *bc) {
-                                best_fr = Some((c, r));
-                            }
-                        }
-                    }
-                    let lt = tasks
-                        .iter()
-                        .map(|t| {
-                            trunc_by_task
-                                .iter()
-                                .find(|(tt, _)| tt == t)
-                                .map(|&(_, tr)| tr)
-                                .unwrap_or(true)
-                        })
-                        .collect();
-                    (best_fr, lt)
-                } else {
-                    self.dc_frontier_q(
-                        &target,
-                        &tasks,
-                        std::time::Duration::from_millis(deadline_ms),
-                        shared_best,
-                    )
-                };
+                let (fr, level_truncated) =
+                    self.run_frontier(&target, &tasks, deadline_ms, shared_best);
                 if trace {
                     eprintln!(
                         "[zeta] optimal frontier {:?} deadline={}ms t={:.0}ms truncated={:?}",
