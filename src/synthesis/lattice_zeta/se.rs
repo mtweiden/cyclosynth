@@ -521,26 +521,87 @@ fn qfilter_discriminant_class(
 /// and return true iff the result exceeds `threshold`. No heap allocation,
 /// no thread-local state — fully stack-resident. About 10× faster than the
 /// rug-128 verify in the hot SE prune-firing path.
+///
+/// Center-relative form (docs/w_center_relative_w_notes.md): each row is
+/// `(R·z)[i] = u_eucl_dd[i] + Σ_{j≥i} R[i][j]·(z[j] − z_c.int[j])`, where
+/// `u_eucl_dd[i] = (R·z_c.int)[i]` is the per-walk dd constant from
+/// [`center_relative_seed`]. The deltas `z[j] − z_c.int[j]` are
+/// bracket-sized (exact small i64), so no intermediate ever exceeds
+/// O(√T·O(1)) — mirroring the f64 accumulator's restructure.
 #[inline]
 pub fn verify_partial_dd_exceeds(
     r_eucl_dd: &[[(f64, f64); 16]; 16],
     z: &[i64; 16],
+    z_c: &SeCenter16,
+    u_eucl_dd: &[(f64, f64); 16],
     depth: usize,
     threshold: f64,
 ) -> bool {
     let mut total: (f64, f64) = (0.0, 0.0);
     for i in depth..16 {
-        let mut row: (f64, f64) = (0.0, 0.0);
+        let mut row: (f64, f64) = u_eucl_dd[i];
         for j in i..16 {
-            let z_dd = dd_from_i64(z[j]);
-            let term = dd_mul(r_eucl_dd[i][j], z_dd);
-            row = dd_add(row, term);
+            let dz = z[j] - z_c.int[j];
+            if dz != 0 {
+                let term = dd_mul(r_eucl_dd[i][j], dd_from_i64(dz));
+                row = dd_add(row, term);
+            }
         }
         let sq = dd_mul(row, row);
         total = dd_add(total, sq);
     }
     // total > threshold (compare hi + lo to threshold)
     total.0 + total.1 > threshold
+}
+
+/// Per-walk seeding state for the center-relative Euclidean accumulator
+/// (docs/w_center_relative_w_notes.md; precision-audit ranked fix 2).
+///
+/// Returns `(x_base, u_dd, u)` where:
+///   - `x_base = B·z_c.int` in wrapping i64. Individual products
+///     `z_c.int[j]·basis[j][c]` wrap at deep ε (|z_c| can reach ~5e16,
+///     basis entries ~2^41), but the SUM is a coordinate of a near-center
+///     lattice point — O(√T), exact mod 2^64, hence exact.
+///   - `u_dd[i] = (R_eucl·z_c.int)[i]` accumulated in double-double from
+///     the dd factor. MUST NOT be done in plain f64: the row sum passes
+///     through ±M ≈ 30·√T·2^53 intermediates (E3 of the precision audit)
+///     and a single f64 rounding there is √T-scale — the very defect this
+///     fix removes. In dd the absolute error is ≤ 16·2⁻¹⁰⁶·M ≈ 3e-11.
+///   - `u[i]`: f64 projection of `u_dd[i]` (each component O(√T), so the
+///     projection is relative-2⁻⁵³ honest).
+///
+/// Seeding the walkers with `z = z_c.int`, `x = x_base`, `w = u` keeps the
+/// delta-update scheme bit-identical while making every subsequent f64
+/// rounding happen at bound-scale magnitude (~√T·O(1)).
+fn center_relative_seed(
+    basis: &[[i64; 16]; 16],
+    r_eucl_dd: &[[(f64, f64); 16]; 16],
+    z_c: &SeCenter16,
+) -> ([i64; 16], [(f64, f64); 16], [f64; 16]) {
+    let mut x_base = [0_i64; 16];
+    for j in 0..16 {
+        let zj = z_c.int[j];
+        if zj == 0 {
+            continue;
+        }
+        let row = &basis[j];
+        for c in 0..16 {
+            x_base[c] = x_base[c].wrapping_add(zj.wrapping_mul(row[c]));
+        }
+    }
+    let mut u_dd = [(0.0_f64, 0.0_f64); 16];
+    let mut u = [0.0_f64; 16];
+    for i in 0..16 {
+        let mut acc = (0.0_f64, 0.0_f64);
+        for j in i..16 {
+            if z_c.int[j] != 0 {
+                acc = dd_add(acc, dd_mul(r_eucl_dd[i][j], dd_from_i64(z_c.int[j])));
+            }
+        }
+        u_dd[i] = acc;
+        u[i] = acc.0 + acc.1;
+    }
+    (x_base, u_dd, u)
 }
 
 // ─── dd Q-bracket (deep-ε dd-verified Q pruning) ─────────────────────────────
@@ -1167,8 +1228,6 @@ pub fn schnorr_euchner_16d_norm_pruned<F>(
 where
     F: FnMut(&[i64; 16]) -> bool,
 {
-    let mut z = [0i64; 16];
-    let mut x = [0i64; 16];
     // **Incremental orthogonalized projection** w = R_eucl · z. Maintained
     // throughout the SE walk by delta updates when z[d] changes:
     //
@@ -1181,10 +1240,25 @@ where
     // many iterations is bounded by ULP per update × tree depth, well
     // below the 1e-9 prune slack.
     //
+    // CENTER-RELATIVE BASELINE (precision-audit ranked fix 2): seed the
+    // walk at `z = z_c.int`, `x = B·z_c.int`, `w = R·z_c.int` instead of
+    // z = 0, so the first delta at every depth is bracket-sized rather
+    // than center-sized (|z_c| > 2^53 at deep ε would put a √T-scale f64
+    // rounding into w). `w` still represents the absolute `R·z`; only the
+    // rounding history changes. This f64-only walker has no dd factor, so
+    // the seed lifts the f64 R rows into dd — exact products of the f64
+    // entries; honest at this walker's (moderate-ε, no production
+    // callers) scales, and in lockstep with the parallel walker's scheme.
+    //
     // Crucial invariant: w[d] depends only on z[d..15] (upper-tri R).
     // So recursion to lower depths cannot corrupt w[d]; no save/restore
     // needed across recursion.
-    let mut w = [0f64; 16];
+    let r_dd_lift: [[(f64, f64); 16]; 16] =
+        std::array::from_fn(|i| std::array::from_fn(|j| (r_eucl[i][j], 0.0)));
+    let (x_base, _u_dd, u) = center_relative_seed(basis, &r_dd_lift, z_c);
+    let mut z = z_c.int;
+    let mut x = x_base;
+    let mut w = u;
     let mut leaves: usize = 0;
     let mut aborted = false;
     recurse_16_norm_pruned(
@@ -1785,6 +1859,7 @@ fn expand_se_prefix_node(
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
     r_eucl_dd: &[[(f64, f64); 16]; 16],
+    u_eucl_dd: &[(f64, f64); 16],
     target_norm_sq: f64,
     target_norm_sq_i64: i64,
     basis: &[[i64; 16]; 16],
@@ -1939,7 +2014,8 @@ fn expand_se_prefix_node(
                 false
             } else if verify_prune_mpfr() && new_partial_eucl <= threshold * verify_ratio_cap() {
                 let t_v = if trace { Some(std::time::Instant::now()) } else { None };
-                let dd_prune = verify_partial_dd_exceeds(r_eucl_dd, &item.z, d, threshold);
+                let dd_prune =
+                    verify_partial_dd_exceeds(r_eucl_dd, &item.z, z_c, u_eucl_dd, d, threshold);
                 if let Some(t) = t_v {
                     crate::synthesis::diag::T_VERIFY_DD_NS
                         .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -2008,6 +2084,14 @@ where
         return (Vec::new(), false);
     }
 
+    // Center-relative seeding state (precision-audit ranked fix 2): the
+    // walk's implied baseline is z = z_c.int, not z = 0, so the f64
+    // Euclidean accumulator w never passes through the M ≈ 30·√T·2^53
+    // intermediates of the old `z_15_f · R[i][15]` seeding (E3/E4 of
+    // docs/w_precision_audit_notes.md). One-time per-walk cost.
+    let (x_base, u_eucl_dd, u_eucl) = center_relative_seed(basis, r_eucl_dd, z_c);
+    let u_eucl_dd = &u_eucl_dd;
+
     // z[15] range from the Q-bound. Keep the integer part as i64 to avoid
     // the deep-ε f64 quantization issue (same fix as recurse_16); the
     // fractional part shifts the bracket onto the true center.
@@ -2042,22 +2126,28 @@ where
         if partial_q > bound_sq + 1e-9 * bound_sq.abs() {
             continue;
         }
-        let mut z = [0i64; 16];
+        // Center-relative seeding: z[0..15] park at z_c.int (their
+        // assigned-coordinate baseline), z[15] takes the candidate. The
+        // z[15] offset from the center's integer part is bracket-sized,
+        // so both the x and w seed corrections are small-magnitude exact:
+        //   x = B·z_c.int + off15·B[15]
+        //   w[i] = (R·z_c.int)[i] + off15·R[i][15]
+        // — w still represents the absolute R·z, but every f64 rounding
+        // happens at O(√T·O(1)) magnitude (no z_15 ~ 2^53+ cast).
+        let mut z = z_c.int;
         z[15] = z_15;
-        let mut x = [0i64; 16];
-        if z_15 != 0 {
+        let off15 = z_15 - z_c.int[15];
+        let mut x = x_base;
+        let mut w = u_eucl;
+        if off15 != 0 {
             let row = &basis[15];
             for c in 0..16 {
-                x[c] = z_15 * row[c];
+                x[c] = x[c].wrapping_add(off15.wrapping_mul(row[c]));
             }
-        }
-        // Incremental w = R_eucl · z. Initialize from z[15] only:
-        //   w[i] = z_15 · R[i][15]   for i ≤ 15
-        // (z[0..15] are zero on entry).
-        let mut w = [0f64; 16];
-        let z_15_f = z_15 as f64;
-        for i in 0..=15 {
-            w[i] = z_15_f * r_eucl[i][15];
+            let off15_f = off15 as f64;
+            for i in 0..=15 {
+                w[i] += off15_f * r_eucl[i][15];
+            }
         }
         let level_eucl = w[15];
         let partial_eucl = level_eucl * level_eucl;
@@ -2111,8 +2201,8 @@ where
                 }
                 expand_se_prefix_node(
                     d, item, &mut frontier, l, l_q_dd, z_c, bound_sq, r_eucl,
-                    r_eucl_dd, target_norm_sq, target_norm_sq_i64, basis,
-                    budget, &aborted, consumed, &mut bcache,
+                    r_eucl_dd, u_eucl_dd, target_norm_sq, target_norm_sq_i64,
+                    basis, budget, &aborted, consumed, &mut bcache,
                 );
             }
             start_depth -= 1;
@@ -2178,7 +2268,7 @@ where
             let mut bcache = BudgetCache::new(pred);
             recurse_collect_norm_pruned(
                 start_depth, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
-                target_norm_sq, target_norm_sq_i64, item.partial_q,
+                u_eucl_dd, target_norm_sq, target_norm_sq_i64, item.partial_q,
                 item.partial_q_dd, item.partial_eucl,
                 &mut item.z, &mut item.x, &mut item.w, basis,
                 &leaf_filter, budget, &aborted, external_abort, consumed,
@@ -2250,6 +2340,7 @@ fn recurse_collect_norm_pruned<F>(
     bound_sq: f64,
     r_eucl: &[[f64; 16]; 16],
     r_eucl_dd: &[[(f64, f64); 16]; 16],
+    u_eucl_dd: &[(f64, f64); 16],
     target_norm_sq: f64,
     target_norm_sq_i64: i64,
     partial_q: f64,
@@ -2361,7 +2452,7 @@ fn recurse_collect_norm_pruned<F>(
         if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_collect_norm_pruned(
                 depth - 1, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
-                target_norm_sq, target_norm_sq_i64,
+                u_eucl_dd, target_norm_sq, target_norm_sq_i64,
                 partial_q, partial_q_dd, new_partial_eucl, z, x, w, basis,
                 leaf_filter, budget, aborted, external_abort, consumed,
                 bcache, results,
@@ -2507,7 +2598,9 @@ fn recurse_collect_norm_pruned<F>(
                 false  // confirmed keep, skip dd verify
             } else if verify_prune_mpfr() && new_partial_eucl <= threshold * verify_ratio_cap() {
                 let t_v = if trace { Some(std::time::Instant::now()) } else { None };
-                let dd_prune = verify_partial_dd_exceeds(r_eucl_dd, z, depth as usize, threshold);
+                let dd_prune = verify_partial_dd_exceeds(
+                    r_eucl_dd, z, z_c, u_eucl_dd, depth as usize, threshold,
+                );
                 if let Some(t) = t_v {
                     crate::synthesis::diag::T_VERIFY_DD_NS
                         .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -2584,7 +2677,7 @@ fn recurse_collect_norm_pruned<F>(
 
         recurse_collect_norm_pruned(
             depth - 1, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
-            target_norm_sq, target_norm_sq_i64,
+            u_eucl_dd, target_norm_sq, target_norm_sq_i64,
             new_partial_q, new_partial_q_dd, new_partial_eucl, z, x, w, basis,
             leaf_filter, budget, aborted, external_abort, consumed, bcache,
             results,
