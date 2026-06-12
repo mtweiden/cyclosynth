@@ -196,21 +196,12 @@ static L_COSET_DEDUP: LazyLock<Option<bool>> = LazyLock::new(|| {
     }
 });
 
-/// ε floor for default-on right-coset dedup. Below it (deep ε) the radial
-/// cap half-width h = (1 − √(1−ε²))/2 ≈ ε²/4 falls under the f64
-/// quantization noise of the alignment chain (`u2t_dag_times_mat2` →
-/// `mat_to_uv` → `uv_to_xy`, relative ~1e-16): each prefix frame's cap
-/// center is radially misplaced by SEVERAL h, true solutions' Q-norms
-/// scatter far outside the 1.51 walk bound (observed Q ≈ 14.8 at ε=1e-8
-/// for a verified ε-close image with exact shell norm and a passing MPFR
-/// alignment margin — probe_coset_flip_t78), and only the 8× coset-mate
-/// redundancy of the plain prefix set lets SOME frame land inside the
-/// bound. Removing the redundancy there flips per-level FOUND→none
-/// (lde 78→80 on all three bench targets at 1e-8). Until the y chain is
-/// rebuilt above f64 (MPFR matrix ops — the 8D sibling of the 16D
-/// "precision in w[d]" cliff fix), coset dedup stays off below this
-/// floor. At ε ≥ 1e-7 the ratio h/(y-noise) ≥ ~100 and the per-level
-/// FOUND/none parity gate passes (docs/w_8d_rework_notes.md).
+/// ε floor for default-on right-coset dedup. Below it the radial cap
+/// half-width ≈ ε²/4 falls under the f64 alignment chain's noise: cap
+/// centers are misplaced by several half-widths and only the 8× coset-
+/// mate redundancy lets SOME frame land inside the walk bound — dedup
+/// there flips FOUND→none. Stays off until the 8D y chain is rebuilt
+/// above f64 (the sibling of the 16D MPFR fix).
 const COSET_EPS_FLOOR: Float = 1e-7;
 
 /// Resolve the dedup mode for a given ε (env override first).
@@ -225,22 +216,11 @@ fn coset_mode_for(eps: Float) -> bool {
 ///   L_n (n≥1):
 ///     even branch: (HS^{b_n}T)·…·(HS^{b_1}T) · C  for b_i ∈ {0,1}, C ∈ C_1
 ///     odd  branch: T · (HS^{b_{n-1}}T)·…·(HS^{b_1}T) · C
-///   deduplicated up to global U(1) phase, then (in coset mode — used by
-///   production at ε ≥ [`COSET_EPS_FLOOR`], see [`coset_mode_for`]) up to
-///   RIGHT cosets of the lde-0 Clifford subgroup ⟨S,X⟩: for lde-0 `C`,
-///   prefix `U_L·C`'s subproblem is a Q-isometric bijection of `U_L`'s
-///   with identical total unitaries (`(U_L·C)·U_R = U_L·(C·U_R)`, with
-///   `C·U_R` on the same norm shell at the same lde), so one
-///   representative per coset preserves completeness exactly — PROVIDED
-///   the per-frame SE walk is itself complete, which currently holds for
-///   ε ≥ the floor only (see COSET_EPS_FLOOR's doc). The 24 Cliffords
-///   form 3 right cosets of the 8-element subgroup, so this removes the
-///   ~2/3+ duplicated work the plain phase-dedup misses.
-///
-/// Size after plain dedup: |L_0|=1, |L_n| = O(2^n) (much less than
-/// 3·2^{n-1}·24 due to many Clifford products being phase-equivalent);
-/// coset dedup shrinks it a further ~4.5-8× (M1 census in
-/// docs/w_8d_rework_notes.md).
+///   deduplicated up to global phase, then (at ε ≥ COSET_EPS_FLOOR) up
+///   to RIGHT cosets of the lde-0 Clifford subgroup ⟨S,X⟩: `(U_L·C)·U_R
+///   = U_L·(C·U_R)` on the same shell, so one rep per coset preserves
+///   completeness exactly — PROVIDED the per-frame walk is complete,
+///   which holds above the floor only.
 pub fn build_l(t_prime: u32) -> Arc<Vec<U2T>> {
     // Legacy entry point (probes/tests): plain phase-dedup unless the env
     // forces coset mode. Production (`dc_search` + the prewarm) goes
@@ -431,46 +411,22 @@ fn uv_to_xy(v: [Float; 4], k: u32) -> [Float; 8] {
 const PASS1_CAP: u64 = 2_000_000;
 const PASS2_CAP: u64 = u64::MAX;
 
-/// True NODE budgets for the 8D SE walk, per `phase1` call (one MA prefix ×
-/// one inner branch). The leaf caps above never bind on a NO-SOLUTION level
-/// (almost nothing reaches a leaf there), so before these existed an empty
-/// level walked unbudgeted to region exhaustion — observed 46 min on one
-/// empty level at ε=1e-3, t=27, single-core. Same 2-pass requeue contract
-/// as the leaf caps: a node-budget hit surfaces through `budget_hit`, so
-/// pass 1 hits are always retried at the pass-2 cap before the dispatcher
-/// advances to lde+1.
-///
-/// Sizing (measured 2026-06-11, `se_nodes (max/walk)` trace telemetry, 2
-/// targets × ε ∈ [1e-2, 1e-8], docs/w_zomega_fixes_notes.md): the LARGEST
-/// single walk observed anywhere in the production D&C path — found-level
-/// or empty-level — is 116 nodes at ε ≤ 1e-4, 330 at 1e-7, 2 956 at 1e-8.
-/// The inner shells are thin (k_inner ≤ ~18) and the SE bound 1.51 keeps
-/// them small; empty LEVELS are expensive through prefix COUNT (LLL), not
-/// through any single walk. So pass 1 = 2M is ≥ 700× above every observed
-/// completing walk (zero behavior change in the regular regime — confirmed
-/// budget=0 on every traced level) while bounding a runaway walk to a few
-/// seconds; pass 2 = 50M is another 25× for the requeue retry. A level
-/// that cannot complete a walk in 50M nodes is the pathological-exhaustion
-/// case (the kind that ran 46 min unbudgeted); skipping to lde+1 there
-/// matches the 16D production policy (`DC_PASS2_CAP` is finite too) under
-/// the accepted speed-over-completeness rule.
+/// NODE budgets per `phase1` call: the leaf caps never bind on a
+/// no-solution level (almost nothing reaches a leaf), so an empty
+/// level used to walk unbudgeted to exhaustion. Pass 1 sits ≥ 700×
+/// above every observed completing walk (empty levels are expensive
+/// through prefix COUNT, not any single walk); a level that cannot
+/// finish a walk in the pass-2 cap is pathological exhaustion, skipped
+/// under the accepted speed-over-completeness rule.
 const PASS1_NODE_CAP: u64 = 2_000_000;
 const PASS2_NODE_CAP: u64 = 50_000_000;
 
-/// Candidates collected per DC walk (one prefix × one branch) before the
-/// upstream ε-distance check. Historical value was 1 (pure first-hit), but
-/// the stage-1 right-coset dedup needs the walk to survive a BORDERLINE
-/// first candidate: at ε=1e-8 a candidate can pass the MPFR-128 alignment
-/// cap (sin φ ≤ ε exactly) yet fail the f64 diamond-distance check by
-/// ~1 ulp — observed live (dist_rej=1 at lde=78 flipped FOUND→none on all
-/// 3 bench targets once the dedup removed the coset-mates). Pre-dedup,
-/// each ε-close solution had up to 8 coset-mate frames = 8 independent
-/// first-hit draws; the dedup collapses them to one frame, so that frame
-/// must yield up to 8 candidates to preserve the same robustness (every
-/// mate's solution maps into the representative's cap region, so they ARE
-/// reachable in this one walk). The dist-check loop still returns on the
-/// FIRST passing candidate, so behavior is identical to max_solutions=1
-/// whenever the first candidate is good.
+/// Candidates collected per DC walk before the ε-distance check. The
+/// coset dedup collapsed up to 8 independent first-hit draws into one
+/// frame, so that frame must yield up to 8 candidates to keep the same
+/// robustness against a borderline first candidate (passes the MPFR
+/// alignment cap, fails f64 distance by ~1 ulp). Identical to
+/// max_solutions=1 whenever the first candidate is good.
 const DC_WALK_MAX_SOLUTIONS: usize = 8;
 
 /// LLL-based aligned search for a right factor `U_R` of given lde `k`
@@ -593,29 +549,13 @@ pub struct SynthesizerT {
 }
 
 impl SynthesizerT {
-    /// Create a synthesizer with the given precision and sensible defaults.
-    ///
-    /// Sets `min_lde = floor(coef(ε) · log₂(1/ε))` where `coef` ramps from
-    /// `1.5` at ε ≥ 1e-4 up to `2.8` at ε ≤ 1e-6, linearly interpolated in
-    /// log10(1/ε) between the two breakpoints. At larger ε, identity-like
-    /// targets and small-T solutions live well below the deep-ε floor; the
-    /// 1.5× coefficient gives them a chance. At deep ε, the 2.8× floor
-    /// matches the empirical T-count for generic rotations and skips
-    /// known-empty lde levels.
-    ///
-    /// Sets `max_lde = max(50, ceil(3.1 · log₂(1/ε)) + 2)` — generous upper
-    /// bound that scales with ε so that worst-case angles (e.g. Rz(π/7) at
-    /// 1e-5 needs lde=51) still have headroom. The +2 covers parity-skipped
-    /// odd-t' lde values; the 3.1× coefficient is empirically tuned from the
-    /// observed T-count spread across angles in the bench.
-    ///
-    /// Sets `direct_limit = 20` for ε ≥ 1e-4, `6` otherwise. Bumping
-    /// direct_limit at moderate ε lets the brute-force `direct_search`
-    /// cover the gap below `t_dc_start = ceil(2.5·log₂(1/ε))` where
-    /// dc_search would bail (`t_prime = 0`). Direct search at norm shell
-    /// 2^t is exponential in t — practical only up to ~t=20. For deep ε
-    /// the optimal-T-count is already above this range, so dc_search is
-    /// the right tool and direct_limit stays small.
+    /// ε-tuned defaults. min_lde's coefficient ramps 1.5 → 2.8 in
+    /// log10(1/ε): shallow ε must give small-T/identity-like targets a
+    /// chance below the generic floor, deep ε can skip known-empty
+    /// levels. max_lde scales at 3.1× with headroom for worst-case
+    /// angles. direct_limit is large only at moderate ε, where it
+    /// covers the gap below the t' > 0 threshold; direct search is
+    /// exponential in t, so deep ε keeps it small.
     pub fn new(epsilon: Float) -> Self {
         let (min_lde, max_lde) = if epsilon > 0.0 && epsilon < 1.0 {
             let log2_recip  = (1.0 / epsilon).log2();
@@ -872,7 +812,6 @@ impl SynthesizerT {
     }
 
     /// Algorithm 3.11: divide-and-conquer with MA left prefixes.
-    /// Algorithm 3.11 body: DC with MA left prefixes.
     ///
     /// Optimal split t' = max(0, ceil(t - 5/2*log2(1/eps))) from Prop 3.13.
     /// Inner step uses lll_aligned_search (CVP-based), which is O(1) near a
