@@ -23,8 +23,8 @@ static TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 #[derive(Clone, Debug)]
 pub struct CapturedFind {
     pub x_inner: [i64; 16],
-    pub k_inner: u32,
-    pub k_total: u32,
+    pub lde_inner: u32,
+    pub lde_total: u32,
     pub d_r: u32,
     pub d_l: u32,
 }

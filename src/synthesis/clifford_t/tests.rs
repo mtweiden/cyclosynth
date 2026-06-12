@@ -492,8 +492,8 @@
         use std::sync::atomic::AtomicBool;
         let t_prime = optimal_t_prime(t, eps);
         let t_inner = t - t_prime;
-        let k_inner: u32 = if t_inner % 2 == 1 { (t_inner - 1) / 2 + 1 } else { t_inner / 2 + 1 };
-        eprintln!("t={t} t'={t_prime} t_inner={t_inner} k_inner={k_inner}");
+        let lde_inner: u32 = if t_inner % 2 == 1 { (t_inner - 1) / 2 + 1 } else { t_inner / 2 + 1 };
+        eprintln!("t={t} t'={t_prime} t_inner={t_inner} lde_inner={lde_inner}");
 
         let plain = build_l_inner_with(t_prime, false);
         let coset = build_l_inner_with(t_prime, true);
@@ -508,13 +508,13 @@
                 let v_b = if odd { apply_t_dag_to_uv(v_inner) } else { v_inner };
                 let hit = AtomicBool::new(false);
                 for sol in lll_aligned_search(
-                    &mut scratch, v_b, k_inner, eps, max_sols, u64::MAX,
+                    &mut scratch, v_b, lde_inner, eps, max_sols, u64::MAX,
                     50_000_000, &hit, None,
                 ) {
                     let u2t = if odd {
-                        *u_l * solution_to_u2t(&sol, k_inner) * U2T::t()
+                        *u_l * solution_to_u2t(&sol, lde_inner) * U2T::t()
                     } else {
-                        *u_l * solution_to_u2t(&sol, k_inner)
+                        *u_l * solution_to_u2t(&sol, lde_inner)
                     };
                     let dist = diamond_distance_u2t_float(&u2t, &target);
                     out.push((odd, sol, dist));
@@ -578,11 +578,11 @@
                 let c_mat = &CLIFFORD_TABLE_T[ci].1;
                 // w ≈ r·c  ⇒  w·U(sol) = r·(c·U(sol)); image x = first col
                 // of c·U(sol). Winner was ODD branch: total = r·img·T.
-                let img_u2t = *c_mat * solution_to_u2t(&sol, k_inner);
+                let img_u2t = *c_mat * solution_to_u2t(&sol, lde_inner);
                 eprintln!(
-                    "  image k={} (k_inner={k_inner}); in rep sols: {}",
+                    "  image k={} (lde_inner={lde_inner}); in rep sols: {}",
                     img_u2t.k,
-                    rsols.iter().any(|(_, s, _)| solution_to_u2t(s, k_inner).diamond_distance(&img_u2t) < 1e-9),
+                    rsols.iter().any(|(_, s, _)| solution_to_u2t(s, lde_inner).diamond_distance(&img_u2t) < 1e-9),
                 );
                 let img_total = *r * img_u2t * U2T::t();
                 eprintln!(
@@ -593,7 +593,7 @@
                 let m_inner_r = prefix_dag_times_target(r, &target);
                 let v_inner_r = try_unitary_to_uv(&m_inner_r).expect("rep try_unitary_to_uv");
                 let v_odd_r = apply_t_dag_to_uv(v_inner_r);
-                let y = uv_to_lattice_y(v_odd_r, k_inner);
+                let y = uv_to_lattice_y(v_odd_r, lde_inner);
                 // x_img integer coords: (u1, u2) coefficients of img_u2t.
                 let gi = |z: &crate::rings::ZOmega| -> [f64; 4] {
                     use crate::rings::types::int_to_f64;
@@ -609,10 +609,10 @@
                     [i1[0], i1[1], i1[2], i1[3], i2[0], i2[1], i2[2], i2[3]];
                 let dot: f64 = (0..8).map(|j| y[j] * x_img[j]).sum();
                 let norm_sq: f64 = x_img.iter().map(|v| v * v).sum();
-                let thresh = (1.0 - eps * eps) * 2f64.powi(2 * k_inner as i32) / 4.0;
+                let thresh = (1.0 - eps * eps) * 2f64.powi(2 * lde_inner as i32) / 4.0;
                 eprintln!(
                     "  x_img: |x|^2/2^k = {:.6}  dot^2/thresh - 1 = {:+.6e}",
-                    norm_sq / 2f64.powi(k_inner as i32),
+                    norm_sq / 2f64.powi(lde_inner as i32),
                     dot * dot / thresh - 1.0,
                 );
                 // Q-norm of x_img from the rep's odd frame, evaluated in
@@ -622,7 +622,7 @@
                 use crate::synthesis::lattice::{q_metric::build_q_mpfr, scratch::IntScratch};
                 use rug::Float as RFloat;
                 let mut qs = IntScratch::new(eps);
-                build_q_mpfr(&mut qs, &y, k_inner, eps);
+                build_q_mpfr(&mut qs, &y, lde_inner, eps);
                 let prec = qs.q_mpfr[0][0].prec();
                 let mut qn = RFloat::with_val(prec, 0.0);
                 for a in 0..8 {
@@ -644,7 +644,7 @@
                     s2.reset_basis();
                     let hit = AtomicBool::new(false);
                     let out = crate::synthesis::lattice::integer::find_aligned_lattice_points(
-                        &mut s2, &y, k_inner, eps, usize::MAX, u64::MAX,
+                        &mut s2, &y, lde_inner, eps, usize::MAX, u64::MAX,
                         50_000_000, &hit, None,
                     );
                     eprintln!(
@@ -667,7 +667,7 @@
                     use rug::Assign;
                     let mut s3 = IntScratch::new(eps);
                     s3.reset_basis();
-                    build_q_mpfr(&mut s3, &y, k_inner, eps);
+                    build_q_mpfr(&mut s3, &y, lde_inner, eps);
                     build_q_int(&mut s3);
                     let lll_res = lll_l2_8(&mut s3);
                     eprintln!("  replay: lll={lll_res:?} scale_bits={}", s3.scale_bits);
@@ -772,7 +772,7 @@
                             }
                             pe[d] = pe[d + 1] + lvl * lvl;
                         }
-                        let tgt = 2f64.powi(k_inner as i32);
+                        let tgt = 2f64.powi(lde_inner as i32);
                         eprintln!(
                             "  replay: eucl partials/2^k by depth (7..0): {:?} (cut if > 1 + 2^-k)",
                             (0..8).rev().map(|d| (d, pe[d] / tgt)).collect::<Vec<_>>()
@@ -961,7 +961,7 @@
                     // Probe the PRODUCTION geometry for this level. With
                     // t' = optimal_t_prime == 0 that's the three direct
                     // branches at k = t; with t' > 0 it's the MA-prefix
-                    // inner frames at k_inner — the frames whose walks the
+                    // inner frames at lde_inner — the frames whose walks the
                     // 1.51 bound actually governs. (Direct full-lde
                     // probing at ε ≤ 1e-3 is hopeless: the t=27..34 region
                     // is so large that a 50M-node budgeted walk finds
@@ -979,7 +979,7 @@
                         }
                     } else {
                         let t_inner = t - t_prime;
-                        let k_inner: u32 = if t_inner % 2 == 1 {
+                        let lde_inner: u32 = if t_inner % 2 == 1 {
                             (t_inner - 1) / 2 + 1
                         } else {
                             t_inner / 2 + 1
@@ -996,9 +996,9 @@
                             }
                             let m_inner = prefix_dag_times_target(u_l, &target);
                             let Some(v_inner) = try_unitary_to_uv(&m_inner) else { continue };
-                            frames.push((v_inner, k_inner));
+                            frames.push((v_inner, lde_inner));
                             if t_inner > 0 {
-                                frames.push((apply_t_dag_to_uv(v_inner), k_inner));
+                                frames.push((apply_t_dag_to_uv(v_inner), lde_inner));
                             }
                         }
                     }
@@ -1188,7 +1188,7 @@
         for &(eps, t) in &[(1e-7f64, 66u32), (1e-8, 74), (1e-8, 76)] {
             let t_prime = optimal_t_prime(t, eps);
             let t_inner = t - t_prime;
-            let k_inner: u32 = if t_inner % 2 == 1 {
+            let lde_inner: u32 = if t_inner % 2 == 1 {
                 (t_inner - 1) / 2 + 1
             } else {
                 t_inner / 2 + 1
@@ -1210,9 +1210,9 @@
                 }
                 let m_inner = prefix_dag_times_target(u_l, &target);
                 let Some(v_inner) = try_unitary_to_uv(&m_inner) else { continue };
-                ys.push(uv_to_lattice_y(v_inner, k_inner));
+                ys.push(uv_to_lattice_y(v_inner, lde_inner));
                 if t_inner > 0 && ys.len() < n_cap {
-                    ys.push(uv_to_lattice_y(apply_t_dag_to_uv(v_inner), k_inner));
+                    ys.push(uv_to_lattice_y(apply_t_dag_to_uv(v_inner), lde_inner));
                 }
             }
             if ys.is_empty() {
@@ -1223,7 +1223,7 @@
             let mut s = IntScratch::new(eps);
             // Warm seed: LLL-reduce Q_base itself. Populate q_base via one
             // build_q_mpfr call, copy it into q_mpfr, snapshot, reduce.
-            build_q_mpfr(&mut s, &ys[0], k_inner, eps);
+            build_q_mpfr(&mut s, &ys[0], lde_inner, eps);
             for i in 0..8 {
                 for j in 0..8 {
                     s.q_mpfr[i][j].assign(&s.q_base[i][j]);
@@ -1233,7 +1233,7 @@
             let (res_base, it_base) = lll_l2_8_seeded(&mut s, None);
             let warm = s.basis;
             eprintln!(
-                "eps={eps:e} t={t} t'={t_prime} k_inner={k_inner} captured={} \
+                "eps={eps:e} t={t} t'={t_prime} lde_inner={lde_inner} captured={} \
                  | q_base LLL: {res_base:?} iters={it_base}",
                 ys.len()
             );
@@ -1241,7 +1241,7 @@
             let (mut tot_cold, mut tot_warm) = (0u64, 0u64);
             let mut nonconv = 0usize;
             for y in &ys {
-                build_q_mpfr(&mut s, y, k_inner, eps);
+                build_q_mpfr(&mut s, y, lde_inner, eps);
                 build_q_int(&mut s);
                 let (rc, ic) = lll_l2_8_seeded(&mut s, None);
                 let (rw, iw) = lll_l2_8_seeded(&mut s, Some(&warm));
