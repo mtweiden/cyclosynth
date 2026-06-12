@@ -217,11 +217,11 @@ mod tests {
     fn class_bound_holds_on_brute_shells() {
         use crate::synthesis::clifford_sqrt_t::{det_phase_of, solution_to_u2q};
         use crate::synthesis::decomposer::BlochDecomposer;
-        use crate::synthesis::search_zeta::phase1_brute;
+        use crate::synthesis::search_zeta::enumerate_unitary_norm_shell;
 
         let mut checked = 0usize;
         for k in 0..=3u32 {
-            for sol in &phase1_brute(k) {
+            for sol in &enumerate_unitary_norm_shell(k) {
                 let u = solution_to_u2q(sol, k);
                 let d = det_phase_of(&u.to_float());
                 let gates = BlochDecomposer.decompose(&u);
@@ -244,7 +244,7 @@ mod tests {
     }
 
     /// E2 (small-k anchor): brute-enumerate full shells at k ≤ 3 via
-    /// `phase1_brute`, decompose every completion, and check the
+    /// `enumerate_unitary_norm_shell`, decompose every completion, and check the
     /// staircase never exceeds the cheapest realized cost. (The brute
     /// minimum is an upper bound on the true L(k) — completions fix a
     /// convention — so this validates soundness, not exactness.)
@@ -252,10 +252,10 @@ mod tests {
     fn staircase_below_brute_minimum_small_k() {
         use crate::synthesis::clifford_sqrt_t::solution_to_u2q;
         use crate::synthesis::decomposer::BlochDecomposer;
-        use crate::synthesis::search_zeta::phase1_brute;
+        use crate::synthesis::search_zeta::enumerate_unitary_norm_shell;
 
         for k in 0..=3u32 {
-            let sols = phase1_brute(k);
+            let sols = enumerate_unitary_norm_shell(k);
             let mut min_cost = usize::MAX;
             for sol in &sols {
                 let u = solution_to_u2q(sol, k).reduced();

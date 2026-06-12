@@ -121,7 +121,7 @@ pub struct IntScratch {
     /// MPFR precision used for build_q + Cholesky + LU (post-LLL phases).
     pub prec_q: u32,
     /// Adaptive scale `B` such that `Q_int[i][j] ≈ 2^B · Q[i][j]`. Picked
-    /// per phase1 call so `max(|Q_int|) ≈ 2^TARGET_BITS`.
+    /// per find_aligned_lattice_points call so `max(|Q_int|) ≈ 2^TARGET_BITS`.
     pub scale_bits: i32,
 
     // ── MPFR buffers for build_q (constants + per-call working values) ──
@@ -171,7 +171,7 @@ pub struct IntScratch {
     /// rank-1 term carries ~half the anisotropy bits, so the Q_base
     /// reduction is most of the shared work (measured warm/cold iters
     /// ≈ 0.60 on 400-prefix captures, `warm_lll_gate` test). Keyed
-    /// separately from `q_base_key`: computed lazily by `phase1` (it
+    /// separately from `q_base_key`: computed lazily by `find_aligned_lattice_points` (it
     /// needs an LLL run, which `build_q_mpfr` must not recurse into).
     pub q_base_seed: Option<IMat8>,
     pub q_base_seed_key: Option<(u32, u64)>,
@@ -294,7 +294,7 @@ fn fill_sigma(sigma: &mut [[RFloat; 8]; 8], prec: u32) {
 /// `p_ub[i][j] = ½·Σ_{r=4..7} σ[r][i]·σ[r][j]`. Depends only on the
 /// constant Σ matrix, so it runs once at scratch construction; the values
 /// persist across every build_q_mpfr call. Eliminates ~512 MPFR mul + 512
-/// MPFR add ops per phase1 invocation.
+/// MPFR add ops per find_aligned_lattice_points invocation.
 fn fill_p_u_p_ub(scratch: &mut IntScratch) {
     for i in 0..8 {
         for j in 0..8 {

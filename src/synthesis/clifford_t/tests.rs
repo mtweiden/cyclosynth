@@ -431,7 +431,7 @@
             }
         }
         // Widen the SE walk bound for the WHOLE probe (LazyLock-once; must
-        // precede the first phase1 call). If the rep's missing image shows
+        // precede the first find_aligned_lattice_points call). If the rep's missing image shows
         // up at bound 4.0, its Q-norm in that frame is in (1.51, 4.0] and
         // the Q-band model is frame-fragile; if it stays missing, the f64
         // partial-eucl norm prune (the known 1.5e-8-cliff mechanism) is
@@ -636,25 +636,25 @@
                     "  x_img Q-norm in rep odd frame = {:.6} (walk bound 1.51; probe bound 4.0)",
                     qn.to_f64()
                 );
-                // Call integer::phase1 directly to expose should_escalate
+                // Call integer::find_aligned_lattice_points directly to expose should_escalate
                 // (mod.rs's wrapper silently drops it).
                 {
                     use std::sync::atomic::AtomicBool;
                     let mut s2 = IntScratch::new(eps);
                     s2.reset_basis();
                     let hit = AtomicBool::new(false);
-                    let out = crate::synthesis::lattice::integer::phase1(
+                    let out = crate::synthesis::lattice::integer::find_aligned_lattice_points(
                         &mut s2, &y, k_inner, eps, usize::MAX, u64::MAX,
                         50_000_000, &hit, None,
                     );
                     eprintln!(
-                        "  rep odd frame direct phase1: sols={} should_escalate={} budget_hit={}",
+                        "  rep odd frame direct find_aligned_lattice_points: sols={} should_escalate={} budget_hit={}",
                         out.solutions.len(),
                         out.should_escalate,
                         hit.load(std::sync::atomic::Ordering::Relaxed),
                     );
                 }
-                // SE-walk replay: reproduce phase1's setup, locate x_img's
+                // SE-walk replay: reproduce find_aligned_lattice_points's setup, locate x_img's
                 // z-path, and print the walker's own per-depth partials to
                 // find which level excludes it.
                 {
@@ -906,7 +906,7 @@
     ///
     /// 2026-06-11: collects ALL in-region solutions per level
     /// (`max_solutions = usize::MAX`) — the earlier first-hit numbers
-    /// ([0.75, 0.94]) were maximally center-biased because phase1 stopped
+    /// ([0.75, 0.94]) were maximally center-biased because find_aligned_lattice_points stopped
     /// at the first hit of a distance-ordered walk. Walks are bounded by
     /// the new node budget (T8_NODES, default 50M per branch walk), which
     /// is what makes ε=1e-3 runnable at all (empty/slow branches used to
@@ -919,7 +919,7 @@
     #[test]
     #[ignore]
     fn q_telemetry_sweep_8d() {
-        use crate::synthesis::lattice::{integer::phase1, q_metric::build_q_mpfr};
+        use crate::synthesis::lattice::{integer::find_aligned_lattice_points, q_metric::build_q_mpfr};
         use crate::synthesis::lattice::scratch::IntScratch;
         use std::sync::atomic::AtomicBool;
 
@@ -932,7 +932,7 @@
         let mut total_close = 0usize;
 
         // t (lde) scan ranges per ε. CAUTION (learned the 46-minute way,
-        // twice): `max_phase2_calls` caps CANDIDATE COMPLETIONS, not raw
+        // twice): `max_leaf_checks` caps CANDIDATE COMPLETIONS, not raw
         // nodes — on a no-solution level almost nothing reaches
         // candidacy, so the walk runs effectively unbudgeted and a
         // single below-first-hit level burns tens of minutes on one
@@ -966,7 +966,7 @@
                     // probing at ε ≤ 1e-3 is hopeless: the t=27..34 region
                     // is so large that a 50M-node budgeted walk finds
                     // nothing — the pre-fix 46-minute deadlock geometry.)
-                    // Q/c are built in each frame's own (y, k); phase1
+                    // Q/c are built in each frame's own (y, k); find_aligned_lattice_points
                     // sols have already passed the alignment-cap leaf
                     // check, which is exactly the in-cap criterion the
                     // bound governs.
@@ -1019,7 +1019,7 @@
                         let y = uv_to_xy(v_s, k_f);
                         let mut s = IntScratch::new(eps);
                         let hit = AtomicBool::new(false);
-                        let out = phase1(
+                        let out = find_aligned_lattice_points(
                             &mut s, &y, k_f, eps, usize::MAX, budget, nodes, &hit, None,
                         );
                         // Circuit breaker: this level is expensive territory.
@@ -1033,7 +1033,7 @@
                         sol_frames += 1;
                         any_trunc |= hit.load(std::sync::atomic::Ordering::Relaxed);
                         // Fresh scratch for Q + cap center in THIS frame:
-                        // phase1's LLL may have mutated downstream state;
+                        // find_aligned_lattice_points's LLL may have mutated downstream state;
                         // build_q alone is cheap and sets q_mpfr and c.
                         let mut qs = IntScratch::new(eps);
                         build_q_mpfr(&mut qs, &y, k_f, eps);

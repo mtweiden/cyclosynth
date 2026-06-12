@@ -5,7 +5,8 @@
 //! Complexity") specialised to dimension 8 and the anisotropic Q metric
 //! used by the paper.
 //!
-//! Pipeline per phase1 call: build Q (eq 3.15 cap × ball metric) →
+//! Aligned-lattice-point search for the 8D Z[ω] pipeline (= the paper's
+//! phase 1, arXiv:2510.05816 Alg 3.6): build Q (eq 3.15 cap × ball metric) →
 //! i256 snapshot (scale only affects snapshot precision; LLL μ-values
 //! are scale-invariant ratios) → L²-LLL with pure-f64 GS (NS09
 //! Theorem 2: f64 is provably sufficient at d=8 with δ=0.75, η=0.55;
@@ -26,12 +27,12 @@ use super::q_metric::{build_q_int, build_q_mpfr};
 use super::scratch::{rfv, IntScratch};
 use crate::rings::Float;
 
-/// Outcome of one `phase1` invocation. `should_escalate` is set when the i256
+/// Outcome of one `find_aligned_lattice_points` invocation. `should_escalate` is set when the i256
 /// Gram overflowed during LLL (transient B-growth at very deep ε beyond what
 /// `TARGET_BITS = 180` absorbs). The dispatcher can use this signal to fall
 /// back to an alternative strategy if needed; the L²-LLL path was designed
 /// to keep this flag clear in our target ε ∈ [1e-10, 1e-3] regime.
-pub struct PhaseOneOutcome {
+pub struct LatticeSearchOutcome {
     pub solutions: Vec<[i64; 8]>,
     pub should_escalate: bool,
 }
@@ -63,7 +64,7 @@ fn se_bound_8d() -> f64 {
 ///
 /// Budgets — both set `budget_hit` when they bind, so the caller's 2-pass
 /// requeue can retry the level:
-///   - `max_phase2_calls`: leaf-callback budget (historical semantics).
+///   - `max_leaf_checks`: leaf-callback budget (historical semantics).
 ///     Now also ABORTS the walk when it trips (previously the walk kept
 ///     running with the callback rejecting everything).
 ///   - `max_nodes`: TRUE node budget, one unit per SE recurse-entry. This
@@ -75,17 +76,17 @@ fn se_bound_8d() -> f64 {
 /// set by a peer branch that already found a solution (read-only here).
 /// An externally-aborted walk does NOT set `budget_hit`.
 #[allow(clippy::too_many_arguments)]
-pub fn phase1(
+pub fn find_aligned_lattice_points(
     scratch: &mut IntScratch,
     y: &[Float; 8],
     k: u32,
     eps: Float,
     max_solutions: usize,
-    max_phase2_calls: u64,
+    max_leaf_checks: u64,
     max_nodes: u64,
     budget_hit: &AtomicBool,
     external_abort: Option<&AtomicBool>,
-) -> PhaseOneOutcome {
+) -> LatticeSearchOutcome {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     // target_norm = 2^k. Use i128 so target_norm stays correct for k ≥ 63
@@ -158,7 +159,7 @@ pub fn phase1(
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     if let LllResult::GramOverflow = lll_result {
-        return PhaseOneOutcome { solutions: Vec::new(), should_escalate: true };
+        return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: true };
     }
 
     // Step 3: assert det(B) = ±1 (unimodular basis output).
@@ -170,14 +171,14 @@ pub fn phase1(
                 "[lattice] LLL non-unimodular (det={}) at eps={:e}, k={}; bailing.",
                 d, eps, k
             );
-            return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
+            return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false };
         }
         None => {
             eprintln!(
                 "[lattice] det8_exact overflow at eps={:e}, k={}; bailing.",
                 eps, k
             );
-            return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
+            return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false };
         }
     }
 
@@ -194,7 +195,7 @@ pub fn phase1(
             "[lattice] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
             eps, k
         );
-        return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
+        return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false };
     }
 
     // Build R = Lᵀ at SE working precision (128-bit MPFR).
@@ -218,7 +219,7 @@ pub fn phase1(
     }
     if !lu_ok {
         eprintln!("[lattice] LU solve failed at eps={:e}, k={}; bailing.", eps, k);
-        return PhaseOneOutcome { solutions: Vec::new(), should_escalate: false };
+        return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false };
     }
     let z_c_se: [RFloat; 8] = std::array::from_fn(|i| {
         super::se::rfloat_to_se(&scratch.lu_x[i])
@@ -261,7 +262,7 @@ pub fn phase1(
         &truncated,
         |z: &[i64; 8]| {
             let n_so_far = count.load(Ordering::Relaxed);
-            if n_so_far >= max_phase2_calls {
+            if n_so_far >= max_leaf_checks {
                 // Leaf budget exhausted: abort the walk (the flag is the
                 // walker's budget_exhausted input) without taking a leaf.
                 truncated.store(true, Ordering::Relaxed);
@@ -327,7 +328,7 @@ pub fn phase1(
     crate::synthesis::diag::N_SE_NODES.fetch_add(nodes_used, Ordering::Relaxed);
     crate::synthesis::diag::record_se_nodes_max(nodes_used);
 
-    PhaseOneOutcome { solutions, should_escalate: false }
+    LatticeSearchOutcome { solutions, should_escalate: false }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

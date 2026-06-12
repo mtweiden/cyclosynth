@@ -755,7 +755,7 @@ mod tests {
     #[test]
     fn bkz_4_smoke_on_lll_basis() {
         use crate::synthesis::lattice_zeta::{
-            integer::phase1_with_stop,
+            integer::find_aligned_lattice_points_with_stop,
             lll_f64::cfa_row_f64,
             se::det16_exact,
         };
@@ -773,7 +773,7 @@ mod tests {
 
         // First run regular LLL+SE to get an LLL-reduced basis.
         let budget_hit = AtomicBool::new(false);
-        let _sols = phase1_with_stop(&mut s, &y, k, eps, 100_000, &budget_hit, |_| false, None, None);
+        let _sols = find_aligned_lattice_points_with_stop(&mut s, &y, k, eps, 100_000, &budget_hit, |_| false, None, None);
 
         // Verify basis is unimodular pre-BKZ.
         let det_pre = det16_exact(&s.basis);

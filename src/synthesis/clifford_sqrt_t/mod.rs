@@ -10,11 +10,11 @@
 //! ## Backend (hybrid, three modes)
 //!
 //! For `k ≤ BRUTE_LIMIT` (=3): brute-force enumeration via
-//! [`crate::synthesis::search_zeta::phase1_brute`] — cheap exact-find
+//! [`crate::synthesis::search_zeta::enumerate_unitary_norm_shell`] — cheap exact-find
 //! for small Clifford+√T targets (also the lattice pipeline's oracle).
 //!
 //! For larger `k`: single-shot 16D L²-LLL + Schnorr-Euchner via
-//! [`crate::synthesis::lattice_zeta::phase1`] (with an optional BKZ-β
+//! [`crate::synthesis::lattice_zeta::find_aligned_lattice_points`] (with an optional BKZ-β
 //! post-pass), plus an FGKM-prefix divide-and-conquer mode (`dc_search_q`)
 //! for deep `k`. Adaptive leaf budget scales exponentially in `k`;
 //! reaches ε ≲ 1e-5 at k ≈ 30.
@@ -33,8 +33,8 @@ use crate::rings::types::Int;
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2q_float, Mat2};
-use crate::synthesis::lattice_zeta::{phase1_with_stop, phase1_with_stop_mpfr, IntScratch16};
-use crate::synthesis::search_zeta::{phase1_brute, uv_to_xy_zeta, uv_to_xy_zeta_mpfr};
+use crate::synthesis::lattice_zeta::{find_aligned_lattice_points_with_stop, find_aligned_lattice_points_mpfr, IntScratch16};
+use crate::synthesis::search_zeta::{enumerate_unitary_norm_shell, uv_to_xy_zeta, uv_to_xy_zeta_mpfr};
 use num_complex::Complex64;
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -611,7 +611,7 @@ pub struct SynthesizerQ {
 /// At 3, brute tops out at ~10⁷ shell points (~100 ms).
 const BRUTE_LIMIT: u32 = 3;
 
-/// Process-wide cache over [`phase1_brute`]: the shell enumeration is a
+/// Process-wide cache over [`enumerate_unitary_norm_shell`]: the shell enumeration is a
 /// pure function of `k`, and optimal mode would otherwise re-run it 4×
 /// per target. The cached unit-scale d = 0 float matrices
 /// `(u1, −u2*, u2, u1*)/√2^k` let per-target scans use the cheap f64
@@ -630,7 +630,7 @@ fn brute_shell_cached(k: u32) -> &'static BruteShell {
         [CELL; (BRUTE_LIMIT + 1) as usize];
     debug_assert!(k <= BRUTE_LIMIT);
     CACHE[k as usize].get_or_init(|| {
-        let sols = phase1_brute(k);
+        let sols = enumerate_unitary_norm_shell(k);
         let inv_scale = 1.0 / (2f64.powi(k as i32)).sqrt();
         // ζ₁₆^j basis at unit scale.
         let basis: [Complex64; 8] =
@@ -818,21 +818,21 @@ fn rot32_mpfr(v: [rug::Float; 4], j: u32, prec: u32) -> [rug::Float; 4] {
     ]
 }
 
-/// Deep-ε-aware phase1 router. At ε ≤ 2e-8 the radial cap width ε²/4
+/// Deep-ε-aware find_aligned_lattice_points router. At ε ≤ 2e-8 the radial cap width ε²/4
 /// sits under the f64 ULP at unit scale, so an f64 y-chain corrupts Q,
 /// the cap center, and the Cholesky factor — and an f64 prefix product
 /// additionally displaces the cap itself ([`u2q_dag_v_inner_mpfr`]).
 /// Those ε route through the MPFR entry with `v` derived from the most
 /// exact source available; above 2e-8 the f64 path is safe and ~free.
 #[allow(clippy::too_many_arguments)]
-fn phase1_deep_aware<F>(
+fn find_aligned_lattice_points_auto_prec<F>(
     scratch: &mut IntScratch16,
     v: [f64; 4],
     deep_v_src: Option<(&U2Q, &Mat2)>,
     rot_src: Option<&(Mat2, u32)>,
     k: u32,
     eps: f64,
-    max_phase2_calls: u64,
+    max_leaf_checks: u64,
     budget_hit: &std::sync::atomic::AtomicBool,
     should_stop: F,
     external_abort: Option<&std::sync::atomic::AtomicBool>,
@@ -864,14 +864,14 @@ where
             (None, None) => std::array::from_fn(|i| rug::Float::with_val(prec, v[i])),
         };
         let y_mpfr = uv_to_xy_zeta_mpfr(&v_mpfr, k, prec);
-        phase1_with_stop_mpfr(
-            scratch, &y_mpfr, &v_mpfr, k, eps, max_phase2_calls, budget_hit,
+        find_aligned_lattice_points_mpfr(
+            scratch, &y_mpfr, &v_mpfr, k, eps, max_leaf_checks, budget_hit,
             should_stop, external_abort, consumed,
         )
     } else {
         let y = uv_to_xy_zeta(v, k);
-        phase1_with_stop(
-            scratch, &y, k, eps, max_phase2_calls, budget_hit, should_stop,
+        find_aligned_lattice_points_with_stop(
+            scratch, &y, k, eps, max_leaf_checks, budget_hit, should_stop,
             external_abort, consumed,
         )
     }
@@ -1157,7 +1157,7 @@ impl SynthesizerQ {
         self
     }
 
-    /// Run a BKZ-β post-pass after LLL inside `phase1_with_stop`. β=0
+    /// Run a BKZ-β post-pass after LLL inside `find_aligned_lattice_points_with_stop`. β=0
     /// disables (the default). β=2 is LLL-equivalent — use β≥3 to see
     /// any improvement. Empirically helpful at deep ε where the
     /// post-LLL SE region is large.
@@ -1234,8 +1234,8 @@ impl SynthesizerQ {
     /// distance < `epsilon`. Returns the FIRST candidate found at the
     /// smallest k that works (not necessarily √T-count optimal).
     ///
-    /// **Backend**: hybrid — brute-force `phase1_brute` for `k ≤ BRUTE_LIMIT`
-    /// (=3), then single-shot 16D L²-LLL + Schnorr-Euchner `phase1` (optionally
+    /// **Backend**: hybrid — brute-force `enumerate_unitary_norm_shell` for `k ≤ BRUTE_LIMIT`
+    /// (=3), then single-shot 16D L²-LLL + Schnorr-Euchner `find_aligned_lattice_points` (optionally
     /// BKZ-reduced) and an FGKM-prefix divide-and-conquer mode (`dc_search_q`)
     /// for larger / deep k.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
@@ -1513,7 +1513,7 @@ impl SynthesizerQ {
                 let cand = solution_to_u2q_d(x, k, d);
                 diamond_distance_u2q_float(&cand, &target) < epsilon
             };
-            let sols = phase1_deep_aware(
+            let sols = find_aligned_lattice_points_auto_prec(
                 s.as_mut(), v, None, self.deep_rot_src.as_ref(), k, epsilon, budget, &budget_hit, should_stop, None, None,
             );
             (sols, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
@@ -1949,7 +1949,7 @@ impl SynthesizerQ {
                 external_abort
             };
 
-            let sols = phase1_deep_aware(
+            let sols = find_aligned_lattice_points_auto_prec(
                 scratch, v_inner, Some((u_l, target)), self.deep_rot_src.as_ref(), k_inner, epsilon,
                 per_prefix_cap, &budget_hit, should_stop,
                 walk_abort, consumed,
@@ -2335,7 +2335,7 @@ impl SynthesizerQ {
             };
             let w = &watches[idx];
             w.active.store(true, Ordering::Relaxed);
-            let sols = phase1_deep_aware(
+            let sols = find_aligned_lattice_points_auto_prec(
                 scratch, v_inner, Some((u.u_l, target)), self.deep_rot_src.as_ref(), k_inner, epsilon,
                 per_prefix_cap, &budget_hit, should_stop,
                 Some(&w.abort), None,
@@ -2583,7 +2583,7 @@ impl SynthesizerQ {
             let cand = solution_to_u2q_d(x, k, d);
             diamond_distance_u2q_float(&cand, target) < epsilon
         };
-        let sols = phase1_deep_aware(
+        let sols = find_aligned_lattice_points_auto_prec(
             s.as_mut(), v, None, self.deep_rot_src.as_ref(), k, epsilon, budget, &budget_hit, should_stop, None, None,
         );
         let hit = budget_hit.load(std::sync::atomic::Ordering::Relaxed);
@@ -2593,7 +2593,7 @@ impl SynthesizerQ {
 
     /// Cost-optimal synthesis. Three stages:
     ///
-    /// 1. **Brute regime** (k ≤ BRUTE_LIMIT): `phase1_brute` enumerates
+    /// 1. **Brute regime** (k ≤ BRUTE_LIMIT): `enumerate_unitary_norm_shell` enumerates
     ///    the full norm shell exactly, so the min-cost candidate at the
     ///    smallest feasible k is already optimal there.
     /// 2. **Screen**: run the *production first-hit path* (a clone with

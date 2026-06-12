@@ -6,7 +6,7 @@
     use crate::synthesis::decomposer::BlochDecomposer;
     use crate::synthesis::distance::Mat2;
     use crate::synthesis::search_zeta::{
-        compute_align_vec_zeta, phase1_brute, uv_to_xy_zeta,
+        compute_align_vec_zeta, enumerate_unitary_norm_shell, uv_to_xy_zeta,
     };
     use crate::synthesis::clifford_sqrt_t::{
         det_phase_of, solution_to_u2q, solution_to_u2q_d,
@@ -207,7 +207,7 @@
             let v_mpfr: [RF; 4] = std::array::from_fn(|i| RF::with_val(213, v[i]));
             let y = crate::synthesis::search_zeta::uv_to_xy_zeta_mpfr(&v_mpfr, k, 213);
             let mut s = IntScratch16::new(eps);
-            // Replicate phase1 steps 1-4 (no walk).
+            // Replicate find_aligned_lattice_points steps 1-4 (no walk).
             super::q_metric::build_q_mpfr_zeta_from_mpfr_v(&mut s, &v_mpfr, k, eps);
             build_q_int_zeta(&mut s);
             let prec = s.prec_q;
@@ -247,15 +247,15 @@
     }
 
     #[test]
-    fn phase1_brute_at_k_2_finds_solutions() {
+    fn norm_shell_enum_at_k_2_finds_solutions() {
         // At k=2 (norm² = 4), there should be 2848 solutions per Phase 3 data.
-        let sols = phase1_brute(2);
+        let sols = enumerate_unitary_norm_shell(2);
         assert_eq!(sols.len(), 2848, "expected 2848 valid solutions at k=2");
     }
 
     #[test]
-    fn phase1_brute_at_k_3_finds_solutions() {
-        let sols = phase1_brute(3);
+    fn norm_shell_enum_at_k_3_finds_solutions() {
+        let sols = enumerate_unitary_norm_shell(3);
         assert_eq!(sols.len(), 54048, "expected 54048 valid solutions at k=3");
     }
 
@@ -279,7 +279,7 @@
         let zero = Complex64::new(0.0, 0.0);
         let target = [[one, zero], [zero, omega]];
 
-        let sols = phase1_brute(0);
+        let sols = enumerate_unitary_norm_shell(0);
         let mut min_dist = f64::INFINITY;
         for sol in &sols {
             let u = solution_to_u2q(sol, 0);
@@ -312,7 +312,7 @@
         let qhq: U2Q = U2Q::q() * U2Q::h() * U2Q::q();
         let target = qhq.to_float();
         assert_eq!(qhq.k, 1, "QHQ should have k=1");
-        let sols = phase1_brute(1);
+        let sols = enumerate_unitary_norm_shell(1);
         let mut min_dist = f64::INFINITY;
         for sol in &sols {
             let u = solution_to_u2q(sol, 1);
@@ -347,7 +347,7 @@
             let k = u.k;
             if k > 3 { continue; }
             let target = u.to_float();
-            let sols = phase1_brute(k);
+            let sols = enumerate_unitary_norm_shell(k);
             let min_dist = sols.iter().map(|sol| {
                 let cand = solution_to_u2q(sol, k);
                 diamond_distance_float(&cand.to_float(), &target)
@@ -404,8 +404,8 @@
         assert_eq!(norm_sq, 2);
         let (b1, _, _) = bilinear_forms(&bad_x);
         assert_ne!(b1, 0, "constructed example should fail B_1");
-        let sols = phase1_brute(1);
-        assert!(!sols.contains(&bad_x), "phase1_brute(1) must exclude bad_x");
+        let sols = enumerate_unitary_norm_shell(1);
+        assert!(!sols.contains(&bad_x), "enumerate_unitary_norm_shell(1) must exclude bad_x");
     }
 
     #[test]
@@ -442,7 +442,7 @@
             if k > 3 { continue; }
             let target = u.to_float();
             let d_target = det_phase_of(&target);
-            let sols = phase1_brute(k);
+            let sols = enumerate_unitary_norm_shell(k);
             let min_dist = sols.iter().map(|sol| {
                 let cand = solution_to_u2q_d(sol, k, d_target);
                 diamond_distance_float(&cand.to_float(), &target)
@@ -507,7 +507,7 @@
         use crate::synthesis::distance::diamond_distance_float;
         let hqh: U2Q = U2Q::h() * U2Q::q() * U2Q::h();
         let target = hqh.to_float();
-        let sols = phase1_brute(2);
+        let sols = enumerate_unitary_norm_shell(2);
         let mut min_dist = f64::INFINITY;
         for sol in &sols {
             let cand = solution_to_u2q_d(sol, 2, 1);
@@ -535,7 +535,7 @@
         use crate::synthesis::distance::diamond_distance_float;
         let q = U2Q::q();
         let target = q.to_float();
-        let sols = phase1_brute(0);
+        let sols = enumerate_unitary_norm_shell(0);
         let mut min_dist = f64::INFINITY;
         for sol in &sols {
             for d in 0..16 {
@@ -567,7 +567,7 @@
             let k = u.k;
             if k > 3 { continue; }
             let target = u.to_float();
-            let sols = phase1_brute(k);
+            let sols = enumerate_unitary_norm_shell(k);
             let mut min_dist = f64::INFINITY;
             for sol in &sols {
                 for d in 0..16 {
@@ -587,7 +587,7 @@
         use crate::synthesis::distance::diamond_distance_float;
         let hqh: U2Q = U2Q::h() * U2Q::q() * U2Q::h();
         let target = hqh.to_float();
-        let sols = phase1_brute(2);
+        let sols = enumerate_unitary_norm_shell(2);
         let min_dist = sols.iter().map(|sol| {
             let cand = solution_to_u2q(sol, 2);
             diamond_distance_float(&cand.to_float(), &target)
@@ -684,7 +684,7 @@
 
     #[test]
     fn brute_solutions_roundtrip_via_decomposer() {
-        let sols = phase1_brute(2);
+        let sols = enumerate_unitary_norm_shell(2);
         let mut tested = 0;
         let stride = sols.len().max(1) / 50;
         for sol in sols.iter().step_by(stride.max(1)) {

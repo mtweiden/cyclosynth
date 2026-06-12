@@ -1,6 +1,6 @@
 //! Lenstra-style 8-dimensional integer enumeration for Clifford+T synthesis
 //! (Algorithm 3.6 of arXiv:2510.05816). The whole subsystem is a single
-//! function — [`phase1`] — that takes a target alignment vector `y` and a
+//! function — [`find_aligned_lattice_points`] — that takes a target alignment vector `y` and a
 //! norm shell `k`, and returns the integer 8-vectors `x ∈ ℤ⁸` satisfying:
 //!
 //!   ‖x‖² = 2^k   (norm shell — the cyclotomic norm constraint)
@@ -9,7 +9,7 @@
 //!
 //! ## Pipeline
 //!
-//! [`integer`] is the `phase1` driver that orchestrates:
+//! [`integer`] is the `find_aligned_lattice_points` driver that orchestrates:
 //! [`q_metric`] (anisotropic Q-metric construction), [`lll`] (L²-LLL of
 //! Nguyen-Stehlé 2009 with exact i256 Gram + f64 GS coefficients),
 //! [`cholesky_lu`] (post-LLL Cholesky + cap-center LU solve), and [`se`]
@@ -32,26 +32,26 @@ use std::sync::atomic::AtomicBool;
 /// Returns up to `max_solutions` integer 8-vectors satisfying the synthesis
 /// constraints (norm shell, bilinear, alignment).
 ///
-/// `max_phase2_calls` caps SE leaf-callback invocations; `max_nodes` is a
+/// `max_leaf_checks` caps SE leaf-callback invocations; `max_nodes` is a
 /// TRUE node budget (one unit per SE recurse-entry — what bounds
 /// no-solution levels). Either cap sets `budget_hit` when it binds.
 /// `external_abort` (cross-branch winner signal) is checked per
 /// recurse-entry; an externally-aborted walk does not set `budget_hit`.
 #[allow(clippy::too_many_arguments)]
-pub fn phase1(
+pub fn find_aligned_lattice_points(
     scratch: &mut scratch::IntScratch,
     y: &[Float; 8],
     k: u32,
     eps: Float,
     max_solutions: usize,
-    max_phase2_calls: u64,
+    max_leaf_checks: u64,
     max_nodes: u64,
     budget_hit: &AtomicBool,
     external_abort: Option<&AtomicBool>,
 ) -> Vec<[i64; 8]> {
     scratch.reset_basis();
-    integer::phase1(
-        scratch, y, k, eps, max_solutions, max_phase2_calls,
+    integer::find_aligned_lattice_points(
+        scratch, y, k, eps, max_solutions, max_leaf_checks,
         max_nodes, budget_hit, external_abort,
     )
     .solutions
@@ -78,7 +78,7 @@ mod tests {
         let mut scratch = scratch::IntScratch::new(1e-3);
         let y = realistic_y(14);
         let budget_hit = AtomicBool::new(false);
-        let _ = phase1(
+        let _ = find_aligned_lattice_points(
             &mut scratch, &y, 14, 1e-3, 1, 1_000, 1_000_000, &budget_hit, None,
         );
     }
@@ -88,7 +88,7 @@ mod tests {
         let mut scratch = scratch::IntScratch::new(1e-5);
         let y = realistic_y(21);
         let budget_hit = AtomicBool::new(false);
-        let _ = phase1(
+        let _ = find_aligned_lattice_points(
             &mut scratch, &y, 21, 1e-5, 1, 1_000, 1_000_000, &budget_hit, None,
         );
     }
@@ -102,7 +102,7 @@ mod tests {
         let mut scratch = scratch::IntScratch::new(1e-3);
         let y = realistic_y(14);
         let budget_hit = AtomicBool::new(false);
-        let sols = phase1(
+        let sols = find_aligned_lattice_points(
             &mut scratch, &y, 14, 1e-3, usize::MAX, u64::MAX, 1, &budget_hit, None,
         );
         assert!(
@@ -120,7 +120,7 @@ mod tests {
         let y = realistic_y(14);
         let budget_hit = AtomicBool::new(false);
         let abort = AtomicBool::new(true);
-        let sols = phase1(
+        let sols = find_aligned_lattice_points(
             &mut scratch, &y, 14, 1e-3, usize::MAX, u64::MAX, u64::MAX,
             &budget_hit, Some(&abort),
         );

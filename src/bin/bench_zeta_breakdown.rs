@@ -63,8 +63,8 @@ fn main() {
     let stage = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
     let pct = |x: f64| if stage > 0.0 { 100.0 * x / stage } else { 0.0 };
     println!(
-        "ε={:e} n={n}  wall {:>9.1} ms (trace-on)  phase1_calls={}",
-        eps, wall_ms, s.phase1_calls,
+        "ε={:e} n={n}  wall {:>9.1} ms (trace-on)  lattice_search_calls={}",
+        eps, wall_ms, s.lattice_search_calls,
     );
     println!(
         "  build {:>8.1} ms ({:>4.1}%)  lll {:>8.1} ms ({:>4.1}%)  chol+lu {:>7.1} ms ({:>4.1}%)  se {:>9.1} ms ({:>4.1}%)",
@@ -73,12 +73,12 @@ fn main() {
         s.t_cholesky_ms + s.t_lu_ms, pct(s.t_cholesky_ms + s.t_lu_ms),
         s.t_se_ms, pct(s.t_se_ms),
     );
-    if s.phase1_calls > 0 {
+    if s.lattice_search_calls > 0 {
         println!(
-            "  per-prefix: lll {:.3} ms  build {:.3} ms  ({} phase1 calls; wall {:.1} ms)",
-            s.t_lll_ms / s.phase1_calls as f64,
-            s.t_build_ms / s.phase1_calls as f64,
-            s.phase1_calls, wall_ms,
+            "  per-prefix: lll {:.3} ms  build {:.3} ms  ({} find_aligned_lattice_points calls; wall {:.1} ms)",
+            s.t_lll_ms / s.lattice_search_calls as f64,
+            s.t_build_ms / s.lattice_search_calls as f64,
+            s.lattice_search_calls, wall_ms,
         );
     }
 }

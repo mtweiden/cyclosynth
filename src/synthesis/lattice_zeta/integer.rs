@@ -1,4 +1,5 @@
-//! Phase 1 driver for the 16D Z[ζ_16] pipeline: build Q → L²-LLL →
+//! Aligned-lattice-point search for the 16D Z[ζ_16] pipeline (= the
+//! paper's phase 1, arXiv:2510.05816 Alg 3.6): build Q → L²-LLL →
 //! Cholesky → LU cap-center solve → Schnorr-Euchner with leaf checks.
 //!
 //! ## Leaf checks
@@ -51,7 +52,7 @@ const ALIGN_PREC: u32 = 128;
 /// setup and collect every solution that passes all four leaf checks.
 ///
 /// `y` is the lattice-coord scaled y-vector (output of `uv_to_xy_zeta`).
-/// `max_phase2_calls` caps the SE leaf budget; when reached, `budget_hit` is
+/// `max_leaf_checks` caps the SE leaf budget; when reached, `budget_hit` is
 /// set and the walk aborts. Returns the empty vector on:
 ///   - LLL Gram-overflow,
 ///   - non-unimodular LLL output (algorithm bug, very unlikely),
@@ -66,18 +67,19 @@ fn warm_lll16_enabled() -> bool {
 }
 
 #[cfg(test)]
-pub(crate) fn phase1(
+pub(crate) fn find_aligned_lattice_points(
     scratch: &mut IntScratch16,
     y: &[Float; 16],
     k: u32,
     eps: Float,
-    max_phase2_calls: u64,
+    max_leaf_checks: u64,
     budget_hit: &AtomicBool,
 ) -> Vec<[i64; 16]> {
-    phase1_with_stop(scratch, y, k, eps, max_phase2_calls, budget_hit, |_| false, None, None)
+    find_aligned_lattice_points_with_stop(scratch, y, k, eps, max_leaf_checks, budget_hit, |_| false, None, None)
 }
 
-/// Phase 1 with an early-exit predicate and optional speculation signals.
+/// Aligned-point search with an early-exit predicate and optional
+/// speculation signals.
 ///
 /// `should_stop(x)` is called **only** for leaves that pass the integer-exact
 /// filter (norm shell + bilinear forms + alignment). When it returns `true`,
@@ -92,12 +94,12 @@ pub(crate) fn phase1(
 ///
 /// Callers that don't need the speculation signals pass `None, None`.
 #[allow(clippy::too_many_arguments)]
-pub fn phase1_with_stop<F>(
+pub fn find_aligned_lattice_points_with_stop<F>(
     scratch: &mut IntScratch16,
     y: &[Float; 16],
     k: u32,
     eps: Float,
-    max_phase2_calls: u64,
+    max_leaf_checks: u64,
     budget_hit: &AtomicBool,
     should_stop: F,
     external_abort: Option<&AtomicBool>,
@@ -108,7 +110,7 @@ where
 {
     // Promote f64 y to MPFR. This wrapper is for legacy callers at f64
     // precision (everything ≥ ε=1e-7); ε ≤ 1e-8 should call
-    // `phase1_with_stop_mpfr` directly to bypass the f64 ULP floor in v.
+    // `find_aligned_lattice_points_mpfr` directly to bypass the f64 ULP floor in v.
     let prec = scratch.prec_q;
     let scale = 2.0_f64.powf(k as f64 / 2.0) / 4.0;
     let v_mpfr: [RFloat; 4] = [
@@ -118,8 +120,8 @@ where
         rfv(prec, y[12] / scale),
     ];
     let y_mpfr: [RFloat; 16] = std::array::from_fn(|i| rfv(prec, y[i]));
-    phase1_with_stop_mpfr(
-        scratch, &y_mpfr, &v_mpfr, k, eps, max_phase2_calls, budget_hit, should_stop,
+    find_aligned_lattice_points_mpfr(
+        scratch, &y_mpfr, &v_mpfr, k, eps, max_leaf_checks, budget_hit, should_stop,
         external_abort, consumed,
     )
 }
@@ -129,15 +131,15 @@ where
 /// The only precision path that works at ε ≤ 1e-8 (see
 /// `build_q_mpfr_zeta_from_mpfr_v`).
 ///
-/// Same `external_abort` / `consumed` semantics as [`phase1_with_stop`].
+/// Same `external_abort` / `consumed` semantics as [`find_aligned_lattice_points_with_stop`].
 #[allow(clippy::too_many_arguments)]
-pub fn phase1_with_stop_mpfr<F>(
+pub fn find_aligned_lattice_points_mpfr<F>(
     scratch: &mut IntScratch16,
     y: &[RFloat; 16],
     v: &[RFloat; 4],
     k: u32,
     eps: Float,
-    max_phase2_calls: u64,
+    max_leaf_checks: u64,
     budget_hit: &AtomicBool,
     should_stop: F,
     external_abort: Option<&AtomicBool>,
@@ -149,7 +151,7 @@ where
     crate::synthesis::ensure_rayon_stack();
     let trace = diag::trace_enabled();
     if trace {
-        diag::N_PHASE1_CALLS.fetch_add(1, Ordering::Relaxed);
+        diag::N_LATTICE_SEARCH_CALLS.fetch_add(1, Ordering::Relaxed);
     }
 
     // Step 0.5: per-(k, ε) Q_base warm seed (the 8D transplant; gated by
@@ -326,7 +328,7 @@ where
     // tight bound. Gated so moderate-ε hot paths pay nothing
     // (CYCLOSYNTH_QBRACKET_DD=0 restores f64 + bound 3.0). Computed
     // BEFORE the f64 Cholesky: an f64 Cholesky failure must not bail a
-    // phase1 whose MPFR factorization is healthy.
+    // find_aligned_lattice_points whose MPFR factorization is healthy.
     let q_chol_dual = if (eps <= 2e-8 || verify_prune_mpfr()) && !qbracket_dd_disabled() {
         let dual = q_cholesky_16_mpfr_dual(&scratch.gram, scratch.scale_bits);
         if dual.is_none() {
@@ -389,7 +391,7 @@ where
         });
         let max_z = (0..16).fold(0i64, |acc, i| z_c.int[i].abs().max(acc));
         eprintln!(
-            "[zeta diag] phase1 k={k} eps={eps:.0e} z_c max_|z|={} mpfr_vs_f64_diff={}",
+            "[zeta diag] find_aligned_lattice_points k={k} eps={eps:.0e} z_c max_|z|={} mpfr_vs_f64_diff={}",
             max_z, max_diff,
         );
     }
@@ -463,7 +465,7 @@ where
 
     // Step 6: SE walk + leaf checks. Parallel + norm-pruned + incremental-x.
     let basis = scratch.basis;
-    let budget = AtomicU64::new(max_phase2_calls);
+    let budget = AtomicU64::new(max_leaf_checks);
 
     // Norm-shell pruning: precompute the upper-triangular Euclidean
     // Cholesky of the post-LLL basis at MPFR-128 (then f64 snapshot).
@@ -586,7 +588,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::synthesis::search_zeta::{phase1_brute, uv_to_xy_zeta};
+    use crate::synthesis::search_zeta::{enumerate_unitary_norm_shell, uv_to_xy_zeta};
     use crate::synthesis::clifford_sqrt_t::{
         det_phase_of, solution_to_u2q_d, unitary_to_uv_zeta,
     };
@@ -597,13 +599,13 @@ mod tests {
         std::array::from_fn(|i| v[i] / n)
     }
 
-    /// At k=2 with the `realistic_v` direction, run phase1 and verify every
-    /// returned solution lies in `phase1_brute(2)` AND passes the alignment
+    /// At k=2 with the `realistic_v` direction, run find_aligned_lattice_points and verify every
+    /// returned solution lies in `enumerate_unitary_norm_shell(2)` AND passes the alignment
     /// threshold w.r.t. the same y direction. (Phase1 may return a *subset*
     /// of brute solutions because (a) the SE bound only covers part of the
     /// norm shell and (b) the alignment threshold filters by y-direction.)
     #[test]
-    fn phase1_at_k_2_finds_brute_subset() {
+    fn lattice_search_at_k_2_finds_brute_subset() {
         let v = realistic_v();
         let k = 2u32;
         let eps = 0.5_f64;
@@ -611,28 +613,28 @@ mod tests {
 
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
-        let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
+        let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
 
         let brute_set: std::collections::HashSet<[i64; 16]> =
-            phase1_brute(k).into_iter().collect();
+            enumerate_unitary_norm_shell(k).into_iter().collect();
         for sol in &sols {
             assert!(
                 brute_set.contains(sol),
-                "phase1 returned non-brute solution: {:?}",
+                "find_aligned_lattice_points returned non-brute solution: {:?}",
                 sol
             );
         }
         eprintln!(
-            "phase1_at_k_2: {} solutions (subset of {} brute)",
+            "lattice_search_at_k_2: {} solutions (subset of {} brute)",
             sols.len(),
             brute_set.len()
         );
     }
 
-    /// Target T (k=0, det-phase = 2). Recovered exactly by phase1 with the
+    /// Target T (k=0, det-phase = 2). Recovered exactly by find_aligned_lattice_points with the
     /// `unitary_to_uv_zeta` + single-d reconstruction path.
     #[test]
-    fn phase1_finds_t_at_k_0() {
+    fn lattice_search_finds_t_at_k_0() {
         use crate::matrix::u2::U2Q;
         use crate::synthesis::distance::diamond_distance_float;
 
@@ -647,9 +649,9 @@ mod tests {
         let eps = 0.1_f64;
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
-        let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
+        let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
 
-        assert!(!sols.is_empty(), "phase1 found no solutions for T at k=0");
+        assert!(!sols.is_empty(), "find_aligned_lattice_points found no solutions for T at k=0");
         let min_dist = sols.iter().map(|sol| {
             let cand = solution_to_u2q_d(sol, k, d);
             diamond_distance_float(&cand.to_float(), &target)
@@ -660,7 +662,7 @@ mod tests {
     /// Target QHQ (k=1, det-phase = 10). Recovered exactly via column-1
     /// extraction + single-d reconstruction.
     #[test]
-    fn phase1_finds_qhq_at_k_1() {
+    fn lattice_search_finds_qhq_at_k_1() {
         use crate::matrix::u2::U2Q;
         use crate::synthesis::distance::diamond_distance_float;
 
@@ -675,9 +677,9 @@ mod tests {
         let eps = 0.1_f64;
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
-        let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
+        let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
 
-        assert!(!sols.is_empty(), "phase1 found no solutions for QHQ at k=1");
+        assert!(!sols.is_empty(), "find_aligned_lattice_points found no solutions for QHQ at k=1");
         let min_dist = sols.iter().map(|sol| {
             let cand = solution_to_u2q_d(sol, k, d);
             diamond_distance_float(&cand.to_float(), &target)
@@ -693,7 +695,7 @@ mod tests {
     /// `cargo test --release --lib qhq_at_bound_2 -- --ignored`.
     #[test]
     #[ignore]
-    fn phase1_finds_qhq_at_k_1_bound_2() {
+    fn lattice_search_finds_qhq_at_k_1_bound_2() {
         use crate::matrix::u2::U2Q;
         use crate::synthesis::distance::diamond_distance_float;
 
@@ -708,10 +710,10 @@ mod tests {
         let eps = 0.1_f64;
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
-        let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
+        let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
         unsafe { std::env::remove_var("CYCLOSYNTH_BOUND_SQ") };
 
-        assert!(!sols.is_empty(), "phase1@bound2 found no solutions for QHQ at k=1");
+        assert!(!sols.is_empty(), "find_aligned_lattice_points@bound2 found no solutions for QHQ at k=1");
         let min_dist = sols.iter().map(|sol| {
             let cand = solution_to_u2q_d(sol, k, d);
             diamond_distance_float(&cand.to_float(), &target)
@@ -741,9 +743,9 @@ mod tests {
 
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
-        let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
+        let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
         unsafe { std::env::remove_var("CYCLOSYNTH_BOUND_SQ") };
-        assert!(!sols.is_empty(), "phase1@bound8 must find QHQ");
+        assert!(!sols.is_empty(), "find_aligned_lattice_points@bound8 must find QHQ");
 
         let q = crate::synthesis::lattice_zeta::q_metric::build_q_zzeta_lattice(v, k, eps);
         // True cap center (ambient), legacy rounded-z_c effective center,
@@ -818,7 +820,7 @@ mod tests {
                     let y = uv_to_xy_zeta(v, k);
                     let mut s = IntScratch16::new(eps);
                     let abort = AtomicBool::new(false);
-                    let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
+                    let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
                     if sols.is_empty() {
                         continue;
                     }
@@ -864,16 +866,16 @@ mod tests {
     }
 
     /// Round-trip at a moderate k=2. Pick a brute solution, derive `v` from
-    /// its reconstructed unitary, run phase1, verify the *exact* same
-    /// solution (after symmetry / det-phase rotation) is among phase1's
+    /// its reconstructed unitary, run find_aligned_lattice_points, verify the *exact* same
+    /// solution (after symmetry / det-phase rotation) is among find_aligned_lattice_points's
     /// returned candidates.
     #[test]
-    fn phase1_finds_hqhqh_at_moderate_k() {
-        use crate::synthesis::search_zeta::phase1_brute;
+    fn lattice_search_finds_hqhqh_at_moderate_k() {
+        use crate::synthesis::search_zeta::enumerate_unitary_norm_shell;
         use crate::synthesis::distance::diamond_distance_float;
 
         let k = 2u32;
-        let brute_sols = phase1_brute(k);
+        let brute_sols = enumerate_unitary_norm_shell(k);
         assert!(!brute_sols.is_empty());
 
         // Pick a brute solution that uses non-trivial coefficients so the
@@ -893,10 +895,10 @@ mod tests {
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
         let start = std::time::Instant::now();
-        let sols = phase1(&mut s, &y, k, eps, 10_000_000, &abort);
+        let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 10_000_000, &abort);
         let elapsed = start.elapsed();
         eprintln!(
-            "phase1 round-trip at k={}: {} solutions in {:?}",
+            "find_aligned_lattice_points round-trip at k={}: {} solutions in {:?}",
             k,
             sols.len(),
             elapsed
@@ -904,7 +906,7 @@ mod tests {
 
         assert!(
             !sols.is_empty(),
-            "phase1 found no solutions for k={} round-trip",
+            "find_aligned_lattice_points found no solutions for k={} round-trip",
             k
         );
         let min_dist = sols.iter().map(|sol| {
@@ -921,7 +923,7 @@ mod tests {
         // in well under 100 ms; the 30 s ceiling is purely a runaway guard.
         assert!(
             elapsed.as_secs_f64() < 30.0,
-            "phase1 at k={} took {:?} (budget 30s)",
+            "find_aligned_lattice_points at k={} took {:?} (budget 30s)",
             k, elapsed
         );
     }
@@ -931,7 +933,7 @@ mod tests {
     /// the walk blows up wall-clock past a generous bound.
     #[test]
     #[ignore = "60s timing budget; run with --ignored"]
-    fn phase1_perf_at_k_8_completes() {
+    fn lattice_search_perf_at_k_8_completes() {
         use crate::matrix::u2::U2Q;
 
         // Deterministic k=8 circuit: 8 H's interleaved with 8 Q's. Single-d
@@ -953,10 +955,10 @@ mod tests {
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
         let start = std::time::Instant::now();
-        let sols = phase1(&mut s, &y, k, eps, 100_000_000, &abort);
+        let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
         let elapsed = start.elapsed();
         eprintln!(
-            "phase1 at k={} took {} ms, returned {} solutions",
+            "find_aligned_lattice_points at k={} took {} ms, returned {} solutions",
             k,
             elapsed.as_millis(),
             sols.len()
@@ -966,7 +968,7 @@ mod tests {
         // enforce only that we don't blow up wall-clock.
         assert!(
             elapsed.as_secs() < 60,
-            "phase1 at k={} took {:?} (budget 60s)",
+            "find_aligned_lattice_points at k={} took {:?} (budget 60s)",
             k, elapsed
         );
     }
@@ -975,7 +977,7 @@ mod tests {
     /// Returns a (possibly empty) Vec of solutions.
     #[test]
     #[ignore = "120s budget at deep ε; run with --ignored"]
-    fn phase1_no_overflow_at_eps_1e_5() {
+    fn lattice_search_no_overflow_at_eps_1e_5() {
         let v = realistic_v();
         let k = 14u32;
         let eps = 1e-5_f64;
@@ -983,10 +985,10 @@ mod tests {
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
         let start = std::time::Instant::now();
-        let sols = phase1(&mut s, &y, k, eps, 10_000_000, &abort);
+        let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 10_000_000, &abort);
         let elapsed = start.elapsed();
         eprintln!(
-            "phase1 at ε=1e-5, k=14: {} solutions in {:?}",
+            "find_aligned_lattice_points at ε=1e-5, k=14: {} solutions in {:?}",
             sols.len(),
             elapsed
         );
@@ -995,14 +997,14 @@ mod tests {
         // pipeline doesn't crash or overflow.
         assert!(
             elapsed.as_secs() < 120,
-            "phase1 at ε=1e-5 took {:?} (budget 120s)",
+            "find_aligned_lattice_points at ε=1e-5 took {:?} (budget 120s)",
             elapsed
         );
     }
 
-    /// A/B diagnostic: run phase1 (norm-pruned) at a fixed k and report
+    /// A/B diagnostic: run find_aligned_lattice_points (norm-pruned) at a fixed k and report
     /// timing + sols. To compare against the non-pruned baseline, swap the
-    /// SE call site in `phase1` temporarily.
+    /// SE call site in `find_aligned_lattice_points` temporarily.
     #[test]
     #[ignore]
     fn diag_norm_prune_vs_baseline() {
@@ -1023,7 +1025,7 @@ mod tests {
             let abort = AtomicBool::new(false);
             let budget = 1_000_000_000_u64;
             let t0 = std::time::Instant::now();
-            let sols = phase1(&mut s, &y, k, eps, budget, &abort);
+            let sols = find_aligned_lattice_points(&mut s, &y, k, eps, budget, &abort);
             let dt = t0.elapsed();
             let min_dist = sols.iter().map(|sol| {
                 let cand = solution_to_u2q_d(sol, k, d);
@@ -1076,7 +1078,7 @@ mod tests {
             let mut s = IntScratch16::new(eps);
             let abort = AtomicBool::new(false);
             let t0 = std::time::Instant::now();
-            let sols = phase1(&mut s, &y, k, eps, budget, &abort);
+            let sols = find_aligned_lattice_points(&mut s, &y, k, eps, budget, &abort);
             let dt = t0.elapsed();
             let abort_v = abort.load(Ordering::Relaxed);
             let min_dist = sols.iter().map(|sol| {
@@ -1127,7 +1129,7 @@ mod tests {
         let y = uv_to_xy_zeta(v, k);
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
-        let sols = phase1(&mut s, &y, k, eps, 10_000_000, &abort);
+        let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 10_000_000, &abort);
         assert!(!sols.is_empty(), "k=2 budget-capped walk found nothing");
         assert!(
             !abort.load(Ordering::Relaxed),
@@ -1182,7 +1184,7 @@ mod tests {
         let abort = AtomicBool::new(false);
         let consumed = AtomicU64::new(0);
         let t0 = std::time::Instant::now();
-        let _sols = crate::synthesis::lattice_zeta::phase1_with_stop(
+        let _sols = crate::synthesis::lattice_zeta::find_aligned_lattice_points_with_stop(
             &mut s, &y, k, eps, budget, &abort, |_| false, None, Some(&consumed),
         );
         unsafe { std::env::remove_var("CYCLOSYNTH_W1_DEBUG") };
