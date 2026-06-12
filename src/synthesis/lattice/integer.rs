@@ -198,7 +198,7 @@ pub fn find_aligned_lattice_points_outcome(
 
     // Step 3: assert det(B) = ±1 (unimodular basis output).
     let basis = scratch.basis;
-    match super::se::det8_exact(&basis) {
+    match crate::synthesis::lattice::cholesky_lu::det8_exact(&basis) {
         Some(1) | Some(-1) => {}
         Some(d) => {
             eprintln!(
@@ -272,7 +272,7 @@ pub fn find_aligned_lattice_points_outcome(
     let r_eucl = if zc_exceeds_f64 {
         None
     } else {
-        super::se::euclidean_cholesky(&basis)
+        super::cholesky_lu::euclidean_cholesky(&basis)
     };
     let target_norm_f = target_norm as f64;
     let count = AtomicU64::new(0);
@@ -567,7 +567,7 @@ mod tests {
             return result;
         }
         // Unimodular check
-        let det = se::det8_exact(&s.basis)
+        let det = crate::synthesis::lattice::cholesky_lu::det8_exact(&s.basis)
             .expect("det8_exact overflow");
         assert!(
             det == 1 || det == -1,
@@ -627,7 +627,7 @@ mod tests {
     }
 
     /// Run the integer LLL for given (eps, k) and assert det = ±1
-    /// (unimodular basis output). Uses `super::se::det8_exact` for the
+    /// (unimodular basis output). Uses `crate::synthesis::lattice::cholesky_lu::det8_exact` for the
     /// integer determinant check.
     fn check_lll_unimodular(eps: Float, k: u32) -> LllResult {
         let y = realistic_y(k);
@@ -640,7 +640,7 @@ mod tests {
         if let LllResult::GramOverflow = result {
             return result;
         }
-        let det = se::det8_exact(&s.basis)
+        let det = crate::synthesis::lattice::cholesky_lu::det8_exact(&s.basis)
             .expect("det8_exact overflow");
         assert!(
             det == 1 || det == -1,

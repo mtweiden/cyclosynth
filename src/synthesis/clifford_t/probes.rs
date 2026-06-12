@@ -269,7 +269,8 @@ use std::f64::consts::PI;
                         cholesky_lu::{cholesky_f64_8, lu_solve_int_inplace},
                         lll::lll_l2_8,
                         q_metric::build_q_int,
-                        se::{bilinear_b, euclidean_cholesky, reconstruct_x},
+                        cholesky_lu::euclidean_cholesky,
+                        se::{bilinear_b, reconstruct_x},
                     };
                     use rug::Assign;
                     let mut s3 = IntScratch::new(eps);

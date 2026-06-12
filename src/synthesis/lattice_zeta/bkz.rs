@@ -757,7 +757,7 @@ mod tests {
         use crate::synthesis::lattice_zeta::{
             integer::find_aligned_lattice_points_with_stop,
             lll_f64::cfa_row_f64,
-            se::det16_exact,
+            cholesky_lu::det16_exact,
         };
         use crate::synthesis::brute_search_zeta::uv_to_lattice_y_zeta;
         use std::sync::atomic::AtomicBool;

@@ -14,7 +14,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
-use i256::i256;
 
 /// W1 kill-switch: `CYCLOSYNTH_FLAT_WALK=0` disables the multi-level
 /// frontier flattening in [`schnorr_euchner_16d`],
@@ -491,271 +490,6 @@ pub fn reconstruct_x(b_lll: &[[i64; 16]; 16], z: &[i64; 16]) -> [i64; 16] {
         }
     }
     x
-}
-
-// ─── Exact 16×16 determinant via Gaussian elimination ────────────────────────
-
-/// Exact integer determinant of a 16×16 i64 matrix via Bareiss
-/// fraction-free elimination, working in i128. Returns `None` if the result
-/// (or any intermediate) doesn't fit in i64; otherwise returns the exact
-/// determinant.
-///
-/// Used after LLL to validate that the output basis is unimodular (det = ±1).
-/// A non-unimodular result indicates the GS lost orthogonalization — for the
-/// L²-LLL pipeline this should never happen at d=16, but the check is cheap
-/// and catches algorithm bugs early.
-///
-/// **Overflow note**: At d=16 with post-LLL basis entries up to ~2^41 (deep
-/// ε), Bareiss intermediates can transiently exceed i64. We use i128
-/// throughout; if any intermediate value exceeds i128 range the result is
-/// `None` (saturation). For unimodular bases the *final* det is ±1 so there
-/// is no issue, but spurious overflow during elimination is possible at
-/// pathological inputs.
-pub fn det16_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
-    let mut a: [[i128; 16]; 16] =
-        std::array::from_fn(|i| std::array::from_fn(|j| m[i][j] as i128));
-    let mut sign: i128 = 1;
-    let mut prev: i128 = 1;
-
-    for k in 0..16 {
-        if a[k][k] == 0 {
-            let mut found = false;
-            for i in (k + 1)..16 {
-                if a[i][k] != 0 {
-                    a.swap(k, i);
-                    sign = -sign;
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                return Some(0);
-            }
-        }
-        let pivot = a[k][k];
-        for i in (k + 1)..16 {
-            for j in (k + 1)..16 {
-                let lhs = a[i][j].checked_mul(pivot)?;
-                let rhs = a[i][k].checked_mul(a[k][j])?;
-                let diff = lhs.checked_sub(rhs)?;
-                // diff is divisible by prev exactly (Bareiss invariant).
-                a[i][j] = diff / prev;
-            }
-            a[i][k] = 0;
-        }
-        prev = pivot;
-    }
-    let det = a[15][15].checked_mul(sign)?;
-    if det >= i64::MIN as i128 && det <= i64::MAX as i128 {
-        Some(det as i64)
-    } else {
-        None
-    }
-}
-
-// ─── Euclidean Cholesky (test-oracle / sanity check) ─────────────────────────
-
-/// Upper-triangular Cholesky factor `R` of the Euclidean Gram, as an f64
-/// snapshot plus a double-double `(hi, lo)` projection of the same factor.
-pub type CholeskyDual16 = ([[f64; 16]; 16], [[(f64, f64); 16]; 16]);
-
-/// MPFR-precision Euclidean Cholesky. Compute `R · Rᵀ = B · Bᵀ` with the
-/// factorization done at 128-bit precision, then snapshot R to f64. Used by
-/// the norm-shell-pruned SE walk so the per-leaf `‖R·z‖²` accumulator drifts
-/// only by f64 round-off (not the much larger error from doing Cholesky
-/// itself in f64). This matters at deep k where post-LLL basis entries can
-/// be up to ~2^15+: the Gram reaches ~2^34+, and f64 Cholesky on those
-/// values drifts by 0.1 % or more, corrupting the prune threshold.
-///
-/// Returns `None` if the Gram is not positive-definite (only happens if the
-/// basis is rank-deficient — a bug upstream).
-/// MPFR-128 Cholesky of `B·Bᵀ` (Euclidean Gram of an LLL-reduced lattice
-/// basis). Returns the upper-triangular factor R (`Rᵀ·R = B·Bᵀ`) as both an
-/// f64 snapshot (consumed by the SE walk's primary f64 prune) AND a
-/// double-double (~106-bit) projection (consumed by the verify path set via
-/// [`set_verify_prune_mpfr`]). The Cholesky itself runs at MPFR-128
-/// internally: 106-bit Cholesky was tried and produced rank-deficient
-/// false alarms at small lde where the intermediate
-/// `s -= l[i][k]*l[j][k]` cancellation is tight; 128-bit is safe. The
-/// dd projection of the final factor is probe-confirmed to match
-/// MPFR-192 oracle on the cliff failure instance.
-pub fn euclidean_cholesky_16_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyDual16> {
-    const PREC: u32 = 128;
-    let mut gram = [[0_i128; 16]; 16];
-    for i in 0..16 {
-        for j in 0..16 {
-            let mut s = 0_i128;
-            for k in 0..16 {
-                s += (basis[i][k] as i128) * (basis[j][k] as i128);
-            }
-            gram[i][j] = s;
-        }
-    }
-    let mut g: [[rug::Float; 16]; 16] = std::array::from_fn(|_| {
-        std::array::from_fn(|_| rug::Float::with_val(PREC, 0.0))
-    });
-    for i in 0..16 {
-        for j in 0..16 {
-            g[i][j] = i128_to_mpfr(gram[i][j], PREC);
-        }
-    }
-    mpfr_cholesky_dual_16(&g)
-}
-
-/// MPFR-128 Cholesky of the post-LLL **Q-metric** Gram (`scratch.gram` as
-/// i256, scaled by `2^scale_bits`), returning the upper-triangular factor
-/// R (`Rᵀ·R = G`) as an f64 snapshot plus its double-double projection —
-/// the Q-side mirror of [`euclidean_cholesky_16_mpfr_dual`].
-///
-/// Consumed by the deep-ε dd-verified Q bracket: the f64 snapshot replaces
-/// the `cholesky_f64_16` factor as the SE walk's `l_upper` (strictly more
-/// accurate — the f64 Cholesky factorization error was one of the channels
-/// behind the ε=1.5e-8 partial-Q overshoot), and the dd projection drives
-/// the incremental dd partial-Q that makes the bound-1.5 prune decisions
-/// sound (docs/bound_sq_soundness.md, docs/w_q_bracket_notes.md).
-///
-/// The i256 Gram is exact through both LLL and BKZ (gram-update
-/// invariant), so this factors the same matrix `cholesky_f64_16` reads —
-/// at 128-bit precision instead of f64. Returns `None` if the Gram is not
-/// positive-definite (rank-deficient basis — upstream-bug territory).
-pub fn q_cholesky_16_mpfr_dual(
-    gram: &[[i256; 16]; 16],
-    scale_bits: i32,
-) -> Option<CholeskyDual16> {
-    const PREC: u32 = 128;
-    let mut tmp = rug::Float::with_val(PREC, 0.0);
-    let mut g: [[rug::Float; 16]; 16] = std::array::from_fn(|_| {
-        std::array::from_fn(|_| rug::Float::with_val(PREC, 0.0))
-    });
-    for i in 0..16 {
-        for j in 0..16 {
-            crate::synthesis::lattice::cholesky_lu::i256_to_rfloat(gram[i][j], &mut tmp);
-            // Divide by 2^scale_bits (exponent shift — no precision cost)
-            // to recover the natural-scale Q-metric Gram.
-            if scale_bits > 0 {
-                tmp >>= scale_bits as u32;
-            } else if scale_bits < 0 {
-                tmp <<= (-scale_bits) as u32;
-            }
-            g[i][j] = tmp.clone();
-        }
-    }
-    mpfr_cholesky_dual_16(&g)
-}
-
-/// Shared MPFR-128 Cholesky + dual projection: factor `g` (must be at
-/// 128-bit precision) into lower-triangular L (`L·Lᵀ = g`), transpose to
-/// upper-triangular R, and emit (f64 snapshot, dd projection). Op order
-/// and precision are identical for the Euclidean and Q-metric callers so
-/// the two dd factors carry the same (validated) error model.
-fn mpfr_cholesky_dual_16(g: &[[rug::Float; 16]; 16]) -> Option<CholeskyDual16> {
-    use rug::Float;
-    const PREC: u32 = 128;
-    let mut l: [[Float; 16]; 16] = std::array::from_fn(|_| {
-        std::array::from_fn(|_| Float::with_val(PREC, 0.0))
-    });
-    for i in 0..16 {
-        for j in 0..=i {
-            let mut s = g[i][j].clone();
-            for k in 0..j {
-                let prod = Float::with_val(PREC, &l[i][k] * &l[j][k]);
-                s -= &prod;
-            }
-            if i == j {
-                if s.is_zero() || s.is_sign_negative() {
-                    return None;
-                }
-                l[i][i] = s.sqrt();
-            } else {
-                let q = Float::with_val(PREC, &s / &l[j][j]);
-                l[i][j] = q;
-            }
-        }
-    }
-    // R = L^T (upper-triangular). Snapshot to f64 (used by f64 prune) and
-    // project to dd (used by verify_partial_dd_exceeds / the dd Q bracket).
-    // The MPFR factor itself is consumed here; the dd projection is the
-    // kept output.
-    let mut r_f64 = [[0.0_f64; 16]; 16];
-    let mut r_dd = [[(0.0_f64, 0.0_f64); 16]; 16];
-    for i in 0..16 {
-        for j in 0..16 {
-            let rij = &l[j][i];
-            let hi = rij.to_f64();
-            let mut lo_f = Float::with_val(PREC, rij);
-            lo_f -= hi;
-            let lo = lo_f.to_f64();
-            r_f64[i][j] = hi;
-            r_dd[i][j] = (hi, lo);
-        }
-    }
-    Some((r_f64, r_dd))
-}
-
-/// Convert i128 → MPFR Float, lossless. rug doesn't accept i128 directly.
-fn i128_to_mpfr(v: i128, prec: u32) -> rug::Float {
-    use rug::Float;
-    let neg = v < 0;
-    let abs = if neg { -v } else { v } as u128;
-    let hi = (abs >> 64) as u64;
-    let lo = abs as u64;
-    let mut f = Float::with_val(prec, hi);
-    f <<= 64u32;
-    f += Float::with_val(prec, lo);
-    if neg { -f } else { f }
-}
-
-/// Compute the upper-triangular Cholesky factor R of `B·Bᵀ` (Euclidean Gram
-/// of the LLL basis) in f64. Used as a partial-prune lower bound and as a
-/// numerical sanity oracle alongside `cholesky_f64_16` (which factors the
-/// post-LLL **Q-metric** Gram, not the Euclidean one).
-///
-/// Returns `None` if the Gram is not numerically positive-definite in f64
-/// (extremely rare for an LLL-output basis; would indicate a bug upstream).
-///
-/// **Overflow note**: For d=16 with post-LLL basis entries up to ~2^15 at
-/// moderate ε, gram entries reach ~2^34 (well inside f64). At deep ε with
-/// inflated basis (~2^25), gram can hit ~2^54 — at the edge of f64's 53-bit
-/// mantissa. We accumulate in i128 first, then convert to f64 for the
-/// Cholesky factorization itself.
-pub fn euclidean_cholesky_16(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]> {
-    // Exact integer Gram = B·Bᵀ in i128 to absorb deep-ε basis growth.
-    let mut gram = [[0_i128; 16]; 16];
-    for i in 0..16 {
-        for j in 0..16 {
-            let mut s = 0_i128;
-            for k in 0..16 {
-                s += (basis[i][k] as i128) * (basis[j][k] as i128);
-            }
-            gram[i][j] = s;
-        }
-    }
-    // f64 Cholesky on the (lower) triangular factor L such that L·Lᵀ = G.
-    let mut l = [[0.0_f64; 16]; 16];
-    for i in 0..16 {
-        for j in 0..=i {
-            let mut s = gram[i][j] as f64;
-            for k in 0..j {
-                s -= l[i][k] * l[j][k];
-            }
-            if i == j {
-                if s <= 0.0 {
-                    return None;
-                }
-                l[i][i] = s.sqrt();
-            } else {
-                l[i][j] = s / l[j][j];
-            }
-        }
-    }
-    // Transpose to upper-triangular R = Lᵀ (caller convention).
-    let mut r = [[0.0_f64; 16]; 16];
-    for i in 0..16 {
-        for j in 0..16 {
-            r[i][j] = l[j][i];
-        }
-    }
-    Some(r)
 }
 
 // ─── 16D Schnorr-Euchner enumeration ─────────────────────────────────────────
@@ -1913,7 +1647,7 @@ mod par_tests {
             }
             b[i][i] += 7; // boost diagonal for PSD
         }
-        let r = euclidean_cholesky_16(&b).expect("PSD");
+        let r = crate::synthesis::lattice_zeta::cholesky_lu::euclidean_cholesky_16(&b).expect("PSD");
 
         // Pick a z, compute ‖B·z‖² directly.
         let z: [i64; 16] = [1, -2, 3, 0, -1, 2, 1, -3, 4, 0, -1, 2, 1, -2, 3, -1];
@@ -2165,7 +1899,7 @@ mod tests {
         for i in 0..16 {
             id[i][i] = 1;
         }
-        assert_eq!(det16_exact(&id), Some(1));
+        assert_eq!(crate::synthesis::lattice_zeta::cholesky_lu::det16_exact(&id), Some(1));
     }
 
     #[test]
@@ -2179,7 +1913,7 @@ mod tests {
         m[1][1] = 0;
         m[0][1] = 1;
         m[1][0] = 1;
-        assert_eq!(det16_exact(&m), Some(-1));
+        assert_eq!(crate::synthesis::lattice_zeta::cholesky_lu::det16_exact(&m), Some(-1));
     }
 
     #[test]
@@ -2191,7 +1925,7 @@ mod tests {
         build_q_int_zeta(&mut s);
         let r = run_lll_16(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
-        let det = det16_exact(&s.basis).expect("LLL basis det must fit in i64");
+        let det = crate::synthesis::lattice_zeta::cholesky_lu::det16_exact(&s.basis).expect("LLL basis det must fit in i64");
         assert!(det == 1 || det == -1,
             "LLL output basis must be unimodular; got det = {}", det);
     }
@@ -2205,7 +1939,7 @@ mod tests {
         for i in 0..16 {
             id[i][i] = 1;
         }
-        let r = euclidean_cholesky_16(&id).expect("identity should be PD");
+        let r = crate::synthesis::lattice_zeta::cholesky_lu::euclidean_cholesky_16(&id).expect("identity should be PD");
         for i in 0..16 {
             for j in 0..16 {
                 let expected = if i == j { 1.0 } else { 0.0 };
@@ -2218,7 +1952,7 @@ mod tests {
         for i in 0..16 {
             diag2[i][i] = 2;
         }
-        let r = euclidean_cholesky_16(&diag2).expect("2·I should be PD");
+        let r = crate::synthesis::lattice_zeta::cholesky_lu::euclidean_cholesky_16(&diag2).expect("2·I should be PD");
         for i in 0..16 {
             for j in 0..16 {
                 let expected = if i == j { 2.0 } else { 0.0 };
@@ -2233,7 +1967,7 @@ mod tests {
                 tri[i][j] = if i == j { 3 } else { 1 };
             }
         }
-        let r = euclidean_cholesky_16(&tri).expect("lower-triangular full-rank should be PD");
+        let r = crate::synthesis::lattice_zeta::cholesky_lu::euclidean_cholesky_16(&tri).expect("lower-triangular full-rank should be PD");
         // Check Rᵀ·R = B·Bᵀ.
         let mut bbt = [[0.0_f64; 16]; 16];
         for i in 0..16 {
@@ -2373,7 +2107,7 @@ mod tests {
         let r = run_lll_16(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
 
-        let (snap, dd) = q_cholesky_16_mpfr_dual(&s.gram, s.scale_bits)
+        let (snap, dd) = crate::synthesis::lattice_zeta::cholesky_lu::q_cholesky_16_mpfr_dual(&s.gram, s.scale_bits)
             .expect("post-LLL Q Gram must be PD");
         // dd hi part ≡ f64 snapshot, lo bounded by hi's ULP.
         for i in 0..16 {
@@ -2448,12 +2182,12 @@ mod tests {
         assert!(cholesky_f64_16(&mut s));
         let l_upper_f64: [[f64; 16]; 16] =
             std::array::from_fn(|i| std::array::from_fn(|j| s.l_f64[j][i]));
-        let (l_upper_mpfr, l_q_dd) = q_cholesky_16_mpfr_dual(&s.gram, s.scale_bits)
+        let (l_upper_mpfr, l_q_dd) = crate::synthesis::lattice_zeta::cholesky_lu::q_cholesky_16_mpfr_dual(&s.gram, s.scale_bits)
             .expect("post-LLL Q Gram must be PD");
         assert!(lu_solve_int_inplace_16(&mut s));
         let z_c = SeCenter16::from_lu_x(&s.lu_x);
         let (r_eucl, r_eucl_dd) =
-            euclidean_cholesky_16_mpfr_dual(&s.basis).expect("basis full-rank");
+            crate::synthesis::lattice_zeta::cholesky_lu::euclidean_cholesky_16_mpfr_dual(&s.basis).expect("basis full-rank");
         let basis = s.basis;
         let target_norm_sq = 2.0_f64.powi(k as i32);
         let target_i64 = 1_i64 << k;
