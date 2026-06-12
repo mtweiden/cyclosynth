@@ -888,8 +888,38 @@ where
 const PASS1_CAP: u64 = 100_000_000;
 const PASS2_CAP: u64 = 4_000_000_000;
 
+/// RAII enabler for MPFR prune verification, needed below 2e-8 where
+/// the f64 partial-Euclidean prune suffers catastrophic cancellation
+/// and silently drops valid candidates. Restores the prior global flag
+/// on drop (even on early returns / panics) so other paths are
+/// unaffected.
+struct VerifyGuard {
+    restore_to: bool,
+    changed: bool,
+}
+
+impl VerifyGuard {
+    fn enable_for(epsilon: f64) -> Self {
+        use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
+        let was_on = verify_prune_mpfr();
+        let need = epsilon < 2e-8;
+        if need && !was_on {
+            set_verify_prune_mpfr(true);
+        }
+        VerifyGuard { restore_to: was_on, changed: need && !was_on }
+    }
+}
+
+impl Drop for VerifyGuard {
+    fn drop(&mut self) {
+        if self.changed {
+            crate::synthesis::lattice_zeta::set_verify_prune_mpfr(self.restore_to);
+        }
+    }
+}
+
 /// CYCLOSYNTH_SCREEN_DIV: screen-lite budget divisor for the optimal
-/// pipeline's stage-2 screen at deep ε (default 1 = full budgets).
+/// pipeline.s stage-2 screen at deep ε (default 1 = full budgets).
 /// A/B knob; becomes a constant once the sweep lands.
 fn screen_div() -> u64 {
     use std::sync::OnceLock;
@@ -1472,7 +1502,6 @@ impl SynthesizerQ {
         mut unclear_out: Option<&mut Vec<u32>>,
     ) -> Option<SynthResultQ> {
         use crate::synthesis::diag;
-        use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
         crate::synthesis::ensure_rayon_stack();
 
         // Land the det exactly on a ζ₁₆ power first (lossless, see
@@ -1489,31 +1518,7 @@ impl SynthesizerQ {
             diag::reset_all();
         }
 
-        // Auto-enable MPFR prune verification below 2e-8: near 1.5e-8
-        // the f64 partial-Euclidean prune suffers catastrophic
-        // cancellation and silently drops valid candidates. Restore the
-        // prior flag on exit so other paths aren't affected.
-        let verify_was_on = verify_prune_mpfr();
-        let need_verify = self.epsilon < 2e-8;
-        if need_verify && !verify_was_on {
-            set_verify_prune_mpfr(true);
-        }
-        // RAII guard so we restore even on early returns / panics.
-        struct VerifyGuard {
-            restore_to: bool,
-            changed: bool,
-        }
-        impl Drop for VerifyGuard {
-            fn drop(&mut self) {
-                if self.changed {
-                    crate::synthesis::lattice_zeta::set_verify_prune_mpfr(self.restore_to);
-                }
-            }
-        }
-        let _verify_guard = VerifyGuard {
-            restore_to: verify_was_on,
-            changed: need_verify && !verify_was_on,
-        };
+        let _verify_guard = VerifyGuard::enable_for(self.epsilon);
 
         let d = det_phase_of(&target);
         let v = unitary_to_uv_zeta(&target);
@@ -2945,31 +2950,11 @@ impl SynthesizerQ {
         ledger_out: &mut Vec<(u32, u32, bool)>,
     ) -> Option<SynthResultQ> {
         use crate::synthesis::diag;
-        use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
         let trace = diag::trace_enabled();
 
-        // Same verify-prune RAII dance as `synthesize` — the enum stage
-        // runs SE walks of its own, so the guard must span both stages.
-        let verify_was_on = verify_prune_mpfr();
-        let need_verify = self.epsilon < 2e-8;
-        if need_verify && !verify_was_on {
-            set_verify_prune_mpfr(true);
-        }
-        struct VerifyGuard {
-            restore_to: bool,
-            changed: bool,
-        }
-        impl Drop for VerifyGuard {
-            fn drop(&mut self) {
-                if self.changed {
-                    crate::synthesis::lattice_zeta::set_verify_prune_mpfr(self.restore_to);
-                }
-            }
-        }
-        let _verify_guard = VerifyGuard {
-            restore_to: verify_was_on,
-            changed: need_verify && !verify_was_on,
-        };
+        // The enum stage runs SE walks of its own, so the guard must
+        // span both stages.
+        let _verify_guard = VerifyGuard::enable_for(self.epsilon);
 
         let d = det_phase_of(&target);
         let v = unitary_to_uv_zeta(&target);
