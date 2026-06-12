@@ -31,25 +31,19 @@ pub mod q_metric;
 pub mod scratch;
 pub mod se;
 
-pub use cholesky_lu::{
-    cholesky_f64_16, cholesky_int_16, lu_solve_int_inplace_16,
-    snapshot_gram_to_mpfr_16,
-};
-pub use integer::{phase1, phase1_with_stop, phase1_with_stop_mpfr};
-pub use lll::{lll_l2_16, run_lll_16, LllResult};
-pub use q_metric::{build_q_int_zeta, build_q_mpfr_zeta, build_q_mpfr_zeta_from_mpfr_v};
+pub use integer::{phase1_with_stop, phase1_with_stop_mpfr};
 pub use scratch::IntScratch16;
-pub use se::{
-    beta_1, beta_2, beta_3, bilinear_forms, det16_exact, euclidean_cholesky_16,
-    reconstruct_x, schnorr_euchner_16d, set_verify_prune_mpfr,
-    verify_prune_mpfr, SeCenter16,
-};
+pub use se::{set_verify_prune_mpfr, verify_prune_mpfr};
 
 // ─── Tests preserving the previous flat-module test suite ────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::cholesky_lu::{cholesky_f64_16, lu_solve_int_inplace_16};
+    use super::lll::{run_lll_16, LllResult};
+    use super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
+    use super::se::{bilinear_forms, schnorr_euchner_16d, SeCenter16};
     use crate::synthesis::decomposer::BlochDecomposer;
     use crate::synthesis::distance::Mat2;
     use crate::synthesis::search_zeta::{

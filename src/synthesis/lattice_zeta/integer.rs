@@ -65,7 +65,8 @@ fn warm_lll16_enabled() -> bool {
     *ON
 }
 
-pub fn phase1(
+#[cfg(test)]
+pub(crate) fn phase1(
     scratch: &mut IntScratch16,
     y: &[Float; 16],
     k: u32,

@@ -52,12 +52,6 @@ impl ZOmega {
         Self { a: self.a, b: -self.d, c: -self.c, d: -self.b }
     }
 
-    /// Scalar multiply by an integer.
-    #[inline]
-    pub fn scale(self, s: Int) -> Self {
-        Self { a: self.a * s, b: self.b * s, c: self.c * s, d: self.d * s }
-    }
-
     /// The squared norm of the complex number (in Z[√2] ≅ ℤ, but computed as Int).
     #[inline]
     pub fn norm_sqr(self) -> Int {

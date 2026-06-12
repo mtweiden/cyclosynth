@@ -221,7 +221,8 @@ fn coset_mode_for(eps: Float) -> bool {
 ///   = U_L·(C·U_R)` on the same shell, so one rep per coset preserves
 ///   completeness exactly — PROVIDED the per-frame walk is complete,
 ///   which holds above the floor only.
-pub fn build_l(t_prime: u32) -> Arc<Vec<U2T>> {
+#[cfg(test)]
+pub(crate) fn build_l(t_prime: u32) -> Arc<Vec<U2T>> {
     // Legacy entry point (probes/tests): plain phase-dedup unless the env
     // forces coset mode. Production (`dc_search` + the prewarm) goes
     // through `build_l_mode` with `coset_mode_for(eps)`.
