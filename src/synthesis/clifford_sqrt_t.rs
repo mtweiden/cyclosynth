@@ -1259,6 +1259,50 @@ impl SynthesizerQ {
         (base / self.budget_div.max(1)).max(1)
     }
 
+    /// Pass-2 retries for the dc dispatcher: only levels where pass 1
+    /// hit budget without finding (every other level was exhausted — no
+    /// solution exists there). Returns the find plus the levels that hit
+    /// budget AGAIN, which the caller reports as unclear.
+    fn dc_pass2_retry(
+        &self,
+        target: &Mat2,
+        m_split: u32,
+        mut queue: Vec<u32>,
+    ) -> (Option<SynthResultQ>, Vec<u32>) {
+        queue.sort_unstable();
+        let trace = crate::synthesis::diag::trace_enabled();
+        let mut still_truncated: Vec<u32> = Vec::new();
+        for k in queue {
+            if k > self.effective_max_lde() {
+                break;
+            }
+            let t_k = std::time::Instant::now();
+            if trace {
+                eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
+            }
+            let (result, budget_hit) = self.dc_search_q(
+                target, k, m_split, None,
+                self.cap_div(dc_pass2_cap_for(self.epsilon)),
+                None, None, None, None,
+            );
+            if let Some(r) = result {
+                if trace {
+                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
+                        r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                }
+                return (Some(r), still_truncated);
+            }
+            if budget_hit {
+                still_truncated.push(k);
+            }
+            if trace {
+                eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
+                    t_k.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        (None, still_truncated)
+    }
+
     /// `max_lde` clamped by the live cross-parity incumbent when present
     /// (lde ≤ cost + 1 staircase bound); the incumbent tightens
     /// concurrently as the peer branch finds circuits.
@@ -1475,40 +1519,15 @@ impl SynthesizerQ {
                     }
                     if budget_hit { pass2_collector.lock().unwrap().push(k); }
                 }
-                let mut pass2_queue: Vec<u32> = pass2_collector.into_inner().unwrap();
-                pass2_queue.sort_unstable();
-                // Levels retried at pass-2 cap that hit the budget AGAIN
-                // without finding: still not exhaustively walked.
-                let mut still_truncated: Vec<u32> = Vec::new();
-                for k in pass2_queue {
-                    if k > self.effective_max_lde() {
-                        break;
+                let (found, still_truncated) = self.dc_pass2_retry(
+                    &target, m_split, pass2_collector.into_inner().unwrap(),
+                );
+                if let Some(r) = found {
+                    if let Some(out) = unclear_out.as_deref_mut() {
+                        out.extend(unverified_small.iter().copied());
+                        out.extend(still_truncated.iter().copied());
                     }
-                    let t_k = std::time::Instant::now();
-                    if trace {
-                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
-                    }
-                    let (result, budget_hit2) = self.dc_search_q(
-                        &target, k, m_split, None, self.cap_div(dc_pass2_cap_for(self.epsilon)), None, None, None, None,
-                    );
-                    if let Some(r) = result {
-                        if trace {
-                            eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
-                                r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
-                        }
-                        if let Some(out) = unclear_out.as_deref_mut() {
-                            out.extend(unverified_small.iter().copied());
-                            out.extend(still_truncated.iter().copied());
-                        }
-                        return Some(r);
-                    }
-                    if budget_hit2 {
-                        still_truncated.push(k);
-                    }
-                    if trace {
-                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
-                            t_k.elapsed().as_secs_f64() * 1000.0);
-                    }
+                    return Some(r);
                 }
                 return None;
             }
@@ -1661,40 +1680,15 @@ impl SynthesizerQ {
 
             if let Some(r) = parallel_result { return Some(r); }
 
-            let mut pass2_queue: Vec<u32> = pass2_collector.into_inner().unwrap();
-            pass2_queue.sort_unstable();
-
-            // Pass 2 retries: only the lde levels where pass 1's prefixes
-            // hit budget without finding. Other lde levels were
-            // exhausted at pass 1 (no solution exists at that lde).
-            let mut still_truncated: Vec<u32> = Vec::new();
-            for k in pass2_queue {
-                if k > self.effective_max_lde() {
-                    break;
+            let (found, still_truncated) = self.dc_pass2_retry(
+                &target, m_split, pass2_collector.into_inner().unwrap(),
+            );
+            if let Some(r) = found {
+                if let Some(out) = unclear_out.as_deref_mut() {
+                    out.extend(unverified_small.iter().copied());
+                    out.extend(still_truncated.iter().copied());
                 }
-                let t_k = std::time::Instant::now();
-                if trace {
-                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
-                }
-                let (result, budget_hit2) = self.dc_search_q(&target, k, m_split, None, self.cap_div(dc_pass2_cap_for(self.epsilon)), None, None, None, None);
-                if let Some(r) = result {
-                    if trace {
-                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
-                            r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    if let Some(out) = unclear_out.as_deref_mut() {
-                        out.extend(unverified_small.iter().copied());
-                        out.extend(still_truncated.iter().copied());
-                    }
-                    return Some(r);
-                }
-                if budget_hit2 {
-                    still_truncated.push(k);
-                }
-                if trace {
-                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  none   t={:.0}ms",
-                        t_k.elapsed().as_secs_f64() * 1000.0);
-                }
+                return Some(r);
             }
             return None;
         }
