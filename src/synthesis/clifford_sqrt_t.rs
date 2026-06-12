@@ -3406,12 +3406,72 @@ impl SynthesizerQ {
                     }
                 }
                 let t_w = std::time::Instant::now();
-                let (fr, level_truncated) = self.dc_frontier_q(
-                    &target,
-                    &tasks,
-                    std::time::Duration::from_millis(deadline_ms),
-                    shared_best,
-                );
+                // Sequential per-m phases (experiment, CYCLOSYNTH_SEQ_M=1):
+                // the merged frontier interleaves ALL arms by cost floor,
+                // so m=2's ~6× prefix fan-out starves deep m=1 units no
+                // matter the deadline (1e-8 N=12 d=60 s: interleaved
+                // m={1,2} = 850.0 vs m={1} alone = 831.0). Running the m
+                // groups lowest-first, each under an equal share of the
+                // deadline, lets m=1 saturate before m=2 spends a cycle;
+                // the shared incumbent carries finds forward as the next
+                // phase's prune floor.
+                let seq_m = std::env::var("CYCLOSYNTH_SEQ_M").as_deref() == Ok("1");
+                let mut m_groups: Vec<u32> = tasks.iter().map(|&(_, m)| m).collect();
+                m_groups.sort_unstable();
+                m_groups.dedup();
+                let (fr, level_truncated) = if seq_m && m_groups.len() > 1 {
+                    // Per-phase deadline shares: equal split unless
+                    // CYCLOSYNTH_SEQ_M_SPLIT gives explicit per-phase ms
+                    // (csv, lowest m first; short lists repeat the last
+                    // entry). Split-tuning knob for the d10 ladder.
+                    let split: Vec<u64> = std::env::var("CYCLOSYNTH_SEQ_M_SPLIT")
+                        .ok()
+                        .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
+                        .unwrap_or_default();
+                    let equal = (deadline_ms / m_groups.len() as u64).max(1);
+                    let mut best_fr: Option<(usize, SynthResultQ)> = None;
+                    let mut trunc_by_task: Vec<((u32, u32), bool)> = Vec::new();
+                    for (gi, &mg) in m_groups.iter().enumerate() {
+                        let share = split
+                            .get(gi)
+                            .or(split.last())
+                            .copied()
+                            .unwrap_or(equal)
+                            .max(1);
+                        let group: Vec<(u32, u32)> =
+                            tasks.iter().copied().filter(|&(_, m)| m == mg).collect();
+                        let (g_fr, g_tr) = self.dc_frontier_q(
+                            &target,
+                            &group,
+                            std::time::Duration::from_millis(share),
+                            shared_best,
+                        );
+                        trunc_by_task.extend(group.iter().copied().zip(g_tr));
+                        if let Some((c, r)) = g_fr {
+                            if best_fr.as_ref().is_none_or(|(bc, _)| c < *bc) {
+                                best_fr = Some((c, r));
+                            }
+                        }
+                    }
+                    let lt = tasks
+                        .iter()
+                        .map(|t| {
+                            trunc_by_task
+                                .iter()
+                                .find(|(tt, _)| tt == t)
+                                .map(|&(_, tr)| tr)
+                                .unwrap_or(true)
+                        })
+                        .collect();
+                    (best_fr, lt)
+                } else {
+                    self.dc_frontier_q(
+                        &target,
+                        &tasks,
+                        std::time::Duration::from_millis(deadline_ms),
+                        shared_best,
+                    )
+                };
                 if trace {
                     eprintln!(
                         "[zeta] optimal frontier {:?} deadline={}ms t={:.0}ms truncated={:?}",
