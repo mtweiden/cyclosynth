@@ -110,17 +110,11 @@ pub fn det8_exact(m: &IMat8) -> Option<i64> {
 ///
 /// - The Gram is not numerically positive-definite in f64.
 /// - A Gram diagonal exceeds 2^53 (f64 integer-exactness limit).
-/// - The Cholesky diagonal ratio exceeds 1e6 (Euclid-ill-conditioned
-///   basis). The basis is LLL-reduced in the **Q metric**, not the
-///   Euclidean one; in some frames Q-short vectors are Euclid-long with
-///   entries ~2^30+ and SE coordinates `z ~ 1e10` along true-solution
-///   paths. There the f64 partial sums carry absolute errors of 1e5+
-///   (cancellation between |re·z| ~ 1e18 terms), and the prune cuts
-///   branches containing TRUE solutions. Root-caused live 2026-06-11
-///   (docs/w_8d_rework_notes.md): the right-coset prefix dedup exposed
-///   frames whose pre-fix walk silently found nothing — masked before by
-///   the 8× coset-mate redundancy of `build_l`. (The old i64 Gram
-///   accumulation also overflowed silently at entries ≥ ~2^31; now i128.)
+/// - The Cholesky diagonal ratio exceeds 1e6: the basis is LLL-reduced
+///   in the Q metric, not the Euclidean one, so Q-short vectors can be
+///   Euclid-long — there the f64 partial sums cancel at 1e18 scale and
+///   the prune cuts branches containing TRUE solutions (masked pre-
+///   dedup by the 8× coset-mate redundancy).
 pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
     // Exact integer Gram = B·Bᵀ in i128 (basis entries can reach ~2^33 in
     // Euclid-pathological frames; i64 products overflowed there).
