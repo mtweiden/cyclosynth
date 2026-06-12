@@ -151,7 +151,7 @@
     #[test]
     #[ignore]
     fn audit_w_cancellation_probe() {
-        use super::se::euclidean_cholesky_16_mpfr_dual;
+        use super::cholesky_lu::euclidean_cholesky_16_mpfr_dual;
         use crate::synthesis::clifford_sqrt_t::unitary_to_uv_zeta;
         use rug::Float as RF;
 

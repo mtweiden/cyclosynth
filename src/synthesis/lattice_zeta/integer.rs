@@ -31,12 +31,15 @@
 use rug::{Assign, Float as RFloat};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use super::cholesky_lu::{cholesky_f64_16, lu_solve_int_inplace_16};
+use super::cholesky_lu::{
+    cholesky_f64_16, euclidean_cholesky_16_mpfr_dual, lu_solve_int_inplace_16,
+    q_cholesky_16_mpfr_dual,
+};
 use super::lll::{run_lll_16, LllResult};
 use super::q_metric::build_q_int_zeta;
 use super::scratch::{rfv, IntScratch16};
 use super::se::{
-    bilinear_forms, euclidean_cholesky_16_mpfr_dual, q_cholesky_16_mpfr_dual,
+    bilinear_forms,
     qbracket_dd_disabled, schnorr_euchner_16d,
     verify_prune_mpfr, LeafAction, SeCenter16,
 };
@@ -73,7 +76,7 @@ fn warm_seed_q_base(scratch: &mut IntScratch16, k: u32, eps: Float) -> bool {
         build_q_int_zeta(scratch);
         let r = run_lll_16(scratch);
         let det_ok = matches!(
-            super::se::det16_exact(&scratch.basis),
+            super::cholesky_lu::det16_exact(&scratch.basis),
             Some(1) | Some(-1) | None
         );
         scratch.q_base_seed = if matches!(r, LllResult::Converged) && det_ok {
@@ -108,7 +111,7 @@ fn run_lll_ladder(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> 
         } else {
             run_lll_16(s)
         };
-        let det = super::se::det16_exact(&s.basis);
+        let det = super::cholesky_lu::det16_exact(&s.basis);
         (r, det)
     }
 
@@ -182,7 +185,7 @@ fn run_bkz_postpass(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()
         let _changed = super::bkz::bkz_tours(scratch, block_size, super::bkz::BKZ_MAX_LOOPS);
         // Post-BKZ unimodularity check; bail if the insertion path
         // somehow produced a degenerate basis.
-        match super::se::det16_exact(&scratch.basis) {
+        match super::cholesky_lu::det16_exact(&scratch.basis) {
             Some(1) | Some(-1) | None => {}
             Some(d) => {
                 eprintln!(
