@@ -167,17 +167,20 @@ fn record_if_aligned(
     }
 }
 
-// ─── Algebraic solvers ────────────────────────────────────────────────────────
+// ─── Algebraic solver ─────────────────────────────────────────────────────────
 
-/// Solve for (b1, d1) given all other coordinates and the constraints:
-///   b1² + d1² = r
-///   b1·A + d1·B = rhs,   where A = a1+c1, B = c1−a1.
-///
-/// Records valid solutions directly into `out`.
+/// Solve the remaining (b, d) pair of element `SLOT` (0 → u1's (b1, d1),
+/// 1 → u2's (b2, d2)) given that element's (a, c), the fully-fixed other
+/// element, and the constraints
+///   b² + d² = r
+///   b·A + d·B = rhs,   where A = a+c, B = c−a.
+/// Records valid full 8-vectors into `out`. SLOT is const so each
+/// instantiation monomorphizes to the hand-written original it replaced.
 #[inline]
-fn solve_b1d1(
-    a1: i64, c1: i64,
-    a2: i64, b2: i64, c2: i64, d2: i64,
+#[allow(clippy::too_many_arguments)]
+fn solve_bd_pair<const SLOT: usize>(
+    a: i64, c: i64,
+    other: [i64; 4],
     r: i64,
     rhs: i64,
     av: &[f64; 8],
@@ -185,28 +188,36 @@ fn solve_b1d1(
     out: &mut Vec<[i64; 8]>,
     max_sol: usize,
 ) {
-    let big_a = a1 + c1;
-    let big_b = c1 - a1;
+    let record = |b: i64, d: i64, out: &mut Vec<[i64; 8]>| {
+        let [ao, bo, co, dd] = other;
+        if SLOT == 0 {
+            record_if_aligned(a, b, c, d, ao, bo, co, dd, av, thresh_sq, out, max_sol);
+        } else {
+            record_if_aligned(ao, bo, co, dd, a, b, c, d, av, thresh_sq, out, max_sol);
+        }
+    };
+    let big_a = a + c;
+    let big_b = c - a;
 
     if big_a == 0 && big_b == 0 {
         if rhs != 0 {
             return;
         }
-        let max_b1 = integer_sqrt(r);
-        for b1 in -max_b1..=max_b1 {
-            let d1_sq = r - b1 * b1;
-            if d1_sq < 0 {
+        let max_b = integer_sqrt(r);
+        for b in -max_b..=max_b {
+            let d_sq = r - b * b;
+            if d_sq < 0 {
                 continue;
             }
-            let d1_abs = integer_sqrt(d1_sq);
-            if d1_abs * d1_abs != d1_sq {
+            let d_abs = integer_sqrt(d_sq);
+            if d_abs * d_abs != d_sq {
                 continue;
             }
-            for &d1 in &[d1_abs, -d1_abs] {
-                if d1 < 0 && d1_abs == 0 {
+            for &d in &[d_abs, -d_abs] {
+                if d < 0 && d_abs == 0 {
                     continue;
                 }
-                record_if_aligned(a1, b1, c1, d1, a2, b2, c2, d2, av, thresh_sq, out, max_sol);
+                record(b, d, out);
                 if out.len() >= max_sol {
                     return;
                 }
@@ -216,24 +227,24 @@ fn solve_b1d1(
     }
 
     if big_a == 0 {
-        // d1 = rhs / B
+        // d = rhs / B
         if rhs % big_b != 0 {
             return;
         }
-        let d1 = rhs / big_b;
-        let b1_sq = r - d1 * d1;
-        if b1_sq < 0 {
+        let d = rhs / big_b;
+        let b_sq = r - d * d;
+        if b_sq < 0 {
             return;
         }
-        let b1_abs = integer_sqrt(b1_sq);
-        if b1_abs * b1_abs != b1_sq {
+        let b_abs = integer_sqrt(b_sq);
+        if b_abs * b_abs != b_sq {
             return;
         }
-        for &b1 in &[b1_abs, -b1_abs] {
-            if b1 < 0 && b1_abs == 0 {
+        for &b in &[b_abs, -b_abs] {
+            if b < 0 && b_abs == 0 {
                 continue;
             }
-            record_if_aligned(a1, b1, c1, d1, a2, b2, c2, d2, av, thresh_sq, out, max_sol);
+            record(b, d, out);
             if out.len() >= max_sol {
                 return;
             }
@@ -242,24 +253,24 @@ fn solve_b1d1(
     }
 
     if big_b == 0 {
-        // b1 = rhs / A
+        // b = rhs / A
         if rhs % big_a != 0 {
             return;
         }
-        let b1 = rhs / big_a;
-        let d1_sq = r - b1 * b1;
-        if d1_sq < 0 {
+        let b = rhs / big_a;
+        let d_sq = r - b * b;
+        if d_sq < 0 {
             return;
         }
-        let d1_abs = integer_sqrt(d1_sq);
-        if d1_abs * d1_abs != d1_sq {
+        let d_abs = integer_sqrt(d_sq);
+        if d_abs * d_abs != d_sq {
             return;
         }
-        for &d1 in &[d1_abs, -d1_abs] {
-            if d1 < 0 && d1_abs == 0 {
+        for &d in &[d_abs, -d_abs] {
+            if d < 0 && d_abs == 0 {
                 continue;
             }
-            record_if_aligned(a1, b1, c1, d1, a2, b2, c2, d2, av, thresh_sq, out, max_sol);
+            record(b, d, out);
             if out.len() >= max_sol {
                 return;
             }
@@ -267,9 +278,8 @@ fn solve_b1d1(
         return;
     }
 
-    // General case: quadratic discriminant method.
-    // From b1*A + d1*B = rhs and b1² + d1² = r:
-    //   (A²+B²)·d1² − 2·rhs·B·d1 + (rhs² − A²·r) = 0
+    // General case: from b·A + d·B = rhs and b² + d² = r:
+    //   (A²+B²)·d² − 2·rhs·B·d + (rhs² − A²·r) = 0
     //   disc = 4·A²·((A²+B²)·r − rhs²)
     let s2 = big_a * big_a + big_b * big_b;
     let disc_val = s2 * r - rhs * rhs;
@@ -290,227 +300,44 @@ fn solve_b1d1(
         if sign == -1 && sqrt_disc == 0 {
             continue;
         }
-        let numer_d1 = 2 * rhs * big_b + sign * sqrt_disc;
-        if numer_d1 % denom != 0 {
+        let numer_d = 2 * rhs * big_b + sign * sqrt_disc;
+        if numer_d % denom != 0 {
             continue;
         }
-        let d1 = numer_d1 / denom;
-        let numer_b1 = rhs - d1 * big_b;
-        if numer_b1 % big_a != 0 {
+        let d = numer_d / denom;
+        let numer_b = rhs - d * big_b;
+        if numer_b % big_a != 0 {
             continue;
         }
-        let b1 = numer_b1 / big_a;
-        if b1 * b1 + d1 * d1 != r {
+        let b = numer_b / big_a;
+        if b * b + d * d != r {
             continue;
         }
-        record_if_aligned(a1, b1, c1, d1, a2, b2, c2, d2, av, thresh_sq, out, max_sol);
+        record(b, d, out);
         if out.len() >= max_sol {
             return;
         }
     }
 }
 
-/// Solve for (b2, d2) given all other coordinates and the constraints:
-///   b2² + d2² = r
-///   b2·A + d2·B = rhs,   where A = a2+c2, B = c2−a2.
-#[inline]
-fn solve_b2d2(
-    a1: i64, b1: i64, c1: i64, d1: i64,
-    a2: i64, c2: i64,
-    r: i64,
-    rhs: i64,
-    av: &[f64; 8],
-    thresh_sq: f64,
-    out: &mut Vec<[i64; 8]>,
-    max_sol: usize,
-) {
-    let big_a = a2 + c2;
-    let big_b = c2 - a2;
-
-    if big_a == 0 && big_b == 0 {
-        if rhs != 0 {
-            return;
-        }
-        let max_b2 = integer_sqrt(r);
-        for b2 in -max_b2..=max_b2 {
-            let d2_sq = r - b2 * b2;
-            if d2_sq < 0 {
-                continue;
-            }
-            let d2_abs = integer_sqrt(d2_sq);
-            if d2_abs * d2_abs != d2_sq {
-                continue;
-            }
-            for &d2 in &[d2_abs, -d2_abs] {
-                if d2 < 0 && d2_abs == 0 {
-                    continue;
-                }
-                record_if_aligned(a1, b1, c1, d1, a2, b2, c2, d2, av, thresh_sq, out, max_sol);
-                if out.len() >= max_sol {
-                    return;
-                }
-            }
-        }
-        return;
-    }
-
-    if big_a == 0 {
-        if rhs % big_b != 0 {
-            return;
-        }
-        let d2 = rhs / big_b;
-        let b2_sq = r - d2 * d2;
-        if b2_sq < 0 {
-            return;
-        }
-        let b2_abs = integer_sqrt(b2_sq);
-        if b2_abs * b2_abs != b2_sq {
-            return;
-        }
-        for &b2 in &[b2_abs, -b2_abs] {
-            if b2 < 0 && b2_abs == 0 {
-                continue;
-            }
-            record_if_aligned(a1, b1, c1, d1, a2, b2, c2, d2, av, thresh_sq, out, max_sol);
-            if out.len() >= max_sol {
-                return;
-            }
-        }
-        return;
-    }
-
-    if big_b == 0 {
-        if rhs % big_a != 0 {
-            return;
-        }
-        let b2 = rhs / big_a;
-        let d2_sq = r - b2 * b2;
-        if d2_sq < 0 {
-            return;
-        }
-        let d2_abs = integer_sqrt(d2_sq);
-        if d2_abs * d2_abs != d2_sq {
-            return;
-        }
-        for &d2 in &[d2_abs, -d2_abs] {
-            if d2 < 0 && d2_abs == 0 {
-                continue;
-            }
-            record_if_aligned(a1, b1, c1, d1, a2, b2, c2, d2, av, thresh_sq, out, max_sol);
-            if out.len() >= max_sol {
-                return;
-            }
-        }
-        return;
-    }
-
-    let s2 = big_a * big_a + big_b * big_b;
-    let disc_val = s2 * r - rhs * rhs;
-    if disc_val < 0 {
-        return;
-    }
-    let disc = 4 * big_a * big_a * disc_val;
-    if disc < 0 {
-        return;
-    }
-    let sqrt_disc = integer_sqrt(disc);
-    if sqrt_disc * sqrt_disc != disc {
-        return;
-    }
-
-    let denom = 2 * s2;
-    for sign in [1i64, -1] {
-        if sign == -1 && sqrt_disc == 0 {
-            continue;
-        }
-        let numer_d2 = 2 * rhs * big_b + sign * sqrt_disc;
-        if numer_d2 % denom != 0 {
-            continue;
-        }
-        let d2 = numer_d2 / denom;
-        let numer_b2 = rhs - d2 * big_b;
-        if numer_b2 % big_a != 0 {
-            continue;
-        }
-        let b2 = numer_b2 / big_a;
-        if b2 * b2 + d2 * d2 != r {
-            continue;
-        }
-        record_if_aligned(a1, b1, c1, d1, a2, b2, c2, d2, av, thresh_sq, out, max_sol);
-        if out.len() >= max_sol {
-            return;
-        }
-    }
-}
-
-// ─── Search engines ───────────────────────────────────────────────────────────
+// ─── Search engine ────────────────────────────────────────────────────────────
 
 use rayon::prelude::*;
 
-// ── fast_search (solves for b1, d1) ──────────────────────────────────────────
-
-/// Inner body for one fixed (a1, c1) pair. Enumerates a2, c2, b2, d2 and calls
-/// solve_b1d1 for the remaining pair. Returns all solutions found up to max_sol.
-fn fast_search_inner(
-    a1: i64,
-    c1: i64,
-    rem2: i64,
-    pdot2: f64,
-    av: &[f64; 8],
-    thresh_sq: f64,
-    av_sq_3: f64,
-    av_sq_4: f64,
-    av_sq_5: f64,
-    av_sq_6: f64,
-    do_prune: bool,
-    thresh: f64,
-    max_sol: usize,
-) -> Vec<[i64; 8]> {
-    let mut out: Vec<[i64; 8]> = Vec::new();
-
-    let max_a2 = integer_sqrt(rem2);
-    for a2 in -max_a2..=max_a2 {
-        let rem3 = rem2 - a2 * a2;
-        if rem3 < 0 { continue; }
-        let pdot3 = pdot2 + a2 as f64 * av[4];
-        if do_prune && pdot3.abs() + (rem3 as f64 * av_sq_3).sqrt() < thresh { continue; }
-
-        let max_c2 = integer_sqrt(rem3);
-        for c2 in -max_c2..=max_c2 {
-            let rem4 = rem3 - c2 * c2;
-            if rem4 < 0 { continue; }
-            let pdot4 = pdot3 + c2 as f64 * av[6];
-            if do_prune && pdot4.abs() + (rem4 as f64 * av_sq_4).sqrt() < thresh { continue; }
-
-            let max_b2 = integer_sqrt(rem4);
-            for b2 in -max_b2..=max_b2 {
-                let rem5 = rem4 - b2 * b2;
-                if rem5 < 0 { continue; }
-                let pdot5 = pdot4 + b2 as f64 * av[5];
-                if do_prune && pdot5.abs() + (rem5 as f64 * av_sq_5).sqrt() < thresh { continue; }
-
-                let max_d2 = integer_sqrt(rem5);
-                for d2 in -max_d2..=max_d2 {
-                    let r = rem5 - d2 * d2;
-                    if r < 0 { continue; }
-                    let pdot6 = pdot5 + d2 as f64 * av[7];
-                    if do_prune && pdot6.abs() + (r as f64 * av_sq_6).sqrt() < thresh { continue; }
-
-                    let rhs = -(b2 * (a2 + c2) + d2 * (c2 - a2));
-                    solve_b1d1(a1, c1, a2, b2, c2, d2, r, rhs, av, thresh_sq, &mut out, max_sol);
-                    if out.len() >= max_sol { return out; }
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Full-sphere enumeration with Cauchy–Schwarz pruning, solving for (b1, d1).
-///
-/// Enumeration order: a1(0), c1(2), a2(4), c2(6), b2(5), d2(7) → solve b1(1), d1(3).
-/// Parallelised over (a1, c1) pairs via rayon.
-fn fast_search(
+/// Brute full-sphere enumeration: enumerate coordinates I0..I5 of the
+/// 8-vector in that order under Cauchy–Schwarz pruning, then solve the
+/// remaining (b, d) pair of element `SLOT` algebraically via
+/// [`solve_bd_pair`]. The order is const-generic so each instantiation
+/// monomorphizes to a constant-indexed loop nest (the two orders in use:
+/// enumerate u2 and solve u1's pair, or enumerate u1 and solve u2's —
+/// chosen by where the alignment energy sits). Parallelised over the
+/// outer (I0, I1) pairs via rayon.
+#[allow(clippy::too_many_arguments)]
+fn brute_enum<
+    const I0: usize, const I1: usize, const I2: usize,
+    const I3: usize, const I4: usize, const I5: usize,
+    const SLOT: usize,
+>(
     target_norm: i64,
     av: &[f64; 8],
     thresh_sq: f64,
@@ -520,44 +347,43 @@ fn fast_search(
     let do_prune = thresh_sq > 0.0;
     let thresh = thresh_sq.sqrt();
 
-    let av_sq_all: f64 = av.iter().map(|x| x * x).sum();
-    let av_sq_1 = av_sq_all - av[0] * av[0]; // after a1
-    let av_sq_2 = av_sq_1  - av[2] * av[2]; // after c1
-    let av_sq_3 = av_sq_2  - av[4] * av[4]; // after a2
-    let av_sq_4 = av_sq_3  - av[6] * av[6]; // after c2
-    let av_sq_5 = av_sq_4  - av[5] * av[5]; // after b2
-    let av_sq_6 = av_sq_5  - av[7] * av[7]; // after d2 (remaining: b1, d1)
+    // av_sq[j] = Σ av[i]² over the coordinates still open after level j
+    // (the Cauchy–Schwarz prune tail).
+    let order = [I0, I1, I2, I3, I4, I5];
+    let mut av_sq = [0.0f64; 6];
+    let mut tail: f64 = av.iter().map(|x| x * x).sum();
+    for (j, &idx) in order.iter().enumerate() {
+        tail -= av[idx] * av[idx];
+        av_sq[j] = tail;
+    }
 
-    let max_a1 = integer_sqrt(target_norm);
-
-    let pairs: Vec<(i64, i64, i64, f64)> = (-max_a1..=max_a1)
-        .flat_map(|a1| {
-            let rem1 = target_norm - a1 * a1;
+    let max0 = integer_sqrt(target_norm);
+    let pairs: Vec<(i64, i64, i64, f64)> = (-max0..=max0)
+        .flat_map(|v0| {
+            let rem1 = target_norm - v0 * v0;
             if rem1 < 0 { return vec![]; }
-            let pdot1 = a1 as f64 * av[0];
-            if do_prune && pdot1.abs() + (rem1 as f64 * av_sq_1).sqrt() < thresh {
+            let pdot1 = v0 as f64 * av[I0];
+            if do_prune && pdot1.abs() + (rem1 as f64 * av_sq[0]).sqrt() < thresh {
                 return vec![];
             }
-            let max_c1 = integer_sqrt(rem1);
-            (-max_c1..=max_c1).filter_map(|c1| {
-                let rem2 = rem1 - c1 * c1;
+            let max1 = integer_sqrt(rem1);
+            (-max1..=max1).filter_map(|v1| {
+                let rem2 = rem1 - v1 * v1;
                 if rem2 < 0 { return None; }
-                let pdot2 = pdot1 + c1 as f64 * av[2];
-                if do_prune && pdot2.abs() + (rem2 as f64 * av_sq_2).sqrt() < thresh {
+                let pdot2 = pdot1 + v1 as f64 * av[I1];
+                if do_prune && pdot2.abs() + (rem2 as f64 * av_sq[1]).sqrt() < thresh {
                     return None;
                 }
-                Some((a1, c1, rem2, pdot2))
+                Some((v0, v1, rem2, pdot2))
             }).collect::<Vec<_>>()
         })
         .collect();
 
     let batches: Vec<Vec<[i64; 8]>> = pairs
         .into_par_iter()
-        .filter_map(|(a1, c1, rem2, pdot2)| {
-            let local = fast_search_inner(
-                a1, c1, rem2, pdot2, av, thresh_sq,
-                av_sq_3, av_sq_4, av_sq_5, av_sq_6,
-                do_prune, thresh, max_sol,
+        .filter_map(|(v0, v1, rem2, pdot2)| {
+            let local = brute_enum_inner::<I0, I1, I2, I3, I4, I5, SLOT>(
+                v0, v1, rem2, pdot2, av, thresh_sq, &av_sq, do_prune, thresh, max_sol,
             );
             if local.is_empty() { None } else { Some(local) }
         })
@@ -571,131 +397,78 @@ fn fast_search(
     }
 }
 
-// ── fast_search_u1 (solves for b2, d2) ───────────────────────────────────────
-
-/// Inner body for one fixed (a1, b1) pair. Enumerates c1, d1, a2, c2 and calls
-/// solve_b2d2 for the remaining pair. Returns all solutions found up to max_sol.
-fn fast_search_u1_inner(
-    a1: i64,
-    b1: i64,
+/// Inner 4-level nest of [`brute_enum`] for one fixed (I0, I1) pair.
+#[allow(clippy::too_many_arguments)]
+fn brute_enum_inner<
+    const I0: usize, const I1: usize, const I2: usize,
+    const I3: usize, const I4: usize, const I5: usize,
+    const SLOT: usize,
+>(
+    v0: i64,
+    v1: i64,
     rem2: i64,
     pdot2: f64,
     av: &[f64; 8],
     thresh_sq: f64,
-    av_sq_3: f64,
-    av_sq_4: f64,
-    av_sq_5: f64,
-    av_sq_6: f64,
+    av_sq: &[f64; 6],
     do_prune: bool,
     thresh: f64,
     max_sol: usize,
 ) -> Vec<[i64; 8]> {
     let mut out: Vec<[i64; 8]> = Vec::new();
+    let mut x = [0i64; 8];
+    x[I0] = v0;
+    x[I1] = v1;
 
-    let max_c1 = integer_sqrt(rem2);
-    for c1 in -max_c1..=max_c1 {
-        let rem3 = rem2 - c1 * c1;
+    let max2 = integer_sqrt(rem2);
+    for v2 in -max2..=max2 {
+        let rem3 = rem2 - v2 * v2;
         if rem3 < 0 { continue; }
-        let pdot3 = pdot2 + c1 as f64 * av[2];
-        if do_prune && pdot3.abs() + (rem3 as f64 * av_sq_3).sqrt() < thresh { continue; }
+        let pdot3 = pdot2 + v2 as f64 * av[I2];
+        if do_prune && pdot3.abs() + (rem3 as f64 * av_sq[2]).sqrt() < thresh { continue; }
+        x[I2] = v2;
 
-        let max_d1 = integer_sqrt(rem3);
-        for d1 in -max_d1..=max_d1 {
-            let rem4 = rem3 - d1 * d1;
+        let max3 = integer_sqrt(rem3);
+        for v3 in -max3..=max3 {
+            let rem4 = rem3 - v3 * v3;
             if rem4 < 0 { continue; }
-            let pdot4 = pdot3 + d1 as f64 * av[3];
-            if do_prune && pdot4.abs() + (rem4 as f64 * av_sq_4).sqrt() < thresh { continue; }
+            let pdot4 = pdot3 + v3 as f64 * av[I3];
+            if do_prune && pdot4.abs() + (rem4 as f64 * av_sq[3]).sqrt() < thresh { continue; }
+            x[I3] = v3;
 
-            let cross1 = b1 * (a1 + c1) + d1 * (c1 - a1);
-
-            let max_a2 = integer_sqrt(rem4);
-            for a2 in -max_a2..=max_a2 {
-                let rem5 = rem4 - a2 * a2;
+            let max4 = integer_sqrt(rem4);
+            for v4 in -max4..=max4 {
+                let rem5 = rem4 - v4 * v4;
                 if rem5 < 0 { continue; }
-                let pdot5 = pdot4 + a2 as f64 * av[4];
-                if do_prune && pdot5.abs() + (rem5 as f64 * av_sq_5).sqrt() < thresh { continue; }
+                let pdot5 = pdot4 + v4 as f64 * av[I4];
+                if do_prune && pdot5.abs() + (rem5 as f64 * av_sq[4]).sqrt() < thresh { continue; }
+                x[I4] = v4;
 
-                let max_c2 = integer_sqrt(rem5);
-                for c2 in -max_c2..=max_c2 {
-                    let r = rem5 - c2 * c2;
+                let max5 = integer_sqrt(rem5);
+                for v5 in -max5..=max5 {
+                    let r = rem5 - v5 * v5;
                     if r < 0 { continue; }
-                    let pdot6 = pdot5 + c2 as f64 * av[6];
-                    if do_prune && pdot6.abs() + (r as f64 * av_sq_6).sqrt() < thresh { continue; }
+                    let pdot6 = pdot5 + v5 as f64 * av[I5];
+                    if do_prune && pdot6.abs() + (r as f64 * av_sq[5]).sqrt() < thresh { continue; }
+                    x[I5] = v5;
 
-                    let rhs = -cross1;
-                    solve_b2d2(a1, b1, c1, d1, a2, c2, r, rhs, av, thresh_sq, &mut out, max_sol);
+                    // The fixed element's cross term feeds the solved
+                    // pair's linear constraint.
+                    let base = 4 * (1 - SLOT);
+                    let rhs = -(x[base + 1] * (x[base] + x[base + 2])
+                        + x[base + 3] * (x[base + 2] - x[base]));
+                    let own = 4 * SLOT;
+                    let other = [x[base], x[base + 1], x[base + 2], x[base + 3]];
+                    solve_bd_pair::<SLOT>(
+                        x[own], x[own + 2], other, r, rhs, av, thresh_sq,
+                        &mut out, max_sol,
+                    );
                     if out.len() >= max_sol { return out; }
                 }
             }
         }
     }
     out
-}
-
-/// Full-sphere enumeration with Cauchy–Schwarz pruning, solving for (b2, d2).
-///
-/// Preferred when alignment energy is concentrated in u1 (indices 0-3).
-/// Enumeration order: a1(0), b1(1), c1(2), d1(3), a2(4), c2(6) → solve b2(5), d2(7).
-/// Parallelised over (a1, b1) pairs via rayon.
-fn fast_search_u1(
-    target_norm: i64,
-    av: &[f64; 8],
-    thresh_sq: f64,
-    max_sol: usize,
-    out: &mut Vec<[i64; 8]>,
-) {
-    let do_prune = thresh_sq > 0.0;
-    let thresh = thresh_sq.sqrt();
-
-    let av_sq_all: f64 = av.iter().map(|x| x * x).sum();
-    let av_sq_1 = av_sq_all - av[0] * av[0]; // after a1
-    let av_sq_2 = av_sq_1  - av[1] * av[1]; // after b1
-    let av_sq_3 = av_sq_2  - av[2] * av[2]; // after c1
-    let av_sq_4 = av_sq_3  - av[3] * av[3]; // after d1
-    let av_sq_5 = av_sq_4  - av[4] * av[4]; // after a2
-    let av_sq_6 = av_sq_5  - av[6] * av[6]; // after c2 (remaining: b2, d2)
-
-    let max_a1 = integer_sqrt(target_norm);
-
-    let pairs: Vec<(i64, i64, i64, f64)> = (-max_a1..=max_a1)
-        .flat_map(|a1| {
-            let rem1 = target_norm - a1 * a1;
-            if rem1 < 0 { return vec![]; }
-            let pdot1 = a1 as f64 * av[0];
-            if do_prune && pdot1.abs() + (rem1 as f64 * av_sq_1).sqrt() < thresh {
-                return vec![];
-            }
-            let max_b1 = integer_sqrt(rem1);
-            (-max_b1..=max_b1).filter_map(|b1| {
-                let rem2 = rem1 - b1 * b1;
-                if rem2 < 0 { return None; }
-                let pdot2 = pdot1 + b1 as f64 * av[1];
-                if do_prune && pdot2.abs() + (rem2 as f64 * av_sq_2).sqrt() < thresh {
-                    return None;
-                }
-                Some((a1, b1, rem2, pdot2))
-            }).collect::<Vec<_>>()
-        })
-        .collect();
-
-    let batches: Vec<Vec<[i64; 8]>> = pairs
-        .into_par_iter()
-        .filter_map(|(a1, b1, rem2, pdot2)| {
-            let local = fast_search_u1_inner(
-                a1, b1, rem2, pdot2, av, thresh_sq,
-                av_sq_3, av_sq_4, av_sq_5, av_sq_6,
-                do_prune, thresh, max_sol,
-            );
-            if local.is_empty() { None } else { Some(local) }
-        })
-        .collect();
-
-    for batch in batches {
-        for sol in batch {
-            if out.len() >= max_sol { return; }
-            out.push(sol);
-        }
-    }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -735,9 +508,10 @@ pub fn brute_aligned_search(
 
     let mut out = Vec::new();
     if u1_energy >= u2_energy {
-        fast_search_u1(target_norm, &av, thresh_sq, max_solutions, &mut out);
+        // Energy in u1: enumerate u1 fully, solve u2's pair.
+        brute_enum::<0, 1, 2, 3, 4, 6, 1>(target_norm, &av, thresh_sq, max_solutions, &mut out);
     } else {
-        fast_search(target_norm, &av, thresh_sq, max_solutions, &mut out);
+        brute_enum::<0, 2, 4, 6, 5, 7, 0>(target_norm, &av, thresh_sq, max_solutions, &mut out);
     }
     out
 }
