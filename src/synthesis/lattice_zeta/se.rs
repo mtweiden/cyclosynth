@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 use i256::i256;
 
 /// W1 kill-switch: `CYCLOSYNTH_FLAT_WALK=0` disables the multi-level
-/// frontier flattening in [`schnorr_euchner_16d_par_norm_pruned`],
+/// frontier flattening in [`schnorr_euchner_16d`],
 /// restoring the legacy per-z[15]-only parallel sharding. Default ON.
 /// Read once (A/B benchmarking aid; not a hot-path read).
 static FLAT_WALK_DISABLED: OnceLock<bool> = OnceLock::new();
@@ -832,7 +832,7 @@ impl SeCenter16 {
 /// walk aborts and returns the leaf count visited so far.
 ///
 /// Returns the total number of leaf callbacks made.
-pub fn schnorr_euchner_16d<F>(
+pub fn schnorr_euchner_16d_reference<F>(
     l: &[[f64; 16]; 16],
     z_c: &SeCenter16,
     bound_sq: f64,
@@ -1374,7 +1374,7 @@ fn expand_se_prefix_node(
 /// triggered LDE-stagger dispatcher to observe search progress. Pass
 /// `None, None` if you don't need either.
 #[allow(clippy::too_many_arguments)]
-pub fn schnorr_euchner_16d_par_norm_pruned<F>(
+pub fn schnorr_euchner_16d<F>(
     l: &[[f64; 16]; 16],
     l_q_dd: Option<&[[(f64, f64); 16]; 16]>,
     z_c: &SeCenter16,
@@ -2245,7 +2245,7 @@ mod tests {
         }
     }
 
-    // ── schnorr_euchner_16d tests ────────────────────────────────────────────
+    // ── schnorr_euchner_16d_reference tests ────────────────────────────────────────────
 
     /// SE walk on the identity basis with z_c = 0 should enumerate exactly
     /// the integer 16-vectors with ‖z‖² ≤ bound_sq. At bound_sq = 1, that's
@@ -2259,7 +2259,7 @@ mod tests {
         let z_c = SeCenter16::from_int([0_i64; 16]);
         let budget = AtomicU64::new(10_000);
         let mut visited: HashSet<[i64; 16]> = HashSet::new();
-        let leaves = schnorr_euchner_16d(&l, &z_c, 1.0, |z| {
+        let leaves = schnorr_euchner_16d_reference(&l, &z_c, 1.0, |z| {
             visited.insert(*z);
             true
         }, &budget);
@@ -2286,7 +2286,7 @@ mod tests {
         }
         let z_c = SeCenter16::from_int([0_i64; 16]);
         let budget = AtomicU64::new(10);
-        let leaves = schnorr_euchner_16d(&l, &z_c, 4.0, |_z| true, &budget);
+        let leaves = schnorr_euchner_16d_reference(&l, &z_c, 4.0, |_z| true, &budget);
         assert_eq!(leaves, 10, "budget should cap leaves at 10");
     }
 
@@ -2325,7 +2325,7 @@ mod tests {
         let budget = AtomicU64::new(1_000_000);
         let bound_sq = 1.0e6_f64;
         let mut se_set: HashSet<[i64; 16]> = HashSet::new();
-        schnorr_euchner_16d(&l_upper, &z_c, bound_sq, |z| {
+        schnorr_euchner_16d_reference(&l_upper, &z_c, bound_sq, |z| {
             // Reconstruct x = B·z and apply leaf checks.
             let x = reconstruct_x(&s.basis, z);
             let norm_sq: i64 = x.iter().map(|v| v * v).sum();
@@ -2460,13 +2460,13 @@ mod tests {
         let bound_sq = 2.5_f64;
 
         let budget_a = AtomicU64::new(u64::MAX);
-        let (sols_f64, hit_a) = schnorr_euchner_16d_par_norm_pruned(
+        let (sols_f64, hit_a) = schnorr_euchner_16d(
             &l_upper_f64, None, &z_c, bound_sq, &r_eucl, &r_eucl_dd,
             target_norm_sq, &basis, leaf_filter, &budget_a, None, None,
         );
         assert!(!hit_a);
         let budget_b = AtomicU64::new(u64::MAX);
-        let (sols_dd, hit_b) = schnorr_euchner_16d_par_norm_pruned(
+        let (sols_dd, hit_b) = schnorr_euchner_16d(
             &l_upper_mpfr, Some(&l_q_dd), &z_c, bound_sq, &r_eucl, &r_eucl_dd,
             target_norm_sq, &basis, leaf_filter, &budget_b, None, None,
         );
@@ -2519,7 +2519,7 @@ mod tests {
         }
         let bound_sq = 4.0 * min_diag_sq;
         let budget = AtomicU64::new(1_000_000);
-        let leaves = schnorr_euchner_16d(&l_upper, &z_c, bound_sq, |_z| true, &budget);
+        let leaves = schnorr_euchner_16d_reference(&l_upper, &z_c, bound_sq, |_z| true, &budget);
         // Walk completes within budget (no abort).
         assert!(leaves < 1_000_000,
             "SE walk did not terminate within budget: visited {leaves} leaves");

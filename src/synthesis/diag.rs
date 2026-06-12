@@ -1,4 +1,7 @@
-//! Optional per-search diagnostic counters, gated by `CYCLOSYNTH_TRACE=1`.
+//! Optional per-search diagnostic counters. Most are gated by
+//! `CYCLOSYNTH_TRACE=1`; the budget-truncation outcome counters and the
+//! M2 branch-win telemetry are always-on (at most once per phase1 call,
+//! so the hot path never sees them).
 //!
 //! Usage:
 //!   CYCLOSYNTH_TRACE=1 ./time_synthesis ...

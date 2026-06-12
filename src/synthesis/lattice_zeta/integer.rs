@@ -36,7 +36,7 @@ use super::q_metric::build_q_int_zeta;
 use super::scratch::{rfv, IntScratch16};
 use super::se::{
     bilinear_forms, euclidean_cholesky_16_mpfr_dual, q_cholesky_16_mpfr_dual,
-    qbracket_dd_disabled, schnorr_euchner_16d_par_norm_pruned,
+    qbracket_dd_disabled, schnorr_euchner_16d,
     verify_prune_mpfr, LeafAction, SeCenter16,
 };
 use crate::rings::Float;
@@ -564,7 +564,7 @@ where
         }
     };
 
-    let (solutions, budget_was_hit) = schnorr_euchner_16d_par_norm_pruned(
+    let (solutions, budget_was_hit) = schnorr_euchner_16d(
         &l_upper, q_chol_dual.as_ref().map(|(_, dd)| dd), &z_c, bound_sq,
         &r_eucl, &r_eucl_dd, target_norm_sq_f64, &basis,
         leaf_filter, &budget,
