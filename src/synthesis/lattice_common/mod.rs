@@ -90,3 +90,33 @@ pub enum LllResult {
     /// Reached the iteration cap without convergence.
     IterCap,
 }
+
+use i256::i256;
+
+/// Convert i256 to f64. Combines limbs in increasing-precision order so
+/// low bits round, not high.
+///
+/// **Hot path notes**:
+/// - `i256::is_negative` is a single sign-bit check; skip the early-zero
+///   return (zero lands at 0.0 naturally); pull limbs via `to_ne_limbs`;
+///   hoist the 2^64/2^128/2^192 scales to consts.
+///
+/// Tried (and abandoned): two's-complement direct conversion (signed
+/// high limb, unsigned low limbs). Catastrophic cancellation for small
+/// negative values whose high limb is `0xFF...FF` — subtracts two
+/// near-equal large f64 numbers, loses all precision below ~2^140. Must
+/// take abs() in i256 first to keep mantissa precision.
+#[inline]
+pub fn i256_to_f64(v: i256) -> f64 {
+    const SCALE_64: f64 = 18446744073709551616.0; // 2^64
+    const SCALE_128: f64 = SCALE_64 * SCALE_64;
+    const SCALE_192: f64 = SCALE_128 * SCALE_64;
+    let neg = v.is_negative();
+    let abs = if neg { -v } else { v };
+    let limbs = abs.to_ne_limbs();
+    let r = (limbs[0] as f64)
+        + (limbs[1] as f64) * SCALE_64
+        + (limbs[2] as f64) * SCALE_128
+        + (limbs[3] as f64) * SCALE_192;
+    if neg { -r } else { r }
+}
