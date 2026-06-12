@@ -133,6 +133,31 @@ Synthesizer::synthesize(target)
  until it finds an `x ∈ ℤ⁸` whose reconstruction satisfies the
 unitarity constraints.
 
+## Environment variables
+
+All optional; unset = production defaults. Names are frozen (renaming
+breaks user workflows) — semantics documented here instead.
+
+| variable | meaning |
+|---|---|
+| `CYCLOSYNTH_TRACE=1` | per-search diagnostic counters + stage timings to stderr |
+| `CYCLOSYNTH_SEQ_M=1/0` | force sequential-per-m frontier phases on/off (default: on below ε=1e-7) |
+| `CYCLOSYNTH_SEQ_M_SPLIT=ms,ms` | explicit per-phase deadline shares (csv, lowest m first) |
+| `CYCLOSYNTH_SEQ_ROLLFWD=0` | disable phase-share roll-forward |
+| `CYCLOSYNTH_SEQ_PARITY=0` | run the two det-parity branches concurrently below 2.5e-8 (≈½ wall, ≈+1pp cost) |
+| `CYCLOSYNTH_ZETA_COSET=0` / `CYCLOSYNTH_L_COSET=0/1` | disable/force the right-coset prefix dedup (16D / 8D) |
+| `CYCLOSYNTH_WARM_LLL16=1` | per-(k,ε) Q_base warm seed for the 16D LLL (opt-in; cost-neutral at 1e-8) |
+| `CYCLOSYNTH_SCREEN_DIV=n` | screen-lite: divide the optimal screen's node caps (opt-in) |
+| `CYCLOSYNTH_OPEN_FILTER=1` | lift the det-phase prefix filter (all 16 classes) in probe runs |
+| `CYCLOSYNTH_QBRACKET_DD=0` | disable the deep-ε double-double Q bracket (falls back to f64 + bound 3.0) |
+| `CYCLOSYNTH_BOUND_SQ` / `CYCLOSYNTH_SE_BOUND_8D` | override the SE walk bound (test pinning / experiments) |
+| `CYCLOSYNTH_VERIFY_RATIO_CAP` | overshoot cap above which prune-fires skip dd verification |
+| `CYCLOSYNTH_FLAT_WALK=0` | restore legacy per-z[15] walk sharding (vs the flat frontier) |
+| `CYCLOSYNTH_PREDICTIVE_TRUNC=0` | disable projected-infeasibility aborts on budget-capped walks |
+| `CYCLOSYNTH_BKZ=n` | override the BKZ-β block size (default 4 below 1e-7, else off) |
+| `CYCLOSYNTH_BUDGET_MULT=n` / `CYCLOSYNTH_DEADLINE_MS=ms` | probe-driver overrides for budget multiplier / frontier deadline |
+| `CYCLOSYNTH_W1_DEBUG=1/2` | flat-walk debug prints / work-skew report |
+
 ## Repository layout
 
 ```
