@@ -15,7 +15,7 @@
 //!
 //! For larger `k`: single-shot 16D L²-LLL + Schnorr-Euchner via
 //! [`crate::synthesis::lattice_zeta::find_aligned_lattice_points`] (with an optional BKZ-β
-//! post-pass), plus an FGKM-prefix divide-and-conquer mode (`dc_search_q`)
+//! post-pass), plus an FGKM-prefix divide-and-conquer mode (`prefix_split_search_q`)
 //! for deep `k`. Adaptive leaf budget scales exponentially in `k`;
 //! reaches ε ≲ 1e-5 at k ≈ 30.
 //!
@@ -523,11 +523,11 @@ pub struct SynthesizerQ {
     /// Minimum lde to start searching from.
     pub min_lde: u32,
     /// FGKM-prefix divide-and-conquer split parameter; `None` = single
-    /// search. Builder: [`Self::with_dc_split`].
-    pub dc_split: Option<u32>,
+    /// search. Builder: [`Self::with_prefix_split_m`].
+    pub prefix_split_m: Option<u32>,
     /// Allowed `(d_target − d_L) mod 16` offsets for a prefix to be
-    /// processed; empty = no filter. Builder: [`Self::with_dc_dr_filter`].
-    pub dc_dr_filter: Vec<u32>,
+    /// processed; empty = no filter. Builder: [`Self::with_inner_det_phase_filter`].
+    pub inner_det_phase_filter: Vec<u32>,
     /// f64 Gram-Schmidt state in LLL (vs MPFR). Builder: [`Self::with_f64_gs`].
     pub use_f64_gs: bool,
     /// BKZ-β post-pass block size (0 = off). Builder: [`Self::with_bkz`].
@@ -706,10 +706,10 @@ fn default_optimal_m_sweep(epsilon: f64) -> Vec<u32> {
     }
 }
 
-/// Default `dc_dr_filter` per m, mirroring the auto-defaults set in
+/// Default `inner_det_phase_filter` per m, mirroring the auto-defaults set in
 /// [`SynthesizerQ::new`]: m=1 → relaxed `[0, 1, 15]`, m=2 → strict `[0]`,
 /// anything else → open (no filter).
-fn default_dc_dr_filter(m: u32) -> Vec<u32> {
+fn default_inner_det_phase_filter(m: u32) -> Vec<u32> {
     match m {
         1 => vec![0, 1, 15],
         2 => vec![0],
@@ -930,30 +930,30 @@ fn screen_div() -> u64 {
 
 /// Per-prefix Z1 D&C pass-1 budget; scaled with ε since the post-LLL
 /// SE region grows exponentially in k_inner.
-fn dc_pass1_cap_for(epsilon: f64) -> u64 {
+fn pass1_prefix_leaf_cap_for(epsilon: f64) -> u64 {
     if epsilon <= 1e-8 {
         100_000_000
     } else if epsilon <= 1e-7 {
         25_000_000
     } else {
-        DC_PASS1_CAP
+        PASS1_PREFIX_LEAF_CAP
     }
 }
 
-fn dc_pass2_cap_for(epsilon: f64) -> u64 {
+fn pass2_prefix_leaf_cap_for(epsilon: f64) -> u64 {
     if epsilon <= 1e-8 {
         500_000_000
     } else if epsilon <= 1e-7 {
         50_000_000
     } else {
-        DC_PASS2_CAP
+        PASS2_PREFIX_LEAF_CAP
     }
 }
 
-const DC_PASS1_CAP: u64 = 5_000_000;
-const DC_PASS2_CAP: u64 = 10_000_000;
+const PASS1_PREFIX_LEAF_CAP: u64 = 5_000_000;
+const PASS2_PREFIX_LEAF_CAP: u64 = 10_000_000;
 
-/// Rayon `with_min_len` for `dc_search_q`'s **optimize-mode** prefix
+/// Rayon `with_min_len` for `prefix_split_search_q`'s **optimize-mode** prefix
 /// par_iter. `0` = legacy `usable.len() / n_threads` chunking.
 ///
 /// **A/B 2026-06-10 (1e-6 suite, 6 targets, seed 12648430):** `1`
@@ -1019,7 +1019,7 @@ impl SynthesizerQ {
     pub fn new(epsilon: f64) -> Self {
         // m=2 strict at deep ε (k_inner coverage); m=1 relaxed at 1e-6
         // (m=2 has structural gaps at low lde); single search above.
-        let (dc_split, dc_dr_filter) = if epsilon <= 1e-7 {
+        let (prefix_split_m, inner_det_phase_filter) = if epsilon <= 1e-7 {
             (Some(2u32), vec![0u32])
         } else if epsilon <= 1e-6 {
             (Some(1u32), vec![0u32, 1, 15])
@@ -1061,7 +1061,7 @@ impl SynthesizerQ {
         // finding, so a 1× trigger spawns a spurious peer that dilutes
         // the find.
         let (parallel_lde_window, parallel_lde_trigger_nodes) = if epsilon < 2.5e-8 {
-            let cap = dc_pass1_cap_for(epsilon);
+            let cap = pass1_prefix_leaf_cap_for(epsilon);
             let mult: u64 = if epsilon <= 1e-8 { 3 } else { 1 };
             (2, cap.saturating_mul(mult))
         } else {
@@ -1072,8 +1072,8 @@ impl SynthesizerQ {
             epsilon,
             min_lde,
             max_lde: max_lde_override,
-            dc_split,
-            dc_dr_filter,
+            prefix_split_m,
+            inner_det_phase_filter,
             use_f64_gs,
             bkz_block_size,
             parallel_lde_window,
@@ -1133,8 +1133,8 @@ impl SynthesizerQ {
     /// `m`. Splits each lattice search at lde k_total into a length-m FGKM
     /// prefix `U_L` (enumerated from `L_m^Q`) plus an inner LLL+SE search at
     /// k_inner = k_total − k_prefix, then composes. Off by default.
-    pub fn with_dc_split(mut self, m: u32) -> Self {
-        self.dc_split = Some(m);
+    pub fn with_prefix_split_m(mut self, m: u32) -> Self {
+        self.prefix_split_m = Some(m);
         self
     }
 
@@ -1144,8 +1144,8 @@ impl SynthesizerQ {
     /// Completeness caveat: a target's right factorization may not lie
     /// in any single d_R bucket — widening the set or iterating m covers
     /// more cases.
-    pub fn with_dc_dr_filter(mut self, allowed_offsets: Vec<u32>) -> Self {
-        self.dc_dr_filter = allowed_offsets;
+    pub fn with_inner_det_phase_filter(mut self, allowed_offsets: Vec<u32>) -> Self {
+        self.inner_det_phase_filter = allowed_offsets;
         self
     }
 
@@ -1177,7 +1177,7 @@ impl SynthesizerQ {
 
     /// Override the Stage-2 m-sweep list (m=0 = single-search, m≥1 = D&C
     /// with that FGKM-prefix split). Empty Vec disables the m-sweep and
-    /// falls back to Stage-1 behaviour (use the configured `dc_split`).
+    /// falls back to Stage-1 behaviour (use the configured `prefix_split_m`).
     pub fn with_optimal_m_sweep(mut self, ms: Vec<u32>) -> Self {
         self.optimal_m_sweep = ms;
         self
@@ -1236,7 +1236,7 @@ impl SynthesizerQ {
     ///
     /// **Backend**: hybrid — brute-force `enumerate_unitary_norm_shell` for `k ≤ BRUTE_LIMIT`
     /// (=3), then single-shot 16D L²-LLL + Schnorr-Euchner `find_aligned_lattice_points` (optionally
-    /// BKZ-reduced) and an FGKM-prefix divide-and-conquer mode (`dc_search_q`)
+    /// BKZ-reduced) and an FGKM-prefix divide-and-conquer mode (`prefix_split_search_q`)
     /// for larger / deep k.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
         self.synthesize_with_unclear(target, None)
@@ -1338,9 +1338,9 @@ impl SynthesizerQ {
                         } else {
                             None
                         };
-                        let (result, budget_hit) = self.dc_search_q(
+                        let (result, budget_hit) = self.prefix_split_search_q(
                             target, k, m_split, None,
-                            self.cap_div(dc_pass1_cap_for(self.epsilon)),
+                            self.cap_div(pass1_prefix_leaf_cap_for(self.epsilon)),
                             abort_opt, consumed_opt, None, None,
                         );
                         let dt = t_k.elapsed().as_secs_f64() * 1000.0;
@@ -1394,7 +1394,7 @@ impl SynthesizerQ {
     /// hit budget without finding (every other level was exhausted — no
     /// solution exists there). Returns the find plus the levels that hit
     /// budget AGAIN, which the caller reports as unclear.
-    fn dc_pass2_retry(
+    fn retry_budget_truncated_levels(
         &self,
         target: &Mat2,
         m_split: u32,
@@ -1411,9 +1411,9 @@ impl SynthesizerQ {
             if trace {
                 eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
             }
-            let (result, budget_hit) = self.dc_search_q(
+            let (result, budget_hit) = self.prefix_split_search_q(
                 target, k, m_split, None,
-                self.cap_div(dc_pass2_cap_for(self.epsilon)),
+                self.cap_div(pass2_prefix_leaf_cap_for(self.epsilon)),
                 None, None, None, None,
             );
             if let Some(r) = result {
@@ -1557,12 +1557,12 @@ impl SynthesizerQ {
         // budget-hit levels are requeued at the pass-2 cap so a
         // budget-truncated lde is never silently skipped (min-lde
         // correctness) while easy targets stay cheap.
-        if let Some(m_split) = self.dc_split {
+        if let Some(m_split) = self.prefix_split_m {
             // Budget-hit levels the pass-2 queue will never retry (it
             // covers the main sweep, not this fallback; a find aborts
             // the queue) — reported through `unclear_out`.
             let mut unverified_small: Vec<u32> = Vec::new();
-            // Sequential small-k pass: dc_search_q cannot help for k <= m_split
+            // Sequential small-k pass: prefix_split_search_q cannot help for k <= m_split
             // (k_inner ≤ 0). These are typically few levels near lattice_start.
             for k in lattice_start..=m_split.min(self.max_lde) {
                 let t_k = std::time::Instant::now();
@@ -1600,8 +1600,8 @@ impl SynthesizerQ {
                         break;
                     }
                     let t_k = std::time::Instant::now();
-                    let (result, budget_hit) = self.dc_search_q(
-                        &target, k, m_split, None, self.cap_div(dc_pass1_cap_for(self.epsilon)),
+                    let (result, budget_hit) = self.prefix_split_search_q(
+                        &target, k, m_split, None, self.cap_div(pass1_prefix_leaf_cap_for(self.epsilon)),
                         None, None, None, None,
                     );
                     if let Some(r) = result {
@@ -1625,7 +1625,7 @@ impl SynthesizerQ {
                     }
                     if budget_hit { pass2_collector.lock().unwrap().push(k); }
                 }
-                let (found, still_truncated) = self.dc_pass2_retry(
+                let (found, still_truncated) = self.retry_budget_truncated_levels(
                     &target, m_split, pass2_collector.into_inner().unwrap(),
                 );
                 if let Some(r) = found {
@@ -1649,7 +1649,7 @@ impl SynthesizerQ {
                 return Some(r);
             }
             let (found, still_truncated) =
-                self.dc_pass2_retry(&target, m_split, pass2_queue);
+                self.retry_budget_truncated_levels(&target, m_split, pass2_queue);
             if let Some(r) = found {
                 if let Some(out) = unclear_out.as_deref_mut() {
                     out.extend(unverified_small.iter().copied());
@@ -1732,7 +1732,7 @@ impl SynthesizerQ {
         None
     }
 
-    /// Z[ζ_16] analog of Clifford+T's `dc_search`: for each prefix
+    /// Z[ζ_16] analog of Clifford+T's `prefix_split_search`: for each prefix
     /// `U_L ∈ L_m^Q`, search the inner factor at `k_total − k_prefix` and
     /// compose; `d_R = (d_target − d_L) mod 16` parametrises the inner
     /// reconstruction so `U_L · U_R` matches the target's det phase.
@@ -1741,7 +1741,7 @@ impl SynthesizerQ {
     /// Prefixes run under rayon with per-worker scratch; nested SE
     /// parallelism over-subscribes the pool, which work-stealing handles.
     #[allow(clippy::too_many_arguments)]
-    fn dc_search_q(
+    fn prefix_split_search_q(
         &self,
         target: &Mat2,
         k_total: u32,
@@ -1777,18 +1777,18 @@ impl SynthesizerQ {
         // required d_R isn't in the allowed-offsets set. Each entry
         // carries its precomputed decomposed cost for Stage-3 ranking
         // + heuristic pruning.
-        let dc_dr_filter: &[u32] = dr_filter_override.unwrap_or(&self.dc_dr_filter);
+        let inner_det_phase_filter: &[u32] = dr_filter_override.unwrap_or(&self.inner_det_phase_filter);
         let mut cand_idx: Vec<(usize, usize)> = prefixes
             .iter()
             .enumerate()
             .filter(|(_, u_l)| u_l.k < k_total)
             .filter(|(_, u_l)| {
-                if dc_dr_filter.is_empty() {
+                if inner_det_phase_filter.is_empty() {
                     return true;
                 }
                 let d_l = det_phase_of(&u_l.to_float());
                 let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
-                dc_dr_filter.contains(&d_r)
+                inner_det_phase_filter.contains(&d_r)
             })
             .map(|(i, _)| (i, prefix_costs[i]))
             .collect();
@@ -1871,7 +1871,7 @@ impl SynthesizerQ {
         };
 
         // Shared best-cost tracker; a caller-supplied atomic lets all
-        // concurrent dc_search_q calls prune against one (pre-seeded)
+        // concurrent prefix_split_search_q calls prune against one (pre-seeded)
         // global incumbent.
         let local_best_cost = std::sync::atomic::AtomicUsize::new(usize::MAX);
         let best_cost: &std::sync::atomic::AtomicUsize =
@@ -2079,7 +2079,7 @@ impl SynthesizerQ {
     /// surplus to later phases — beat or tied every hand-tuned split.
     /// Env: CYCLOSYNTH_SEQ_M (1/0 forces), CYCLOSYNTH_SEQ_M_SPLIT
     /// (explicit per-phase ms), CYCLOSYNTH_SEQ_ROLLFWD=0.
-    fn run_frontier(
+    fn run_frontier_grouped_by_m(
         &self,
         target: &Mat2,
         tasks: &[(u32, u32)],
@@ -2095,7 +2095,7 @@ impl SynthesizerQ {
         m_groups.sort_unstable();
         m_groups.dedup();
         if !seq_m || m_groups.len() <= 1 {
-            return self.dc_frontier_q(
+            return self.min_cost_frontier_search(
                 target,
                 tasks,
                 std::time::Duration::from_millis(deadline_ms),
@@ -2128,7 +2128,7 @@ impl SynthesizerQ {
             };
             let group: Vec<(u32, u32)> =
                 tasks.iter().copied().filter(|&(_, m)| m == mg).collect();
-            let (g_fr, g_tr) = self.dc_frontier_q(
+            let (g_fr, g_tr) = self.min_cost_frontier_search(
                 target,
                 &group,
                 std::time::Duration::from_millis(share),
@@ -2162,7 +2162,7 @@ impl SynthesizerQ {
     /// chunks, and stopped by deadline or floor-exhaustion — both cut
     /// only candidates costing ≥ the incumbent. A large per-prefix node
     /// cap backstops pathological prefixes. `cost_lb(k_inner)` is NOT in
-    /// the floor (unsound — see `dc_search_q`).
+    /// the floor (unsound — see `prefix_split_search_q`).
     ///
     /// Returns the min-cost find plus a per-level truncation flag
     /// (parallel to `levels`): a level is marked truncated when any of
@@ -2170,7 +2170,7 @@ impl SynthesizerQ {
     /// backstop cap. Conservative over-marking (a walk that finished
     /// cleanly right at the deadline may be marked) keeps the ledger
     /// honest; sound floor-kills are NOT truncation, as today.
-    fn dc_frontier_q(
+    fn min_cost_frontier_search(
         &self,
         target: &Mat2,
         levels: &[(u32, u32)],
@@ -2190,7 +2190,7 @@ impl SynthesizerQ {
         // Backstop node cap per unit — generous (the deadline is the
         // primary stop), but bounded so one pathological prefix can't
         // monopolise the frontier.
-        let per_prefix_cap = dc_pass2_cap_for(epsilon)
+        let per_prefix_cap = pass2_prefix_leaf_cap_for(epsilon)
             .saturating_mul(self.optimal_budget_multiplier.max(1));
 
         // Keep the per-m prefix caches alive for the unit borrows below.
@@ -2200,12 +2200,12 @@ impl SynthesizerQ {
             levels.iter().map(|&(_, m)| build_l_q_tq(m)).collect();
 
         #[derive(Clone, Copy)]
-        struct Unit<'a> {
+        struct PrefixWorkUnit<'a> {
             u_l: &'a U2Q,
             k_total: u32,
             d_r: u32,
             /// `cost(U_L) + class_cost_lb_half_units(d_R)` — the sound
-            /// per-prefix bound from `dc_search_q`, in the half-unit
+            /// per-prefix bound from `prefix_split_search_q`, in the half-unit
             /// currency shared by every (k, m) arm.
             floor: usize,
             level_idx: usize,
@@ -2214,7 +2214,7 @@ impl SynthesizerQ {
         let truncated: Vec<AtomicBool> =
             levels.iter().map(|_| AtomicBool::new(false)).collect();
 
-        let mut units: Vec<Unit> = Vec::new();
+        let mut units: Vec<PrefixWorkUnit> = Vec::new();
         for (li, &(k_total, m)) in levels.iter().enumerate() {
             // Mirror `try_optimal_variant`: m ≥ k arms don't run (the
             // D&C split needs k_inner ≥ 1 for every prefix).
@@ -2226,7 +2226,7 @@ impl SynthesizerQ {
             let filter = if self.optimal_open_dr_filter {
                 Vec::new()
             } else {
-                default_dc_dr_filter(m)
+                default_inner_det_phase_filter(m)
             };
             // (prefix index, d_R, floor) candidates for this level.
             let mut cands: Vec<(usize, u32, usize)> = Vec::new();
@@ -2262,7 +2262,7 @@ impl SynthesizerQ {
                 cands.retain(|_| *it.next().unwrap());
             }
             for (pi, d_r, floor) in cands {
-                units.push(Unit {
+                units.push(PrefixWorkUnit {
                     u_l: &level_prefixes[li][pi],
                     k_total,
                     d_r,
@@ -2288,7 +2288,7 @@ impl SynthesizerQ {
         let opt_chunk = if OPTIMAL_PAR_MIN_LEN == 0 { chunk } else { OPTIMAL_PAR_MIN_LEN };
 
         // Per-unit watch: the watcher enforces both the sound
-        // incumbent-floor kill (as in `dc_search_q`) and the deadline
+        // incumbent-floor kill (as in `prefix_split_search_q`) and the deadline
         // abort (which additionally marks the unit's level truncated —
         // the watcher is the only place that knows WHY it killed a walk).
         struct PrefixWatch {
@@ -2307,7 +2307,7 @@ impl SynthesizerQ {
 
         let per_unit = |scratch: &mut IntScratch16,
                         idx: usize,
-                        u: &Unit|
+                        u: &PrefixWorkUnit|
          -> Option<(usize, SynthResultQ)> {
             // (a) deadline pre-dispatch: never-started units leave their
             // level truncated (work provably remained at the cutoff).
@@ -3004,7 +3004,7 @@ impl SynthesizerQ {
         // With a deadline configured and certify off, all (k, m ≥ 1)
         // arms run as ONE floor-ordered prefix frontier under a wall
         // deadline instead of per-arm node budgets (see
-        // `dc_frontier_q`). The legacy task grid below remains the
+        // `min_cost_frontier_search`). The legacy task grid below remains the
         // certify path (honest budget-truncation semantics) and the
         // deep-ε path (deadline default None), and still handles
         // m = 0 arms (single-shot probes are not prefix work-units).
@@ -3031,7 +3031,7 @@ impl SynthesizerQ {
                 }
                 let t_w = std::time::Instant::now();
                 let (fr, level_truncated) =
-                    self.run_frontier(&target, &tasks, deadline_ms, shared_best);
+                    self.run_frontier_grouped_by_m(&target, &tasks, deadline_ms, shared_best);
                 if trace {
                     eprintln!(
                         "[zeta] optimal frontier {:?} deadline={}ms t={:.0}ms truncated={:?}",
@@ -3074,7 +3074,7 @@ impl SynthesizerQ {
                     .iter()
                     .map(|&(k, m)| {
                         // 16 MiB stack: these threads participate in
-                        // rayon's in-place execution of dc_search_q,
+                        // rayon's in-place execution of prefix_split_search_q,
                         // whose per-prefix scratch + SE recursion
                         // overflow the 2 MiB scoped-thread default
                         // (observed SIGABRT at lde_window = 2).
@@ -3189,10 +3189,10 @@ impl SynthesizerQ {
             let filter = if self.optimal_open_dr_filter {
                 Vec::new()
             } else {
-                default_dc_dr_filter(m)
+                default_inner_det_phase_filter(m)
             };
-            let cap = dc_pass1_cap_for(self.epsilon).saturating_mul(budget_mult);
-            let (r, budget_hit) = self.dc_search_q(
+            let cap = pass1_prefix_leaf_cap_for(self.epsilon).saturating_mul(budget_mult);
+            let (r, budget_hit) = self.prefix_split_search_q(
                 &target, k, m, Some(&filter), cap, None, None, Some(cost_min),
                 shared_best_cost,
             );

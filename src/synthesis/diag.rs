@@ -7,7 +7,7 @@
 //!   CYCLOSYNTH_TRACE=1 ./time_synthesis ...
 //!
 //! Output is printed to stderr (so it doesn't pollute timing tables on stdout).
-//! The diagnostic boundary is one `dc_search` call: counters are reset at the
+//! The diagnostic boundary is one `prefix_split_search` call: counters are reset at the
 //! start and dumped at the end, showing per-lde where time and prefix count
 //! went.
 
@@ -18,7 +18,7 @@ static TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 /// Diagnostic-only: capture the raw integer x at the moment a should_stop
 /// check returns true inside the SE walk. Set when `CYCLOSYNTH_CAPTURE=1`
-/// and `dc_search_q_mpfr`'s should_stop fires. Read by diagnostic probes
+/// and `prefix_split_search_q`'s should_stop fires. Read by diagnostic probes
 /// to do cap-membership / region-mismatch tests.
 #[derive(Clone, Debug)]
 pub struct CapturedFind {
@@ -53,7 +53,7 @@ pub fn trace_enabled() -> bool {
     })
 }
 
-// ─── Per-lde counters (reset at the start of each dc_search) ─────────────────
+// ─── Per-lde counters (reset at the start of each prefix_split_search) ─────────────────
 
 /// MA prefixes considered at this lde.
 pub static N_PREFIXES: AtomicU64 = AtomicU64::new(0);
@@ -63,7 +63,7 @@ pub static N_PREFIXES: AtomicU64 = AtomicU64::new(0);
 pub static N_MAT_TO_UV_REJECTED: AtomicU64 = AtomicU64::new(0);
 
 /// Total Schnorr-Euchner leaf-callback invocations summed across all
-/// prefixes in this dc_search. Useful for spotting individual prefixes
+/// prefixes in this prefix_split_search. Useful for spotting individual prefixes
 /// whose ellipsoid is "fat" relative to alignment requirements.
 pub static N_SE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 
@@ -100,7 +100,7 @@ pub static N_DIST_REJECTED: AtomicU64 = AtomicU64::new(0);
 
 // ─── Per-phase nanosecond accumulators ───────────────────────────────────────
 //
-// CPU-summed nanoseconds across all find_aligned_lattice_points calls in the current dc_search.
+// CPU-summed nanoseconds across all find_aligned_lattice_points calls in the current prefix_split_search.
 // Total ≈ wall-time × n_threads in steady state (high parallel efficiency).
 
 pub static T_BUILD_NS: AtomicU64 = AtomicU64::new(0);
@@ -111,9 +111,9 @@ pub static T_SE_NS: AtomicU64 = AtomicU64::new(0);
 
 // ─── LLL iteration telemetry ─────────────────────────────────────────────────
 
-/// Sum of LLL inner-loop iterations across all find_aligned_lattice_points calls in this dc_search.
+/// Sum of LLL inner-loop iterations across all find_aligned_lattice_points calls in this prefix_split_search.
 pub static N_LLL_ITERS_TOTAL: AtomicU64 = AtomicU64::new(0);
-/// Max iter count seen by any single LLL call in this dc_search.
+/// Max iter count seen by any single LLL call in this prefix_split_search.
 pub static N_LLL_ITERS_MAX: AtomicU64 = AtomicU64::new(0);
 /// LLL calls that hit the safety cap (typically 10_000 iters). Should be 0;
 /// non-zero indicates LLL cycling at the active precision.
@@ -341,25 +341,25 @@ pub fn snapshot() -> Snapshot {
     }
 }
 
-// ─── M2: 8D dc_search branch-win telemetry (prefix-rework stage 0) ───────────
+// ─── M2: 8D prefix_split_search branch-win telemetry (prefix-rework stage 0) ───────────
 //
 // Appended 2026-06-11 (plan_8d_prefix_rework.md M2). Always-on and
 // CUMULATIVE across the process — deliberately NOT in `reset_all`: they
-// fire at most once per dc_search find (cold path), and try_at_lde's
+// fire at most once per prefix_split_search find (cold path), and try_at_lde's
 // per-pass reset_all would otherwise wipe them before a suite can
 // aggregate. Read at end-of-run by bench_t_breakdown / probes; a per-win
 // `[m2]` stderr line (trace-gated) carries the full distribution.
 
-/// dc_search finds that landed in the EVEN inner branch (U_L·U_R).
+/// prefix_split_search finds that landed in the EVEN inner branch (U_L·U_R).
 pub static N_BRANCH_WIN_EVEN: AtomicU64 = AtomicU64::new(0);
-/// dc_search finds that landed in the ODD inner branch (U_L·U_R·T).
+/// prefix_split_search finds that landed in the ODD inner branch (U_L·U_R·T).
 pub static N_BRANCH_WIN_ODD: AtomicU64 = AtomicU64::new(0);
 /// Sum of winning-prefix sweep indices (mean position = sum / wins).
 pub static N_WIN_PREFIX_IDX_SUM: AtomicU64 = AtomicU64::new(0);
 /// Sum of sweep lengths at each win (mean fraction = idx_sum / len_sum).
 pub static N_WIN_PREFIX_LEN_SUM: AtomicU64 = AtomicU64::new(0);
 
-/// Record one dc_search find (M2). `idx` is the prefix's position in the
+/// Record one prefix_split_search find (M2). `idx` is the prefix's position in the
 /// sweep order actually used, `len` the sweep length.
 pub fn record_branch_win(odd: bool, idx: usize, len: usize, lde: u32) {
     if odd {

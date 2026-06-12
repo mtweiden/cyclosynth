@@ -14,7 +14,7 @@
 //!   right-side branches, each combined with all 24 Clifford left
 //!   prefixes. Fast for small `t`; exponential beyond that.
 //!
-//! - [`dc_search`] (`t > direct_limit`, Algorithm 3.11): divide-and-
+//! - [`prefix_split_search`] (`t > direct_limit`, Algorithm 3.11): divide-and-
 //!   conquer using Matsumoto–Amano left prefixes `L_{t'}`. Splits at
 //!   `t' = max(t − direct_limit, ⌈t − 5/2·log₂(1/ε)⌉)`. For each prefix
 //!   `U_L ∈ L_{t'}`, searches for the right factor via
@@ -105,7 +105,7 @@ fn mat_to_uv(u: &Mat2) -> Option<[Float; 4]> {
 /// 1 if det(m) is at the half-integer positions ζ^{odd}, or None if det is
 /// not on the 8th-root-of-unity circle.
 ///
-/// Used as an upstream algebraic filter for `dc_search`: the `mat_to_uv`
+/// Used as an upstream algebraic filter for `prefix_split_search`: the `mat_to_uv`
 /// rejection condition is exactly `det(U_L† · target) ∉ {ζ^{even}}`, which
 /// reduces to `parity(det(U_L)) ≠ parity(det(target))`. Skipping prefixes
 /// whose parity mismatches the target is provably equivalent to skipping
@@ -224,7 +224,7 @@ fn coset_mode_for(eps: Float) -> bool {
 #[cfg(test)]
 pub(crate) fn build_l_reference(t_prime: u32) -> Arc<Vec<U2T>> {
     // Legacy entry point (probes/tests): plain phase-dedup unless the env
-    // forces coset mode. Production (`dc_search` + the prewarm) goes
+    // forces coset mode. Production (`prefix_split_search` + the prewarm) goes
     // through `build_l` with `coset_mode_for(eps)`.
     build_l(t_prime, (*L_COSET_DEDUP).unwrap_or(false))
 }
@@ -344,7 +344,7 @@ fn solution_to_gates(sol: &[i64; 8], k: u32) -> String {
 // ─── Trace output helper ─────────────────────────────────────────────────────
 
 /// Emit one pass of the per-lde diagnostic block on stderr. Called at the
-/// end of each `dc_search` invocation when `CYCLOSYNTH_TRACE=1` is set.
+/// end of each `prefix_split_search` invocation when `CYCLOSYNTH_TRACE=1` is set.
 fn trace_dump_pass(
     t: u32,
     t_prime: u32,
@@ -390,7 +390,7 @@ fn trace_dump_pass(
     }
 }
 
-// ─── LLL-based aligned search (used by dc_search inner step) ─────────────────
+// ─── LLL-based aligned search (used by prefix_split_search inner step) ─────────────────
 
 /// Scale a 4-element alignment vector `v` to the 8-element y vector used by
 /// the lattice pipeline. `y = compute_align_vec(v) · sqrt(2^k) / 2`,
@@ -464,14 +464,14 @@ fn lll_aligned_search(
     // Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816), with
     // MPFR (rug) at adaptive precision in the LLL+Cholesky setup phase. The
     // SE step downcasts to f64. Scratch is reused across all prefixes within
-    // one rayon worker via map_init in dc_search.
+    // one rayon worker via map_init in prefix_split_search.
     crate::synthesis::lattice::find_aligned_lattice_points(
         scratch, &y, k, eps, max_solutions, max_leaf_checks, max_nodes,
         budget_hit, external_abort,
     )
 }
 
-// ─── Optimal D&C split (Proposition 3.13) ─────────────────────────────────────
+// ─── Optimal prefix-split point (Proposition 3.13) ──────────────────────────────────────────────────────────────
 
 /// Compute the optimal t' for the divide-and-conquer split (Proposition 3.13).
 ///
@@ -541,7 +541,7 @@ pub struct SynthesizerT {
     /// exact low-T-count solutions for Cliffords and other special gates.
     pub min_lde: u32,
     /// Maximum lde for direct_search (brute-force brute_aligned_search).
-    /// For t > direct_limit, skip direct_search and go straight to dc_search
+    /// For t > direct_limit, skip direct_search and go straight to prefix_split_search
     /// regardless of the optimal t' split. This prevents brute_aligned_search from
     /// hanging at large lde where it becomes O(2^(4t)) intractable.
     /// Default: 6 (brute_aligned_search is fast up to norm shell 2^6=64; beyond that
@@ -624,7 +624,7 @@ impl SynthesizerT {
             }
         }
 
-        // Phase 2: DC regime — skip the gap where dc_search exists but prefix lists
+        // Phase 2: DC regime — skip the gap where prefix_split_search exists but prefix lists
         // are tiny and lll_aligned_search is cheap anyway (t=direct_limit+1 .. t_dc_start-1)
         let t_dc_start = if self.epsilon < 1.0 {
             let raw = (5.0 / 2.0) * (1.0 / self.epsilon).log2();
@@ -665,11 +665,11 @@ impl SynthesizerT {
 
     /// Try to find a solution at denominator exponent `t`.
     ///
-    /// Dispatches to direct_search or dc_search:
+    /// Dispatches to direct_search or prefix_split_search:
     ///   - If t <= direct_limit AND optimal_t_prime == 0: direct_search (fast brute-force).
-    ///   - Otherwise: dc_search with adaptive cap retry.
+    ///   - Otherwise: prefix_split_search with adaptive cap retry.
     ///
-    /// Adaptive cap: first try dc_search with PASS1_CAP (aggressive — bails unproductive
+    /// Adaptive cap: first try prefix_split_search with PASS1_CAP (aggressive — bails unproductive
     /// prefixes quickly). If no solution found AND budget was actually exhausted, retry
     /// with PASS2_CAP (full budget). If pass 1 found no solution and budget was *not*
     /// exhausted, the search was already exhaustive at this lde — skip pass 2 and let the
@@ -694,7 +694,7 @@ impl SynthesizerT {
             }
             let t_start = std::time::Instant::now();
             let (result, budget_hit) =
-                self.dc_search(target, v, t, PASS1_CAP, PASS1_NODE_CAP);
+                self.prefix_split_search(target, v, t, PASS1_CAP, PASS1_NODE_CAP);
             let pass1_ms = t_start.elapsed().as_secs_f64() * 1000.0;
             if trace {
                 let s = crate::synthesis::diag::snapshot();
@@ -713,7 +713,7 @@ impl SynthesizerT {
             }
             let t_start2 = std::time::Instant::now();
             let (result2, budget_hit2) =
-                self.dc_search(target, v, t, PASS2_CAP, PASS2_NODE_CAP);
+                self.prefix_split_search(target, v, t, PASS2_CAP, PASS2_NODE_CAP);
             if trace {
                 let s = crate::synthesis::diag::snapshot();
                 trace_dump_pass(
@@ -826,7 +826,7 @@ impl SynthesizerT {
     /// returns any valid find (speed > completeness), so abort-racing is
     /// acceptable; the per-lde loop structure (hence the reported lde) is
     /// unchanged.
-    fn dc_search(
+    fn prefix_split_search(
         &self,
         target: &Mat2,
         v: [Float; 4],

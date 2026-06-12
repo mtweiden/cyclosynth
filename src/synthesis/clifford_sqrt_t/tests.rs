@@ -363,13 +363,13 @@
             assert!(r_s.is_some());
 
             let synth_m1 = SynthesizerQ::new(eps).with_max_lde(20)
-                .with_dc_split(1).with_dc_dr_filter(vec![0, 1, 15]);
+                .with_prefix_split_m(1).with_inner_det_phase_filter(vec![0, 1, 15]);
             let t0 = std::time::Instant::now();
             let r_m1 = synth_m1.synthesize(target);
             let tm1 = t0.elapsed().as_secs_f64() * 1000.0;
 
             let synth_m2 = SynthesizerQ::new(eps).with_max_lde(20)
-                .with_dc_split(2).with_dc_dr_filter(vec![0]);
+                .with_prefix_split_m(2).with_inner_det_phase_filter(vec![0]);
             let t0 = std::time::Instant::now();
             let r_m2 = synth_m2.synthesize(target);
             let tm2 = t0.elapsed().as_secs_f64() * 1000.0;
@@ -446,8 +446,8 @@
         for (m, filter, label) in configs {
             let synth = SynthesizerQ::new(eps)
                 .with_max_lde(15)
-                .with_dc_split(*m)
-                .with_dc_dr_filter(filter.to_vec());
+                .with_prefix_split_m(*m)
+                .with_inner_det_phase_filter(filter.to_vec());
             let t0 = std::time::Instant::now();
             let r = synth.synthesize(target);
             let dt = t0.elapsed();
@@ -495,7 +495,7 @@
 
         // D&C across several m values to characterize per-prefix cost.
         for m in [1u32, 2, 3] {
-            let synth_dc = SynthesizerQ::new(eps).with_max_lde(15).with_dc_split(m);
+            let synth_dc = SynthesizerQ::new(eps).with_max_lde(15).with_prefix_split_m(m);
             let t1 = std::time::Instant::now();
             let r_dc = synth_dc.synthesize(target);
             let t_dc = t1.elapsed();
@@ -514,24 +514,24 @@
     fn auto_defaults_at_various_eps() {
         // Default at ε=1e-6: D&C with m=1, |d_R|≤1 (relaxed filter).
         let s = SynthesizerQ::new(1e-6);
-        assert_eq!(s.dc_split, Some(1));
-        assert_eq!(s.dc_dr_filter, vec![0u32, 1, 15]);
+        assert_eq!(s.prefix_split_m, Some(1));
+        assert_eq!(s.inner_det_phase_filter, vec![0u32, 1, 15]);
 
         // Default at ε ≤ 1e-7: D&C with m=2, d_R=0 (strict filter) —
         // empirically faster + better lde quality at this depth.
         let s7 = SynthesizerQ::new(1e-7);
-        assert_eq!(s7.dc_split, Some(2));
-        assert_eq!(s7.dc_dr_filter, vec![0u32]);
+        assert_eq!(s7.prefix_split_m, Some(2));
+        assert_eq!(s7.inner_det_phase_filter, vec![0u32]);
         assert_eq!(s7.max_lde, 35, "max_lde should auto-bump at ε ≤ 1e-7");
 
         let s8 = SynthesizerQ::new(1e-8);
-        assert_eq!(s8.dc_split, Some(2));
-        assert_eq!(s8.dc_dr_filter, vec![0u32]);
+        assert_eq!(s8.prefix_split_m, Some(2));
+        assert_eq!(s8.inner_det_phase_filter, vec![0u32]);
 
         // Default at moderate ε: single search.
         let s3 = SynthesizerQ::new(1e-3);
-        assert_eq!(s3.dc_split, None);
-        assert_eq!(s3.dc_dr_filter, Vec::<u32>::new());
+        assert_eq!(s3.prefix_split_m, None);
+        assert_eq!(s3.inner_det_phase_filter, Vec::<u32>::new());
         assert_eq!(s3.max_lde, 30);
 
         // f64 GS is on at moderate ε but auto-disabled at ε ≤ 1e-8
@@ -543,9 +543,9 @@
         assert!(!SynthesizerQ::new(eps).use_f64_gs, "f64 default should be OFF at ε={eps:.0e}");
 
         // Manual override still works.
-        let s_override = SynthesizerQ::new(1e-7).with_dc_split(1).with_dc_dr_filter(vec![0, 1, 15]);
-        assert_eq!(s_override.dc_split, Some(1));
-        assert_eq!(s_override.dc_dr_filter, vec![0u32, 1, 15]);
+        let s_override = SynthesizerQ::new(1e-7).with_prefix_split_m(1).with_inner_det_phase_filter(vec![0, 1, 15]);
+        assert_eq!(s_override.prefix_split_m, Some(1));
+        assert_eq!(s_override.inner_det_phase_filter, vec![0u32, 1, 15]);
         let s_no_f64 = SynthesizerQ::new(1e-3).with_f64_gs(false);
         assert!(!s_no_f64.use_f64_gs);
 
@@ -1045,7 +1045,7 @@
                 [gp * Complex64::from_polar(st, p), gp * Complex64::from_polar(ct, p + l)],
             ];
             for (label, filt) in [("strict[0]", vec![0u32]), ("relaxed[0,1,15]", vec![0u32, 1, 15])] {
-                let synth = SynthesizerQ::new(1e-8).with_dc_dr_filter(filt);
+                let synth = SynthesizerQ::new(1e-8).with_inner_det_phase_filter(filt);
                 let t0 = std::time::Instant::now();
                 let r = synth.synthesize(target);
                 match r {

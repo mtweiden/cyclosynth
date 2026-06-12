@@ -15,7 +15,7 @@
 //! ## Why we want it for the Z[ζ_16] pipeline
 //!
 //! Tighter LLL output basis → smaller post-LLL Schnorr-Euchner region in
-//! `dc_search_q`. The fplll BKZ wisdom (Chen–Nguyen 2011): root-Hermite
+//! `prefix_split_search_q`. The fplll BKZ wisdom (Chen–Nguyen 2011): root-Hermite
 //! factor drops from `1.0219` (LLL) to `~1.0188` (β=4), `~1.0168`
 //! (β=8). At d=16 a 1.0188/1.0219 ratio compounded over 16 dimensions
 //! gives ~1.5× shorter `b*_0` empirically. The downstream SE region
