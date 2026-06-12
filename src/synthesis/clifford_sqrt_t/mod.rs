@@ -322,10 +322,11 @@ impl SynthesizerQ {
             deep_rot_src: None,
             my_screen_done: None,
             peer_screen_done: None,
-            // Window 3 below 1e-7: the cost minimum often sits above
-            // find-lde there; window 4 regresses (extra levels dilute
-            // the deadline).
-            optimal_lde_window: if epsilon < 1e-7 { 3 } else { 2 },
+            // Window 3 at and below 1e-7: the cost minimum often sits
+            // above find-lde there (post-dedup, w3+d2500 matches
+            // w2+d3500's cost at 30% less wall); window 4 regresses
+            // (extra levels dilute the deadline).
+            optimal_lde_window: if epsilon <= 1e-7 { 3 } else { 2 },
             budget_div: 1,
             // Open filters only where the cost they recover beats the
             // 3-6× enum wall they cost (audit: real optima excluded by
@@ -342,7 +343,10 @@ impl SynthesizerQ {
             } else if epsilon >= 1e-6 {
                 Some(1500)
             } else if epsilon >= 1e-7 {
-                Some(3500)
+                // Post-dedup the 1e-7 cliff is gone (smooth curve); with
+                // window 3 the 2500 ms point matches the old 3500 ms
+                // cost band at 30% less wall.
+                Some(2500)
             } else {
                 Some(10_000)
             },
