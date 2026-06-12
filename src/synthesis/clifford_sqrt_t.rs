@@ -839,9 +839,13 @@ fn default_optimal_m_sweep(epsilon: f64) -> Vec<u32> {
     } else if epsilon >= 1e-7 {
         vec![1, 2]
     } else {
-        // m={1}: the 12/12-wins 1e-8 sweep config (deduped sound walk);
-        // the old "m=1 too noisy at depth" verdict was phantom-era.
-        vec![1]
+        // m={1,2} under SEQUENTIAL phases (the deep-ε default, see
+        // `synthesize_optimal_certified`): interleaved m={1,2} loses to
+        // m={1} alone at any deadline (the merged frontier's cost-floor
+        // order lets m=2's 6× fan-out starve deep m=1 units), but m=1-
+        // then-m=2 phases win decisively — 836.5 → 824.5 at 1e-8 N=12
+        // d=10 s with roll-forward, 12/12 wins, hand-tuned splits ≤ tied.
+        vec![1, 2]
     }
 }
 
@@ -3406,16 +3410,22 @@ impl SynthesizerQ {
                     }
                 }
                 let t_w = std::time::Instant::now();
-                // Sequential per-m phases (experiment, CYCLOSYNTH_SEQ_M=1):
-                // the merged frontier interleaves ALL arms by cost floor,
-                // so m=2's ~6× prefix fan-out starves deep m=1 units no
-                // matter the deadline (1e-8 N=12 d=60 s: interleaved
-                // m={1,2} = 850.0 vs m={1} alone = 831.0). Running the m
-                // groups lowest-first, each under an equal share of the
-                // deadline, lets m=1 saturate before m=2 spends a cycle;
-                // the shared incumbent carries finds forward as the next
-                // phase's prune floor.
-                let seq_m = std::env::var("CYCLOSYNTH_SEQ_M").as_deref() == Ok("1");
+                // Sequential per-m phases: the merged frontier interleaves
+                // ALL arms by cost floor, so m=2's ~6× prefix fan-out
+                // starves deep m=1 units no matter the deadline (1e-8
+                // N=12 d=60 s: interleaved m={1,2} = 850.0 vs m={1} alone
+                // = 831.0). Running the m groups lowest-first, each under
+                // a share of the deadline, lets m=1 saturate before m=2
+                // spends a cycle; the shared incumbent carries finds
+                // forward as the next phase's prune floor. Default ON
+                // below 1e-7 (824.5 vs 836.5 at d=10 s); at 1e-6/1e-7 the
+                // interleaved order measured better, so default OFF there.
+                // CYCLOSYNTH_SEQ_M=1/0 forces either way.
+                let seq_m = match std::env::var("CYCLOSYNTH_SEQ_M").as_deref() {
+                    Ok("1") => true,
+                    Ok("0") => false,
+                    _ => self.epsilon < 1e-7,
+                };
                 let mut m_groups: Vec<u32> = tasks.iter().map(|&(_, m)| m).collect();
                 m_groups.sort_unstable();
                 m_groups.dedup();
@@ -3429,15 +3439,32 @@ impl SynthesizerQ {
                         .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
                         .unwrap_or_default();
                     let equal = (deadline_ms / m_groups.len() as u64).max(1);
+                    // Roll-forward (default on; CYCLOSYNTH_SEQ_ROLLFWD=0
+                    // disables; explicit-split mode is exempt): a phase
+                    // whose frontier finishes early (incumbent-pruned
+                    // levels, not exhaustion) returns before its share is
+                    // up; recomputing shares from the time actually left
+                    // hands the surplus to the remaining phases. Beat or
+                    // tied every hand-tuned split (824.5 vs 825.5-835.0
+                    // at 1e-8 d=10 s) with no tuning constant.
+                    let rollfwd = split.is_empty()
+                        && std::env::var("CYCLOSYNTH_SEQ_ROLLFWD").as_deref() != Ok("0");
+                    let t_phases = std::time::Instant::now();
                     let mut best_fr: Option<(usize, SynthResultQ)> = None;
                     let mut trunc_by_task: Vec<((u32, u32), bool)> = Vec::new();
                     for (gi, &mg) in m_groups.iter().enumerate() {
-                        let share = split
-                            .get(gi)
-                            .or(split.last())
-                            .copied()
-                            .unwrap_or(equal)
-                            .max(1);
+                        let share = if rollfwd {
+                            let left = deadline_ms
+                                .saturating_sub(t_phases.elapsed().as_millis() as u64);
+                            (left / (m_groups.len() - gi) as u64).max(1)
+                        } else {
+                            split
+                                .get(gi)
+                                .or(split.last())
+                                .copied()
+                                .unwrap_or(equal)
+                                .max(1)
+                        };
                         let group: Vec<(u32, u32)> =
                             tasks.iter().copied().filter(|&(_, m)| m == mg).collect();
                         let (g_fr, g_tr) = self.dc_frontier_q(
