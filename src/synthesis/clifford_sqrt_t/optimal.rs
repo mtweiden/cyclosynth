@@ -605,8 +605,10 @@ impl SynthesizerQ {
         // same wall). CYCLOSYNTH_SEQ_PARITY=0 re-enables concurrency —
         // the halved wall is a legitimate fast-mode trade. The shared
         // incumbent flows identically either way.
-        let force_sequential = self.epsilon < 2.5e-8
-            && std::env::var("CYCLOSYNTH_SEQ_PARITY").as_deref() != Ok("0");
+        let force_sequential = self.seq_parity.unwrap_or_else(|| {
+            self.epsilon < 2.5e-8
+                && std::env::var("CYCLOSYNTH_SEQ_PARITY").as_deref() != Ok("0")
+        });
         if force_sequential {
             // No peer exists in sequential mode — pre-set BOTH handshake
             // flags or the frontier dead-sleeps its full 4×deadline

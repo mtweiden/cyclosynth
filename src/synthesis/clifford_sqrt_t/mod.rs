@@ -174,6 +174,12 @@ pub struct SynthesizerQ {
     /// circuits with Q-count ≡ d(target) (mod 2) — half the pool.
     /// Builder: [`Self::with_odd_parity_branch`].
     pub odd_parity_branch: bool,
+    /// Override the deep-ε sequential-parity schedule: `None` = ε rule
+    /// (sequential below 2.5e-8, where each branch saturates the pool
+    /// alone), `Some(false)` = concurrent branches — the fast trade
+    /// (~⅓ wall for ~+1pp cost at 1e-8 with deadline 3000).
+    /// Builder: [`Self::with_seq_parity`].
+    pub seq_parity: Option<bool>,
     /// Run enum tasks with an open det-phase filter (all 16 classes):
     /// the closed first-hit defaults exclude classes containing cost
     /// optima. Builder: [`Self::with_optimal_open_dr_filter`].
@@ -333,6 +339,7 @@ impl SynthesizerQ {
             // the closed first-hit filters at ε ≤ 1e-5; ~nothing above).
             optimal_open_dr_filter: epsilon <= 1e-5,
             odd_parity_branch: true,
+            seq_parity: None,
             // ε-scaled anytime deadlines, each swept to the knee of its
             // cost/deadline curve (1e-7 cliffs at 3.0-3.5 s — the deep
             // arms' time-to-first-candidate; 1e-8 saturates near 10 s
@@ -440,6 +447,13 @@ impl SynthesizerQ {
     /// See the `optimal_deadline_ms` field doc.
     pub fn with_optimal_deadline_ms(mut self, ms: Option<u64>) -> Self {
         self.optimal_deadline_ms = ms;
+        self
+    }
+
+    /// Force (`true`) or disable (`false`) sequential parity branches
+    /// at deep ε; `None` restores the ε rule. See the field doc.
+    pub fn with_seq_parity(mut self, seq: Option<bool>) -> Self {
+        self.seq_parity = seq;
         self
     }
 
