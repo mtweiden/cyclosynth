@@ -19,6 +19,12 @@
 //! 7th arg: anytime-frontier deadline override — integer ms, or "none"
 //! to force the legacy per-arm-budget task grid. Empty/unset → builder
 //! default. (Also settable via env CYCLOSYNTH_DEADLINE_MS.)
+//!
+//! 8th arg: ζ right-coset prefix dedup A/B — "0" or "1", forwarded to
+//! `CYCLOSYNTH_ZETA_COSET` via set_var before any synthesis (direct
+//! env-prefixed execution is denied in the agent harness — same
+//! workaround as bench_t_breakdown's `--coset`). Empty/unset → leave
+//! the env/default alone.
 
 use cyclosynth::synthesis::clifford_t::SynthesizerT;
 use cyclosynth::synthesis::clifford_sqrt_t::SynthesizerQ;
@@ -127,6 +133,10 @@ fn main() {
         .filter(|s| !s.is_empty())
         .cloned()
         .or_else(|| std::env::var("CYCLOSYNTH_DEADLINE_MS").ok());
+    if let Some(coset) = args.get(7).filter(|s| *s == "0" || *s == "1") {
+        // Must run before the first synthesis (LazyLock-once read).
+        unsafe { std::env::set_var("CYCLOSYNTH_ZETA_COSET", coset) };
+    }
     let mode_label = match mode {
         Mode::First => "first-hit",
         Mode::Optimal => "optimal",
@@ -142,9 +152,10 @@ fn main() {
     )).collect();
 
     let verbose = n <= 20;
-    println!("ε={eps:e}, n={n} U3 targets, seed=0x{seed:X}, cost = T + 3.5·Q, √T mode={mode_label}, lde_window={lde_window}, m_sweep={}, deadline={}\n",
+    println!("ε={eps:e}, n={n} U3 targets, seed=0x{seed:X}, cost = T + 3.5·Q, √T mode={mode_label}, lde_window={lde_window}, m_sweep={}, deadline={}, zeta_coset={}\n",
         m_sweep_override.as_ref().map(|v| format!("{:?}", v)).unwrap_or_else(|| "auto".to_string()),
-        deadline_override.as_deref().unwrap_or("auto"));
+        deadline_override.as_deref().unwrap_or("auto"),
+        std::env::var("CYCLOSYNTH_ZETA_COSET").as_deref().unwrap_or("default(1)"));
 
     if mode == Mode::Compare {
         run_compare(&targets, eps, verbose, lde_window, m_sweep_override, deadline_override);
