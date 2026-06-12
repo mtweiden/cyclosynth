@@ -212,47 +212,14 @@ where
         diag::T_BUILD_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // ─── Step 2: L²-LLL with adaptive precision ladder ───────────────
-    //
-    // fplll's `wrapper.cpp` runs a precision ladder: try low-precision
-    // first, escalate on detected failure. Their full ladder is
-    //   `double` (53 bit) → `dpe_t` (double + long expo) → `dd_real`
-    //   (~106 bit) → `mpfr_t` (arbitrary).
-    // We use the same idea with a 2-step ladder over our two backends:
-    //
-    //   1. **f64 GS** (`lll_f64::run_lll_16_f64`): 52 mantissa bits,
-    //      ~2.5× faster per call than MPFR-80. fplll's `l2_min_prec`
-    //      formula `≥ 10 + 2·log d − log ε + d·log ρ` says we need ~50
-    //      bits at d=16, ε=1e-8, leaving f64 with a 2-bit margin.
-    //      Empirically converges through ε=1e-7; ε=1e-8 is borderline.
-    //
-    //   2. **MPFR-80** (`run_lll_16` at `GS_PREC=80`, the default): 80
-    //      mantissa bits, ~30-bit margin at ε=1e-8 — comfortably safe.
-    //      ~2.5× slower per call but reliable.
-    //
-    // **Failure detection** (signals the f64 path is past its precision
-    // budget):
-    //   (a) `LllResult::IterCap` — LLL didn't converge in MAX_LLL_ITERS.
-    //       Strong signal of GS-state cycling from precision loss.
-    //   (b) `det16_exact == Some(d)` with `d ∉ {±1}` — basis became
-    //       non-unimodular under f64 LLL's transformations. Means the
-    //       size-reduction's f64 mu-rounding accumulated a wrong basis
-    //       update somewhere.
-    //
-    // **Not escalated**:
-    //   - `LllResult::GramOverflow`: the i256 Gram buffer overflowed,
-    //     not a precision issue. MPFR can't help — we'd need wider
-    //     integers. Return empty.
-    //   - `det16_exact == None`: i128 Bareiss elimination overflowed at
-    //     d=16 (rare at deep ε per the chunk 2 caveat). Treat as
-    //     inconclusive-success and proceed; no clean fallback.
-    //
-    // The escalation cost is one full LLL setup + run. When f64 succeeds
-    // (ε ≥ 1e-7 typically), the ladder's overhead is just a det check
-    // (≤ 1 μs) — negligible. When f64 fails, we pay 2× LLL.
-    //
-    // Diag counter `N_LLL_F64_ESCALATIONS` tracks how often this fires.
-    // Should be 0 at moderate ε; non-zero only at ε ≤ 1e-8.
+    // Step 2: L²-LLL on a 2-step precision ladder (fplll's wrapper
+    // strategy): f64 GS first — its ~50-bit requirement at d=16, eps=1e-8
+    // leaves only a 2-bit margin, so failures happen — then MPFR-80 on
+    // IterCap (GS-state cycling) or a non-unimodular det (mu-rounding
+    // corrupted a basis update). GramOverflow is NOT escalated (an i256
+    // saturation, precision cannot help); det = None (Bareiss i128
+    // overflow) is treated as inconclusive-success. Success costs a
+    // <=1 us det check; failure pays 2x LLL.
 
     let t_lll = if trace { Some(std::time::Instant::now()) } else { None };
     let initial_use_f64 = scratch.use_f64_gs;
