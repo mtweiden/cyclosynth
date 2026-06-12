@@ -518,7 +518,7 @@
     }
 
     #[test]
-    fn solution_to_u2q_d_0_matches_su2() {
+    fn solution_with_det_phase_0_matches_su2() {
         let sol = [1, 2, -1, 0, 0, 1, 0, -1,    -2, 1, 0, 1, 1, 0, -1, 0];
         let u_default = solution_to_u2q(&sol, 4);
         let u_d0 = solution_to_u2q_with_det_phase(&sol, 4, 0);

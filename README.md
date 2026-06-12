@@ -116,24 +116,21 @@ Synthesizer::synthesize(target)
         │
         ▼
   for t in 0, 1, 2, ...                       (T-count budget)
-        ├── if t ≤ direct_limit:                 → search::aligned_search
+        ├── if t ≤ direct_limit:                 → search::brute_aligned_search
         │     brute-force shell ‖x‖² = 2^t with Cauchy–Schwarz pruning
         │     across 24 Clifford prefixes × {even, T, T†} branches.
         │
-        └── else:                                 → dc_search (divide & conquer)
+        └── else:                                 → prefix_split_search
               split: t' = max(t − direct_limit,
                               ⌈t − 5/2·log₂(1/ε)⌉)
               for each Matsumoto-Amano left prefix U_L ∈ L_{t'}:
-                  ├── try U_R = LLL_aligned_search(target · U_L†)        (even branch)
-                  └── try U_R = LLL_aligned_search(target · U_L† · T†)   (odd branch)
+                  ├── try U_R = lll_aligned_search(target · U_L†)        (even branch)
+                  └── try U_R = lll_aligned_search(target · U_L† · T†)   (odd branch)
               the search runs in parallel via rayon (per-prefix scratch
               reused per worker; first-found wins).
 ```
 
-`LLL_aligned_search` is the workhorse for non-trivial T-counts: it builds a
-Q-metric lattice from the target, reduces it with LLL, and walks integer
-lattice points within the cap × ball intersection (Schnorr-Euchner
-enumeration) until it finds an `x ∈ ℤ⁸` whose reconstruction satisfies the
+ until it finds an `x ∈ ℤ⁸` whose reconstruction satisfies the
 unitarity constraints.
 
 ## Repository layout
@@ -145,16 +142,17 @@ src/
 ├── rings/              Cyclotomic integer rings Z[ω], Z[ζ₁₆] and Float aliases
 ├── synthesis/
 │   ├── synthesizer.rs      Unified Synthesizer wrapper over both backends
-│   ├── clifford_t.rs       Clifford+T backend (8D, Z[ω])
-│   ├── clifford_sqrt_t.rs  Clifford+√T backend (16D, Z[ζ₁₆]), FGKM
-│   │                       divide-and-conquer + optimize-cost mode
+│   ├── clifford_t/         Clifford+T backend (8D, Z[ω]); tests.rs
+│   ├── clifford_sqrt_t/    Clifford+√T backend (16D, Z[ζ₁₆]): recon,
+│   │                       prefix (FGKM set + coset dedup), brute,
+│   │                       first_hit, optimal pipelines + tests
 │   ├── cliffords.rs        24-element Clifford table for the outer search
 │   ├── decomposer.rs       Output-side: ring unitary → gate string
 │   ├── diag.rs             Optional CYCLOSYNTH_TRACE=1 counters
-│   ├── search.rs           Direct enumeration over small norm shells (Z[ω])
+│   ├── search.rs           Brute enumeration over small norm shells (Z[ω]);
+│   │                       the authoritative uv/y vocabulary doc
 │   ├── search_zeta.rs      Direct enumeration for Z[ζ₁₆]
 │   ├── distance.rs         Diamond-distance via Frobenius identity
-│   ├── sigma.rs            Minkowski-embedding Σ matrices
 │   ├── lattice/            8D pipeline: L²-LLL (i256 Gram + f64 GS),
 │   │                       Cholesky/LU, Schnorr-Euchner enumeration
 │   ├── lattice_zeta/       16D pipeline for Z[ζ₁₆]: LLL, BKZ-β, SE walk,
@@ -194,7 +192,7 @@ The post-LLL phase runs:
 ## Threading model
 
 [`Synthesizer::synthesize`] uses [`rayon`] to parallelise the
-prefix loop inside `dc_search`. Per-worker scratch is allocated once via
+prefix loop inside `prefix_split_search`. Per-worker scratch is allocated once via
 `rayon::map_init` and reused across all prefixes that worker handles, so
 the LLL inner loop has zero per-prefix heap allocation. The
 [`rayon::find_any`] combinator short-circuits as soon as any thread

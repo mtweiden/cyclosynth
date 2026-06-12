@@ -275,7 +275,7 @@
         check_result(&result, &target, 0.01);
     }
 
-    /// Empirical sister of `clifford_sqrt_t::tests::build_l_q_dc_cost_ratio`.
+    /// Empirical sister of `clifford_sqrt_t::tests::fgkm_prefix_split_cost_ratio`.
     /// Computes the same `S(t', α)` cost-ratio (Σ count(t', k)/α^k) for
     /// Clifford+T's `build_ma_prefix_set_reference` so we can directly compare what the naive
     /// cost model predicts for D&C in each ring.

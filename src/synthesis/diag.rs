@@ -60,7 +60,7 @@ pub static N_PREFIXES: AtomicU64 = AtomicU64::new(0);
 
 /// Prefixes rejected by `try_unitary_to_uv` (not in SU(2): wrong determinant or
 /// odd-parity ζ̄ adjustment failed).
-pub static N_MAT_TO_UV_REJECTED: AtomicU64 = AtomicU64::new(0);
+pub static N_UV_EXTRACT_REJECTED: AtomicU64 = AtomicU64::new(0);
 
 /// Total Schnorr-Euchner leaf-callback invocations summed across all
 /// prefixes in this prefix_split_search. Useful for spotting individual prefixes
@@ -240,7 +240,7 @@ pub fn record_lll_iters(iters: u64, cap: u64) {
 pub fn reset_all() {
     for c in [
         &N_PREFIXES,
-        &N_MAT_TO_UV_REJECTED,
+        &N_UV_EXTRACT_REJECTED,
         &N_SE_CALLBACKS,
         &N_SE_NODES,
         &N_SE_NODES_MAX,
@@ -280,7 +280,7 @@ pub fn reset_all() {
 /// Snapshot of the current counter values for printing.
 pub struct Snapshot {
     pub prefixes: u64,
-    pub mat_to_uv_rejected: u64,
+    pub uv_extract_rejected: u64,
     pub se_callbacks: u64,
     pub se_nodes: u64,
     pub se_nodes_max: u64,
@@ -312,7 +312,7 @@ pub struct Snapshot {
 pub fn snapshot() -> Snapshot {
     Snapshot {
         prefixes: N_PREFIXES.load(Ordering::Relaxed),
-        mat_to_uv_rejected: N_MAT_TO_UV_REJECTED.load(Ordering::Relaxed),
+        uv_extract_rejected: N_UV_EXTRACT_REJECTED.load(Ordering::Relaxed),
         se_callbacks: N_SE_CALLBACKS.load(Ordering::Relaxed),
         se_nodes: N_SE_NODES.load(Ordering::Relaxed),
         se_nodes_max: N_SE_NODES_MAX.load(Ordering::Relaxed),

@@ -11,7 +11,7 @@
     /// `--nocapture` in normal runs; the assertions are minimal — this is
     /// a measurement, not a correctness contract.
     #[test]
-    fn build_l_q_size_growth() {
+    fn fgkm_prefix_set_size_growth() {
         for m in 0..=5 {
             let raw = if m == 0 {
                 1
@@ -40,7 +40,7 @@
     /// and is independent of lde_total (the c·α^{lde_total} term cancels).
     /// D&C wins at m when S(m, α) < 1.
     #[test]
-    fn build_l_q_dc_cost_ratio() {
+    fn fgkm_prefix_split_cost_ratio() {
         // Coarse k → count map per m, then evaluate S(m, α) for several α.
         for m in 1..=5 {
             let l = build_fgkm_prefix_set(m);
@@ -97,7 +97,7 @@
     /// The shape of the distribution determines how we bin prefixes by
     /// k for the inner LLL+SE search.
     #[test]
-    fn build_l_q_k_distribution() {
+    fn fgkm_prefix_k_distribution() {
         for m in 1..=5 {
             let l = build_fgkm_prefix_set(m);
             // Bins 0..=m+a few extra for safety in case the bound is
@@ -311,7 +311,7 @@
 
     #[test]
     #[ignore]
-    fn z1_dc_dr_filter_random_targets() {
+    fn det_phase_filter_random_targets() {
         use rand::{Rng, SeedableRng};
         use rand::rngs::StdRng;
 
@@ -400,7 +400,7 @@
     /// many prefixes pass the filter and how the dispatcher does.
     #[test]
     #[ignore = "slow diagnostic; run with --ignored"]
-    fn z1_dc_dr_filter() {
+    fn det_phase_filter_coverage() {
         let theta = 0.3_f64;
         let target: Mat2 = [
             [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
