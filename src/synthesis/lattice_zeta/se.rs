@@ -1885,7 +1885,6 @@ fn recurse_collect_norm_pruned<F>(
 #[cfg(test)]
 mod par_tests {
     use super::*;
-    use std::collections::HashSet;
 
     /// Round-trip check: ‖R·z‖² (sum of squared rows R[d] · z, accumulated
     /// top-down as in the SE pruning) must equal ‖B·z‖² exactly (modulo
