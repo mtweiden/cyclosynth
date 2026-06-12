@@ -557,15 +557,6 @@ where
         // Integer-exact filter passed. Now ask the caller whether to
         // stop the walk (typically used to bail on first ε-pass).
         if should_stop(x) {
-            // Record nodes consumed at first solution found (per-prefix
-            // walker). Only the first writer wins via compare_exchange.
-            // Used for filter-on vs filter-off comparison.
-            if trace {
-                let consumed = max_phase2_calls
-                    .saturating_sub(budget.load(Ordering::Relaxed));
-                let _ = diag::N_NODES_AT_FIRST_SOLUTION
-                    .compare_exchange(0, consumed, Ordering::Relaxed, Ordering::Relaxed);
-            }
             LeafAction::TakeAndStop
         } else {
             LeafAction::Take

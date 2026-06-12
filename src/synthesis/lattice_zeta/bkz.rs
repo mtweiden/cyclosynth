@@ -42,7 +42,6 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use std::sync::atomic::Ordering;
 use super::scratch::IntScratch16;
 
 /// BKZ block size. β=2 is LLL-equivalent; β≥3 gives strict improvement.
@@ -251,12 +250,10 @@ pub fn bkz_insert(
     debug_assert!(kappa + block_size <= 16);
 
     // Diagnostic: count how often each branch fires (gated on tracing).
-    let trace = crate::synthesis::diag::trace_enabled();
 
     // Branch 1: all-zero except one ±1 — just move it to κ.
     let nonzero: Vec<usize> = (0..block_size).filter(|&i| x[i] != 0).collect();
     if nonzero.len() == 1 {
-        if trace { crate::synthesis::diag::N_BKZ_BRANCH1.fetch_add(1, Ordering::Relaxed); }
         let i = nonzero[0];
         let sign = x[i];
         if i != 0 {
@@ -276,7 +273,6 @@ pub fn bkz_insert(
 
     // Branch 2: some |x[i]| = 1 — use it as a pivot.
     if let Some(piv_idx) = (0..block_size).find(|&i| x[i].abs() == 1) {
-        if trace { crate::synthesis::diag::N_BKZ_BRANCH2.fetch_add(1, Ordering::Relaxed); }
         let piv_sign = x[piv_idx];
         // For every other non-zero coord j, do
         //   b_{κ+piv_idx} ← b_{κ+piv_idx} + sign · |x[j]| · b_{κ+j}
@@ -362,10 +358,8 @@ pub fn bkz_insert(
         if g == 1 { break; }
     }
     if g != 1 {
-        if trace { crate::synthesis::diag::N_BKZ_BRANCH3_NONPRIMITIVE.fetch_add(1, Ordering::Relaxed); }
         return Err(());
     }
-    if trace { crate::synthesis::diag::N_BKZ_BRANCH3_SUCCESS.fetch_add(1, Ordering::Relaxed); }
 
     // From here on, gcd = 1 guaranteed → the algorithm will succeed.
     let mut x: Vec<i64> = x.to_vec();
