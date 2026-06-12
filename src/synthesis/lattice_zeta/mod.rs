@@ -495,7 +495,30 @@ mod tests {
 
     #[test]
     fn y_lattice_image_matches_y_real() {
-        use crate::synthesis::sigma::{build_y_vector, sigma_8};
+        // Inlined from the retired sigma.rs module: the Galois coset
+        // reps and the Σ_8 Minkowski embedding, kept ONLY to pin the
+        // production y convention against an independent construction.
+        const COSET_REPS: [u32; 4] = [1, 5, 9, 13];
+        fn sigma_8() -> [[f64; 8]; 8] {
+            let mut m = [[0.0f64; 8]; 8];
+            for (k, &a) in COSET_REPS.iter().enumerate() {
+                for j in 0..8 {
+                    let theta = (a as f64) * (j as f64) * std::f64::consts::PI / 8.0;
+                    m[2 * k][j] = theta.cos();
+                    m[2 * k + 1][j] = theta.sin();
+                }
+            }
+            m
+        }
+        fn build_y_vector(target: &Mat2, k: u32) -> [f64; 16] {
+            let scale = (2.0f64).powi(k as i32).sqrt();
+            let mut y = [0.0f64; 16];
+            y[0] = target[0][0].re * scale;
+            y[1] = target[0][0].im * scale;
+            y[8] = target[1][0].re * scale;
+            y[9] = target[1][0].im * scale;
+            y
+        }
         let v = [0.5, 0.3, 0.7, -0.4];
         let target: Mat2 = [
             [Complex64::new(v[0], v[1]), Complex64::new(0.0, 0.0)],

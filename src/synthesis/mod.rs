@@ -10,8 +10,6 @@ pub mod lattice_common;
 pub mod lattice_zeta;
 pub mod search;
 pub mod search_zeta;
-#[cfg(test)]
-pub mod sigma;
 pub mod synthesizer;
 
 /// Build the global rayon pool with 16 MiB worker stacks before its
