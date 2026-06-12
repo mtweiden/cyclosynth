@@ -31,6 +31,26 @@ pub(crate) fn ensure_rayon_stack() {
     });
 }
 
+/// Transpose-interleave: deal `items` round-robin across `stride`
+/// positions (position j gets ranks j, j+stride, j+2·stride, …).
+/// Rayon's contiguous chunking would hand one worker all the
+/// front-of-list items — exactly the cost-sorted cheapest prefixes
+/// (16D) or the structurally-similar `build_l` neighbours (8D) —
+/// serializing the items most likely to finish first; dealing makes
+/// every chunk's early items span the whole list.
+pub(crate) fn stride_interleave<T: Copy>(items: &[T], stride: usize) -> Vec<T> {
+    let stride = stride.max(1);
+    let mut out = Vec::with_capacity(items.len());
+    for j in 0..stride {
+        let mut idx = j;
+        while idx < items.len() {
+            out.push(items[idx]);
+            idx += stride;
+        }
+    }
+    out
+}
+
 pub use cliffords::{CLIFFORD_TABLE_T, apply_clifford_dagger, match_clifford};
 pub use decomposer::BlochDecomposer;
 pub use distance::{

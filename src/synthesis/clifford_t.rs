@@ -893,27 +893,11 @@ impl SynthesizerT {
         // other in-flight walk.
         let found_abort = std::sync::atomic::AtomicBool::new(false);
 
-        // Round-robin interleave (the 16D OPTIMAL_PREFIX_INTERLEAVE
-        // pattern): deal prefix indices across n_threads strides so each
-        // rayon chunk samples the whole build_l-order space instead of one
-        // contiguous block. build_l order correlates position with
-        // structure (bit-string, then Clifford coset), so contiguous
-        // chunks concentrate structurally-similar prefixes on one worker;
-        // interleaving makes every worker's early items span the space,
-        // which lowers time-to-first-hit under find_any.
-        let order: Vec<u32> = if n > n_threads {
-            let mut v = Vec::with_capacity(n);
-            for j in 0..n_threads {
-                let mut idx = j;
-                while idx < n {
-                    v.push(idx as u32);
-                    idx += n_threads;
-                }
-            }
-            v
-        } else {
-            (0..n as u32).collect()
-        };
+        // build_l order correlates position with structure, so
+        // contiguous chunks concentrate similar prefixes on one worker;
+        // dealing lowers time-to-first-hit under find_any.
+        let indices: Vec<u32> = (0..n as u32).collect();
+        let order = crate::synthesis::stride_interleave(&indices, n_threads);
 
         // Algebraic parity pre-filter: `mat_to_uv(U_L† · target)` succeeds
         // iff `parity(det(U_L)) == parity(det(target))`. Skipping prefixes
