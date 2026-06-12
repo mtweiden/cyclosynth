@@ -34,7 +34,7 @@ pub(crate) fn ensure_rayon_stack() {
 /// positions (position j gets ranks j, j+stride, j+2·stride, …).
 /// Rayon's contiguous chunking would hand one worker all the
 /// front-of-list items — exactly the cost-sorted cheapest prefixes
-/// (16D) or the structurally-similar `build_l` neighbours (8D) —
+/// (16D) or the structurally-similar `build_ma_prefix_set` neighbours (8D) —
 /// serializing the items most likely to finish first; dealing makes
 /// every chunk's early items span the whole list.
 pub(crate) fn stride_interleave<T: Copy>(items: &[T], stride: usize) -> Vec<T> {

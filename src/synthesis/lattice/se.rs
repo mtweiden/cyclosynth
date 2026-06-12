@@ -339,7 +339,7 @@ fn recurse<F>(
     // the per-level span is O(1), so the branch holding a TRUE solution
     // could fall outside [z_low, z_high] — observed live at ε=1e-8
     // (docs/w_8d_rework_notes.md; frame-dependent FOUND→none flips that
-    // build_l's coset-mate redundancy used to mask). The span itself is
+    // build_ma_prefix_set's coset-mate redundancy used to mask). The span itself is
     // O(1) and stays f64.
     let r_dd_f = r_dd.to_f64();
     let span = rem_sqrt_f / r_dd_f.abs();

@@ -45,11 +45,11 @@ use crate::synthesis::search::{
     normalize4,
 };
 
-/// Global cache for `build_l` results, keyed by `(t_prime, coset_dedup)`.
+/// Global cache for `build_ma_prefix_set` results, keyed by `(t_prime, coset_dedup)`.
 /// Values are wrapped in `Arc` so cache hits return an `O(1)` refcount bump
 /// rather than cloning the full prefix list (at t'=14 that vector holds
 /// ~329 k U2T values, ~32 MB).
-static BUILD_L_CACHE: LazyLock<Mutex<HashMap<(u32, bool), Arc<Vec<U2T>>>>> =
+static MA_PREFIX_CACHE: LazyLock<Mutex<HashMap<(u32, bool), Arc<Vec<U2T>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Extract uv = [Re(u1), Im(u1), Re(u2), Im(u2)] from a 2×2 unitary matrix.
@@ -183,7 +183,7 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
         .try_into().unwrap()
 }
 
-/// Right-coset dedup gate for `build_l` (stage 1 of
+/// Right-coset dedup gate for `build_ma_prefix_set` (stage 1 of
 /// docs/plan_8d_prefix_rework.md, lever B1). Tri-state:
 /// `CYCLOSYNTH_L_COSET=0` forces plain phase-dedup, `=1` forces coset
 /// dedup at every ε, unset defers to the [`COSET_EPS_FLOOR`] rule.
@@ -222,20 +222,20 @@ fn coset_mode_for(eps: Float) -> bool {
 ///   completeness exactly — PROVIDED the per-frame walk is complete,
 ///   which holds above the floor only.
 #[cfg(test)]
-pub(crate) fn build_l_reference(t_prime: u32) -> Arc<Vec<U2T>> {
+pub(crate) fn build_ma_prefix_set_reference(t_prime: u32) -> Arc<Vec<U2T>> {
     // Legacy entry point (probes/tests): plain phase-dedup unless the env
     // forces coset mode. Production (`prefix_split_search` + the prewarm) goes
-    // through `build_l` with `coset_mode_for(eps)`.
-    build_l(t_prime, (*L_COSET_DEDUP).unwrap_or(false))
+    // through `build_ma_prefix_set` with `coset_mode_for(eps)`.
+    build_ma_prefix_set(t_prime, (*L_COSET_DEDUP).unwrap_or(false))
 }
 
 /// The MA prefix set with an explicit coset-dedup mode; results cached
 /// per `(t_prime, coset_dedup)`.
-pub fn build_l(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
+pub fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
     let key = (t_prime, coset_dedup);
     // Check cache first; clone of `Arc` is just a refcount bump.
     {
-        let cache = BUILD_L_CACHE.lock().unwrap();
+        let cache = MA_PREFIX_CACHE.lock().unwrap();
         if let Some(v) = cache.get(&key) {
             return Arc::clone(v);
         }
@@ -245,14 +245,14 @@ pub fn build_l(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
 
     // Race-tolerant insert: another thread may have populated this entry while
     // we were computing; either copy is identical so an overwrite is harmless.
-    BUILD_L_CACHE
+    MA_PREFIX_CACHE
         .lock()
         .unwrap()
         .insert(key, Arc::clone(&result));
     result
 }
 
-/// `build_l_inner` with an explicit dedup mode (the M1 census probe
+/// `build_ma_prefix_set_inner` with an explicit dedup mode (the M1 census probe
 /// compares both modes in one process, bypassing the env gate + cache).
 fn build_l_inner_with(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
     if t_prime == 0 {
@@ -635,7 +635,7 @@ impl SynthesizerT {
         let t_dc_start = t_dc_start.max(self.min_lde);
 
         // Pre-warm the L cache in parallel for the t_prime values expected in the first
-        // few steps of the t-loop.  build_l_reference is expensive (O(2^t_prime)) and lazily
+        // few steps of the t-loop.  build_ma_prefix_set_reference is expensive (O(2^t_prime)) and lazily
         // populated; doing it here fills all cores before the search loop starts.
         // Cap at a 5-step horizon: solutions are almost always found within the first
         // few t values above t_dc_start, so building larger L sets is wasteful.
@@ -651,7 +651,7 @@ impl SynthesizerT {
                     .collect()
             };
             let coset = coset_mode_for(self.epsilon);
-            needed.into_par_iter().for_each(|tp| { build_l(tp, coset); });
+            needed.into_par_iter().for_each(|tp| { build_ma_prefix_set(tp, coset); });
         }
 
         for t in t_dc_start..=self.max_lde {
@@ -867,7 +867,7 @@ impl SynthesizerT {
             t_inner / 2 + 1
         };
 
-        let prefixes = build_l(t_prime, coset_mode_for(eps));
+        let prefixes = build_ma_prefix_set(t_prime, coset_mode_for(eps));
         if crate::synthesis::diag::trace_enabled() {
             crate::synthesis::diag::N_PREFIXES
                 .fetch_add(prefixes.len() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -887,7 +887,7 @@ impl SynthesizerT {
         // other in-flight walk.
         let found_abort = std::sync::atomic::AtomicBool::new(false);
 
-        // build_l_reference order correlates position with structure, so
+        // build_ma_prefix_set_reference order correlates position with structure, so
         // contiguous chunks concentrate similar prefixes on one worker;
         // dealing lowers time-to-first-hit under find_any.
         let indices: Vec<u32> = (0..n as u32).collect();

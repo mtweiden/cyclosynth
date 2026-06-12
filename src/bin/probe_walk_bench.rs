@@ -2,13 +2,13 @@
 //! exhaustive lattice-level walks.
 //!
 //! Runs ONE unbudgeted m = 0 level enumeration — the operation
-//! `SynthesizerQ::synthesize_certified` performs per parity branch —
+//! `SynthesizerQ::synthesize_exhaustive_certified` performs per parity branch —
 //! and reports wall time, SE nodes/leaves, solutions, min cost, CPU
 //! utilization, and the per-phase (build/LLL/cholesky/LU/SE) breakdown
 //! from the `CYCLOSYNTH_TRACE=1` diag counters.
 //!
 //! The walk is rebuilt here from public APIs (the internal helper
-//! `run_single_optimal` is private and clifford_sqrt_t.rs is owned by
+//! `direct_lattice_search_at` is private and clifford_sqrt_t.rs is owned by
 //! another workstream right now): project the target det onto the ζ₁₆
 //! grid, take d = det_phase_of, v = unitary_to_uv_zeta, y =
 //! uv_to_lattice_y_zeta(v, k), then `find_aligned_lattice_points_with_stop(..., u64::MAX, ...)`
@@ -27,7 +27,7 @@
 
 use cyclosynth::matrix::U2Q;
 use cyclosynth::synthesis::clifford_sqrt_t::{
-    det_phase_of, solution_to_u2q_d, unitary_to_uv_zeta,
+    det_phase_of, solution_to_u2q_with_det_phase, unitary_to_uv_zeta,
 };
 use cyclosynth::synthesis::decomposer::BlochDecomposer;
 use cyclosynth::synthesis::diag;
@@ -61,7 +61,7 @@ fn cpu_time_s() -> f64 {
     ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
 }
 
-// ─── target construction (mirrors synthesize_certified, reimplemented
+// ─── target construction (mirrors synthesize_exhaustive_certified, reimplemented
 //     locally because project_det_to_zeta_coset is private) ─────────────────
 
 fn rz(theta: f64) -> Mat2 {
@@ -171,7 +171,7 @@ fn run_branch(target: &Mat2, eps: f64, k: u32, parity: u32, dump: bool) -> RunRe
     let mut sols_eps = 0usize;
     let mut min_cost: Option<usize> = None;
     for sol in &sols {
-        let cand: U2Q = solution_to_u2q_d(sol, k, d).reduced();
+        let cand: U2Q = solution_to_u2q_with_det_phase(sol, k, d).reduced();
         let dist = diamond_distance_u2q_float(&cand, target);
         if dist < eps {
             sols_eps += 1;

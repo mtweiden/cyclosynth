@@ -590,7 +590,7 @@ mod tests {
     use super::*;
     use crate::synthesis::search_zeta::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta};
     use crate::synthesis::clifford_sqrt_t::{
-        det_phase_of, solution_to_u2q_d, unitary_to_uv_zeta,
+        det_phase_of, solution_to_u2q_with_det_phase, unitary_to_uv_zeta,
     };
 
     fn realistic_v() -> [f64; 4] {
@@ -653,7 +653,7 @@ mod tests {
 
         assert!(!sols.is_empty(), "find_aligned_lattice_points found no solutions for T at k=0");
         let min_dist = sols.iter().map(|sol| {
-            let cand = solution_to_u2q_d(sol, k, d);
+            let cand = solution_to_u2q_with_det_phase(sol, k, d);
             diamond_distance_float(&cand.to_float(), &target)
         }).fold(f64::INFINITY, f64::min);
         assert!(min_dist < 1e-9, "min dist to T at k=0: {min_dist:.3e}");
@@ -681,7 +681,7 @@ mod tests {
 
         assert!(!sols.is_empty(), "find_aligned_lattice_points found no solutions for QHQ at k=1");
         let min_dist = sols.iter().map(|sol| {
-            let cand = solution_to_u2q_d(sol, k, d);
+            let cand = solution_to_u2q_with_det_phase(sol, k, d);
             diamond_distance_float(&cand.to_float(), &target)
         }).fold(f64::INFINITY, f64::min);
         assert!(min_dist < 1e-9, "min dist to QHQ at k=1: {min_dist:.3e}");
@@ -715,7 +715,7 @@ mod tests {
 
         assert!(!sols.is_empty(), "find_aligned_lattice_points@bound2 found no solutions for QHQ at k=1");
         let min_dist = sols.iter().map(|sol| {
-            let cand = solution_to_u2q_d(sol, k, d);
+            let cand = solution_to_u2q_with_det_phase(sol, k, d);
             diamond_distance_float(&cand.to_float(), &target)
         }).fold(f64::INFINITY, f64::min);
         assert!(min_dist < 1e-9, "min dist to QHQ at k=1 (bound 2): {min_dist:.3e}");
@@ -841,7 +841,7 @@ mod tests {
                             }
                         }
                         max_all = max_all.max(qn);
-                        let cand = solution_to_u2q_d(sol, k, d);
+                        let cand = solution_to_u2q_with_det_phase(sol, k, d);
                         if diamond_distance_float(&cand.to_float(), &target) <= eps {
                             max_close = max_close.max(qn);
                             n_close += 1;
@@ -885,7 +885,7 @@ mod tests {
             .find(|&s| s.iter().filter(|&&v| v != 0).count() >= 4)
             .copied()
             .expect("expected a brute sol with ≥4 nonzero coefficients");
-        let target_u2q = solution_to_u2q_d(&target_sol, k, 0);
+        let target_u2q = solution_to_u2q_with_det_phase(&target_sol, k, 0);
         let target = target_u2q.to_float();
         let v = unitary_to_uv_zeta(&target);
         let d = det_phase_of(&target);
@@ -910,7 +910,7 @@ mod tests {
             k
         );
         let min_dist = sols.iter().map(|sol| {
-            let cand = solution_to_u2q_d(sol, k, d);
+            let cand = solution_to_u2q_with_det_phase(sol, k, d);
             diamond_distance_float(&cand.to_float(), &target)
         }).fold(f64::INFINITY, f64::min);
         assert!(
@@ -1028,7 +1028,7 @@ mod tests {
             let sols = find_aligned_lattice_points(&mut s, &y, k, eps, budget, &abort);
             let dt = t0.elapsed();
             let min_dist = sols.iter().map(|sol| {
-                let cand = solution_to_u2q_d(sol, k, d);
+                let cand = solution_to_u2q_with_det_phase(sol, k, d);
                 diamond_distance_float(&cand.to_float(), &target)
             }).fold(f64::INFINITY, f64::min);
             eprintln!(
@@ -1082,7 +1082,7 @@ mod tests {
             let dt = t0.elapsed();
             let abort_v = abort.load(Ordering::Relaxed);
             let min_dist = sols.iter().map(|sol| {
-                let cand = solution_to_u2q_d(sol, k, d);
+                let cand = solution_to_u2q_with_det_phase(sol, k, d);
                 diamond_distance_float(&cand.to_float(), &target)
             }).fold(f64::INFINITY, f64::min);
             let hit = min_dist < eps;

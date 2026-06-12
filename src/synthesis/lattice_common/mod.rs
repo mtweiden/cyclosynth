@@ -24,7 +24,7 @@
 //! - Per-iteration LLL inner loops (`lll_l2_8` vs `lll_l2_16`).
 //! - Bilinear forms (1 form for Z[ω], 3 for Z[ζ_16] — different
 //!   structure, not just dim).
-//! - Solution reconstruction (`solution_to_u2t` vs `solution_to_u2q_d`).
+//! - Solution reconstruction (`solution_to_u2t` vs `solution_to_u2q_with_det_phase`).
 //! - Q-metric construction (different ring embeddings).
 //!
 //! When future fplll-inspired optimizations land (adaptive precision

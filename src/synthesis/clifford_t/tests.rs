@@ -277,19 +277,19 @@
 
     /// Empirical sister of `clifford_sqrt_t::tests::build_l_q_dc_cost_ratio`.
     /// Computes the same `S(t', α)` cost-ratio (Σ count(t', k)/α^k) for
-    /// Clifford+T's `build_l_reference` so we can directly compare what the naive
+    /// Clifford+T's `build_ma_prefix_set_reference` so we can directly compare what the naive
     /// cost model predicts for D&C in each ring.
     #[test]
     fn build_l_size_and_cost_ratio() {
         eprintln!("\n|L_{{t'}}| sizes:");
         for t_prime in 0..=10 {
-            let l = build_l_reference(t_prime);
+            let l = build_ma_prefix_set_reference(t_prime);
             eprintln!("  t'={t_prime:>2}  |L_{{t'}}|={:>8}", l.len());
         }
 
-        eprintln!("\nk_prefix histogram (Clifford+T, build_l_reference):");
+        eprintln!("\nk_prefix histogram (Clifford+T, build_ma_prefix_set_reference):");
         for t_prime in 1..=8 {
-            let l = build_l_reference(t_prime);
+            let l = build_ma_prefix_set_reference(t_prime);
             let mut counts: Vec<u64> = vec![0; 64];
             for u in l.iter() {
                 let k = u.k as usize;
@@ -306,7 +306,7 @@
         eprintln!("\nS(t', α) = Σ_k count(t', k) / α^k  (D&C cost ratio):");
         eprintln!("  t'  total      α=2.0    α=2.5    α=3.0    α=3.5    α=4.0");
         for t_prime in 1..=10 {
-            let l = build_l_reference(t_prime);
+            let l = build_ma_prefix_set_reference(t_prime);
             let mut counts: Vec<u64> = vec![0; 64];
             for u in l.iter() {
                 let k = u.k as usize;
@@ -796,7 +796,7 @@
     #[test]
     #[ignore]
     fn l_coset_census() {
-        eprintln!("\nM1 census: build_l_reference plain phase-dedup vs right-coset dedup");
+        eprintln!("\nM1 census: build_ma_prefix_set_reference plain phase-dedup vs right-coset dedup");
         eprintln!("  t'   |L| plain   |L| coset   ratio");
         for tp in 1..=13u32 {
             let t0 = std::time::Instant::now();
@@ -985,7 +985,7 @@
                             t_inner / 2 + 1
                         };
                         let target_parity = det_zeta_parity(&target);
-                        for u_l in build_l_reference(t_prime).iter() {
+                        for u_l in build_ma_prefix_set_reference(t_prime).iter() {
                             if frames.len() >= 64 {
                                 break;
                             }
@@ -1193,7 +1193,7 @@
             } else {
                 t_inner / 2 + 1
             };
-            let prefixes = build_l(t_prime, coset_mode_for(eps));
+            let prefixes = build_ma_prefix_set(t_prime, coset_mode_for(eps));
             let target_parity = det_zeta_parity(&target);
 
             // Capture surviving prefixes' y vectors (both inner branches,

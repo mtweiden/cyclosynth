@@ -18,7 +18,7 @@
             } else {
                 9 * 6u64.pow(m - 1) * 24
             };
-            let l = build_l_q(m);
+            let l = build_fgkm_prefix_set(m);
             let dedup = l.len();
             let factor = raw as f64 / dedup as f64;
             eprintln!(
@@ -43,7 +43,7 @@
     fn build_l_q_dc_cost_ratio() {
         // Coarse k → count map per m, then evaluate S(m, α) for several α.
         for m in 1..=5 {
-            let l = build_l_q(m);
+            let l = build_fgkm_prefix_set(m);
             let mut counts: Vec<u64> = vec![0; 64];
             for u in l.iter() {
                 let k = u.k as usize;
@@ -68,7 +68,7 @@
         eprintln!("{:>3}  {:>8}  τ=0    τ=4    τ=8    τ=12   τ=16   τ=20",
                   "m", "|L_m^Q|");
         for m in 1..=5 {
-            let l = build_l_q(m);
+            let l = build_fgkm_prefix_set(m);
             let mut counts: Vec<u64> = vec![0; 64];
             for u in l.iter() {
                 let k = u.k as usize;
@@ -99,7 +99,7 @@
     #[test]
     fn build_l_q_k_distribution() {
         for m in 1..=5 {
-            let l = build_l_q(m);
+            let l = build_fgkm_prefix_set(m);
             // Bins 0..=m+a few extra for safety in case the bound is
             // looser than expected.
             let max_bin: usize = (m as usize) + 4;
@@ -167,7 +167,7 @@
     }
 
     /// Screen-truncation out-param plumbing: on an easy coarse-ε target
-    /// no level hits a budget cap, so `synthesize_with_unclear` must
+    /// no level hits a budget cap, so `synthesize_with_unverified_levels` must
     /// report zero unclear levels and agree with the public entry point.
     /// (ε = 1e-2: near-z-axis diagonal targets at 1e-3 burn every
     /// level's budget for ~5 min — known sparse-region hardness, not a
@@ -181,7 +181,7 @@
         let synth = SynthesizerQ::new(1e-2).with_optimize_cost(false);
         let mut unclear = Vec::new();
         let r1 = synth
-            .synthesize_with_unclear(target, Some(&mut unclear))
+            .synthesize_with_unverified_levels(target, Some(&mut unclear))
             .expect("should synthesize");
         let r2 = synth.synthesize(target).expect("should synthesize");
         assert!(unclear.is_empty(), "unexpected unclear levels: {unclear:?}");
@@ -231,7 +231,7 @@
             [t_f[1][0] * g, t_f[1][1] * g],
         ];
         let (r, cert) = SynthesizerQ::new(1e-3)
-            .synthesize_certified(target, 2)
+            .synthesize_exhaustive_certified(target, 2)
             .expect("certified synthesis should succeed");
         assert!(r.distance < 1e-3);
         assert_eq!(cert.upper_half_units, 2, "T circuit costs 2 HU");
@@ -252,7 +252,7 @@
             ]
         }
         let (r, cert) = SynthesizerQ::new(1e-2)
-            .synthesize_certified(rzm(0.7), 4)
+            .synthesize_exhaustive_certified(rzm(0.7), 4)
             .expect("certified synthesis should succeed");
         assert!(r.distance < 1e-2);
         assert!(cert.lower_half_units <= cert.upper_half_units);
@@ -276,7 +276,7 @@
             [hqh[1][0] * g, hqh[1][1] * g],
         ];
         let (_, cert) = SynthesizerQ::new(1e-3)
-            .synthesize_certified(target, 8)
+            .synthesize_exhaustive_certified(target, 8)
             .expect("certified synthesis should succeed");
         assert_eq!(cert.upper_half_units, 7);
         assert!(cert.certified_optimal);
@@ -411,7 +411,7 @@
         // d_R distribution on L_m^Q for this target.
         let d_target = det_phase_of(&target);
         for m in [1u32, 2, 3] {
-            let prefixes = build_l_q(m);
+            let prefixes = build_fgkm_prefix_set(m);
             let mut hist = [0u64; 16];
             for u_l in prefixes.iter() {
                 let d_l = det_phase_of(&u_l.to_float());
@@ -451,11 +451,11 @@
             let t0 = std::time::Instant::now();
             let r = synth.synthesize(target);
             let dt = t0.elapsed();
-            let l_size = build_l_q(*m).len();
+            let l_size = build_fgkm_prefix_set(*m).len();
             let n_pass = if filter.is_empty() {
                 l_size as u64
             } else {
-                let prefixes = build_l_q(*m);
+                let prefixes = build_fgkm_prefix_set(*m);
                 prefixes.iter().filter(|u| {
                     let d_l = det_phase_of(&u.to_float());
                     let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
@@ -499,7 +499,7 @@
             let t1 = std::time::Instant::now();
             let r_dc = synth_dc.synthesize(target);
             let t_dc = t1.elapsed();
-            let l_size = build_l_q(m).len();
+            let l_size = build_fgkm_prefix_set(m).len();
             let per_prefix_us = t_dc.as_secs_f64() * 1e6 / (l_size as f64);
             eprintln!(
                 "  d&c m={m}: |L|={l_size:>6}  lde={:?}  t={:.1}ms  per-prefix={per_prefix_us:.0}μs",
@@ -751,7 +751,7 @@
         assert!(result.gates.is_some());
     }
 
-    /// Census: how much of `build_l_q(m)` is right-coset duplicate work
+    /// Census: how much of `build_fgkm_prefix_set(m)` is right-coset duplicate work
     /// under ⟨S,X⟩, and how much survives the d_R filters. Soundness
     /// premise: (U_L·C)·U_R = U_L·(C·U_R) on the same shell — the rep's
     /// search covers every mate's solutions with identical totals. The
@@ -764,7 +764,7 @@
         use std::collections::{HashMap, HashSet};
 
         // lde-0 Clifford subgroup as U2Q (rebuilt from table names, the
-        // same route build_l_q_inner uses for its Clifford suffixes —
+        // same route build_fgkm_prefix_set_inner uses for its Clifford suffixes —
         // shared with the production orbit table).
         let lde0 = lde0_cliffords_q();
         for c in &lde0 {
@@ -772,7 +772,7 @@
         }
 
         for m in 1..=3u32 {
-            let prefixes = build_l_q(m);
+            let prefixes = build_fgkm_prefix_set(m);
             let n = prefixes.len();
             let key_of: Vec<[i64; 8]> = prefixes.iter().map(canonical_key_q).collect();
             let idx_of: HashMap<[i64; 8], usize> =
@@ -808,15 +808,15 @@
             // census's locally computed linking (gate 5).
             assert_eq!(
                 orbit_id,
-                *build_l_q_orbits(m).as_ref(),
-                "production build_l_q_orbits({m}) diverges from census linking"
+                *build_fgkm_prefix_orbits(m).as_ref(),
+                "production build_fgkm_prefix_orbits({m}) diverges from census linking"
             );
 
             // d_R-respecting census per filter. For each d_target the
             // usable set is {u : (d_target − d_L) mod 16 ∈ filter}; the
             // dedup that survives = |usable| / |orbits among usable|.
             // `classes` additionally splits orbits by the unreduced k —
-            // the PRODUCTION dedup grouping (`build_l_q_coset_keys`;
+            // the PRODUCTION dedup grouping (`build_fgkm_prefix_coset_keys`;
             // cross-k orbit links are float-real but their coverage is
             // asymmetric, so the implementation keeps one rep per
             // (orbit, k) ∩ usable): the classes column is the actual
@@ -825,7 +825,7 @@
                 .iter()
                 .map(|u| det_phase_of(&u.to_float()))
                 .collect();
-            let coset_keys = build_l_q_coset_keys(m);
+            let coset_keys = build_fgkm_prefix_coset_keys(m);
             for (fname, filter) in [
                 ("strict [0]   (m=2 1st-hit default)", vec![0u32]),
                 ("relaxed [0,1,15] (m=1 default)", vec![0u32, 1, 15]),
@@ -887,8 +887,8 @@
             U2Q::new(z * u.u11, z * u.u12, z * u.u21, z * u.u22, u.k)
         };
         for m in 1..=2u32 {
-            let prefixes = build_l_q(m);
-            let keys = build_l_q_coset_keys(m);
+            let prefixes = build_fgkm_prefix_set(m);
+            let keys = build_fgkm_prefix_coset_keys(m);
             assert_eq!(prefixes.len(), keys.len());
             // First member per (orbit, k) class = the class rep ties
             // resolve to in production when costs tie.
