@@ -588,13 +588,6 @@ impl SynthesizerT {
         self
     }
 
-    /// Set the maximum lde for direct_search (brute-force).
-    /// Beyond this, dc_search is always used.
-    pub fn with_direct_limit(mut self, direct_limit: u32) -> Self {
-        self.direct_limit = direct_limit;
-        self
-    }
-
     /// Find a minimum-lde Clifford+T circuit approximating `target`.
     ///
     /// Returns `None` if no circuit within `max_lde` achieves distance < `epsilon`.

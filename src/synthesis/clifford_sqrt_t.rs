@@ -570,11 +570,6 @@ pub struct SynthesizerQ {
     /// (bounded at 4× the deadline) until both screens are done.
     my_screen_done: Option<std::sync::Arc<AtomicBool>>,
     peer_screen_done: Option<std::sync::Arc<AtomicBool>>,
-    /// Skip prefixes whose own weighted cost already exceeds the
-    /// incumbent. Heuristic: U_R can cancel parts of U_L, so this can in
-    /// principle miss the optimum; empirically it never has on random
-    /// SU(2) targets. Builder: [`Self::with_optimal_prefix_prune`].
-    pub optimal_prefix_prune: bool,
     /// Extra lde levels enumerated above the first feasible one — the
     /// lde-vs-cost relationship is not monotone, so the cost minimum can
     /// sit above find-lde. Builder: [`Self::with_optimal_lde_window`].
@@ -1094,7 +1089,6 @@ impl SynthesizerQ {
             deep_rot_src: None,
             my_screen_done: None,
             peer_screen_done: None,
-            optimal_prefix_prune: true,
             // Window 3 below 1e-7: the cost minimum often sits above
             // find-lde there; window 4 regresses (extra levels dilute
             // the deadline).
@@ -1123,21 +1117,6 @@ impl SynthesizerQ {
             certify_extra_ms: 2_000,
             q_cost_x2: 7,
         }
-    }
-
-    /// Set the parallel-LDE speculation window (default 1 = sequential).
-    /// See the field comment on `parallel_lde_window`.
-    pub fn with_parallel_lde_window(mut self, window: u32) -> Self {
-        debug_assert!(window >= 1);
-        self.parallel_lde_window = window;
-        self
-    }
-
-    /// Set the budget-triggered speculation threshold (default 0).
-    /// See the field comment on `parallel_lde_trigger_nodes`.
-    pub fn with_parallel_lde_trigger_nodes(mut self, nodes: u64) -> Self {
-        self.parallel_lde_trigger_nodes = nodes;
-        self
     }
 
     pub fn with_max_lde(mut self, max_lde: u32) -> Self {
@@ -1212,15 +1191,6 @@ impl SynthesizerQ {
         self
     }
 
-    /// Toggle the Stage-3 prefix-cost heuristic prune. Off → enumerate
-    /// every (filtered) prefix; on → skip prefixes whose own decomposed
-    /// cost already exceeds the best total found so far. See the
-    /// `optimal_prefix_prune` field for the soundness caveat.
-    pub fn with_optimal_prefix_prune(mut self, on: bool) -> Self {
-        self.optimal_prefix_prune = on;
-        self
-    }
-
     /// Set the Stage-4 lde-window. 0 = strict min-lde-first (default,
     /// current behaviour). N>0 = after finding at lde `f`, also search
     /// lde `f+1..=f+N` and return the global min-cost candidate.
@@ -1236,21 +1206,9 @@ impl SynthesizerQ {
         self
     }
 
-    /// Toggle certificate mode (see the `certify` field doc).
-    pub fn with_certify(mut self, on: bool) -> Self {
-        self.certify = on;
-        self
-    }
-
     /// Set the certify extension wall budget in milliseconds.
     pub fn with_certify_extra_ms(mut self, ms: u64) -> Self {
         self.certify_extra_ms = ms;
-        self
-    }
-
-    /// Toggle the odd-Q-parity branch (see the field doc).
-    pub fn with_odd_parity_branch(mut self, on: bool) -> Self {
-        self.odd_parity_branch = on;
         self
     }
 
@@ -1865,7 +1823,6 @@ impl SynthesizerQ {
         }
 
         let optimize_cost = cost_min_override.unwrap_or(self.optimize_cost);
-        let prefix_prune = self.optimal_prefix_prune;
 
         // Optimal mode sorts cheapest-first so the shared incumbent
         // drops quickly; first-hit keeps k_prefix-desc (small k_inner =
@@ -1932,7 +1889,10 @@ impl SynthesizerQ {
             let d_l = det_phase_of(&u_l.to_float());
             let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
 
-            if optimize_cost && prefix_prune {
+            // Heuristic prune: U_R can cancel parts of U_L, so this
+            // can in principle miss the optimum; empirically it never
+            // has on random SU(2) targets.
+            if optimize_cost {
                 let cur_best = best_cost.load(std::sync::atomic::Ordering::Relaxed);
                 // Sound because syllable costs are additive in normal
                 // form: any U cheaper than `best` is reachable through
@@ -2224,7 +2184,6 @@ impl SynthesizerQ {
         let epsilon = self.epsilon;
         let use_f64_gs = self.use_f64_gs;
         let bkz_block_size = self.bkz_block_size;
-        let prefix_prune = self.optimal_prefix_prune;
         let best_cost = shared_best_cost;
         let start = std::time::Instant::now();
 
@@ -2357,9 +2316,7 @@ impl SynthesizerQ {
                 return None;
             }
             // (b) floor-exhaustion: sound prune, NOT truncation.
-            if prefix_prune
-                && best_cost.load(std::sync::atomic::Ordering::Relaxed) <= u.floor
-            {
+            if best_cost.load(std::sync::atomic::Ordering::Relaxed) <= u.floor {
                 return None;
             }
 
