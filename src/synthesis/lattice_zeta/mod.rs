@@ -43,7 +43,7 @@ mod tests {
     use super::cholesky_lu::{cholesky_f64_16, lu_solve_int_inplace_16};
     use super::lll::{run_lll_16, LllResult};
     use super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
-    use super::se::{bilinear_forms, schnorr_euchner_16d, SeCenter16};
+    use super::se::{bilinear_forms, schnorr_euchner_16d_reference, SeCenter16};
     use crate::synthesis::decomposer::BlochDecomposer;
     use crate::synthesis::distance::Mat2;
     use crate::synthesis::search_zeta::{

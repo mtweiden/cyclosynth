@@ -710,7 +710,7 @@ fn fast_search_u1(
 ///
 /// # Returns
 /// Vector of `[a1, b1, c1, d1, a2, b2, c2, d2]` satisfying all constraints.
-pub fn aligned_search(
+pub fn brute_aligned_search(
     v: [f64; 4],
     k: u32,
     epsilon: f64,
@@ -803,7 +803,7 @@ mod tests {
     #[test]
     fn test_search_k0_identity_dir() {
         let v = [1.0f64, 0.0, 0.0, 0.0];
-        let sols = aligned_search(v, 0, 0.0, 100);
+        let sols = brute_aligned_search(v, 0, 0.0, 100);
         assert!(!sols.is_empty(), "Should find solutions at k=0");
         check_solutions(&sols, 0);
     }
@@ -812,7 +812,7 @@ mod tests {
     fn test_search_k1_no_alignment() {
         // With epsilon=0 (no alignment filter), enumerate all valid solutions at k=1.
         let v = [1.0f64, 0.0, 0.0, 0.0];
-        let sols = aligned_search(v, 1, 0.0, 1000);
+        let sols = brute_aligned_search(v, 1, 0.0, 1000);
         // ‖x‖²=2, unitarity constraint → should find several solutions
         assert!(!sols.is_empty());
         check_solutions(&sols, 1);
@@ -821,7 +821,7 @@ mod tests {
     #[test]
     fn test_search_k2_with_alignment() {
         let v = [1.0f64, 0.0, 0.0, 0.0];
-        let sols = aligned_search(v, 2, 0.5, 100);
+        let sols = brute_aligned_search(v, 2, 0.5, 100);
         check_solutions(&sols, 2);
         // With alignment filter, all solutions should have reasonable alignment
         let av = compute_align_vec(v);
@@ -836,7 +836,7 @@ mod tests {
     fn test_search_finds_identity() {
         // At k=0, v=[1,0,0,0], should find [±1,0,0,0,0,0,0,0].
         let v = [1.0f64, 0.0, 0.0, 0.0];
-        let sols = aligned_search(v, 0, 0.0, 100);
+        let sols = brute_aligned_search(v, 0, 0.0, 100);
         let found = sols.iter().any(|s| *s == [1,0,0,0,0,0,0,0] || *s == [-1,0,0,0,0,0,0,0]);
         assert!(found, "Should find identity solution");
     }

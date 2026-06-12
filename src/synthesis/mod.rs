@@ -59,5 +59,5 @@ pub use distance::{
     diamond_distance_u2q_float,
     Mat2,
 };
-pub use search::{aligned_search, compute_align_vec, apply_u2t_dag_to_uv};
+pub use search::{brute_aligned_search, compute_align_vec, apply_u2t_dag_to_uv};
 pub use synthesizer::{Synthesizer, SynthResult};

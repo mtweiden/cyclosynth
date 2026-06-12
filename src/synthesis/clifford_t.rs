@@ -10,7 +10,7 @@
 //!
 //! - [`direct_search`] (`t ≤ direct_limit`, default 6): brute-force
 //!   enumeration over the norm shell `‖x‖² = 2^t` via
-//!   [`crate::synthesis::search::aligned_search`]. Tries even, T, and T†
+//!   [`crate::synthesis::search::brute_aligned_search`]. Tries even, T, and T†
 //!   right-side branches, each combined with all 24 Clifford left
 //!   prefixes. Fast for small `t`; exponential beyond that.
 //!
@@ -41,11 +41,11 @@ use crate::synthesis::cliffords::{CLIFFORD_LDE0_IDX, CLIFFORD_TABLE_T};
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2t_float, Mat2};
 use crate::synthesis::search::{
-    aligned_search, apply_t_dag_to_uv, apply_t_to_uv, apply_u2t_dag_to_uv, compute_align_vec,
+    brute_aligned_search, apply_t_dag_to_uv, apply_t_to_uv, apply_u2t_dag_to_uv, compute_align_vec,
     normalize4,
 };
 
-/// Global cache for `build_l` results, keyed by `(t_prime, coset_dedup)`.
+/// Global cache for `build_l_reference` results, keyed by `(t_prime, coset_dedup)`.
 /// Values are wrapped in `Arc` so cache hits return an `O(1)` refcount bump
 /// rather than cloning the full prefix list (at t'=14 that vector holds
 /// ~329 k U2T values, ~32 MB).
@@ -183,7 +183,7 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
         .try_into().unwrap()
 }
 
-/// Right-coset dedup gate for `build_l` (stage 1 of
+/// Right-coset dedup gate for `build_l_reference` (stage 1 of
 /// docs/plan_8d_prefix_rework.md, lever B1). Tri-state:
 /// `CYCLOSYNTH_L_COSET=0` forces plain phase-dedup, `=1` forces coset
 /// dedup at every ε, unset defers to the [`COSET_EPS_FLOOR`] rule.
@@ -222,16 +222,16 @@ fn coset_mode_for(eps: Float) -> bool {
 ///   completeness exactly — PROVIDED the per-frame walk is complete,
 ///   which holds above the floor only.
 #[cfg(test)]
-pub(crate) fn build_l(t_prime: u32) -> Arc<Vec<U2T>> {
+pub(crate) fn build_l_reference(t_prime: u32) -> Arc<Vec<U2T>> {
     // Legacy entry point (probes/tests): plain phase-dedup unless the env
     // forces coset mode. Production (`dc_search` + the prewarm) goes
-    // through `build_l_mode` with `coset_mode_for(eps)`.
-    build_l_mode(t_prime, (*L_COSET_DEDUP).unwrap_or(false))
+    // through `build_l` with `coset_mode_for(eps)`.
+    build_l(t_prime, (*L_COSET_DEDUP).unwrap_or(false))
 }
 
-/// `build_l` with an explicit dedup mode; results cached per
+/// `build_l_reference` with an explicit dedup mode; results cached per
 /// `(t_prime, coset_dedup)`.
-pub fn build_l_mode(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
+pub fn build_l(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
     let key = (t_prime, coset_dedup);
     // Check cache first; clone of `Arc` is just a refcount bump.
     {
@@ -540,11 +540,11 @@ pub struct SynthesizerT {
     /// on the minimum T-count for a generic SU(2) rotation.  Set to 0 to find
     /// exact low-T-count solutions for Cliffords and other special gates.
     pub min_lde: u32,
-    /// Maximum lde for direct_search (brute-force aligned_search).
+    /// Maximum lde for direct_search (brute-force brute_aligned_search).
     /// For t > direct_limit, skip direct_search and go straight to dc_search
-    /// regardless of the optimal t' split. This prevents aligned_search from
+    /// regardless of the optimal t' split. This prevents brute_aligned_search from
     /// hanging at large lde where it becomes O(2^(4t)) intractable.
-    /// Default: 6 (aligned_search is fast up to norm shell 2^6=64; beyond that
+    /// Default: 6 (brute_aligned_search is fast up to norm shell 2^6=64; beyond that
     /// DC with forced t_prime = t - direct_limit is used).
     pub direct_limit: u32,
 }
@@ -635,7 +635,7 @@ impl SynthesizerT {
         let t_dc_start = t_dc_start.max(self.min_lde);
 
         // Pre-warm the L cache in parallel for the t_prime values expected in the first
-        // few steps of the t-loop.  build_l is expensive (O(2^t_prime)) and lazily
+        // few steps of the t-loop.  build_l_reference is expensive (O(2^t_prime)) and lazily
         // populated; doing it here fills all cores before the search loop starts.
         // Cap at a 5-step horizon: solutions are almost always found within the first
         // few t values above t_dc_start, so building larger L sets is wasteful.
@@ -651,7 +651,7 @@ impl SynthesizerT {
                     .collect()
             };
             let coset = coset_mode_for(self.epsilon);
-            needed.into_par_iter().for_each(|tp| { build_l_mode(tp, coset); });
+            needed.into_par_iter().for_each(|tp| { build_l(tp, coset); });
         }
 
         for t in t_dc_start..=self.max_lde {
@@ -728,7 +728,7 @@ impl SynthesizerT {
 
     /// Algorithm 3.6: direct search at lde `t`.
     ///
-    /// Uses `search::aligned_search` (fast brute-force with Cauchy-Schwarz pruning)
+    /// Uses `search::brute_aligned_search` (fast brute-force with Cauchy-Schwarz pruning)
     /// for the inner lattice search.  `lll_aligned_search` (LLL+CVP) is reserved
     /// for the DC path where the inner lde is large and the CVP target is tight.
     ///
@@ -763,7 +763,7 @@ impl SynthesizerT {
         }
 
         branches.par_iter().find_map_any(|(v_s, tag)| {
-            for sol in aligned_search(*v_s, t, eps, 1) {
+            for sol in brute_aligned_search(*v_s, t, eps, 1) {
                 let (u2t, gates) = match tag {
                     DirectBranch::Plain => (
                         solution_to_u2t(&sol, t),
@@ -867,7 +867,7 @@ impl SynthesizerT {
             t_inner / 2 + 1
         };
 
-        let prefixes = build_l_mode(t_prime, coset_mode_for(eps));
+        let prefixes = build_l(t_prime, coset_mode_for(eps));
         if crate::synthesis::diag::trace_enabled() {
             crate::synthesis::diag::N_PREFIXES
                 .fetch_add(prefixes.len() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -887,7 +887,7 @@ impl SynthesizerT {
         // other in-flight walk.
         let found_abort = std::sync::atomic::AtomicBool::new(false);
 
-        // build_l order correlates position with structure, so
+        // build_l_reference order correlates position with structure, so
         // contiguous chunks concentrate similar prefixes on one worker;
         // dealing lowers time-to-first-hit under find_any.
         let indices: Vec<u32> = (0..n as u32).collect();
@@ -1286,19 +1286,19 @@ mod tests {
 
     /// Empirical sister of `clifford_sqrt_t::tests::build_l_q_dc_cost_ratio`.
     /// Computes the same `S(t', α)` cost-ratio (Σ count(t', k)/α^k) for
-    /// Clifford+T's `build_l` so we can directly compare what the naive
+    /// Clifford+T's `build_l_reference` so we can directly compare what the naive
     /// cost model predicts for D&C in each ring.
     #[test]
     fn build_l_size_and_cost_ratio() {
         eprintln!("\n|L_{{t'}}| sizes:");
         for t_prime in 0..=10 {
-            let l = build_l(t_prime);
+            let l = build_l_reference(t_prime);
             eprintln!("  t'={t_prime:>2}  |L_{{t'}}|={:>8}", l.len());
         }
 
-        eprintln!("\nk_prefix histogram (Clifford+T, build_l):");
+        eprintln!("\nk_prefix histogram (Clifford+T, build_l_reference):");
         for t_prime in 1..=8 {
-            let l = build_l(t_prime);
+            let l = build_l_reference(t_prime);
             let mut counts: Vec<u64> = vec![0; 64];
             for u in l.iter() {
                 let k = u.k as usize;
@@ -1315,7 +1315,7 @@ mod tests {
         eprintln!("\nS(t', α) = Σ_k count(t', k) / α^k  (D&C cost ratio):");
         eprintln!("  t'  total      α=2.0    α=2.5    α=3.0    α=3.5    α=4.0");
         for t_prime in 1..=10 {
-            let l = build_l(t_prime);
+            let l = build_l_reference(t_prime);
             let mut counts: Vec<u64> = vec![0; 64];
             for u in l.iter() {
                 let k = u.k as usize;
@@ -1805,7 +1805,7 @@ mod tests {
     #[test]
     #[ignore]
     fn l_coset_census() {
-        eprintln!("\nM1 census: build_l plain phase-dedup vs right-coset dedup");
+        eprintln!("\nM1 census: build_l_reference plain phase-dedup vs right-coset dedup");
         eprintln!("  t'   |L| plain   |L| coset   ratio");
         for tp in 1..=13u32 {
             let t0 = std::time::Instant::now();
@@ -1994,7 +1994,7 @@ mod tests {
                             t_inner / 2 + 1
                         };
                         let target_parity = det_zeta_parity(&target);
-                        for u_l in build_l(t_prime).iter() {
+                        for u_l in build_l_reference(t_prime).iter() {
                             if frames.len() >= 64 {
                                 break;
                             }
@@ -2202,7 +2202,7 @@ mod tests {
             } else {
                 t_inner / 2 + 1
             };
-            let prefixes = build_l_mode(t_prime, coset_mode_for(eps));
+            let prefixes = build_l(t_prime, coset_mode_for(eps));
             let target_parity = det_zeta_parity(&target);
 
             // Capture surviving prefixes' y vectors (both inner branches,
