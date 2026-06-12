@@ -636,14 +636,14 @@
                     "  x_img Q-norm in rep odd frame = {:.6} (walk bound 1.51; probe bound 4.0)",
                     qn.to_f64()
                 );
-                // Call integer::find_aligned_lattice_points directly to expose should_escalate
+                // Call integer::find_aligned_lattice_points_outcome directly to expose should_escalate
                 // (mod.rs's wrapper silently drops it).
                 {
                     use std::sync::atomic::AtomicBool;
                     let mut s2 = IntScratch::new(eps);
                     s2.reset_basis();
                     let hit = AtomicBool::new(false);
-                    let out = crate::synthesis::lattice::integer::find_aligned_lattice_points(
+                    let out = crate::synthesis::lattice::integer::find_aligned_lattice_points_outcome(
                         &mut s2, &y, lde_inner, eps, usize::MAX, u64::MAX,
                         50_000_000, &hit, None,
                     );
@@ -919,7 +919,7 @@
     #[test]
     #[ignore]
     fn q_telemetry_sweep_8d() {
-        use crate::synthesis::lattice::{integer::find_aligned_lattice_points, q_metric::build_q_mpfr};
+        use crate::synthesis::lattice::{integer::find_aligned_lattice_points_outcome as find_aligned_lattice_points, q_metric::build_q_mpfr};
         use crate::synthesis::lattice::scratch::IntScratch;
         use std::sync::atomic::AtomicBool;
 

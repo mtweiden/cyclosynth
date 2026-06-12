@@ -996,6 +996,38 @@ pub enum LeafAction {
     TakeAndStop,
 }
 
+/// CYCLOSYNTH_W1_DEBUG=2 work-skew report: per-item walk times and
+/// per-thread load for the flat-frontier stage. Diagnostics only —
+/// unreachable in production runs.
+#[cold]
+fn report_w1_skew(
+    item_times: std::sync::Mutex<Vec<(f64, i64)>>,
+    stage3_wall_s: f64,
+) {
+    let mut times = item_times.into_inner().unwrap();
+    times.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let total: f64 = times.iter().map(|t| t.0).sum();
+    let top: Vec<String> = times.iter().take(10).map(|t| format!("{:.3}", t.0)).collect();
+    let mut per_thread: std::collections::HashMap<i64, (f64, usize)> =
+        std::collections::HashMap::new();
+    for &(t, tid) in &times {
+        let e = per_thread.entry(tid).or_insert((0.0, 0));
+        e.0 += t;
+        e.1 += 1;
+    }
+    let mut pt: Vec<_> = per_thread.into_iter().collect();
+    pt.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
+    let pts: Vec<String> = pt.iter()
+        .map(|(tid, (t, n))| format!("t{tid}:{t:.2}s/{n}"))
+        .collect();
+    eprintln!(
+        "[w1] skew: {} items, Σ {:.3} s, stage3 wall {:.3} s, top10 [{}]\n[w1] threads: {}",
+        times.len(), total, stage3_wall_s,
+        top.join(", "),
+        pts.join(" ")
+    );
+}
+
 /// Parallel + norm-shell-pruned + incremental-x SE walker. This is the
 /// production workhorse used by [`super::find_aligned_lattice_points`].
 ///
@@ -1610,28 +1642,9 @@ where
         })
         .collect();
     if w1_debug_skew {
-        let mut times = item_times.into_inner().unwrap();
-        times.sort_by(|a, b| b.0.total_cmp(&a.0));
-        let total: f64 = times.iter().map(|t| t.0).sum();
-        let top: Vec<String> = times.iter().take(10).map(|t| format!("{:.3}", t.0)).collect();
-        let mut per_thread: std::collections::HashMap<i64, (f64, usize)> =
-            std::collections::HashMap::new();
-        for &(t, tid) in &times {
-            let e = per_thread.entry(tid).or_insert((0.0, 0));
-            e.0 += t;
-            e.1 += 1;
-        }
-        let mut pt: Vec<_> = per_thread.into_iter().collect();
-        pt.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
-        let pts: Vec<String> = pt.iter()
-            .map(|(tid, (t, n))| format!("t{tid}:{t:.2}s/{n}"))
-            .collect();
-        eprintln!(
-            "[w1] skew: {} items, Σ {:.3} s, stage3 wall {:.3} s, top10 [{}]\n[w1] threads: {}",
-            times.len(), total,
+        report_w1_skew(
+            item_times,
             t_stage3.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0),
-            top.join(", "),
-            pts.join(" ")
         );
     }
 
