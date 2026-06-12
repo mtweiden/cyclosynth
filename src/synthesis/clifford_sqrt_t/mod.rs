@@ -496,7 +496,7 @@ pub use recon::{
     det_phase_of, solution_to_u2q, solution_to_u2q_with_det_phase,
     unitary_to_uv_zeta,
 };
-pub(crate) use recon::project_det_to_zeta_coset;
+pub use recon::project_det_to_zeta_coset;
 #[cfg(test)]
 pub(crate) use recon::zeta_16_pow;
 

@@ -61,40 +61,6 @@ fn cpu_time_s() -> f64 {
     ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
 }
 
-// ─── target construction (mirrors synthesize_exhaustive_certified, reimplemented
-//     locally because project_det_to_zeta_coset is private) ─────────────────
-
-fn rz(theta: f64) -> Mat2 {
-    let z = Complex64::new(0.0, 0.0);
-    [
-        [Complex64::from_polar(1.0, -theta / 2.0), z],
-        [z, Complex64::from_polar(1.0, theta / 2.0)],
-    ]
-}
-
-fn scale(m: &Mat2, g: Complex64) -> Mat2 {
-    [
-        [m[0][0] * g, m[0][1] * g],
-        [m[1][0] * g, m[1][1] * g],
-    ]
-}
-
-/// Rotate `target` by a global phase so its det lands exactly on the
-/// nearest ζ₁₆ power (local copy of the private
-/// `clifford_sqrt_t::project_det_to_zeta_coset`; lossless for the
-/// diamond distance).
-fn project_det_to_zeta_coset(target: &Mat2) -> Mat2 {
-    let det = target[0][0] * target[1][1] - target[0][1] * target[1][0];
-    let d = det_phase_of(target) as f64;
-    let mut residual = det.arg() - d * PI / 8.0;
-    while residual > PI {
-        residual -= 2.0 * PI;
-    }
-    while residual <= -PI {
-        residual += 2.0 * PI;
-    }
-    scale(target, Complex64::from_polar(1.0, -residual / 2.0))
-}
 
 /// Half-unit cost 2·T + 7·Q of a decomposed gate string (local copy of
 /// the private `gates_cost` with the default q_cost_x2 = 7).
@@ -256,7 +222,7 @@ fn main() {
         std::env::set_var("CYCLOSYNTH_QBRACKET_DD", "0");
     }
 
-    let target = project_det_to_zeta_coset(&rz(theta));
+    let target = cyclosynth::synthesis::clifford_sqrt_t::project_det_to_zeta_coset(&rz(theta));
     let target_odd = scale(&target, Complex64::from_polar(1.0, PI / 16.0));
 
     println!(

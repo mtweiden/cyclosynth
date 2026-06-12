@@ -54,7 +54,7 @@ pub fn solution_to_u2q_with_det_phase(sol: &[i64; 16], k: u32, det_phase: u32) -
 /// but without it a U(2) input whose det is not a 16th root carries a
 /// residual phase no completion can absorb, and the search burns to
 /// max_lde finding nothing.
-pub(crate) fn project_det_to_zeta_coset(target: &Mat2) -> Mat2 {
+pub fn project_det_to_zeta_coset(target: &Mat2) -> Mat2 {
     let det = target[0][0] * target[1][1] - target[0][1] * target[1][0];
     let d = det_phase_of(target) as f64;
     let mut residual = det.arg() - d * PI / 8.0;
