@@ -181,7 +181,6 @@ fn canonical_key_q(u: &U2Q) -> [i64; 8] {
 
 /// Build `L_m^Q`: the FGKM canonical-form prefix set with Clifford suffix,
 /// at syllable count `m`. Cached by `m` (Arc-cloned on hit).
-#[allow(dead_code)]
 pub fn build_l_q(m: u32) -> Arc<Vec<U2Q>> {
     {
         let cache = BUILD_L_Q_CACHE.lock().unwrap();
@@ -1044,21 +1043,6 @@ where
 const PASS1_CAP: u64 = 100_000_000;
 const PASS2_CAP: u64 = 4_000_000_000;
 
-/// TEMPORARY A/B knob (budget right-sizing sweep, 2026-06-11): divisor
-/// applied to the ε ≤ 1e-7 (but > 1e-8) dc caps. Read once per process.
-/// Remove after the sweep lands its final constants.
-fn dc_cap_div() -> u64 {
-    use std::sync::OnceLock;
-    static DIV: OnceLock<u64> = OnceLock::new();
-    *DIV.get_or_init(|| {
-        std::env::var("CYCLOSYNTH_DC_CAP_DIV")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|&d| d >= 1)
-            .unwrap_or(1)
-    })
-}
-
 /// CYCLOSYNTH_SCREEN_DIV: screen-lite budget divisor for the optimal
 /// pipeline's stage-2 screen at deep ε (default 1 = full budgets).
 /// A/B knob; becomes a constant once the sweep lands.
@@ -1080,7 +1064,7 @@ fn dc_pass1_cap_for(epsilon: f64) -> u64 {
     if epsilon <= 1e-8 {
         100_000_000
     } else if epsilon <= 1e-7 {
-        25_000_000 / dc_cap_div()
+        25_000_000
     } else {
         DC_PASS1_CAP
     }
@@ -1090,7 +1074,7 @@ fn dc_pass2_cap_for(epsilon: f64) -> u64 {
     if epsilon <= 1e-8 {
         500_000_000
     } else if epsilon <= 1e-7 {
-        50_000_000 / dc_cap_div()
+        50_000_000
     } else {
         DC_PASS2_CAP
     }
@@ -1131,7 +1115,6 @@ const OPTIMAL_PREFIX_INTERLEAVE: bool = true;
 /// Compute `U_L† · target` as a continuous Mat2.
 /// `U_L` is exact (`U2Q`), `target` is float (`Mat2`). Mirrors the 8D
 /// helper `clifford_t::u2t_dag_times_mat2` for use by the Z1 D&C path.
-#[allow(dead_code)]
 fn u2q_dag_times_mat2(u_l: &U2Q, target: &Mat2) -> Mat2 {
     let u_f = u_l.to_float();
     // (U_L†)[i][j] = conj(U_L[j][i])

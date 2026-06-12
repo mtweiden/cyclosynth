@@ -28,29 +28,6 @@ use std::sync::OnceLock;
 
 use i256::i256;
 
-/// Diagnostic-only: skip the partial Euclidean norm prune in the SE walk.
-/// Initialized from `CYCLOSYNTH_BYPASS_NORM_PRUNE=1`, but **mutable at
-/// runtime** via `set_bypass_norm_prune` so a single process can toggle
-/// the prune between phases (e.g., probe Phase 1 captures with bypass on
-/// and Phase 4 watches with bypass off). The leaf integer-exact
-/// `‖x‖² == 2^k` check still arbitrates correctness.
-static BYPASS_NORM_PRUNE: AtomicBool = AtomicBool::new(false);
-static BYPASS_INIT: OnceLock<()> = OnceLock::new();
-
-fn bypass_norm_prune() -> bool {
-    BYPASS_INIT.get_or_init(|| {
-        let v = std::env::var("CYCLOSYNTH_BYPASS_NORM_PRUNE").ok().as_deref() == Some("1");
-        BYPASS_NORM_PRUNE.store(v, Ordering::Relaxed);
-    });
-    BYPASS_NORM_PRUNE.load(Ordering::Relaxed)
-}
-
-/// Diagnostic-only: override the bypass flag at runtime.
-pub fn set_bypass_norm_prune(value: bool) {
-    BYPASS_INIT.get_or_init(|| {});
-    BYPASS_NORM_PRUNE.store(value, Ordering::Relaxed);
-}
-
 /// W1 kill-switch: `CYCLOSYNTH_FLAT_WALK=0` disables the multi-level
 /// frontier flattening in [`schnorr_euchner_16d_par_norm_pruned`],
 /// restoring the legacy per-z[15]-only parallel sharding. Default ON.
@@ -72,51 +49,6 @@ fn predictive_trunc_disabled() -> bool {
     *PREDICTIVE_TRUNC_DISABLED.get_or_init(|| {
         std::env::var("CYCLOSYNTH_PREDICTIVE_TRUNC").ok().as_deref() == Some("0")
     })
-}
-
-// Depth-1 Q-filter (phase 3). DEFAULT OFF.
-//
-// Sound: rejects only z[1] candidates with no integer z[0] making
-// ‖x‖² = T exactly (the leaf filter's hard requirement). 99.98%
-// rejection rate at the cliff per the qfilter measurement.
-//
-// Phantom-node budget (`PHANTOM_PER_REJECT`) charges each rejected
-// candidate ~8 budget units (matching the depth-0+leaves subtree the
-// filter saved), so the per-node budget admits roughly the same total
-// work as if the filter were inactive. Fixes the original "100× wider
-// admission" pathology (commit 073f09d → this commit).
-//
-// Why still default off: mixed results across ε=1e-8 targets.
-// theta=1.1 wins (9.6 s vs 11.85 s baseline), but easier-walk targets
-// regress (theta=0.3 at lde=24 takes 1134 s vs 627 s baseline,
-// theta=0.7 takes 24 s vs 16 s). The filter overhead in production
-// is higher than micro-benchmarks predict (cache contention across
-// 14 threads, precompute paid on every depth-1 entry even when
-// candidates would have been cheap to enumerate). Phase-4 work
-// needed before default-on:
-//   (a) selective enablement (e.g., only when partial_eucl is near
-//       threshold — the "shell-tight" regime where filter wins);
-//   (b) cheaper filter (f64 fast-path for D<0; lazy isqrt);
-//   (c) incremental v_0, v_1, A maintenance across depths 2..15 to
-//       amortize the 400 ns precompute.
-//
-// Set `CYCLOSYNTH_QFILTER=1` to enable, or call
-// `set_qfilter_enabled(true)`.
-static QFILTER_ENABLED: AtomicBool = AtomicBool::new(false);
-static QFILTER_INIT: OnceLock<()> = OnceLock::new();
-
-fn qfilter_enabled() -> bool {
-    QFILTER_INIT.get_or_init(|| {
-        let v = std::env::var("CYCLOSYNTH_QFILTER").ok().as_deref() == Some("1");
-        QFILTER_ENABLED.store(v, Ordering::Relaxed);
-    });
-    QFILTER_ENABLED.load(Ordering::Relaxed)
-}
-
-/// Diagnostic-only: enable the depth-1 Q-filter at runtime.
-pub fn set_qfilter_enabled(value: bool) {
-    QFILTER_INIT.get_or_init(|| {});
-    QFILTER_ENABLED.store(value, Ordering::Relaxed);
 }
 
 /// dd Q-bracket kill-switch: `CYCLOSYNTH_QBRACKET_DD=0` disables the
@@ -381,140 +313,6 @@ pub fn analytical_depth0_z0_candidates(
         }
     }
     n
-}
-
-/// Depth-1 shell-discriminant state. At depth 1 with `z[2..15]` fixed, the
-/// shell equation `‖x‖² = T` (T = `target_norm_sq_i64`) is the quadratic
-/// `G_00·z[0]² + 2(G_01·z[1] + v_0)·z[0] + (G_11·z[1]² + 2·v_1·z[1] + A − T) = 0`
-/// in z[0], parametrized by z[1]. For an integer solution to exist for a
-/// given z[1], the discriminant must be ≥ 0 and a perfect square.
-///
-/// Returns `(G_00, G_01, G_11, A, v_0, v_1)` as i256. Magnitudes can exceed
-/// i128 at cliff conditions (basis ~ 2^41, z_c ~ 2^43, so y_i ~ 2^88 and
-/// y_i² sum ~ 2^180). i256 carries everything safely.
-#[inline]
-pub fn qfilter_depth1_state_pub(
-    basis: &[[i64; 16]; 16],
-    x: &[i64; 16],
-    z0_curr: i64,
-    z1_curr: i64,
-) -> (i256, i256, i256, i256, i256, i256) {
-    qfilter_depth1_state(basis, x, z0_curr, z1_curr)
-}
-pub fn isqrt_i256_pub(n: i256) -> i256 { isqrt_i256(n) }
-#[allow(clippy::too_many_arguments)]
-pub fn qfilter_discriminant_class_pub(
-    g_00: i256, g_01: i256, g_11: i256, a: i256, v_0: i256, v_1: i256,
-    target_norm_sq_i64: i64, zd: i64,
-) -> u8 {
-    qfilter_discriminant_class(g_00, g_01, g_11, a, v_0, v_1, target_norm_sq_i64, zd)
-}
-
-fn qfilter_depth1_state(
-    basis: &[[i64; 16]; 16],
-    x: &[i64; 16],
-    z0_curr: i64,
-    z1_curr: i64,
-) -> (i256, i256, i256, i256, i256, i256) {
-    let mut g_00 = i256::from_i64(0);
-    let mut g_01 = i256::from_i64(0);
-    let mut g_11 = i256::from_i64(0);
-    for i in 0..16 {
-        let b0 = i256::from_i64(basis[0][i]);
-        let b1 = i256::from_i64(basis[1][i]);
-        g_00 = g_00.wrapping_add(b0.wrapping_mul(b0));
-        g_01 = g_01.wrapping_add(b0.wrapping_mul(b1));
-        g_11 = g_11.wrapping_add(b1.wrapping_mul(b1));
-    }
-    let z0 = i256::from_i64(z0_curr);
-    let z1 = i256::from_i64(z1_curr);
-    let mut a = i256::from_i64(0);
-    let mut v_0 = i256::from_i64(0);
-    let mut v_1 = i256::from_i64(0);
-    for i in 0..16 {
-        let b0 = i256::from_i64(basis[0][i]);
-        let b1 = i256::from_i64(basis[1][i]);
-        let y_i = i256::from_i64(x[i])
-            .wrapping_sub(z0.wrapping_mul(b0))
-            .wrapping_sub(z1.wrapping_mul(b1));
-        a = a.wrapping_add(y_i.wrapping_mul(y_i));
-        v_0 = v_0.wrapping_add(y_i.wrapping_mul(b0));
-        v_1 = v_1.wrapping_add(y_i.wrapping_mul(b1));
-    }
-    (g_00, g_01, g_11, a, v_0, v_1)
-}
-
-/// Newton's-method floor-isqrt for non-negative i256. Returns ⌊√n⌋. Caller
-/// must ensure n ≥ 0 (returns garbage for n < 0).
-///
-/// Convergence: with a 2^⌈bits/2⌉ seed, Newton's quadratic convergence
-/// reaches the fixed point in O(log(bits)) ≈ 7-8 iterations for full-i256.
-#[inline]
-fn isqrt_i256(n: i256) -> i256 {
-    let zero = i256::from_i64(0);
-    if n <= zero {
-        return zero;
-    }
-    if n < i256::from_i64(4) {
-        return i256::from_i64(1);
-    }
-    let bits = 256 - n.leading_zeros();
-    let seed_shift = bits.div_ceil(2);
-    let mut x = i256::from_i64(1).wrapping_shl(seed_shift);
-    loop {
-        let q = n.wrapping_div(x);
-        if q >= x {
-            break;
-        }
-        x = x.wrapping_add(q).wrapping_shr(1);
-    }
-    x
-}
-
-/// For a depth-1 z[1] candidate `zd`, classify the shell discriminant into
-/// four buckets:
-///   `0` — D < 0 (no real z[0] solution)
-///   `1` — D ≥ 0 but mod-16 says not a perfect square (no integer z[0])
-///   `2` — D ≥ 0, mod-16 OK, but isqrt²≠D (not a perfect square — no int z[0])
-///   `3` — D ≥ 0 and D is a perfect square (filter passes — recurse)
-///
-/// The mod-16 test is a cheap necessary condition; the isqrt test is the
-/// definitive integer-z[0]-existence check.
-///
-/// D = 4·D_per_4 where D_per_4 = `b_lin² − G_00·c`. D is a perfect square
-/// iff D_per_4 is (since 4 = 2²). So we operate on D_per_4 throughout.
-#[inline]
-fn qfilter_discriminant_class(
-    g_00: i256,
-    g_01: i256,
-    g_11: i256,
-    a: i256,
-    v_0: i256,
-    v_1: i256,
-    target_norm_sq_i64: i64,
-    zd: i64,
-) -> u8 {
-    let zd_i = i256::from_i64(zd);
-    let two = i256::from_i64(2);
-    let b_lin = g_01.wrapping_mul(zd_i).wrapping_add(v_0);
-    let c = g_11
-        .wrapping_mul(zd_i)
-        .wrapping_mul(zd_i)
-        .wrapping_add(two.wrapping_mul(v_1).wrapping_mul(zd_i))
-        .wrapping_add(a.wrapping_sub(i256::from_i64(target_norm_sq_i64)));
-    let d_per_4 = b_lin
-        .wrapping_mul(b_lin)
-        .wrapping_sub(g_00.wrapping_mul(c));
-    if d_per_4 < i256::from_i64(0) {
-        return 0;
-    }
-    let rem = d_per_4.wrapping_rem_i128(4);
-    let rem_pos = if rem < 0 { rem + 4 } else { rem };
-    if rem_pos != 0 && rem_pos != 1 {
-        return 1;
-    }
-    let s = isqrt_i256(d_per_4);
-    if s.wrapping_mul(s) == d_per_4 { 3 } else { 2 }
 }
 
 /// Compute `Σ_{i ≥ depth} (R · z)[i]²` in inline double-double (~106 bits)
@@ -1321,7 +1119,7 @@ fn recurse_16_norm_pruned<F>(
         z[d] = new_zd;
         let level_eucl = w[d];
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
-        if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
+        if new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_16_norm_pruned(
                 depth - 1, l, z_c, bound_sq, r_eucl, target_norm_sq,
                 partial_q, new_partial_eucl, z, x, w, basis, callback, budget,
@@ -1392,8 +1190,7 @@ fn recurse_16_norm_pruned<F>(
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
         let threshold = target_norm_sq * (1.0 + 1e-9);
         let prune_fires = depth > 0 && new_partial_eucl > threshold;
-        let bypass = bypass_norm_prune();
-        if prune_fires && !bypass {
+        if prune_fires {
             crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
             if (depth as usize) < 16 {
                 crate::synthesis::diag::N_PRUNE_FIRES_AT_DEPTH[depth as usize]
@@ -1418,7 +1215,7 @@ fn recurse_16_norm_pruned<F>(
                 });
             }
         }
-        if !bypass && prune_fires {
+        if prune_fires {
             continue;
         }
         recurse_16_norm_pruned(
@@ -1894,7 +1691,7 @@ fn expand_se_prefix_node(
         item.z[d] = new_zd;
         let level_eucl = item.w[d];
         let new_partial_eucl = item.partial_eucl + level_eucl * level_eucl;
-        if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
+        if new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             item.partial_eucl = new_partial_eucl;
             out.push(item);
         }
@@ -1979,9 +1776,8 @@ fn expand_se_prefix_node(
         let new_partial_eucl = item.partial_eucl + level_eucl * level_eucl;
         let threshold = target_norm_sq * (1.0 + 1e-9);
         let prune_fires = new_partial_eucl > threshold; // d ≥ 4 > 0 here
-        let bypass = bypass_norm_prune();
         let depth = d as i32;
-        if trace && prune_fires && !bypass {
+        if trace && prune_fires {
             crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
             if d < 16 {
                 crate::synthesis::diag::N_PRUNE_FIRES_AT_DEPTH[d]
@@ -2008,7 +1804,7 @@ fn expand_se_prefix_node(
         }
         // Same prune-verification ladder as the recursion: integer-exact
         // short-circuit first, then dd verify (when enabled and near).
-        let actually_prune = if !bypass && prune_fires {
+        let actually_prune = if prune_fires {
             let x_norm_sq: i64 = item.x.iter().map(|&v| v.wrapping_mul(v)).sum();
             if x_norm_sq <= target_norm_sq_i64 {
                 false
@@ -2151,7 +1947,7 @@ where
         }
         let level_eucl = w[15];
         let partial_eucl = level_eucl * level_eucl;
-        if !bypass_norm_prune() && partial_eucl > target_norm_sq * (1.0 + 1e-9) {
+        if partial_eucl > target_norm_sq * (1.0 + 1e-9) {
             continue;
         }
         frontier.push(SePrefixItem { z, x, w, partial_q, partial_q_dd, partial_eucl });
@@ -2400,22 +2196,6 @@ fn recurse_collect_norm_pruned<F>(
     if trace && depth == 0 {
         crate::synthesis::diag::D1_PARTIAL_TLS.with(|c| c.set(partial_eucl));
     }
-    // Depth-1 shell-discriminant filter (phase 3) — see `qfilter_enabled`
-    // for status. Default off; opt-in via `CYCLOSYNTH_QFILTER=1`.
-    let qfilter_state: Option<(i256, i256, i256, i256, i256, i256)> =
-        if depth == 1 && qfilter_enabled() {
-            let t_pre = if trace { Some(std::time::Instant::now()) } else { None };
-            let s = qfilter_depth1_state(basis, x, z[0], z[1]);
-            if let Some(t) = t_pre {
-                crate::synthesis::diag::T_QFILTER_PRECOMPUTE_NS
-                    .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                crate::synthesis::diag::N_QFILTER_PRECOMPUTE_CALLS
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-            Some(s)
-        } else {
-            None
-        };
     if depth < 0 {
         // Shell-ratio histogram: record where x lands relative to the
         // target shell, regardless of leaf_filter outcome. Reveals whether
@@ -2449,7 +2229,7 @@ fn recurse_collect_norm_pruned<F>(
         z[d] = new_zd;
         let level_eucl = w[d];
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
-        if bypass_norm_prune() || new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
+        if new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_collect_norm_pruned(
                 depth - 1, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
                 u_eucl_dd, target_norm_sq, target_norm_sq_i64,
@@ -2551,8 +2331,7 @@ fn recurse_collect_norm_pruned<F>(
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
         let threshold = target_norm_sq * (1.0 + 1e-9);
         let prune_fires = depth > 0 && new_partial_eucl > threshold;
-        let bypass = bypass_norm_prune();
-        if trace && prune_fires && !bypass {
+        if trace && prune_fires {
             crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
             if (depth as usize) < 16 {
                 crate::synthesis::diag::N_PRUNE_FIRES_AT_DEPTH[depth as usize]
@@ -2590,7 +2369,7 @@ fn recurse_collect_norm_pruned<F>(
         // where integer-exact norm proves the prune wrong, BEFORE running
         // dd verify (~450 ns). Net win iff a non-negligible fraction of
         // prune-fires have ‖x‖² ≤ T_int.
-        let actually_prune = if !bypass && prune_fires {
+        let actually_prune = if prune_fires {
             // Integer-exact short-circuit (no false negatives, may miss some
             // true keeps where prefix_d > ‖x‖² − T).
             let x_norm_sq: i64 = x.iter().map(|&v| v.wrapping_mul(v)).sum();
@@ -2633,48 +2412,6 @@ fn recurse_collect_norm_pruned<F>(
         // is pure overhead without budget-model changes.
 
         // Depth-1 Q-filter: at z[1] = zd, decide if any integer z[0] makes
-        // ‖x‖² = T exactly. Skip recursion when no perfect-square solution
-        // exists. Sound: leaf_filter requires ‖x‖² == T strictly, so a
-        // non-perfect-square discriminant guarantees no leaf survives.
-        if let Some((g_00, g_01, g_11, a_q, v_0, v_1)) = qfilter_state {
-            let t_cls = if trace { Some(std::time::Instant::now()) } else { None };
-            let class = qfilter_discriminant_class(
-                g_00, g_01, g_11, a_q, v_0, v_1, target_norm_sq_i64, zd,
-            );
-            if let Some(t) = t_cls {
-                crate::synthesis::diag::T_QFILTER_CLASSIFY_NS
-                    .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            }
-            if trace {
-                crate::synthesis::diag::N_QFILTER_TOTAL.fetch_add(1, Ordering::Relaxed);
-                match class {
-                    0 => crate::synthesis::diag::N_QFILTER_D_NEG.fetch_add(1, Ordering::Relaxed),
-                    1 => crate::synthesis::diag::N_QFILTER_D_GE0_MOD16_BAD
-                        .fetch_add(1, Ordering::Relaxed),
-                    2 => crate::synthesis::diag::N_QFILTER_D_GE0_NOT_SQUARE
-                        .fetch_add(1, Ordering::Relaxed),
-                    _ => crate::synthesis::diag::N_QFILTER_PERFECT_SQUARE
-                        .fetch_add(1, Ordering::Relaxed),
-                };
-            }
-            if class != 3 {
-                // Phantom-node budget: the filter saved us from a depth-0
-                // subtree visit. Charge the budget equal to the skipped
-                // subtree size (1 depth-0 entry + ~10 leaves) so the
-                // per-node budget admits the same total work as if the
-                // filter were inactive. Without this, filter-rejected
-                // entries consume only 1 node each, so the budget admits
-                // ~100× more depth-1 entries than the unfiltered case —
-                // making the filter ~10× slower at no-solution lde levels
-                // despite being correct.
-                const PHANTOM_PER_REJECT: u64 = 8;
-                if !bcache.charge(PHANTOM_PER_REJECT, budget, consumed, aborted) {
-                    return;
-                }
-                continue;
-            }
-        }
-
         recurse_collect_norm_pruned(
             depth - 1, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
             u_eucl_dd, target_norm_sq, target_norm_sq_i64,

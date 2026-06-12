@@ -3,7 +3,6 @@
 //! `IntScratch` struct that pre-allocates every buffer up front so the
 //! inner LLL loop has zero allocation.
 
-#![allow(dead_code)]
 // 8×8 matrix code reads more clearly with explicit (i, j) indexing.
 #![allow(clippy::needless_range_loop)]
 

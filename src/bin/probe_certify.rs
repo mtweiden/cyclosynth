@@ -41,7 +41,7 @@ fn main() {
                 .with_certify_extra_ms(k_max as u64 * 1000)
                 .synthesize_with_certificate(v)
             {
-                Some((r, c)) => println!(
+                Some((_r, c)) => println!(
                     "prod θ={theta} eps={eps:e} → cost={} in [{}, {}] gap={} certified={} k={} t={:.1}s",
                     c.upper_half_units, c.lower_half_units, c.upper_half_units,
                     c.upper_half_units - c.lower_half_units,

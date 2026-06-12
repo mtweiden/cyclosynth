@@ -41,7 +41,6 @@
 //!  - The factor `(1−ε²)/2` corresponds to `cos²(θ_σ1) ≥ (1−ε²)/2` in
 //!    σ_1-image space — the same cap-alignment criterion as 8D Z[ω].
 
-#![allow(dead_code)]
 #![allow(clippy::needless_range_loop)]
 
 use rug::{Assign, Float as RFloat};
