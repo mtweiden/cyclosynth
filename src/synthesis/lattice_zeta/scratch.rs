@@ -23,7 +23,6 @@
 //! to a larger integer type (e.g. `rug::Integer`). For the M3 deliverable
 //! targeting moderate ε (≥ 10⁻⁵, k ≤ 30) this is comfortable.
 
-#![allow(dead_code)]
 #![allow(clippy::needless_range_loop)]
 
 use crate::rings::Float;

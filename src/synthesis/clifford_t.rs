@@ -473,58 +473,6 @@ const PASS2_NODE_CAP: u64 = 50_000_000;
 /// whenever the first candidate is good.
 const DC_WALK_MAX_SOLUTIONS: usize = 8;
 
-/// Stage-2 branch two-sweep gate (docs/plan_8d_prefix_rework.md lever 3):
-/// when on, `dc_search` runs ONE inner branch across all prefixes first and
-/// the second branch only if the first sweep found nothing, instead of
-/// paying both branch pipelines per prefix up front. `budget_hit` ORs
-/// across sweeps, so the 2-pass requeue contract is unchanged.
-///
-/// Default OFF — the plan's kill criterion fired: M2 measured branch wins
-/// at ~50/50 (revert config: 5 even / 7 odd; coset config: 6/6, with no
-/// t_inner-parity rule and mean win position 0.71-0.76 of the sweep —
-/// docs/w_8d_rework_notes.md). With no dominant branch, sweep 1 covers
-/// only ~half the finds and the other half pays a full extra sweep of
-/// parity/mat_to_uv work plus deferred discovery; expected value ≤ 1.
-/// Kept behind `CYCLOSYNTH_TWO_SWEEP=1` for future re-evaluation (e.g.
-/// if a branch-prior emerges from the t'-offset work in stage 3).
-static BRANCH_TWO_SWEEP: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var("CYCLOSYNTH_TWO_SWEEP").map(|v| v == "1").unwrap_or(false)
-});
-
-/// Sweep-1 branch override for experiments: `CYCLOSYNTH_SWEEP1=odd|even`.
-/// Default (None) uses the M2-measured choice in `dc_search`.
-static SWEEP1_ODD_OVERRIDE: LazyLock<Option<bool>> = LazyLock::new(|| {
-    match std::env::var("CYCLOSYNTH_SWEEP1").as_deref() {
-        Ok("odd") => Some(true),
-        Ok("even") => Some(false),
-        _ => None,
-    }
-});
-
-/// Stage-3 t'-split offset (docs/plan_8d_prefix_rework.md lever B2):
-/// `CYCLOSYNTH_TP_OFFSET=<i32>` shifts the Prop 3.13 optimum,
-/// `t' = clamp(opt + offset, 1, t)` whenever `opt > 0` (levels where the
-/// formula says `opt == 0` keep t' = 0 — `dc_search`'s level-skip behavior
-/// must stay identical, only the split point of SEARCHED levels moves).
-/// Each −1 roughly halves the prefix count and grows `t_inner` (hence the
-/// inner walk) by one.
-///
-/// PARITY CAVEAT (why odd offsets are expected to fail the FOUND/none
-/// gate): `parity(det U_L) = t' mod 2` (each MA syllable contributes
-/// det = −ζ; Cliffords are ζ-even), and the `det_zeta_parity` /
-/// `mat_to_uv` filter rejects every prefix whose parity mismatches the
-/// target's. For det-even targets (e.g. the det-1 u3 bench targets) a
-/// level is searchable only when its t' is EVEN — an odd offset flips the
-/// t' parity of every level, wiping out previously-FOUND levels. Offsets
-/// to sweep are therefore effectively the even ones (−2); −1/−3 are swept
-/// for the record. Default 0. Read once per process (LazyLock).
-static TP_OFFSET: LazyLock<i32> = LazyLock::new(|| {
-    std::env::var("CYCLOSYNTH_TP_OFFSET")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0)
-});
-
 /// LLL-based aligned search for a right factor `U_R` of given lde `k`
 /// matching the alignment vector `v`. Finds integer 8-vectors satisfying
 /// the norm-shell, bilinear-form, and alignment constraints.
@@ -589,17 +537,7 @@ fn optimal_t_prime(t: u32, eps: Float) -> u32 {
     } else {
         // ceil(t - threshold)
         let raw = t as Float - threshold;
-        let opt = raw.ceil() as u32;
-        // Stage-3 lever B2: shift the split while preserving WHICH levels
-        // are searched (opt == 0 stays 0 — handled above by the early
-        // return paths; here opt ≥ 1). Clamp to [1, t]: t' = 0 would turn
-        // a searched level into a skipped one, t' > t is meaningless.
-        let off = *TP_OFFSET;
-        if off == 0 {
-            opt
-        } else {
-            (opt as i64 + off as i64).clamp(1, t as i64) as u32
-        }
+        raw.ceil() as u32
     }
 }
 
@@ -1048,25 +986,13 @@ impl SynthesizerT {
         // mat_to_uv check.
         let target_parity = det_zeta_parity(target);
 
-        // Stage-2 branch two-sweep (lever 3): each "plan" is the list of
-        // inner branches (`odd` flags) one sweep runs per prefix.
-        //   - t_inner == 0: only the even branch exists (single sweep).
-        //   - two-sweep ON: sweep 1 = the M2-dominant branch across all
-        //     prefixes; sweep 2 = the other branch, only entered when
-        //     sweep 1 found nothing. On the found level this pays ~one
-        //     branch pipeline per scanned prefix instead of two; on an
-        //     empty level it does the same total work, reordered.
-        //   - two-sweep OFF (the default — M2 measured ~50/50 branch
-        //     wins, the plan's kill criterion; see BRANCH_TWO_SWEEP):
-        //     legacy single sweep running even-then-odd per prefix.
-        // Sweep 1 defaults to even (legacy order) unless overridden via
-        // CYCLOSYNTH_SWEEP1=odd.
-        let two_sweep = t_inner > 0 && *BRANCH_TWO_SWEEP;
-        let sweep1_odd = (*SWEEP1_ODD_OVERRIDE).unwrap_or(false);
+        // Inner branches (`odd` flags) run per prefix: even (U_L·U_R) and,
+        // when t_inner > 0, odd (U_L·U_R·T). A branch-ordered "two-sweep"
+        // variant was tried and killed — M2 measured branch wins at ~50/50
+        // with no t_inner-parity rule, so no sweep order dominates
+        // (docs/w_8d_rework_notes.md; removed 2026-06-12).
         let plans: Vec<Vec<bool>> = if t_inner == 0 {
             vec![vec![false]]
-        } else if two_sweep {
-            vec![vec![sweep1_odd], vec![!sweep1_odd]]
         } else {
             vec![vec![false, true]]
         };

@@ -42,7 +42,6 @@
 //! - [`cholesky_lu`]: `cholesky_f64_8`, `lu_solve_int_inplace`, plus the
 //!   MPFR oracle path used by tests.
 
-#![allow(dead_code)]
 // 8×8 matrix code reads more clearly with explicit (i, j) indexing.
 #![allow(clippy::needless_range_loop)]
 

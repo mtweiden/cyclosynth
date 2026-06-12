@@ -68,7 +68,7 @@ pub use q_metric::{build_q_int_zeta, build_q_mpfr_zeta, build_q_mpfr_zeta_from_m
 pub use scratch::IntScratch16;
 pub use se::{
     beta_1, beta_2, beta_3, bilinear_forms, det16_exact, euclidean_cholesky_16,
-    reconstruct_x, schnorr_euchner_16d, set_bypass_norm_prune, set_verify_prune_mpfr,
+    reconstruct_x, schnorr_euchner_16d, set_verify_prune_mpfr,
     verify_prune_mpfr, SeCenter16,
 };
 
@@ -228,7 +228,6 @@ mod tests {
         use super::se::euclidean_cholesky_16_mpfr_dual;
         use crate::synthesis::clifford_sqrt_t::unitary_to_uv_zeta;
         use rug::Float as RF;
-        use std::sync::atomic::AtomicBool;
 
         // Same target generator as the displacement probe.
         struct Xs(u64);
