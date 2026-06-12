@@ -155,7 +155,7 @@ pub struct IntScratch {
     /// Prefix-independent part of the Q metric:
     /// `q_base[i][j] = inv_dp_sq·p_u[i][j] + inv_r_sq·p_ub[i][j]`.
     /// Valid for the `(k, eps)` recorded in `q_base_key`; rebuilt by
-    /// `build_q_mpfr` only when the key changes (within one `dc_search`
+    /// `build_q_mpfr` only when the key changes (within one `prefix_split_search`
     /// level k is fixed, so this runs once per worker per level).
     pub q_base: [[RFloat; 8]; 8],
     /// Scalar weight of the prefix-dependent rank-1 term:

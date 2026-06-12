@@ -325,7 +325,7 @@
         }
     }
 
-    /// Stage-2 contract: `dc_search`'s `budget_hit` is shared across the
+    /// Stage-2 contract: `prefix_split_search`'s `budget_hit` is shared across the
     /// branch sweeps (OR semantics) and surfaces to the caller — the 2-pass
     /// requeue depends on it. With a 1-node SE budget every walk in BOTH
     /// sweeps trips immediately on an empty level → `(None, true)`; the
@@ -354,12 +354,12 @@
             if optimal_t_prime(t, eps) == 0 {
                 continue;
             }
-            let (res, hit) = synth.dc_search(&target, v, t, PASS1_CAP, PASS1_NODE_CAP);
+            let (res, hit) = synth.prefix_split_search(&target, v, t, PASS1_CAP, PASS1_NODE_CAP);
             if res.is_some() {
                 break; // first-hit reached; no empty levels above
             }
             assert!(!hit, "production caps should be exhaustive at lde={t}");
-            let (res1, hit1) = synth.dc_search(&target, v, t, u64::MAX, 1);
+            let (res1, hit1) = synth.prefix_split_search(&target, v, t, u64::MAX, 1);
             assert!(res1.is_none(), "no solution reachable on a 1-node budget (lde={t})");
             if hit1 {
                 verified = true;
@@ -818,7 +818,7 @@
     #[test]
     fn test_dc_fires_and_finds_solution() {
         // eps=0.01, Rz(0.3): DC fires at t>=17.  We go straight to t=20 to
-        // ensure dc_search is exercised (t'=4, t_inner=16, |L|~16).
+        // ensure prefix_split_search is exercised (t'=4, t_inner=16, |L|~16).
         let target = rz(0.3);
         let eps = 0.01_f64;
         let synth = SynthesizerT::new(eps).with_max_lde(35);
@@ -862,7 +862,7 @@
     }
 
     /// Synthesize a Haar-random SU(2) unitary at ε=1e-3. Exercises the
-    /// dc_search path on a non-trivial target (not just Rz/Ry); the named
+    /// prefix_split_search path on a non-trivial target (not just Rz/Ry); the named
     /// tests above mostly cover axis-aligned rotations.
     #[test]
     fn test_synthesize_random_unitary() {

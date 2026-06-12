@@ -49,7 +49,7 @@ pub static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
 /// units of Z[ω], no 1/√2 factor).
 ///
 /// Used by `build_l`'s right-coset dedup (stage 1 of
-/// docs/plan_8d_prefix_rework.md): for lde-0 `C`, the D&C subproblems of
+/// docs/plan_8d_prefix_rework.md): for lde-0 `C`, the prefix-split subproblems of
 /// prefixes `U_L` and `U_L·C` are Q-isometric bijections with identical
 /// total unitaries (`U_L·C·U_R = U_L·(C·U_R)`, and `C·U_R` lies on the
 /// same norm shell with the same lde), so one representative per right
