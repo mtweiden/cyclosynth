@@ -1346,7 +1346,6 @@ impl SynthesizerQ {
         let use_f64_gs = self.use_f64_gs;
         let bkz_block_size = self.bkz_block_size;
         let optimize_cost = self.optimize_cost;
-        let q_cost_x2 = self.q_cost_x2;
         let try_lattice_k = |k: u32,
                              budget: u64,
                              scratch: &mut Option<Box<IntScratch16>>|
@@ -1371,28 +1370,8 @@ impl SynthesizerQ {
         };
 
         let check_sols = |sols: &[[i64; 16]], k: u32| -> Option<SynthResultQ> {
-            let mut best: Option<(usize, SynthResultQ)> = None;
-            for sol in sols {
-                let cand: U2Q = solution_to_u2q_d(sol, k, d);
-                let dist = diamond_distance_u2q_float(&cand, &target);
-                if dist < self.epsilon {
-                    let gates = BlochDecomposer.decompose(&cand);
-                    let cost = gates_cost(&gates, q_cost_x2);
-                    let cand_result = SynthResultQ {
-                        gates: Some(gates),
-                        lde: k,
-                        distance: dist,
-                    };
-                    if !optimize_cost {
-                        return Some(cand_result);
-                    }
-                    match &best {
-                        Some((bcost, _)) if *bcost <= cost => {}
-                        _ => best = Some((cost, cand_result)),
-                    }
-                }
-            }
-            best.map(|(_, r)| r)
+            let cands = sols.iter().map(|sol| (solution_to_u2q_d(sol, k, d), k));
+            self.best_costed(cands, &target, !optimize_cost).map(|(_, r)| r)
         };
 
         // Brute regime: iterate every k for exact small-T Clifford+√T finds.
@@ -2670,28 +2649,8 @@ impl SynthesizerQ {
             s.as_mut(), v, None, self.deep_rot_src.as_ref(), k, epsilon, budget, &budget_hit, should_stop, None, None,
         );
         let hit = budget_hit.load(std::sync::atomic::Ordering::Relaxed);
-        let mut best: Option<(usize, SynthResultQ)> = None;
-        for sol in &sols {
-            let cand: U2Q = solution_to_u2q_d(sol, k, d);
-            let dist = diamond_distance_u2q_float(&cand, target);
-            if dist < epsilon {
-                let gates = BlochDecomposer.decompose(&cand);
-                let cost = gates_cost(&gates, self.q_cost_x2);
-                let result = SynthResultQ {
-                    gates: Some(gates),
-                    lde: k,
-                    distance: dist,
-                };
-                if !cost_min {
-                    return (Some((cost, result)), hit);
-                }
-                match &best {
-                    Some((bcost, _)) if *bcost <= cost => {}
-                    _ => best = Some((cost, result)),
-                }
-            }
-        }
-        (best, hit)
+        let cands = sols.iter().map(|sol| (solution_to_u2q_d(sol, k, d), k));
+        (self.best_costed(cands, target, !cost_min), hit)
     }
 
     /// Cost-optimal synthesis. Three stages:
@@ -2887,6 +2846,37 @@ impl SynthesizerQ {
         }
     }
 
+    /// Scan ε-close candidates, decompose each, and keep the min-cost
+    /// one — or return the FIRST ε-close one when `first_hit` (the
+    /// legacy non-optimal semantics, which must stay order-sensitive).
+    fn best_costed<I>(
+        &self,
+        cands: I,
+        target: &Mat2,
+        first_hit: bool,
+    ) -> Option<(usize, SynthResultQ)>
+    where
+        I: IntoIterator<Item = (U2Q, u32)>,
+    {
+        let mut best: Option<(usize, SynthResultQ)> = None;
+        for (cand, lde) in cands {
+            let dist = diamond_distance_u2q_float(&cand, target);
+            if dist < self.epsilon {
+                let gates = BlochDecomposer.decompose(&cand);
+                let cost = gates_cost(&gates, self.q_cost_x2);
+                let result = SynthResultQ { gates: Some(gates), lde, distance: dist };
+                if first_hit {
+                    return Some((cost, result));
+                }
+                match &best {
+                    Some((bc, _)) if *bc <= cost => {}
+                    _ => best = Some((cost, result)),
+                }
+            }
+        }
+        best
+    }
+
     /// Stage 1 of the optimal pipeline: exact min-cost scan of the brute
     /// shells (k ≤ BRUTE_LIMIT). A find here is already optimal at the
     /// smallest feasible k.
@@ -2895,26 +2885,13 @@ impl SynthesizerQ {
         let thr = brute_prefilter_threshold(self.epsilon);
         for k in self.min_lde..=BRUTE_LIMIT.min(self.max_lde) {
             let shell = brute_shell_cached(k);
-            let mut best: Option<(usize, SynthResultQ)> = None;
-            for (sol, m) in shell.sols.iter().zip(&shell.mats) {
-                if brute_dist_est(m, zd, target) >= thr {
-                    continue;
-                }
-                let cand: U2Q = solution_to_u2q_d(sol, k, d);
-                let dist = diamond_distance_u2q_float(&cand, target);
-                if dist < self.epsilon {
-                    let gates = BlochDecomposer.decompose(&cand);
-                    let cost = gates_cost(&gates, self.q_cost_x2);
-                    match &best {
-                        Some((bc, _)) if *bc <= cost => {}
-                        _ => best = Some((cost, SynthResultQ {
-                            gates: Some(gates),
-                            lde: k,
-                            distance: dist,
-                        })),
-                    }
-                }
-            }
+            let close = shell
+                .sols
+                .iter()
+                .zip(&shell.mats)
+                .filter(|(_, m)| brute_dist_est(m, zd, target) < thr)
+                .map(|(sol, _)| (solution_to_u2q_d(sol, k, d), k));
+            let best = self.best_costed(close, target, false);
             if best.is_some() {
                 return best;
             }
