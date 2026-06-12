@@ -1,21 +1,5 @@
-//! Phase 1 driver for the 16D Z[ζ_16] L²-LLL pipeline.
-//!
-//! Wires together every stage from M1-M4:
-//!
-//!  1. **Build Q** in MPFR ([`build_q_mpfr_zeta`]) + i256 snapshot
-//!     ([`build_q_int_zeta`]). The MPFR Q-construction does not populate
-//!     `scratch.c` (cap-center in lattice coords); we compute it here.
-//!  2. **L²-LLL** ([`run_lll_16`]) — MPFR Gram-Schmidt over the exact i256
-//!     Gram. Returns `LllResult::GramOverflow` at deep ε if i256 saturates.
-//!  3. **Cholesky** ([`cholesky_f64_16`]) — f64 lower-triangular L on the
-//!     post-LLL Gram (LLL invariant κ(G) ≤ (4/3)^15 ≈ 240 keeps f64 safe).
-//!     Transposed to upper-triangular at the SE call site.
-//!  4. **LU solve** ([`lu_solve_int_inplace_16`]) — Bᵀ · z_c = c at MPFR
-//!     `lu_prec` bits. Solution split into SE's fractional-center pair
-//!     (i64 integer part + f64 fractional part, [`SeCenter16`]).
-//!  5. **Schnorr-Euchner** ([`schnorr_euchner_16d`]) — walk integer
-//!     16-tuples within the Q-bounded ellipsoid; for each leaf, reconstruct
-//!     `x = B·z` and validate the four leaf checks.
+//! Phase 1 driver for the 16D Z[ζ_16] pipeline: build Q → L²-LLL →
+//! Cholesky → LU cap-center solve → Schnorr-Euchner with leaf checks.
 //!
 //! ## Leaf checks
 //!
@@ -369,22 +353,12 @@ where
         }
     }
 
-    // Deep-ε dd Q-bracket (docs/w_q_bracket_notes.md): MPFR-128 Cholesky
-    // of the post-LLL Q-metric Gram (exact i256 through LLL and BKZ),
-    // projected to an f64 snapshot + a double-double factor. The snapshot
-    // replaces the f64-Cholesky `l_upper` (strictly more accurate); the
-    // dd factor drives the incremental dd partial-Q inside the SE walk,
-    // making every Q-prune decision sound at the tight bound. Gated on
-    // the deep-ε regime — `verify_prune_mpfr()` is the integrator's flag
-    // (set below 2e-8), and `eps <= 2e-8` mirrors that gating for direct
-    // phase1 callers (probes) — so moderate-ε hot paths pay nothing.
-    // Kill-switch `CYCLOSYNTH_QBRACKET_DD=0` restores the legacy deep-ε
-    // behavior (f64 factor + bound 3.0) for A/B and retention references.
-    //
-    // Computed BEFORE the f64 Cholesky (precision-audit ordering fix):
-    // in dd mode the f64 factor is unused, and an f64 Cholesky failure
-    // (post-LLL Gram with f64-κ > ~2^52 at deep ε) must not bail a
-    // phase1 whose MPFR factorization is perfectly healthy.
+    // Deep-ε dd Q-bracket: MPFR-128 Cholesky projected to an f64
+    // snapshot + dd factor, making every Q-prune decision sound at the
+    // tight bound. Gated so moderate-ε hot paths pay nothing
+    // (CYCLOSYNTH_QBRACKET_DD=0 restores f64 + bound 3.0). Computed
+    // BEFORE the f64 Cholesky: an f64 Cholesky failure must not bail a
+    // phase1 whose MPFR factorization is healthy.
     let q_chol_dual = if (eps <= 2e-8 || verify_prune_mpfr()) && !qbracket_dd_disabled() {
         let dual = q_cholesky_16_mpfr_dual(&scratch.gram, scratch.scale_bits);
         if dual.is_none() {
@@ -431,19 +405,11 @@ where
         return Vec::new();
     }
 
-    // Split lu_x into the SE center's (int, frac) pair. **Crucial at deep
-    // ε**: `lu_x[i]` (MPFR) can have magnitude > 2^53 (the f64
-    // exact-integer ceiling) at ε=1e-8, lde≥18 — observed up to 5×10¹⁶.
-    // Going through `to_f64()` quantizes to the nearest f64-representable
-    // integer (ULP up to 2 at this magnitude); with LLL's Hermite factor
-    // in 16D (~100), that shifts the SE center by up to ||B·e||²_Q ~ 10⁴
-    // Q-units and the cap appears empty even when valid solutions exist.
-    //
-    // So: `int` = MPFR round → i64 (full precision), `frac` = MPFR
-    // (lu_x − int) → f64 (|frac| ≤ 0.5, f64-precise at any magnitude).
-    // The SE walk measures Q from the TRUE center int + frac, eliminating
-    // the center-rounding inflation of the legacy integer-z_c convention
-    // (docs/bound_sq_soundness.md).
+    // Split lu_x into (int, frac) WITHOUT passing through to_f64():
+    // |lu_x| can exceed 2^53 at deep ε, and the resulting ULP-2
+    // quantization shifts the SE center by ~10⁴ Q-units — the cap then
+    // looks empty even when solutions exist. Measuring Q from the true
+    // center int + frac also removes the rounded-center inflation.
     let z_c = SeCenter16::from_lu_x(&scratch.lu_x);
 
     if trace {
