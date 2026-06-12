@@ -55,6 +55,31 @@ fn se_bound_8d() -> f64 {
     *BOUND
 }
 
+/// Per-(k, ε) warm seed (8D mirror of the 16D `warm_seed_q_base`):
+/// Q_base is prefix-independent and carries most of the shared
+/// reduction work, so seeding each prefix's LLL with its reduced basis
+/// cuts iterations ~40%. Computed lazily once per scratch per (k, ε);
+/// rebuilds the real prefix Q afterwards.
+fn warm_seed_q_base(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float) {
+    let seed_key = (k, eps.to_bits());
+    if scratch.q_base_seed_key != Some(seed_key) {
+        for i in 0..8 {
+            for j in 0..8 {
+                scratch.q_mpfr[i][j].assign(&scratch.q_base[i][j]);
+            }
+        }
+        build_q_int(scratch);
+        let (res, _) = super::lll::lll_l2_8_seeded(scratch, None);
+        scratch.q_base_seed = match res {
+            LllResult::Converged => Some(scratch.basis),
+            _ => None, // overflow/cap: fall back to cold starts at this key
+        };
+        scratch.q_base_seed_key = Some(seed_key);
+        build_q_mpfr(scratch, y, k, eps);
+        build_q_int(scratch);
+    }
+}
+
 /// Run the full Lenstra 8D pipeline for one MA-prefix's `(y, k, eps)` setup.
 ///
 /// Collects up to `max_solutions` valid 8-vector solutions (production
@@ -127,27 +152,7 @@ pub fn find_aligned_lattice_points(
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // Per-(k, ε) warm seed: Q_base is prefix-independent and carries
-    // most of the shared reduction work, so seeding each prefix's LLL
-    // with its reduced basis cuts iterations ~40%. Computed lazily once
-    // per scratch per (k, ε).
-    let seed_key = (k, eps.to_bits());
-    if scratch.q_base_seed_key != Some(seed_key) {
-        for i in 0..8 {
-            for j in 0..8 {
-                scratch.q_mpfr[i][j].assign(&scratch.q_base[i][j]);
-            }
-        }
-        build_q_int(scratch);
-        let (res, _) = super::lll::lll_l2_8_seeded(scratch, None);
-        scratch.q_base_seed = match res {
-            LllResult::Converged => Some(scratch.basis),
-            _ => None, // overflow/cap: fall back to cold starts at this key
-        };
-        scratch.q_base_seed_key = Some(seed_key);
-        build_q_mpfr(scratch, y, k, eps);
-        build_q_int(scratch);
-    }
+    warm_seed_q_base(scratch, y, k, eps);
 
     // Step 2: L²-LLL (f64 GS over exact i256 Gram + INSERT semantics),
     // warm-seeded when the Q_base reduction converged.
