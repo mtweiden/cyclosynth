@@ -1868,21 +1868,8 @@ impl SynthesizerQ {
         let n_threads = rayon::current_num_threads().max(1);
         if optimize_cost {
             usable.sort_by_key(|(_, c)| *c);
-            // See `OPTIMAL_PREFIX_INTERLEAVE`: deal the cost-sorted list
-            // round-robin across ~n_threads strides so each rayon chunk
-            // covers the whole cost spectrum (cheapest first) instead of
-            // one chunk hoarding every cheap prefix.
-            let n = usable.len();
-            if OPTIMAL_PREFIX_INTERLEAVE && n > n_threads {
-                let mut interleaved: Vec<(&U2Q, usize)> = Vec::with_capacity(n);
-                for j in 0..n_threads {
-                    let mut idx = j;
-                    while idx < n {
-                        interleaved.push(usable[idx]);
-                        idx += n_threads;
-                    }
-                }
-                usable = interleaved;
+            if OPTIMAL_PREFIX_INTERLEAVE {
+                usable = crate::synthesis::stride_interleave(&usable, n_threads);
             }
         } else {
             usable.sort_by(|(a, _), (b, _)| b.k.cmp(&a.k));
@@ -2330,17 +2317,8 @@ impl SynthesizerQ {
         // cost-rank transpose-interleave across rayon's chunking.
         units.sort_by(|a, b| a.floor.cmp(&b.floor).then(a.k_total.cmp(&b.k_total)));
         let n_threads = rayon::current_num_threads().max(1);
-        let n = units.len();
-        if OPTIMAL_PREFIX_INTERLEAVE && n > n_threads {
-            let mut interleaved: Vec<Unit> = Vec::with_capacity(n);
-            for j in 0..n_threads {
-                let mut idx = j;
-                while idx < n {
-                    interleaved.push(units[idx]);
-                    idx += n_threads;
-                }
-            }
-            units = interleaved;
+        if OPTIMAL_PREFIX_INTERLEAVE {
+            units = crate::synthesis::stride_interleave(&units, n_threads);
         }
         let chunk = (units.len() / n_threads).max(1);
         let opt_chunk = if OPTIMAL_PAR_MIN_LEN == 0 { chunk } else { OPTIMAL_PAR_MIN_LEN };
