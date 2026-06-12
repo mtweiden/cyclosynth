@@ -1240,7 +1240,12 @@ impl SynthesizerQ {
             my_screen_done: None,
             peer_screen_done: None,
             optimal_prefix_prune: true,
-            optimal_lde_window: 2,
+            // Window 3 below 1e-7: breaks the deadline-saturated w2
+            // cost plateau (849.0 -> 836.5 at 1e-8 N=12, 12/12 wins,
+            // same wall — the plateau was lde coverage). Window 4
+            // regresses (855.0): extra levels dilute the deadline,
+            // same failure mode as m={1,2} arms.
+            optimal_lde_window: if epsilon < 1e-7 { 3 } else { 2 },
             // Open the det-phase filters where the audit showed real
             // cost left behind (ε ≤ 1e-5); keep them closed at shallow
             // ε where opening costs 6× wall for ~nothing.
