@@ -53,39 +53,65 @@ pub fn uv_to_xy_zeta(v: [f64; 4], k: u32) -> [f64; 16] {
 /// MPFR-precision variant of [`uv_to_xy_zeta`]. Caller provides an
 /// MPFR `v` (of any precision) and gets back y at the same precision.
 /// The `prec` argument matches the precision of the returned RFloats.
+///
+/// **Deep-ε radial-norm contract** (docs/w_precision_audit_notes.md):
+/// the SE cap's radial window is keyed multiplicatively to ‖y‖, and at
+/// ε = 1e-8 the window is only ε²/2 = 5e-17 wide RELATIVE — below one
+/// f64 ulp. Two ~1e-16 norm-error channels used to live here and
+/// displaced the cap by up to ±1.5 window-widths (the 1e-8 find/miss
+/// flicker):
+///   1. f64 `theta.cos()/sin()` lifted into MPFR (≤1 ulp each — the
+///      "single-rounding is exact" comment was true of the conversion
+///      and irrelevant to the chain);
+///   2. `v` carries the target column's own f64 quantization defect
+///      |v| = 1 + ν, ν ~ 1e-16, which the true acceptance window
+///      cancels out (threshold and |t| scale together) but the cap
+///      construction did not.
+/// Fix: MPFR cos/sin tables, then rescale so ‖y‖ = 2^(k/2)/2 = ρ
+/// EXACTLY (to `prec`). Norm errors of any upstream origin become pure
+/// direction errors, which enter the cap radius only via the ρε
+/// tangential arm (~1e-24·ρ — harmless). Residual η ~ 2^−prec.
 pub fn uv_to_xy_zeta_mpfr(v: &[rug::Float; 4], k: u32, prec: u32) -> [rug::Float; 16] {
-    use rug::ops::AssignRound;
     use rug::Float as RFloat;
-    let scale = {
-        // scale = 2^(k/2) / 4 in MPFR
+    // cos/sin(jπ/8) tables at `prec` (MPFR Pi — no f64 trig roundings).
+    let pi = RFloat::with_val(prec, rug::float::Constant::Pi);
+    let mut raw: [RFloat; 16] = std::array::from_fn(|_| RFloat::with_val(prec, 0.0));
+    let mut raw_norm_sq = RFloat::with_val(prec, 0.0);
+    for j in 0..8 {
+        let theta = RFloat::with_val(prec, &pi * (j as u32)) / 8u32;
+        let c = theta.clone().cos();
+        let s = theta.sin();
+        // raw[j] = c·v[0] + s·v[1]
+        let cv0 = RFloat::with_val(prec, &c * &v[0]);
+        let sv1 = RFloat::with_val(prec, &s * &v[1]);
+        raw[j] = RFloat::with_val(prec, &cv0 + &sv1);
+        // raw[8+j] = c·v[2] + s·v[3]
+        let cv2 = RFloat::with_val(prec, &c * &v[2]);
+        let sv3 = RFloat::with_val(prec, &s * &v[3]);
+        raw[8 + j] = RFloat::with_val(prec, &cv2 + &sv3);
+        raw_norm_sq += RFloat::with_val(prec, &raw[j] * &raw[j]);
+        raw_norm_sq += RFloat::with_val(prec, &raw[8 + j] * &raw[8 + j]);
+    }
+    if raw_norm_sq.is_zero() {
+        // Degenerate v: keep the legacy convention (zero y → SE walk
+        // returns empty downstream).
+        return raw;
+    }
+    // ρ = 2^(k/2) / 2 in MPFR (exact shift; √2 at prec for odd k).
+    let rho = {
         let mut s = RFloat::with_val(prec, 1.0);
-        // 2^(k/2) = 2^(k>>1) · √2 if k odd
-        let half = (k / 2) as i32;
-        s <<= half;
+        s <<= (k / 2) as i32;
         if k % 2 == 1 {
             let sqrt2 = RFloat::with_val(prec, 2.0).sqrt();
             s *= &sqrt2;
         }
-        let four = RFloat::with_val(prec, 4.0);
-        RFloat::with_val(prec, &s / &four)
+        s >>= 1;
+        s
     };
-    let mut y: [RFloat; 16] = std::array::from_fn(|_| RFloat::with_val(prec, 0.0));
-    for j in 0..8 {
-        let theta = (j as f64) * PI / 8.0;
-        let c = RFloat::with_val(prec, theta.cos());
-        let s = RFloat::with_val(prec, theta.sin());
-        // raw[j] = c·v[0] + s·v[1]
-        let cv0 = RFloat::with_val(prec, &c * &v[0]);
-        let sv1 = RFloat::with_val(prec, &s * &v[1]);
-        let raw_j = RFloat::with_val(prec, &cv0 + &sv1);
-        let _ = y[j].assign_round(&raw_j * &scale, rug::float::Round::Nearest);
-        // raw[8+j] = c·v[2] + s·v[3]
-        let cv2 = RFloat::with_val(prec, &c * &v[2]);
-        let sv3 = RFloat::with_val(prec, &s * &v[3]);
-        let raw_8j = RFloat::with_val(prec, &cv2 + &sv3);
-        let _ = y[8 + j].assign_round(&raw_8j * &scale, rug::float::Round::Nearest);
-    }
-    y
+    // y = raw · ρ / ‖raw‖ — exact radial-norm anchoring (‖y‖ ≡ ρ).
+    let raw_norm = raw_norm_sq.sqrt();
+    let scale = RFloat::with_val(prec, &rho / &raw_norm);
+    std::array::from_fn(|i| RFloat::with_val(prec, &raw[i] * &scale))
 }
 
 // ─── Brute-force phase1 ──────────────────────────────────────────────────────

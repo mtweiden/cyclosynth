@@ -321,19 +321,52 @@ where
         }
     }
 
+    // Deep-ε dd Q-bracket (docs/w_q_bracket_notes.md): MPFR-128 Cholesky
+    // of the post-LLL Q-metric Gram (exact i256 through LLL and BKZ),
+    // projected to an f64 snapshot + a double-double factor. The snapshot
+    // replaces the f64-Cholesky `l_upper` (strictly more accurate); the
+    // dd factor drives the incremental dd partial-Q inside the SE walk,
+    // making every Q-prune decision sound at the tight bound. Gated on
+    // the deep-ε regime — `verify_prune_mpfr()` is the integrator's flag
+    // (set below 2e-8), and `eps <= 2e-8` mirrors that gating for direct
+    // phase1 callers (probes) — so moderate-ε hot paths pay nothing.
+    // Kill-switch `CYCLOSYNTH_QBRACKET_DD=0` restores the legacy deep-ε
+    // behavior (f64 factor + bound 3.0) for A/B and retention references.
+    //
+    // Computed BEFORE the f64 Cholesky (precision-audit ordering fix):
+    // in dd mode the f64 factor is unused, and an f64 Cholesky failure
+    // (post-LLL Gram with f64-κ > ~2^52 at deep ε) must not bail a
+    // phase1 whose MPFR factorization is perfectly healthy.
+    let q_chol_dual = if (eps <= 2e-8 || verify_prune_mpfr()) && !qbracket_dd_disabled() {
+        let dual = q_cholesky_16_mpfr_dual(&scratch.gram, scratch.scale_bits);
+        if dual.is_none() {
+            eprintln!(
+                "[lattice_zeta] MPFR Q-Cholesky failed (non-PD Gram) at \
+                 eps={:e}, k={}; falling back to f64 factor + bound 3.0.",
+                eps, k
+            );
+        }
+        dual
+    } else {
+        None
+    };
+
     // Step 3: f64 Cholesky on the post-LLL Gram. Lower-triangular L in
-    // `scratch.l_f64`.
-    let t_chol = if trace { Some(std::time::Instant::now()) } else { None };
-    let chol_ok = cholesky_f64_16(scratch);
-    if let Some(t) = t_chol {
-        diag::T_CHOLESKY_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-    }
-    if !chol_ok {
-        eprintln!(
-            "[lattice_zeta] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
-            eps, k
-        );
-        return Vec::new();
+    // `scratch.l_f64`. Skipped in dd mode (the MPFR snapshot supersedes
+    // it); required only when it is the factor the SE walk will consume.
+    if q_chol_dual.is_none() {
+        let t_chol = if trace { Some(std::time::Instant::now()) } else { None };
+        let chol_ok = cholesky_f64_16(scratch);
+        if let Some(t) = t_chol {
+            diag::T_CHOLESKY_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+        if !chol_ok {
+            eprintln!(
+                "[lattice_zeta] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
+                eps, k
+            );
+            return Vec::new();
+        }
     }
 
     // Step 4: solve Bᵀ · z_c = c in MPFR. Result lands in `scratch.lu_x`.
@@ -378,31 +411,6 @@ where
             max_z, max_diff,
         );
     }
-
-    // Deep-ε dd Q-bracket (docs/w_q_bracket_notes.md): MPFR-128 Cholesky
-    // of the post-LLL Q-metric Gram (exact i256 through LLL and BKZ),
-    // projected to an f64 snapshot + a double-double factor. The snapshot
-    // replaces the f64-Cholesky `l_upper` (strictly more accurate); the
-    // dd factor drives the incremental dd partial-Q inside the SE walk,
-    // making every Q-prune decision sound at the tight bound. Gated on
-    // the deep-ε regime — `verify_prune_mpfr()` is the integrator's flag
-    // (set below 2e-8), and `eps <= 2e-8` mirrors that gating for direct
-    // phase1 callers (probes) — so moderate-ε hot paths pay nothing.
-    // Kill-switch `CYCLOSYNTH_QBRACKET_DD=0` restores the legacy deep-ε
-    // behavior (f64 factor + bound 3.0) for A/B and retention references.
-    let q_chol_dual = if (eps <= 2e-8 || verify_prune_mpfr()) && !qbracket_dd_disabled() {
-        let dual = q_cholesky_16_mpfr_dual(&scratch.gram, scratch.scale_bits);
-        if dual.is_none() {
-            eprintln!(
-                "[lattice_zeta] MPFR Q-Cholesky failed (non-PD Gram) at \
-                 eps={:e}, k={}; falling back to f64 factor + bound 3.0.",
-                eps, k
-            );
-        }
-        dual
-    } else {
-        None
-    };
 
     // Transpose lower-triangular L to upper-triangular for SE (dd mode:
     // take the MPFR snapshot instead — same factor at higher accuracy).

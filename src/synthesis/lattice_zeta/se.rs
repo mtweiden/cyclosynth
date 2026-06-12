@@ -131,6 +131,27 @@ pub fn qbracket_dd_disabled() -> bool {
     })
 }
 
+/// Verify-ratio cap for the dd norm-prune verification: prune-fires with
+/// `partial_eucl / threshold` beyond this cap skip the dd verify and prune
+/// unconditionally. The default 5.0 was calibrated EMPIRICALLY at the
+/// ε=1.5e-8 cliff ("0 FNs in 1000 samples at ratio ≥ 5"), but the
+/// w-cancellation bound at ε=1e-8, k=20-26 is e ≈ 16·2⁻⁵³·max|z_c·R| ≈
+/// 30·√T (audit probe `audit_w_cancellation_probe`), so overshoot ratios
+/// up to ~(1+30)² ≈ 10³ are reachable in the worst case — fires in
+/// (5, 10³] would prune silently. `CYCLOSYNTH_VERIFY_RATIO_CAP` overrides
+/// for A/B conviction runs (docs/w_precision_audit_notes.md E4).
+static VERIFY_RATIO_CAP_OVERRIDE: OnceLock<f64> = OnceLock::new();
+
+#[inline]
+pub fn verify_ratio_cap() -> f64 {
+    *VERIFY_RATIO_CAP_OVERRIDE.get_or_init(|| {
+        std::env::var("CYCLOSYNTH_VERIFY_RATIO_CAP")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(5.0)
+    })
+}
+
 /// MPFR-128 verification of the f64 norm-shell prune predicate. When ON,
 /// every f64 prune-fire event is re-checked at 128-bit precision using the
 /// MPFR Cholesky factor; if MPFR says "keep" (true partial < threshold),
@@ -1912,12 +1933,11 @@ fn expand_se_prefix_node(
         }
         // Same prune-verification ladder as the recursion: integer-exact
         // short-circuit first, then dd verify (when enabled and near).
-        const VERIFY_RATIO_CAP: f64 = 5.0;
         let actually_prune = if !bypass && prune_fires {
             let x_norm_sq: i64 = item.x.iter().map(|&v| v.wrapping_mul(v)).sum();
             if x_norm_sq <= target_norm_sq_i64 {
                 false
-            } else if verify_prune_mpfr() && new_partial_eucl <= threshold * VERIFY_RATIO_CAP {
+            } else if verify_prune_mpfr() && new_partial_eucl <= threshold * verify_ratio_cap() {
                 let t_v = if trace { Some(std::time::Instant::now()) } else { None };
                 let dd_prune = verify_partial_dd_exceeds(r_eucl_dd, &item.z, d, threshold);
                 if let Some(t) = t_v {
@@ -2479,14 +2499,13 @@ fn recurse_collect_norm_pruned<F>(
         // where integer-exact norm proves the prune wrong, BEFORE running
         // dd verify (~450 ns). Net win iff a non-negligible fraction of
         // prune-fires have ‖x‖² ≤ T_int.
-        const VERIFY_RATIO_CAP: f64 = 5.0;
         let actually_prune = if !bypass && prune_fires {
             // Integer-exact short-circuit (no false negatives, may miss some
             // true keeps where prefix_d > ‖x‖² − T).
             let x_norm_sq: i64 = x.iter().map(|&v| v.wrapping_mul(v)).sum();
             if x_norm_sq <= target_norm_sq_i64 {
                 false  // confirmed keep, skip dd verify
-            } else if verify_prune_mpfr() && new_partial_eucl <= threshold * VERIFY_RATIO_CAP {
+            } else if verify_prune_mpfr() && new_partial_eucl <= threshold * verify_ratio_cap() {
                 let t_v = if trace { Some(std::time::Instant::now()) } else { None };
                 let dd_prune = verify_partial_dd_exceeds(r_eucl_dd, z, depth as usize, threshold);
                 if let Some(t) = t_v {
