@@ -227,6 +227,177 @@ pub fn build_l_q_tq(m: u32) -> Arc<Vec<(usize, usize)>> {
     arc
 }
 
+/// Right-coset dedup gate for the ζ prefix lists — the zeta mirror of
+/// 8D's stage-1 `CYCLOSYNTH_L_COSET` (docs/w_8d_rework_notes.md):
+/// `CYCLOSYNTH_ZETA_COSET=0` disables the dedup (no-dedup A/B escape),
+/// anything else (or unset) enables it. Read once per process. Unlike
+/// 8D there is no ε floor to start with: the zeta deep-ε pipeline
+/// already computes `v_inner` in MPFR (`u2q_dag_v_inner_mpfr`), which
+/// is exactly the per-frame-cap precision fix 8D's floor is waiting on.
+static ZETA_COSET_DEDUP: LazyLock<bool> = LazyLock::new(|| {
+    !matches!(std::env::var("CYCLOSYNTH_ZETA_COSET").as_deref(), Ok("0"))
+});
+
+/// The 8-element lde-0 Clifford subgroup ⟨S, X⟩ as U2Q, rebuilt from
+/// [`CLIFFORD_TABLE_T`] entry names via [`CLIFFORD_LDE0_IDX`] — the same
+/// name-folding route `build_l_q_inner` uses for its Clifford suffixes
+/// (NOT the det-1 U2T table matrices, which differ by ζ-power phases;
+/// orbit keys must match the list's own construction including float
+/// tie-breaking, see `build_l_q_orbits`).
+fn lde0_cliffords_q() -> [U2Q; 8] {
+    use crate::synthesis::cliffords::CLIFFORD_LDE0_IDX;
+    std::array::from_fn(|j| {
+        let (name, _) = &CLIFFORD_TABLE_T[CLIFFORD_LDE0_IDX[j]];
+        name.chars().fold(U2Q::eye(), |acc, ch| {
+            acc * match ch {
+                'H' => U2Q::h(),
+                'S' => U2Q::s(),
+                'X' => U2Q::x(),
+                'Y' => U2Q::y(),
+                'Z' => U2Q::z(),
+                _ => U2Q::eye(),
+            }
+        })
+    })
+}
+
+/// Cache for per-prefix right-coset orbit ids (parallel to
+/// [`BUILD_L_Q_CACHE`], keyed by syllable count `m`).
+static BUILD_L_Q_ORBIT_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<usize>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Orbit id per prefix of `build_l_q(m)` under RIGHT multiplication by
+/// the lde-0 Clifford subgroup ⟨S, X⟩, mod global phase: the id of
+/// prefix `i` is the minimum list index among its key-matched orbit
+/// mates `{canonical_key_q(u_i · C) : C ∈ ⟨S,X⟩}` (the
+/// `zeta_coset_census` linking rule, so the census's surviving-dedup
+/// numbers are reproduced by construction). Mates whose key is absent
+/// from the list (float pivot ties in `canonical_key_q`'s max-magnitude
+/// phase normalisation — m=1/2/3 have 164/1518/9702 such products) stay
+/// unlinked and land in smaller orbit classes: conservative — less
+/// dedup, never less coverage.
+///
+/// CAUTION: the linking is by FLOAT value, and `build_l_q` stores the
+/// unreduced peel-depth `k`, so one orbit can span members at different
+/// `k` (an unreduced member is the √2-scaled image of a lower-k mate —
+/// e.g. m=1 index 20 (k=4) links to index 14 (k=3)). The production
+/// dedup therefore groups by `(orbit id, k)` — see
+/// [`build_l_q_coset_keys`] / [`coset_keep_mask`]. Within one (orbit,
+/// k) class, members are exact ring-unit coset mates
+/// (`u_j = ±ζ^p · u_i · C`, pinned ring-exactly by
+/// `zeta_coset_orbits_sound`). The converse (same coset ⇒ same id) can
+/// fail via missing keys, which is safe.
+pub fn build_l_q_orbits(m: u32) -> Arc<Vec<usize>> {
+    {
+        let cache = BUILD_L_Q_ORBIT_CACHE.lock().unwrap();
+        if let Some(v) = cache.get(&m) {
+            return Arc::clone(v);
+        }
+    }
+    let prefixes = build_l_q(m);
+    let idx_of: HashMap<[i64; 8], usize> = prefixes
+        .iter()
+        .enumerate()
+        .map(|(i, u)| (canonical_key_q(u), i))
+        .collect();
+    let lde0 = lde0_cliffords_q();
+    let orbit: Vec<usize> = (0..prefixes.len())
+        .map(|i| {
+            let mut mn = i;
+            for c in &lde0 {
+                if let Some(&j) = idx_of.get(&canonical_key_q(&(prefixes[i] * *c))) {
+                    mn = mn.min(j);
+                }
+            }
+            mn
+        })
+        .collect();
+    let arc = Arc::new(orbit);
+    BUILD_L_Q_ORBIT_CACHE
+        .lock()
+        .unwrap()
+        .insert(m, Arc::clone(&arc));
+    arc
+}
+
+/// Right-coset dedup of an already-filtered prefix candidate list:
+/// position `p` survives iff its `(weight, prefix_index)` is minimal
+/// within its **(orbit id, k)** class. `cands[p] = (prefix_index,
+/// weight)` where weight is the decomposed prefix cost (`dc_search_q`)
+/// or the unit floor (`dc_frontier_q`); `keys[pi] = (orbit_id, k)`.
+///
+/// Why (orbit, k) and not the raw orbit: `build_l_q` stores the
+/// UNREDUCED peel-depth `k`, and `canonical_key_q` links by float
+/// value, so an orbit can contain members at different `k` (an
+/// unreduced member is the √2-scaled image of a lower-k mate). Same-k
+/// mates are related by an exact ring-unit isometry (`u_j = ±ζ^p ·
+/// u_i · C`, pinned by `zeta_coset_orbits_sound`) — identical inner
+/// subproblems, identical totals. Cross-k coverage is ASYMMETRIC (only
+/// the lower-k member's shell contains the √2-scaled images of the
+/// higher-k member's solutions) and changes the surviving walk's shell
+/// size, so cross-k members are kept separate: behavior-preserving by
+/// construction. See docs/w_zeta_coset_notes.md.
+///
+/// The dedup MUST run after the d_R/k usable filter (one rep per
+/// class ∩ usable): a globally canonical rep can be filter-excluded
+/// while a usable mate survives, and dropping that mate would flip
+/// per-level FOUND→none. Keeping the MIN-WEIGHT usable member preserves
+/// the optimal-mode floor prune's soundness: whenever a total `U`
+/// cheaper than the incumbent is reachable through a usable canonical
+/// prefix `P*`, the kept rep `P` of `P*`'s class has
+/// `cost(P) ≤ cost(P*) = cost(U) − cost(suffix)`, so `P`'s floor never
+/// prunes the class while it still hides an improving total.
+fn coset_keep_mask(cands: &[(usize, usize)], keys: &[(usize, u32)]) -> Vec<bool> {
+    use std::collections::hash_map::Entry;
+    let mut best: HashMap<(usize, u32), usize> = HashMap::new(); // class → pos
+    for (pos, &(pi, w)) in cands.iter().enumerate() {
+        match best.entry(keys[pi]) {
+            Entry::Occupied(mut e) => {
+                let (bpi, bw) = cands[*e.get()];
+                if (w, pi) < (bw, bpi) {
+                    e.insert(pos);
+                }
+            }
+            Entry::Vacant(e) => {
+                e.insert(pos);
+            }
+        }
+    }
+    let mut mask = vec![false; cands.len()];
+    for pos in best.into_values() {
+        mask[pos] = true;
+    }
+    mask
+}
+
+/// Cached per-m `(orbit id, k)` dedup keys, parallel to `build_l_q(m)`.
+static BUILD_L_Q_COSET_KEY_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<(usize, u32)>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The `(orbit id, unreduced k)` dedup class per prefix of
+/// `build_l_q(m)` — the key [`coset_keep_mask`] groups by.
+pub fn build_l_q_coset_keys(m: u32) -> Arc<Vec<(usize, u32)>> {
+    {
+        let cache = BUILD_L_Q_COSET_KEY_CACHE.lock().unwrap();
+        if let Some(v) = cache.get(&m) {
+            return Arc::clone(v);
+        }
+    }
+    let prefixes = build_l_q(m);
+    let orbit = build_l_q_orbits(m);
+    let keys: Vec<(usize, u32)> = prefixes
+        .iter()
+        .zip(orbit.iter())
+        .map(|(u, &o)| (o, u.k))
+        .collect();
+    let arc = Arc::new(keys);
+    BUILD_L_Q_COSET_KEY_CACHE
+        .lock()
+        .unwrap()
+        .insert(m, Arc::clone(&arc));
+    arc
+}
+
 fn build_l_q_inner(m: u32) -> Vec<U2Q> {
     if m == 0 {
         return vec![U2Q::eye()];
@@ -1927,11 +2098,11 @@ impl SynthesizerQ {
         // carries its precomputed decomposed cost for Stage-3 ranking
         // + heuristic pruning.
         let dc_dr_filter: &[u32] = dr_filter_override.unwrap_or(&self.dc_dr_filter);
-        let mut usable: Vec<(&U2Q, usize)> = prefixes
+        let mut cand_idx: Vec<(usize, usize)> = prefixes
             .iter()
-            .zip(prefix_costs.iter().copied())
-            .filter(|(u_l, _)| u_l.k < k_total)
-            .filter(|(u_l, _)| {
+            .enumerate()
+            .filter(|(_, u_l)| u_l.k < k_total)
+            .filter(|(_, u_l)| {
                 if dc_dr_filter.is_empty() {
                     return true;
                 }
@@ -1939,6 +2110,40 @@ impl SynthesizerQ {
                 let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
                 dc_dr_filter.contains(&d_r)
             })
+            .map(|(i, _)| (i, prefix_costs[i]))
+            .collect();
+
+        // Right-coset dedup of the post-filter usable set: one rep per
+        // (orbit, k) class ∩ usable, the min-cost member
+        // (CYCLOSYNTH_ZETA_COSET=0 disables). See `coset_keep_mask` /
+        // docs/w_zeta_coset_notes.md.
+        //
+        // Budget compensation: the per-prefix node cap is scaled by the
+        // level's dedup ratio so the TOTAL leaf-budget ceiling per
+        // orbit is invariant under dedup. Without it, the surviving
+        // rep gets ONE cap-bounded draw where the orbit used to get
+        // `ratio` independent ones — and the nested-parallel SE walk's
+        // leaf-visit order is scheduling-racy, so a near-cap find can
+        // flip FOUND→budget-hit in a tail of runs (observed once at
+        // ε=1e-8 target θ=1.80: lde-24 find at 8-48M consumed across
+        // runs, one probe run lost it entirely → cost 73.5→78).
+        // Exhausted (sub-cap) walks — the common case on no-solution
+        // levels — are unaffected, so the dedup's wall win survives.
+        let mut per_prefix_cap = per_prefix_cap;
+        if *ZETA_COSET_DEDUP && cand_idx.len() > 1 {
+            let pre = cand_idx.len();
+            let keys = build_l_q_coset_keys(m_split);
+            let mask = coset_keep_mask(&cand_idx, &keys);
+            let mut it = mask.iter();
+            cand_idx.retain(|_| *it.next().unwrap());
+            let post = cand_idx.len().max(1);
+            let ratio = (pre.div_ceil(post)) as u64;
+            per_prefix_cap = per_prefix_cap.saturating_mul(ratio.max(1));
+        }
+
+        let mut usable: Vec<(&U2Q, usize)> = cand_idx
+            .into_iter()
+            .map(|(i, c)| (&prefixes[i], c))
             .collect();
 
         if usable.is_empty() {
@@ -2335,9 +2540,12 @@ impl SynthesizerQ {
             } else {
                 default_dc_dr_filter(m)
             };
-            for (u_l, &(t, q)) in level_prefixes[li]
+            // (prefix index, d_R, floor) candidates for this level.
+            let mut cands: Vec<(usize, u32, usize)> = Vec::new();
+            for (pi, (u_l, &(t, q))) in level_prefixes[li]
                 .iter()
                 .zip(level_costs[li].iter())
+                .enumerate()
             {
                 if u_l.k >= k_total {
                     continue;
@@ -2351,7 +2559,28 @@ impl SynthesizerQ {
                 let floor = u_l_cost.saturating_add(
                     crate::synthesis::cost_bound::class_cost_lb_half_units(d_r),
                 );
-                units.push(Unit { u_l, k_total, d_r, floor, level_idx: li });
+                cands.push((pi, d_r, floor));
+            }
+            // Right-coset dedup of this arm's post-filter set: one rep
+            // per (orbit, k) class ∩ usable, the min-floor member (the
+            // floor is the frontier's sort/prune currency).
+            // CYCLOSYNTH_ZETA_COSET=0 disables. See `coset_keep_mask`.
+            if *ZETA_COSET_DEDUP && cands.len() > 1 {
+                let keys = build_l_q_coset_keys(m);
+                let iw: Vec<(usize, usize)> =
+                    cands.iter().map(|&(pi, _, f)| (pi, f)).collect();
+                let mask = coset_keep_mask(&iw, &keys);
+                let mut it = mask.iter();
+                cands.retain(|_| *it.next().unwrap());
+            }
+            for (pi, d_r, floor) in cands {
+                units.push(Unit {
+                    u_l: &level_prefixes[li][pi],
+                    k_total,
+                    d_r,
+                    floor,
+                    level_idx: li,
+                });
             }
         }
 
@@ -4113,36 +4342,26 @@ mod tests {
     /// shell, same lde, and (U_L·C)·U_R = U_L·(C·U_R) with C·U_R on the
     /// rep's shell — the rep's SE search (at the rep's own d_R) covers
     /// every mate's solutions with IDENTICAL total unitaries, hence
-    /// identical decomposed costs. det(C) ∈ {1, i, −1, −i} = ζ^{0,4,8,12},
-    /// so coset-mates' d_R values differ by multiples of 4: a strict
-    /// filter keeps exactly one det class per orbit; the OPEN filter
-    /// (production at ε ≤ 1e-5 via `optimal_open_dr_filter`) keeps the
-    /// whole orbit = full-orbit duplicate work.
+    /// identical decomposed costs. det(C) ∈ {1, i, −1, −i} = ζ^{0,4,8,12};
+    /// note however that the LIST member matched to `u·C` is `ζ^p·(u·C)`
+    /// for some phase p, contributing a further det shift of 2p — so
+    /// orbit-mates' d_R values differ by arbitrary EVEN offsets, not
+    /// only multiples of 4 (the soundness argument is d_R-agnostic;
+    /// see docs/w_zeta_coset_notes.md). The OPEN filter (production at
+    /// ε ≤ 1e-5 via `optimal_open_dr_filter`) keeps whole orbits =
+    /// full-orbit duplicate work. Orbits are also k-IMPURE (unreduced
+    /// peel-depth k + float linking): the production dedup groups by
+    /// (orbit, k) — the "PROD dedup" column is the achieved reduction.
     /// Run: `cargo test --release --lib zeta_coset_census -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn zeta_coset_census() {
-        use crate::synthesis::cliffords::CLIFFORD_LDE0_IDX;
         use std::collections::{HashMap, HashSet};
 
         // lde-0 Clifford subgroup as U2Q (rebuilt from table names, the
-        // same route build_l_q_inner uses for its Clifford suffixes).
-        let lde0: Vec<U2Q> = CLIFFORD_LDE0_IDX
-            .iter()
-            .map(|&i| {
-                let (name, _) = &CLIFFORD_TABLE_T[i];
-                name.chars().fold(U2Q::eye(), |acc, ch| {
-                    acc * match ch {
-                        'H' => U2Q::h(),
-                        'S' => U2Q::s(),
-                        'X' => U2Q::x(),
-                        'Y' => U2Q::y(),
-                        'Z' => U2Q::z(),
-                        _ => U2Q::eye(),
-                    }
-                })
-            })
-            .collect();
+        // same route build_l_q_inner uses for its Clifford suffixes —
+        // shared with the production orbit table).
+        let lde0 = lde0_cliffords_q();
         for c in &lde0 {
             assert_eq!(c.k, 0, "lde-0 Clifford has k != 0 as U2Q");
         }
@@ -4179,13 +4398,29 @@ mod tests {
                 n as f64 / orbits.len() as f64
             );
 
+            // Self-consistency with the production dedup: the cached
+            // orbit table the searches use must be IDENTICAL to the
+            // census's locally computed linking (gate 5).
+            assert_eq!(
+                orbit_id,
+                *build_l_q_orbits(m).as_ref(),
+                "production build_l_q_orbits({m}) diverges from census linking"
+            );
+
             // d_R-respecting census per filter. For each d_target the
             // usable set is {u : (d_target − d_L) mod 16 ∈ filter}; the
             // dedup that survives = |usable| / |orbits among usable|.
+            // `classes` additionally splits orbits by the unreduced k —
+            // the PRODUCTION dedup grouping (`build_l_q_coset_keys`;
+            // cross-k orbit links are float-real but their coverage is
+            // asymmetric, so the implementation keeps one rep per
+            // (orbit, k) ∩ usable): the classes column is the actual
+            // achieved reduction.
             let d_l: Vec<u32> = prefixes
                 .iter()
                 .map(|u| det_phase_of(&u.to_float()))
                 .collect();
+            let coset_keys = build_l_q_coset_keys(m);
             for (fname, filter) in [
                 ("strict [0]   (m=2 1st-hit default)", vec![0u32]),
                 ("relaxed [0,1,15] (m=1 default)", vec![0u32, 1, 15]),
@@ -4193,6 +4428,7 @@ mod tests {
             ] {
                 let mut tot_usable = 0usize;
                 let mut tot_orbits = 0usize;
+                let mut tot_classes = 0usize;
                 let mut per_d: Vec<(u32, usize, usize)> = Vec::new();
                 for d_target in 0..16u32 {
                     let usable: Vec<usize> = (0..n)
@@ -4207,15 +4443,20 @@ mod tests {
                         .collect();
                     let uorb: HashSet<usize> =
                         usable.iter().map(|&i| orbit_id[i]).collect();
+                    let uclass: HashSet<(usize, u32)> =
+                        usable.iter().map(|&i| coset_keys[i]).collect();
                     tot_usable += usable.len();
                     tot_orbits += uorb.len();
+                    tot_classes += uclass.len();
                     per_d.push((d_target, usable.len(), uorb.len()));
                 }
                 eprintln!(
-                    "  filter {fname}: avg usable {:.1} -> orbits {:.1}  surviving dedup {:.2}x",
+                    "  filter {fname}: avg usable {:.1} -> orbits {:.1} (dedup {:.2}x) | (orbit,k) classes {:.1} (PROD dedup {:.2}x)",
                     tot_usable as f64 / 16.0,
                     tot_orbits as f64 / 16.0,
-                    tot_usable as f64 / tot_orbits.max(1) as f64
+                    tot_usable as f64 / tot_orbits.max(1) as f64,
+                    tot_classes as f64 / 16.0,
+                    tot_usable as f64 / tot_classes.max(1) as f64
                 );
                 if m == 2 {
                     let row: Vec<String> = per_d
@@ -4225,6 +4466,153 @@ mod tests {
                     eprintln!("    per-d usable/orbits: {}", row.join(" "));
                 }
             }
+        }
+    }
+
+    /// Structural soundness pin for the right-coset dedup (zeta mirror
+    /// of 8D's `coset_dedup_covers_all_prefixes`), RING-EXACT: for
+    /// m = 1, 2 and every pair of prefixes sharing a production dedup
+    /// class `(orbit id, k)` in `build_l_q_coset_keys(m)`, verify the
+    /// exact ring relation `u_i = ζ^p · u_rep · C` for some lde-0 C and
+    /// p ∈ 0..16 (ζ^{p+8} = −ζ^p, so this covers ±ζ^p — every
+    /// modulus-1 phase that can relate two equal-k ring matrices here).
+    /// This is exactly what the dedup's soundness argument consumes:
+    /// the dropped member's inner subproblem is the image of the kept
+    /// rep's under an exact ring-unit isometry, with IDENTICAL total
+    /// unitaries (docs/w_zeta_coset_notes.md). The census (ignored)
+    /// additionally checks the orbit table against an independent
+    /// recomputation and measures the surviving dedup per d_R filter.
+    #[test]
+    fn zeta_coset_orbits_sound() {
+        let lde0 = lde0_cliffords_q();
+        for c in &lde0 {
+            assert_eq!(c.k, 0, "lde-0 Clifford has k != 0 as U2Q");
+        }
+        let scale = |u: &U2Q, z: ZZeta| -> U2Q {
+            U2Q::new(z * u.u11, z * u.u12, z * u.u21, z * u.u22, u.k)
+        };
+        for m in 1..=2u32 {
+            let prefixes = build_l_q(m);
+            let keys = build_l_q_coset_keys(m);
+            assert_eq!(prefixes.len(), keys.len());
+            // First member per (orbit, k) class = the class rep ties
+            // resolve to in production when costs tie.
+            let mut rep_of: HashMap<(usize, u32), usize> = HashMap::new();
+            let mut classes = 0usize;
+            for (i, u) in prefixes.iter().enumerate() {
+                assert!(keys[i].0 <= i, "orbit id must be a min index (m={m}, i={i})");
+                assert_eq!(keys[i].1, u.k, "class k must be the prefix k");
+                let rep = *rep_of.entry(keys[i]).or_insert_with(|| {
+                    classes += 1;
+                    i
+                });
+                if rep == i {
+                    continue;
+                }
+                let r = &prefixes[rep];
+                let mate = lde0.iter().any(|c| {
+                    let rc = *r * *c;
+                    (0..16u32).any(|p| scale(&rc, zeta_16_pow(p)) == *u)
+                });
+                assert!(
+                    mate,
+                    "class-mates not ring-exact coset mates (m={m}, i={i}, rep={rep})"
+                );
+            }
+            assert!(
+                classes < prefixes.len(),
+                "coset dedup must merge something at m={m}"
+            );
+        }
+    }
+
+    /// Coset-regression probe (ignored): probe_t_vs_qt target 0
+    /// (θ=2.37 φ=5.73 λ=3.33, seed 12648430) at ε=1e-6 optimal w2 —
+    /// coset-off finds cost 52.5, coset-on falls to the T baseline 53.
+    /// Runs ONE mode per process (env LazyLock): set the mode via the
+    /// test name. Prints the enum trace for diffing.
+    /// Run: cargo test --release --lib probe_zeta_coset_t0_off -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn probe_zeta_coset_t0_off() {
+        probe_zeta_coset_target(0, 1e-6, "0");
+    }
+    #[test]
+    #[ignore]
+    fn probe_zeta_coset_t0_on() {
+        probe_zeta_coset_target(0, 1e-6, "1");
+    }
+    /// 1e-8 flip probe: probe_t_vs_qt target 6 (θ=1.80 φ=0.59 λ=1.62)
+    /// — coset-off screen finds lde=24 (cost 73.5), coset-on drifts to
+    /// the lde-78 fallback (cost 78).
+    #[test]
+    #[ignore]
+    fn probe_zeta_coset_t6_1e8_off() {
+        probe_zeta_coset_target(6, 1e-8, "0");
+    }
+    #[test]
+    #[ignore]
+    fn probe_zeta_coset_t6_1e8_on() {
+        probe_zeta_coset_target(6, 1e-8, "1");
+    }
+    fn probe_zeta_coset_target(index: usize, eps: f64, coset: &str) {
+        unsafe {
+            std::env::set_var("CYCLOSYNTH_ZETA_COSET", coset);
+            std::env::set_var("CYCLOSYNTH_TRACE", "1");
+        }
+        // SplitMix64 target gen, first triple of seed 12648430
+        // (probe_t_vs_qt's Xs) — replicated from tests/qt_guard_1e5.rs.
+        struct Xs(u64);
+        impl Xs {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                z ^ (z >> 31)
+            }
+            fn unit(&mut self) -> f64 {
+                (self.next() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+            }
+            fn range(&mut self, lo: f64, hi: f64) -> f64 {
+                lo + (hi - lo) * self.unit()
+            }
+        }
+        let mut rng = Xs(12648430);
+        let mut tpl = (0.0, 0.0, 0.0);
+        for _ in 0..=index {
+            tpl = (
+                rng.range(0.2, PI - 0.2),
+                rng.range(0.1, 2.0 * PI - 0.1),
+                rng.range(0.1, 2.0 * PI - 0.1),
+            );
+        }
+        let (th, ph, la) = tpl;
+        eprintln!("[t{index}] θ={th:.3} φ={ph:.3} λ={la:.3} ε={eps:e} coset={coset}");
+        let (c, s) = ((th / 2.0).cos(), (th / 2.0).sin());
+        let eilam = Complex64::from_polar(1.0, la);
+        let eiphi = Complex64::from_polar(1.0, ph);
+        let g = Complex64::from_polar(1.0, -(ph + la) / 2.0);
+        let target: Mat2 = [
+            [Complex64::new(c, 0.0) * g, -eilam * s * g],
+            [eiphi * s * g, eiphi * eilam * Complex64::new(c, 0.0) * g],
+        ];
+        let r = SynthesizerQ::new(eps)
+            .with_optimize_cost(true)
+            .with_optimal_lde_window(2)
+            .synthesize(target);
+        match r {
+            Some(r) => {
+                let g = r.gates.as_deref().unwrap_or("");
+                let (t, q) = gates_tq(g);
+                eprintln!(
+                    "[t{index}] RESULT lde={} T={t} Q={q} cost={} dist={:.3e}",
+                    r.lde,
+                    t as f64 + 3.5 * q as f64,
+                    r.distance
+                );
+            }
+            None => eprintln!("[t{index}] RESULT NONE"),
         }
     }
 
