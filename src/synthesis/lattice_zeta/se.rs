@@ -2002,7 +2002,7 @@ mod w1_bench {
             target = scale(&target, Complex64::from_polar(1.0, PI / 16.0));
         }
         let v = crate::synthesis::clifford_sqrt_t::unitary_to_uv_zeta(&target);
-        let y = crate::synthesis::search_zeta::uv_to_xy_zeta(v, k);
+        let y = crate::synthesis::search_zeta::uv_to_lattice_y_zeta(v, k);
 
         // Mirror SynthesizerQ::new scratch defaults (as probe_walk_bench does).
         let mut scratch = Box::new(crate::synthesis::lattice_zeta::IntScratch16::new(eps));
@@ -2416,7 +2416,7 @@ mod tests {
     #[test]
     fn dd_q_bracket_walk_matches_f64_walk() {
         use super::super::scratch::rfv;
-        use crate::synthesis::search_zeta::uv_to_xy_zeta;
+        use crate::synthesis::search_zeta::uv_to_lattice_y_zeta;
         let v = realistic_v();
         let k = 2u32;
         let eps = 0.5_f64; // wide cap at k=2 → guaranteed non-empty walk
@@ -2425,7 +2425,7 @@ mod tests {
         build_q_int_zeta(&mut s);
         // Cap center c = y · cap_mid (build_q does not populate scratch.c;
         // mirror of integer.rs's find_aligned_lattice_points step 1).
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
         let cap_mid = (1.0 + (1.0 - eps * eps).sqrt()) / 2.0;
         for i in 0..16 {
             s.c[i] = rfv(s.prec_q, y[i] * cap_mid);

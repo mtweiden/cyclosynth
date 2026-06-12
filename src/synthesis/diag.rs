@@ -58,7 +58,7 @@ pub fn trace_enabled() -> bool {
 /// MA prefixes considered at this lde.
 pub static N_PREFIXES: AtomicU64 = AtomicU64::new(0);
 
-/// Prefixes rejected by `mat_to_uv` (not in SU(2): wrong determinant or
+/// Prefixes rejected by `try_unitary_to_uv` (not in SU(2): wrong determinant or
 /// odd-parity ζ̄ adjustment failed).
 pub static N_MAT_TO_UV_REJECTED: AtomicU64 = AtomicU64::new(0);
 

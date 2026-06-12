@@ -34,7 +34,7 @@ use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2q_float, Mat2};
 use crate::synthesis::lattice_zeta::{find_aligned_lattice_points_with_stop, find_aligned_lattice_points_mpfr, IntScratch16};
-use crate::synthesis::search_zeta::{enumerate_unitary_norm_shell, uv_to_xy_zeta, uv_to_xy_zeta_mpfr};
+use crate::synthesis::search_zeta::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta, uv_to_lattice_y_zeta_mpfr};
 use num_complex::Complex64;
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -223,7 +223,7 @@ pub fn build_l_q_tq(m: u32) -> Arc<Vec<(usize, usize)>> {
 /// `CYCLOSYNTH_ZETA_COSET=0` disables the dedup (no-dedup A/B escape),
 /// anything else (or unset) enables it. Read once per process. Unlike
 /// 8D there is no ε floor to start with: the zeta deep-ε pipeline
-/// already computes `v_inner` in MPFR (`u2q_dag_v_inner_mpfr`), which
+/// already computes `v_inner` in MPFR (`prefix_residual_uv_mpfr`), which
 /// is exactly the per-frame-cap precision fix 8D's floor is waiting on.
 static ZETA_COSET_DEDUP: LazyLock<bool> = LazyLock::new(|| {
     !matches!(std::env::var("CYCLOSYNTH_ZETA_COSET").as_deref(), Ok("0"))
@@ -742,12 +742,12 @@ fn gates_tq(gates: &str) -> (usize, usize) {
 
 /// MPFR-precision column-1 of `U_L† · target` as the alignment vector
 /// `v_inner` — the deep-ε replacement for the f64
-/// `u2q_dag_times_mat2` → `unitary_to_uv_zeta` chain. Why: the f64
+/// `prefix_dag_times_target_q` → `unitary_to_uv_zeta` chain. Why: the f64
 /// product's ~1e-16 error matches the radial cap width ε² at ε = 1e-8
 /// and displaces the constructed cap, and no enumeration bound recovers
 /// a solution the cap no longer contains. `U_L` is exact ring data and
 /// `target` exact f64 data, so the product carries full `prec` bits.
-fn u2q_dag_v_inner_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [rug::Float; 4] {
+fn prefix_residual_uv_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [rug::Float; 4] {
     use rug::ops::Pow;
     use rug::Float as RF;
     // ζ^i = e^{iπ/8}: cos/sin tables at prec.
@@ -801,7 +801,7 @@ fn u2q_dag_v_inner_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [rug::Float; 4] 
 /// in MPFR — the parity-branch rotation, applied AFTER exact v
 /// derivation so the odd branch's cap is built from uncorrupted
 /// geometry (the scalar rotation commutes with the prefix product).
-fn rot32_mpfr(v: [rug::Float; 4], j: u32, prec: u32) -> [rug::Float; 4] {
+fn rotate_uv_by_zeta32_mpfr(v: [rug::Float; 4], j: u32, prec: u32) -> [rug::Float; 4] {
     use rug::Float as RF;
     if j == 0 {
         return v;
@@ -821,7 +821,7 @@ fn rot32_mpfr(v: [rug::Float; 4], j: u32, prec: u32) -> [rug::Float; 4] {
 /// Deep-ε-aware find_aligned_lattice_points router. At ε ≤ 2e-8 the radial cap width ε²/4
 /// sits under the f64 ULP at unit scale, so an f64 y-chain corrupts Q,
 /// the cap center, and the Cholesky factor — and an f64 prefix product
-/// additionally displaces the cap itself ([`u2q_dag_v_inner_mpfr`]).
+/// additionally displaces the cap itself ([`prefix_residual_uv_mpfr`]).
 /// Those ε route through the MPFR entry with `v` derived from the most
 /// exact source available; above 2e-8 the f64 path is safe and ~free.
 #[allow(clippy::too_many_arguments)]
@@ -849,9 +849,9 @@ where
         // original and rotate exactly in MPFR.
         let v_mpfr: [rug::Float; 4] = match (deep_v_src, rot_src) {
             (Some((u_l, _rotated)), Some((orig, j))) => {
-                rot32_mpfr(u2q_dag_v_inner_mpfr(u_l, orig, prec), *j, prec)
+                rotate_uv_by_zeta32_mpfr(prefix_residual_uv_mpfr(u_l, orig, prec), *j, prec)
             }
-            (Some((u_l, target)), None) => u2q_dag_v_inner_mpfr(u_l, target, prec),
+            (Some((u_l, target)), None) => prefix_residual_uv_mpfr(u_l, target, prec),
             (None, Some((orig, j))) => {
                 let base: [rug::Float; 4] = [
                     rug::Float::with_val(prec, orig[0][0].re),
@@ -859,17 +859,17 @@ where
                     rug::Float::with_val(prec, orig[1][0].re),
                     rug::Float::with_val(prec, orig[1][0].im),
                 ];
-                rot32_mpfr(base, *j, prec)
+                rotate_uv_by_zeta32_mpfr(base, *j, prec)
             }
             (None, None) => std::array::from_fn(|i| rug::Float::with_val(prec, v[i])),
         };
-        let y_mpfr = uv_to_xy_zeta_mpfr(&v_mpfr, k, prec);
+        let y_mpfr = uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, prec);
         find_aligned_lattice_points_mpfr(
             scratch, &y_mpfr, &v_mpfr, k, eps, max_leaf_checks, budget_hit,
             should_stop, external_abort, consumed,
         )
     } else {
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
         find_aligned_lattice_points_with_stop(
             scratch, &y, k, eps, max_leaf_checks, budget_hit, should_stop,
             external_abort, consumed,
@@ -976,8 +976,8 @@ const OPTIMAL_PREFIX_INTERLEAVE: bool = true;
 
 /// Compute `U_L† · target` as a continuous Mat2.
 /// `U_L` is exact (`U2Q`), `target` is float (`Mat2`). Mirrors the 8D
-/// helper `clifford_t::u2t_dag_times_mat2` for use by the Z1 D&C path.
-fn u2q_dag_times_mat2(u_l: &U2Q, target: &Mat2) -> Mat2 {
+/// helper `clifford_t::prefix_dag_times_target` for use by the Z1 D&C path.
+fn prefix_dag_times_target_q(u_l: &U2Q, target: &Mat2) -> Mat2 {
     let u_f = u_l.to_float();
     // (U_L†)[i][j] = conj(U_L[j][i])
     let ud00 = Complex64::new(u_f[0][0].re, -u_f[0][0].im);
@@ -1909,7 +1909,7 @@ impl SynthesizerQ {
             }
 
             // m_inner = U_L† · target as a continuous Mat2.
-            let m_inner = u2q_dag_times_mat2(u_l, target);
+            let m_inner = prefix_dag_times_target_q(u_l, target);
             let v_inner = unitary_to_uv_zeta(&m_inner);
 
             let budget_hit = AtomicBool::new(false);
@@ -2321,7 +2321,7 @@ impl SynthesizerQ {
             }
 
             let k_inner = u.k_total - u.u_l.k;
-            let m_inner = u2q_dag_times_mat2(u.u_l, target);
+            let m_inner = prefix_dag_times_target_q(u.u_l, target);
             let v_inner = unitary_to_uv_zeta(&m_inner);
             let budget_hit = AtomicBool::new(false);
             let u_l_local = *u.u_l;

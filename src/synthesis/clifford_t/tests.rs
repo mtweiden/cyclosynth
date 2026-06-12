@@ -501,8 +501,8 @@
 
         let run_prefix = |u_l: &U2T, max_sols: usize| -> Vec<(bool, [i64; 8], f64)> {
             let mut out = Vec::new();
-            let m_inner = u2t_dag_times_mat2(u_l, &target);
-            let Some(v_inner) = mat_to_uv(&m_inner) else { return out };
+            let m_inner = prefix_dag_times_target(u_l, &target);
+            let Some(v_inner) = try_unitary_to_uv(&m_inner) else { return out };
             let mut scratch = crate::synthesis::lattice::scratch::IntScratch::new(eps);
             for odd in [false, true] {
                 let v_b = if odd { apply_t_dag_to_uv(v_inner) } else { v_inner };
@@ -590,10 +590,10 @@
                     diamond_distance_u2t_float(&img_total, &target)
                 );
                 // Geometry of x_img in the rep's ODD frame.
-                let m_inner_r = u2t_dag_times_mat2(r, &target);
-                let v_inner_r = mat_to_uv(&m_inner_r).expect("rep mat_to_uv");
+                let m_inner_r = prefix_dag_times_target(r, &target);
+                let v_inner_r = try_unitary_to_uv(&m_inner_r).expect("rep try_unitary_to_uv");
                 let v_odd_r = apply_t_dag_to_uv(v_inner_r);
-                let y = uv_to_xy(v_odd_r, k_inner);
+                let y = uv_to_lattice_y(v_odd_r, k_inner);
                 // x_img integer coords: (u1, u2) coefficients of img_u2t.
                 let gi = |z: &crate::rings::ZOmega| -> [f64; 4] {
                     use crate::rings::types::int_to_f64;
@@ -994,8 +994,8 @@
                                     continue;
                                 }
                             }
-                            let m_inner = u2t_dag_times_mat2(u_l, &target);
-                            let Some(v_inner) = mat_to_uv(&m_inner) else { continue };
+                            let m_inner = prefix_dag_times_target(u_l, &target);
+                            let Some(v_inner) = try_unitary_to_uv(&m_inner) else { continue };
                             frames.push((v_inner, k_inner));
                             if t_inner > 0 {
                                 frames.push((apply_t_dag_to_uv(v_inner), k_inner));
@@ -1016,7 +1016,7 @@
                             break;
                         }
                         k_probed = k_f;
-                        let y = uv_to_xy(v_s, k_f);
+                        let y = uv_to_lattice_y(v_s, k_f);
                         let mut s = IntScratch::new(eps);
                         let hit = AtomicBool::new(false);
                         let out = find_aligned_lattice_points(
@@ -1208,11 +1208,11 @@
                         continue;
                     }
                 }
-                let m_inner = u2t_dag_times_mat2(u_l, &target);
-                let Some(v_inner) = mat_to_uv(&m_inner) else { continue };
-                ys.push(uv_to_xy(v_inner, k_inner));
+                let m_inner = prefix_dag_times_target(u_l, &target);
+                let Some(v_inner) = try_unitary_to_uv(&m_inner) else { continue };
+                ys.push(uv_to_lattice_y(v_inner, k_inner));
                 if t_inner > 0 && ys.len() < n_cap {
-                    ys.push(uv_to_xy(apply_t_dag_to_uv(v_inner), k_inner));
+                    ys.push(uv_to_lattice_y(apply_t_dag_to_uv(v_inner), k_inner));
                 }
             }
             if ys.is_empty() {

@@ -6,7 +6,7 @@
     use crate::synthesis::decomposer::BlochDecomposer;
     use crate::synthesis::distance::Mat2;
     use crate::synthesis::search_zeta::{
-        compute_align_vec_zeta, enumerate_unitary_norm_shell, uv_to_xy_zeta,
+        compute_align_vec_zeta, enumerate_unitary_norm_shell, uv_to_lattice_y_zeta,
     };
     use crate::synthesis::clifford_sqrt_t::{
         det_phase_of, solution_to_u2q, solution_to_u2q_d,
@@ -22,8 +22,8 @@
     /// only the f64 entry points under audit survive):
     ///
     ///   ν      = |col1(target)| − 1   (target's own f64 quantization
-    ///            defect; u2q_dag_v_inner_mpfr never normalizes it away)
-    ///   η_tot  = ‖uv_to_xy_zeta_mpfr(v)‖ / ρ − 1, ρ = 2^(k/2)/2
+    ///            defect; prefix_residual_uv_mpfr never normalizes it away)
+    ///   η_tot  = ‖uv_to_lattice_y_zeta_mpfr(v)‖ / ρ − 1, ρ = 2^(k/2)/2
     ///            (total radial norm error of the production y chain:
     ///            ν + the f64 cos/sin embedding error)
     ///
@@ -35,7 +35,7 @@
     #[test]
     #[ignore]
     fn audit_radial_displacement_probe() {
-        use crate::synthesis::search_zeta::uv_to_xy_zeta_mpfr;
+        use crate::synthesis::search_zeta::uv_to_lattice_y_zeta_mpfr;
         use rug::Float as RF;
 
         // SplitMix64 + u3, replicated from src/bin/probe_t_vs_qt.rs.
@@ -109,7 +109,7 @@
             let v_norm = v_norm_sq.sqrt();
             let nu = RF::with_val(PREC, &v_norm - 1.0_f64).to_f64();
 
-            let y = uv_to_xy_zeta_mpfr(&v, k, PREC);
+            let y = uv_to_lattice_y_zeta_mpfr(&v, k, PREC);
             let mut y_norm_sq = RF::with_val(PREC, 0.0);
             for c in &y {
                 y_norm_sq += RF::with_val(PREC, c * c);
@@ -205,7 +205,7 @@
         );
         for k in [20u32, 22, 24, 26] {
             let v_mpfr: [RF; 4] = std::array::from_fn(|i| RF::with_val(213, v[i]));
-            let y = crate::synthesis::search_zeta::uv_to_xy_zeta_mpfr(&v_mpfr, k, 213);
+            let y = crate::synthesis::search_zeta::uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, 213);
             let mut s = IntScratch16::new(eps);
             // Replicate find_aligned_lattice_points steps 1-4 (no walk).
             super::q_metric::build_q_mpfr_zeta_from_mpfr_v(&mut s, &v_mpfr, k, eps);
@@ -485,7 +485,7 @@
         ];
         let k = 6;
         let y_real = build_y_vector(&target, k);
-        let y_lattice = uv_to_xy_zeta(v, k);
+        let y_lattice = uv_to_lattice_y_zeta(v, k);
         let s8 = sigma_8();
         let mut y_real_from_lattice = [0.0f64; 16];
         for i in 0..8 {

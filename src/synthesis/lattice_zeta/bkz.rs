@@ -759,14 +759,14 @@ mod tests {
             lll_f64::cfa_row_f64,
             se::det16_exact,
         };
-        use crate::synthesis::search_zeta::uv_to_xy_zeta;
+        use crate::synthesis::search_zeta::uv_to_lattice_y_zeta;
         use std::sync::atomic::AtomicBool;
 
         // Use Rz(0.3) target as in the rest of the bench suite.
         let v: [f64; 4] = [(0.3_f64 / 2.0).cos(), -(0.3_f64 / 2.0).sin(), 0.0, 0.0];
         let eps = 1e-3_f64;
         let k = 12u32;
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
 
         let mut s = IntScratch16::new(eps);
         s.use_f64_gs = true;

@@ -51,7 +51,7 @@ const ALIGN_PREC: u32 = 128;
 /// Run the full 16D Lenstra Z[ζ_16] pipeline for one MA-prefix's `(y, k, eps)`
 /// setup and collect every solution that passes all four leaf checks.
 ///
-/// `y` is the lattice-coord scaled y-vector (output of `uv_to_xy_zeta`).
+/// `y` is the lattice-coord scaled y-vector (output of `uv_to_lattice_y_zeta`).
 /// `max_leaf_checks` caps the SE leaf budget; when reached, `budget_hit` is
 /// set and the walk aborts. Returns the empty vector on:
 ///   - LLL Gram-overflow,
@@ -588,7 +588,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::synthesis::search_zeta::{enumerate_unitary_norm_shell, uv_to_xy_zeta};
+    use crate::synthesis::search_zeta::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta};
     use crate::synthesis::clifford_sqrt_t::{
         det_phase_of, solution_to_u2q_d, unitary_to_uv_zeta,
     };
@@ -609,7 +609,7 @@ mod tests {
         let v = realistic_v();
         let k = 2u32;
         let eps = 0.5_f64;
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
 
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
@@ -644,7 +644,7 @@ mod tests {
         let d = det_phase_of(&target);
         let k = t_gate.k;
         assert_eq!(k, 0, "T should have k=0");
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
 
         let eps = 0.1_f64;
         let mut s = IntScratch16::new(eps);
@@ -672,7 +672,7 @@ mod tests {
         let d = det_phase_of(&target);
         let k = qhq.k;
         assert_eq!(k, 1, "QHQ should have k=1");
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
 
         let eps = 0.1_f64;
         let mut s = IntScratch16::new(eps);
@@ -705,7 +705,7 @@ mod tests {
         let v = unitary_to_uv_zeta(&target);
         let d = det_phase_of(&target);
         let k = qhq.k;
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
 
         let eps = 0.1_f64;
         let mut s = IntScratch16::new(eps);
@@ -738,7 +738,7 @@ mod tests {
         let target = qhq.to_float();
         let v = unitary_to_uv_zeta(&target);
         let k = qhq.k;
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
         let eps = 0.1_f64;
 
         let mut s = IntScratch16::new(eps);
@@ -817,7 +817,7 @@ mod tests {
             let d = det_phase_of(&target);
             for &(eps, k_lo, k_hi) in &[(3e-2f64, 5u32, 7u32), (1e-3, 9, 10)] {
                 for k in k_lo..=k_hi {
-                    let y = uv_to_xy_zeta(v, k);
+                    let y = uv_to_lattice_y_zeta(v, k);
                     let mut s = IntScratch16::new(eps);
                     let abort = AtomicBool::new(false);
                     let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
@@ -889,7 +889,7 @@ mod tests {
         let target = target_u2q.to_float();
         let v = unitary_to_uv_zeta(&target);
         let d = det_phase_of(&target);
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
 
         let eps = 0.1_f64;
         let mut s = IntScratch16::new(eps);
@@ -949,7 +949,7 @@ mod tests {
         let target = u.to_float();
         let v = unitary_to_uv_zeta(&target);
         let k = u.k;
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
 
         let eps = 0.1_f64;
         let mut s = IntScratch16::new(eps);
@@ -981,7 +981,7 @@ mod tests {
         let v = realistic_v();
         let k = 14u32;
         let eps = 1e-5_f64;
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
         let start = std::time::Instant::now();
@@ -1020,7 +1020,7 @@ mod tests {
         let d = det_phase_of(&target);
         let eps = 1e-3_f64;
         for k in 9u32..=10 {
-            let y = uv_to_xy_zeta(v, k);
+            let y = uv_to_lattice_y_zeta(v, k);
             let mut s = IntScratch16::new(eps);
             let abort = AtomicBool::new(false);
             let budget = 1_000_000_000_u64;
@@ -1073,7 +1073,7 @@ mod tests {
         let d = det_phase_of(&target);
         eprintln!("upper bound k = {upper_bound}; v={v:?}, d={d}");
         for k in 5u32..=(upper_bound + 2).min(20) {
-            let y = uv_to_xy_zeta(v, k);
+            let y = uv_to_lattice_y_zeta(v, k);
             let budget = 1_000_000_000_u64;
             let mut s = IntScratch16::new(eps);
             let abort = AtomicBool::new(false);
@@ -1126,7 +1126,7 @@ mod tests {
         let v = realistic_v();
         let k = 2u32;
         let eps = 0.5_f64;
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
         let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 10_000_000, &abort);
@@ -1173,7 +1173,7 @@ mod tests {
         let eps = 1e-3_f64;
         let k = 11u32;
         let budget = 3_000_000_000_u64; // inside the measured (1.2G, 4G) fire window
-        let y = uv_to_xy_zeta(v, k);
+        let y = uv_to_lattice_y_zeta(v, k);
 
         let _guard = PREDICTIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Walk-end `[w1] predictive: ...` progress line (items/consumed/fired).

@@ -11,7 +11,7 @@
 //! `run_single_optimal` is private and clifford_sqrt_t.rs is owned by
 //! another workstream right now): project the target det onto the ζ₁₆
 //! grid, take d = det_phase_of, v = unitary_to_uv_zeta, y =
-//! uv_to_xy_zeta(v, k), then `find_aligned_lattice_points_with_stop(..., u64::MAX, ...)`
+//! uv_to_lattice_y_zeta(v, k), then `find_aligned_lattice_points_with_stop(..., u64::MAX, ...)`
 //! with a no-op stop predicate (cost-min mode never early-exits), and
 //! reconstruct/score every returned solution.
 //!
@@ -33,7 +33,7 @@ use cyclosynth::synthesis::decomposer::BlochDecomposer;
 use cyclosynth::synthesis::diag;
 use cyclosynth::synthesis::distance::{diamond_distance_u2q_float, Mat2};
 use cyclosynth::synthesis::lattice_zeta::{find_aligned_lattice_points_with_stop, IntScratch16};
-use cyclosynth::synthesis::search_zeta::uv_to_xy_zeta;
+use cyclosynth::synthesis::search_zeta::uv_to_lattice_y_zeta;
 use num_complex::Complex64;
 use std::f64::consts::PI;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -134,7 +134,7 @@ struct RunReport {
 fn run_branch(target: &Mat2, eps: f64, k: u32, parity: u32, dump: bool) -> RunReport {
     let d = det_phase_of(target);
     let v = unitary_to_uv_zeta(target);
-    let y = uv_to_xy_zeta(v, k);
+    let y = uv_to_lattice_y_zeta(v, k);
 
     // Scratch config mirrors SynthesizerQ::new defaults.
     let mut scratch = Box::new(IntScratch16::new(eps));

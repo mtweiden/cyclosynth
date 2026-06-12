@@ -74,9 +74,9 @@ fn unitary_to_uv(v: &Mat2) -> [Float; 4] {
 /// Convert a 2×2 unitary to uv by trying all 8 global phases e^{ikπ/4} to find
 /// the SU(2) form [[u1, −ū2], [u2, ū1]]. Returns None if no phase works.
 ///
-/// Matches Python's mat_to_uv in bandb6.py.  The 8 phases correspond to the
+/// Matches Python's try_unitary_to_uv in bandb6.py.  The 8 phases correspond to the
 /// possible determinants of Clifford+T products (det ∈ {e^{ikπ/4}}).
-fn mat_to_uv(u: &Mat2) -> Option<[Float; 4]> {
+fn try_unitary_to_uv(u: &Mat2) -> Option<[Float; 4]> {
     use std::f64::consts::FRAC_PI_4;
     for k in 0..8 {
         let ph = Complex::from_polar(1.0, k as Float * FRAC_PI_4);
@@ -105,11 +105,11 @@ fn mat_to_uv(u: &Mat2) -> Option<[Float; 4]> {
 /// 1 if det(m) is at the half-integer positions ζ^{odd}, or None if det is
 /// not on the 8th-root-of-unity circle.
 ///
-/// Used as an upstream algebraic filter for `prefix_split_search`: the `mat_to_uv`
+/// Used as an upstream algebraic filter for `prefix_split_search`: the `try_unitary_to_uv`
 /// rejection condition is exactly `det(U_L† · target) ∉ {ζ^{even}}`, which
 /// reduces to `parity(det(U_L)) ≠ parity(det(target))`. Skipping prefixes
 /// whose parity mismatches the target is provably equivalent to skipping
-/// prefixes that mat_to_uv would have rejected — no heuristic, no
+/// prefixes that try_unitary_to_uv would have rejected — no heuristic, no
 /// completeness loss.
 fn det_zeta_parity(m: &Mat2) -> Option<u8> {
     let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
@@ -131,7 +131,7 @@ fn det_zeta_parity(m: &Mat2) -> Option<u8> {
 
 /// Compute U_L† · target as a float matrix.
 /// U_L is stored as U2T (exact), target as Mat2 (float).
-fn u2t_dag_times_mat2(u_l: &U2T, target: &Mat2) -> Mat2 {
+fn prefix_dag_times_target(u_l: &U2T, target: &Mat2) -> Mat2 {
     let u_f = u_l.to_float();
     // (U_L†)[i][j] = conj(U_L[j][i])
     let ud00 = Complex::new(u_f[0][0].re, -u_f[0][0].im);
@@ -396,7 +396,7 @@ fn trace_dump_pass(
 /// the lattice pipeline. `y = compute_align_vec(v) · sqrt(2^k) / 2`,
 /// satisfying `‖y‖² = 2^(k-1)`. Used `powf` (not bit-shift) so `k ≥ 64`
 /// stays well-defined.
-fn uv_to_xy(v: [Float; 4], k: u32) -> [Float; 8] {
+fn uv_to_lattice_y(v: [Float; 4], k: u32) -> [Float; 8] {
     let scale = 2.0_f64.powf(k as f64 / 2.0 - 1.0);
     compute_align_vec(v).map(|x| x * scale)
 }
@@ -453,14 +453,14 @@ fn lll_aligned_search(
     external_abort: Option<&std::sync::atomic::AtomicBool>,
 ) -> Vec<[i64; 8]> {
     // Old guard was `k > 62` because `target_norm = 1i64 << k` overflowed at
-    // k ≥ 63. Now that target_norm is i128 and uv_to_xy uses powf, the safe
+    // k ≥ 63. Now that target_norm is i128 and uv_to_lattice_y uses powf, the safe
     // ceiling is much higher. Cap at 110 to stay comfortably below i128 range
     // (target_norm = 2^k must fit, and Σ-products in bilinear_b can reach
     // ~k+log₂(8) bits — 2^110 + log₂(8) ≈ 2^113, well within i128 = 2^127).
     if max_solutions == 0 || k > 110 {
         return Vec::new();
     }
-    let y = uv_to_xy(v, k);
+    let y = uv_to_lattice_y(v, k);
     // Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816), with
     // MPFR (rug) at adaptive precision in the LLL+Cholesky setup phase. The
     // SE step downcasts to f64. Scratch is reused across all prefixes within
@@ -893,14 +893,14 @@ impl SynthesizerT {
         let indices: Vec<u32> = (0..n as u32).collect();
         let order = crate::synthesis::stride_interleave(&indices, n_threads);
 
-        // Algebraic parity pre-filter: `mat_to_uv(U_L† · target)` succeeds
+        // Algebraic parity pre-filter: `try_unitary_to_uv(U_L† · target)` succeeds
         // iff `parity(det(U_L)) == parity(det(target))`. Skipping prefixes
-        // with mismatched parity short-circuits before `u2t_dag_times_mat2`
+        // with mismatched parity short-circuits before `prefix_dag_times_target`
         // and saves the per-prefix float matmul + 8-phase trial. Provably
-        // equivalent to mat_to_uv's rejection condition; no completeness loss.
+        // equivalent to try_unitary_to_uv's rejection condition; no completeness loss.
         // `None` = target det not on the 8th-root-of-unity circle (e.g. an
         // arbitrary unitary), in which case we fall through to the original
-        // mat_to_uv check.
+        // try_unitary_to_uv check.
         let target_parity = det_zeta_parity(target);
 
         // Inner branches (`odd` flags) run per prefix: even (U_L·U_R) and,
@@ -942,8 +942,8 @@ impl SynthesizerT {
                                 return None;
                             }
                         }
-                        let m_inner = u2t_dag_times_mat2(u_l, target);
-                        let v_inner = match mat_to_uv(&m_inner) {
+                        let m_inner = prefix_dag_times_target(u_l, target);
+                        let v_inner = match try_unitary_to_uv(&m_inner) {
                             Some(v) => v,
                             None => {
                                 crate::synthesis::diag::N_MAT_TO_UV_REJECTED
