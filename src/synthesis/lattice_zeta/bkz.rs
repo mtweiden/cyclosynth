@@ -21,12 +21,7 @@
 //! gives ~1.5× shorter `b*_0` empirically. The downstream SE region
 //! shrinks ~that much per dimension.
 //!
-//! ## Implementation reference
-//!
-//! Mirrors fplll's [bkz.cpp `tour`/`trunc_tour`/`svp_reduction`]
-//! (https://github.com/fplll/fplll/blob/master/fplll/bkz.cpp). Key
-//! mechanic from the agent's deep-dive (see
-//! `project_zeta_lll_optimization.md`):
+//! Mirrors fplll bkz.cpp (tour/trunc_tour/svp_reduction):
 //!
 //! - **No extra basis rows**. After SVP-enum returns a coefficient
 //!   vector `x ∈ Z^β`, we transform the existing β rows in place via
@@ -42,9 +37,8 @@
 //! - **Clean tour**: a tour is "clean" if no insertion shortened any
 //!   `r̄_{κ,κ}`. Termination on clean OR `max_loops`.
 //!
-//! Auto-abort copies fplll's [BKZAutoAbort]
-//! (https://github.com/fplll/fplll/blob/master/fplll/bkz.cpp#L653-L660):
-//! track GSO slope across tours; exit after 5 non-improving tours.
+//! Auto-abort copies fplll: track GSO slope across tours; exit after
+//! 5 non-improving tours.
 
 #![allow(clippy::needless_range_loop)]
 

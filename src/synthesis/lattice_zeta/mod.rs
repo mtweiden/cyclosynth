@@ -6,37 +6,10 @@
 //! provably sufficient at d=8 (Theorem 2 of Nguyen-Stehlé 2009) but not at
 //! d=16, so the 16D path uses MPFR throughout.
 //!
-//! ## Pipeline (per phase1 call)
-//!
-//!   1. **Build Q** in MPFR ([`q_metric::build_q_mpfr_zeta`]) — anisotropic
-//!      ellipsoid metric in lattice coordinates. Cap radial (1 dim) +
-//!      cap tangential (3 dims) + bullet balls (12 dims).
-//!   2. **Snapshot Q to i256** ([`q_metric::build_q_int_zeta`]) with adaptive
-//!      scale `S = 2^B` chosen so `max(|S·Q|) ≈ 2^TARGET_BITS`.
-//!   3. **L²-LLL** ([`lll::run_lll_16`]): MPFR Gram-Schmidt on the exact
-//!      i256 Gram (mandatory at d=16; f64 GS is only proved sufficient at
-//!      d ≤ 11). INSERT semantics + lazy size-reduction maintain the
-//!      L³-reduced invariant.
-//!   4. **Schnorr-Euchner** ([`se::schnorr_euchner_16d`]): walk candidate
-//!      `z` values within the SE ellipsoid; reconstruct `x = B·z` and
-//!      validate against the synthesis constraints (norm shell, 3 bilinear
-//!      forms `B_1, B_2, B_3 = 0`, alignment cap).
-//!
-//! ## Module layout (mirrors [`super::lattice`])
-//!
-//! - [`cholesky_lu`] — Cholesky / LU helpers for d=16.
-//! - [`integer`] — phase1 driver wiring all stages.
-//! - [`lll`] — 16D L²-LLL with MPFR Gram-Schmidt.
-//! - [`q_metric`] — MPFR Q-metric + i256 snapshot.
-//! - [`scratch`] — `IntScratch16` per-thread buffers.
-//! - [`se`] — Schnorr-Euchner walk + bilinear leaf checks.
-//!
-//! Brute-force enumeration (`phase1_brute`) and y-vector helpers
-//! (`compute_align_vec_zeta`, `uv_to_xy_zeta`) live in
-//! [`super::search_zeta`], parallel to [`super::search`] for Z[ω].
-//! `U2Q` reconstruction (`solution_to_u2q*`, `unitary_to_uv_zeta`,
-//! `det_phase_of`) lives in [`super::clifford_sqrt_t`], parallel to
-//! [`super::clifford_t`] for Z[ω].
+//! Pipeline and module layout mirror [`super::lattice`]; see
+//! [`integer`] for the per-call stage breakdown. Brute force and
+//! y-helpers live in [`super::search_zeta`]; U2Q reconstruction in
+//! [`super::clifford_sqrt_t`].
 //!
 //! ## Solution layout
 //!

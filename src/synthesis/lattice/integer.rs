@@ -5,42 +5,14 @@
 //! Complexity") specialised to dimension 8 and the anisotropic Q metric
 //! used by the paper.
 //!
-//! ## Per-phase1 call pipeline
-//!
-//!  1. **Build Q** in MPFR (`q_metric::build_q_mpfr`): the anisotropic
-//!     ellipsoid metric for the cap × ball intersection (eq 3.15 of the
-//!     paper). ~13% of phase1 CPU at deep ε.
-//!
-//!  2. **Snapshot Q to i256** (`q_metric::build_q_int`) with adaptive scale
-//!     `S = 2^B` chosen so `max(|S·Q|) ≈ 2^TARGET_BITS`. The exact integer
-//!     Gram is the input to L²-LLL; LLL μ-values are scale-invariant
-//!     ratios, so the choice of S only affects the effective precision of
-//!     the snapshot, not algorithmic correctness.
-//!
-//!  3. **L²-LLL** (`lll::lll_l2_8`): pure-f64 Gram-Schmidt with the exact
-//!     i256 Gram on the side. Per Theorem 2 + Figure 7 of the paper, f64
-//!     (ℓ=52 mantissa bits) is provably sufficient at d=8 with
-//!     (δ=0.75, η=0.55), giving 18-bit precision margin. INSERT semantics
-//!     and lazy size-reduction maintain the L³-reduced invariant required
-//!     by the f64 sufficiency proof. ~70% of phase1 CPU at deep ε.
-//!
-//!  4. **Cholesky + LU** post-LLL (`cholesky_lu::*`): f64 Cholesky on the
-//!     reduced Gram (justified by the LLL invariant κ(G) ≤ 16) + MPFR LU
-//!     to solve `Bᵀ·z_c = c` for the cap-center in lattice coordinates.
-//!     ~17% of phase1 CPU at deep ε.
-//!
-//!  5. **Schnorr-Euchner** (`super::se::schnorr_euchner_8d`): walk
-//!     candidate `z` values within the SE ellipsoid; for each, reconstruct
-//!     `x = B·z` and validate `‖x‖² == 2^k`, `B(x) == 0` (bilinear
-//!     unitarity), and `(y·x)² ≥ thresh_xy` (alignment cap). ~8% of CPU.
-//!
-//! Validated for ε ∈ [1e-10, 1e-3]. Public sub-modules:
-//!
-//! - [`scratch`]: `IntScratch` struct, MPFR macros, precision constants.
-//! - [`q_metric`]: `build_q_mpfr`, `build_q_int`.
-//! - [`lll`]: `lll_l2_8`, `LllResult`, GS helpers, Gram updates.
-//! - [`cholesky_lu`]: `cholesky_f64_8`, `lu_solve_int_inplace`, plus the
-//!   MPFR oracle path used by tests.
+//! Pipeline per phase1 call: build Q (eq 3.15 cap × ball metric) →
+//! i256 snapshot (scale only affects snapshot precision; LLL μ-values
+//! are scale-invariant ratios) → L²-LLL with pure-f64 GS (NS09
+//! Theorem 2: f64 is provably sufficient at d=8 with δ=0.75, η=0.55;
+//! INSERT semantics + lazy size-reduction maintain the invariant the
+//! proof needs) → f64 Cholesky (κ(G) ≤ 16 post-LLL) + MPFR LU for the
+//! cap center → Schnorr-Euchner with norm/bilinear/alignment leaf
+//! checks.
 
 // 8×8 matrix code reads more clearly with explicit (i, j) indexing.
 #![allow(clippy::needless_range_loop)]
@@ -154,14 +126,10 @@ pub fn phase1(
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    // Step 1.5: per-(k, ε) warm seed for the L²-LLL. The Q_base part of
-    // the metric is prefix-independent and carries most of the shared
-    // reduction work (the per-prefix rank-1 term holds ~half the
-    // anisotropy bits); seeding every prefix's LLL with Q_base's reduced
-    // basis cuts iterations ~40% (warm/cold ≈ 0.60 on 400-prefix
-    // captures, `warm_lll_gate`). Computed lazily once per scratch per
-    // (k, ε): reduce a pure-Q_base problem, capture the basis, restore
-    // the real prefix Q (a q_base cache hit).
+    // Per-(k, ε) warm seed: Q_base is prefix-independent and carries
+    // most of the shared reduction work, so seeding each prefix's LLL
+    // with its reduced basis cuts iterations ~40%. Computed lazily once
+    // per scratch per (k, ε).
     let seed_key = (k, eps.to_bits());
     if scratch.q_base_seed_key != Some(seed_key) {
         for i in 0..8 {
