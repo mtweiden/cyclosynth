@@ -10,7 +10,7 @@
 //!
 //! - [`direct_search`] (`t ≤ direct_limit`, default 6): brute-force
 //!   enumeration over the norm shell `‖x‖² = 2^t` via
-//!   [`crate::synthesis::search::brute_aligned_search`]. Tries even, T, and T†
+//!   [`crate::synthesis::brute_search::brute_aligned_search`]. Tries even, T, and T†
 //!   right-side branches, each combined with all 24 Clifford left
 //!   prefixes. Fast for small `t`; exponential beyond that.
 //!
@@ -40,7 +40,7 @@ use crate::rings::ZOmega;
 use crate::synthesis::cliffords::{CLIFFORD_LDE0_IDX, CLIFFORD_TABLE_T};
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2t_float, Mat2};
-use crate::synthesis::search::{
+use crate::synthesis::brute_search::{
     brute_aligned_search, apply_t_dag_to_uv, apply_t_to_uv, apply_u2t_dag_to_uv, compute_align_vec,
     normalize4,
 };

@@ -217,7 +217,7 @@ mod tests {
     fn class_bound_holds_on_brute_shells() {
         use crate::synthesis::clifford_sqrt_t::{det_phase_of, solution_to_u2q};
         use crate::synthesis::decomposer::BlochDecomposer;
-        use crate::synthesis::search_zeta::enumerate_unitary_norm_shell;
+        use crate::synthesis::brute_search_zeta::enumerate_unitary_norm_shell;
 
         let mut checked = 0usize;
         for k in 0..=3u32 {
@@ -252,7 +252,7 @@ mod tests {
     fn staircase_below_brute_minimum_small_k() {
         use crate::synthesis::clifford_sqrt_t::solution_to_u2q;
         use crate::synthesis::decomposer::BlochDecomposer;
-        use crate::synthesis::search_zeta::enumerate_unitary_norm_shell;
+        use crate::synthesis::brute_search_zeta::enumerate_unitary_norm_shell;
 
         for k in 0..=3u32 {
             let sols = enumerate_unitary_norm_shell(k);
