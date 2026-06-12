@@ -90,15 +90,6 @@ impl ZZeta {
         }
     }
 
-    /// Scalar multiply by an integer.
-    #[inline]
-    pub fn scale(self, s: Int) -> Self {
-        Self {
-            a: self.a * s, b: self.b * s, c: self.c * s, d: self.d * s,
-            e: self.e * s, f: self.f * s, g: self.g * s, h: self.h * s,
-        }
-    }
-
     /// Convert to a floating-point complex number.
     pub fn to_complex(self) -> Complex64 {
         use std::f64::consts::PI;

@@ -68,15 +68,10 @@ pub static CLIFFORD_LDE0_IDX: [usize; 8] = [0, 2, 3, 4, 5, 9, 10, 11];
 // phase, which is the convention the synthesizer's tests and decomposer
 // agree on.
 
-/// Left-multiply a U2T by the Clifford C†, returning C†·target.
-/// Used in the C-phase of synthesis to search over all 24 Clifford left-prefixes.
-pub fn apply_clifford_dagger(clifford: &U2T, target: &U2T) -> U2T {
-    clifford.dagger() * *target
-}
-
 /// Find the Clifford (by index into CLIFFORD_TABLE_T) that best matches target.
 /// Returns the index and the diamond distance.
-pub fn match_clifford(target: &U2T) -> Option<usize> {
+#[cfg(test)]
+pub(crate) fn match_clifford(target: &U2T) -> Option<usize> {
     CLIFFORD_TABLE_T
         .iter()
         .enumerate()

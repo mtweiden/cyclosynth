@@ -51,7 +51,7 @@ pub(crate) fn stride_interleave<T: Copy>(items: &[T], stride: usize) -> Vec<T> {
     out
 }
 
-pub use cliffords::{CLIFFORD_TABLE_T, apply_clifford_dagger, match_clifford};
+pub use cliffords::CLIFFORD_TABLE_T;
 pub use decomposer::BlochDecomposer;
 pub use distance::{
     diamond_distance_float, diamond_distance_float_mpfr,
