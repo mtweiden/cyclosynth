@@ -73,6 +73,15 @@ const ALIGN_PREC: u32 = 128;
 ///   - LLL Gram-overflow,
 ///   - non-unimodular LLL output (algorithm bug, very unlikely),
 ///   - Cholesky / LU numerical failure.
+/// CYCLOSYNTH_WARM_LLL16=1 enables the per-(k, ε) Q_base warm-LLL seed
+/// (default off pending the A/B on the 1e-8 concurrent-parity config).
+fn warm_lll16_enabled() -> bool {
+    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var("CYCLOSYNTH_WARM_LLL16").as_deref() == Ok("1")
+    });
+    *ON
+}
+
 pub fn phase1(
     scratch: &mut IntScratch16,
     y: &[Float; 16],
@@ -159,8 +168,43 @@ where
         diag::N_PHASE1_CALLS.fetch_add(1, Ordering::Relaxed);
     }
 
+    // Step 0.5: per-(k, ε) Q_base warm seed (the 8D transplant; gated by
+    // CYCLOSYNTH_WARM_LLL16). The metric splits as Q_base(k, ε) + a
+    // rank-1 ŷŷᵀ term — only the rank-1 part varies per prefix. Reducing
+    // a pure-Q_base problem once per scratch per (k, ε) and seeding every
+    // prefix's LLL with its basis hands LLL most of the shared reduction
+    // work pre-done. The seed runs on the MPFR ladder regardless of
+    // `use_f64_gs` (computed once; reliability over speed), and any
+    // LLL-output basis is unimodular, so seeding is always sound — only
+    // effectiveness varies.
+    let mut warm_seeded = false;
+    if warm_lll16_enabled() && !scratch.warm_lll {
+        let seed_key = (k, eps.to_bits());
+        if scratch.q_base_seed_key != Some(seed_key) {
+            super::q_metric::build_q_base_mpfr_zeta(scratch, k, eps);
+            build_q_int_zeta(scratch);
+            let r = run_lll_16(scratch);
+            let det_ok = matches!(
+                super::se::det16_exact(&scratch.basis),
+                Some(1) | Some(-1) | None
+            );
+            scratch.q_base_seed =
+                if matches!(r, LllResult::Converged) && det_ok {
+                    Some(scratch.basis)
+                } else {
+                    None // overflow/cap: cold starts at this key
+                };
+            scratch.q_base_seed_key = Some(seed_key);
+        }
+        if let Some(seed) = scratch.q_base_seed {
+            scratch.basis = seed;
+            scratch.warm_lll = true; // cleared right after the LLL step
+            warm_seeded = true;
+        }
+    }
+
     // Step 1: build Q in MPFR + i256 snapshot. Reset basis unless caller
-    // requested warm_lll (Z1 D&C path).
+    // requested warm_lll (Z1 D&C path) or the Q_base seed is installed.
     let t_build = if trace { Some(std::time::Instant::now()) } else { None };
     if !scratch.warm_lll {
         scratch.reset_basis();
@@ -275,6 +319,11 @@ where
 
     if let Some(t) = t_lll {
         diag::T_LLL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+    if warm_seeded {
+        // The seed's warm_lll is per-call; a persisting flag would make
+        // the NEXT call (possibly a different k) skip its basis reset.
+        scratch.warm_lll = false;
     }
 
     if let LllResult::GramOverflow = lll_result {

@@ -165,6 +165,18 @@ pub struct IntScratch16 {
     /// Default: false (cold start, single-search behaviour).
     pub warm_lll: bool,
 
+    /// Per-(k, ε) warm-LLL seed (the 8D `q_base_seed` transplant): the
+    /// LLL-reduced basis of the prefix-independent part of the metric
+    /// (`coef_p_sigma1 · P_Σ1 + coef_id · I` — everything except the
+    /// rank-1 `coef_yy · ŷŷᵀ` term, which is the only part that varies
+    /// per prefix). Computed lazily once per scratch per (k, ε) and fed
+    /// through `warm_lll` for every subsequent `phase1` call at that
+    /// key; rayon `map_init` reuses scratches across an arm's prefixes,
+    /// so the cache hits hundreds of times per seed computation.
+    /// `None` after a non-converged seed reduction = cold starts.
+    pub q_base_seed: Option<IMat16>,
+    pub q_base_seed_key: Option<(u32, u64)>,
+
     /// Experimental f64 GS state: when true, `phase1_with_stop` calls
     /// `lll_f64::run_lll_16_f64` instead of the MPFR-based `run_lll_16`.
     /// Theorem 2 of Nguyen-Stehlé 2009 doesn't cover d=16 in f64, but
@@ -228,6 +240,8 @@ impl IntScratch16 {
             lu_tmp: rfz(lu_prec),
             lu_acc: rfz(lu_prec),
             warm_lll: false,
+            q_base_seed: None,
+            q_base_seed_key: None,
             r_bar_f64: [[0.0; 16]; 16],
             mu_bar_f64: [[0.0; 16]; 16],
             s_bar_f64: [[0.0; 16]; 16],
