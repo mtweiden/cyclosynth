@@ -839,7 +839,9 @@ fn default_optimal_m_sweep(epsilon: f64) -> Vec<u32> {
     } else if epsilon >= 1e-7 {
         vec![1, 2]
     } else {
-        vec![2]
+        // m={1}: the 12/12-wins 1e-8 sweep config (deduped sound walk);
+        // the old "m=1 too noisy at depth" verdict was phantom-era.
+        vec![1]
     }
 }
 
@@ -1225,11 +1227,13 @@ impl SynthesizerQ {
             // measured 17-20+ min/target at ε=1e-8 even at 1× budget ×
             // window 1, vs ~13 s for first-hit. The Clifford+T baseline
             // floor still applies, so the cost guarantee is kept.
-            optimal_m_sweep: if epsilon < 1e-7 {
-                Vec::new()
-            } else {
-                default_optimal_m_sweep(epsilon)
-            },
+            // Hybrid-lite (empty m-sweep below 1e-7) RETIRED 2026-06-11:
+            // on the sound+deduped walk, m={1} arms under a 10 s deadline
+            // win 12 of 12 targets at 1e-8 (ratio 0.963 -> 0.934, sweep
+            // 3/5/10 s monotone). The 17-20 min/target measurement that
+            // justified hybrid-lite predates the bound arc, the anytime
+            // frontier, the precision fixes, and the coset dedup.
+            optimal_m_sweep: default_optimal_m_sweep(epsilon),
             optimal_budget_multiplier: 2,
             global_best_cost: None,
             deep_rot_src: None,
@@ -1270,7 +1274,11 @@ impl SynthesizerQ {
                 // cannot hold the ≤0.89 ratio rule.
                 Some(3500)
             } else {
-                None
+                // Deep ε (the former hybrid-lite regime): m={1} arms on
+                // the deduped sound walk under 10 s win 12/12 targets at
+                // 1e-8 (0.963 -> 0.934; monotone 3/5/10 s sweep). Cost-
+                // first objective per the 2026-06-11 directive.
+                Some(10_000)
             },
             certify: false,
             certify_extra_ms: 2_000,
