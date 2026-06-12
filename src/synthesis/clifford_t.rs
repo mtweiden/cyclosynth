@@ -442,7 +442,7 @@ const DC_WALK_MAX_SOLUTIONS: usize = 8;
 /// recurse-entry; does not set `budget_hit`).
 #[allow(clippy::too_many_arguments)]
 fn lll_aligned_search(
-    scratch: &mut crate::synthesis::lattice::LatticeScratch,
+    scratch: &mut crate::synthesis::lattice::scratch::IntScratch,
     v: [Float; 4],
     k: u32,
     eps: Float,
@@ -915,7 +915,7 @@ impl SynthesizerT {
         };
 
         // Per-worker scratch: rayon's `map_init` allocates one
-        // `LatticeScratch` (pre-allocated MPFR/i256 buffers at the right
+        // `IntScratch` (pre-allocated MPFR/i256 buffers at the right
         // precision for `eps`) per worker thread and reuses it across every
         // prefix that worker handles, avoiding per-op allocation in the
         // hot path.
@@ -932,7 +932,7 @@ impl SynthesizerT {
                 .enumerate()
                 .with_min_len(chunk)
                 .map_init(
-                    || crate::synthesis::lattice::LatticeScratch::new(eps),
+                    || crate::synthesis::lattice::scratch::IntScratch::new(eps),
                     |scratch, (pos, &pi)| -> Option<SynthResultT> {
                         let u_l = &prefixes[pi as usize];
                         if let Some(tp) = target_parity {
@@ -1512,7 +1512,7 @@ mod tests {
             let mut out = Vec::new();
             let m_inner = u2t_dag_times_mat2(u_l, &target);
             let Some(v_inner) = mat_to_uv(&m_inner) else { return out };
-            let mut scratch = crate::synthesis::lattice::LatticeScratch::new(eps);
+            let mut scratch = crate::synthesis::lattice::scratch::IntScratch::new(eps);
             for odd in [false, true] {
                 let v_b = if odd { apply_t_dag_to_uv(v_inner) } else { v_inner };
                 let hit = AtomicBool::new(false);
@@ -2130,7 +2130,7 @@ mod tests {
         let target = rz(theta);
         let raw_uv = unitary_to_uv(&target);
         let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
-        let mut scratch = crate::synthesis::lattice::LatticeScratch::new(eps);
+        let mut scratch = crate::synthesis::lattice::scratch::IntScratch::new(eps);
         let hit = AtomicBool::new(false);
 
         crate::synthesis::diag::N_SE_NODES
