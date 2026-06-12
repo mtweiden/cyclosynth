@@ -5,7 +5,7 @@
     use super::se::{bilinear_forms, SeCenter16};
     use crate::synthesis::decomposer::BlochDecomposer;
     use crate::synthesis::distance::Mat2;
-    use crate::synthesis::search_zeta::{
+    use crate::synthesis::brute_search_zeta::{
         compute_align_vec_zeta, enumerate_unitary_norm_shell, uv_to_lattice_y_zeta,
     };
     use crate::synthesis::clifford_sqrt_t::{
@@ -35,7 +35,7 @@
     #[test]
     #[ignore]
     fn audit_radial_displacement_probe() {
-        use crate::synthesis::search_zeta::uv_to_lattice_y_zeta_mpfr;
+        use crate::synthesis::brute_search_zeta::uv_to_lattice_y_zeta_mpfr;
         use rug::Float as RF;
 
         // SplitMix64 + u3, replicated from src/bin/probe_t_vs_qt.rs.
@@ -205,7 +205,7 @@
         );
         for k in [20u32, 22, 24, 26] {
             let v_mpfr: [RF; 4] = std::array::from_fn(|i| RF::with_val(213, v[i]));
-            let y = crate::synthesis::search_zeta::uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, 213);
+            let y = crate::synthesis::brute_search_zeta::uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, 213);
             let mut s = IntScratch16::new(eps);
             // Replicate find_aligned_lattice_points steps 1-4 (no walk).
             super::q_metric::build_q_mpfr_zeta_from_mpfr_v(&mut s, &v_mpfr, k, eps);

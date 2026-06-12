@@ -10,7 +10,7 @@
 //! ## Backend (hybrid, three modes)
 //!
 //! For `k ≤ BRUTE_LIMIT` (=3): brute-force enumeration via
-//! [`crate::synthesis::search_zeta::enumerate_unitary_norm_shell`] — cheap exact-find
+//! [`crate::synthesis::brute_search_zeta::enumerate_unitary_norm_shell`] — cheap exact-find
 //! for small Clifford+√T targets (also the lattice pipeline's oracle).
 //!
 //! For larger `k`: single-shot 16D L²-LLL + Schnorr-Euchner via
@@ -34,7 +34,7 @@ use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2q_float, Mat2};
 use crate::synthesis::lattice_zeta::{find_aligned_lattice_points_with_stop, find_aligned_lattice_points_mpfr, IntScratch16};
-use crate::synthesis::search_zeta::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta, uv_to_lattice_y_zeta_mpfr};
+use crate::synthesis::brute_search_zeta::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta, uv_to_lattice_y_zeta_mpfr};
 use num_complex::Complex64;
 use std::collections::HashMap;
 use std::f64::consts::PI;
