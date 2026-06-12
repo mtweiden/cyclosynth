@@ -1259,6 +1259,149 @@ impl SynthesizerQ {
         (base / self.budget_div.max(1)).max(1)
     }
 
+    /// Parallel-LDE speculation: windows of `parallel_lde_window` levels
+    /// run concurrently from `start_k` upward; the first find aborts
+    /// in-flight peers. Hard-target wall drops from "sum of no-solution
+    /// burns + find" to "find alone", paid for by thread dilution on
+    /// easy targets — hence only enabled where hard targets overshoot
+    /// the predicted lde. Task i > 0 gates on its predecessor burning
+    /// `parallel_lde_trigger_nodes` without finding (0 = launch
+    /// immediately), and ALSO on predecessor finish: a level can
+    /// complete cleanly below the trigger, and a successor polling a
+    /// permanently-stopped counter deadlocks the process.
+    ///
+    /// Returns `(find, pass-2 queue, unclear-below-find levels)`. The
+    /// third element is conservative: a non-finding window peer below
+    /// the find may have been aborted mid-walk or never launched —
+    /// indistinguishable here from a clean exhaust — so every one is
+    /// reported.
+    fn parallel_lde_sweep(
+        &self,
+        target: &Mat2,
+        m_split: u32,
+        start_k: u32,
+    ) -> (Option<SynthResultQ>, Vec<u32>, Vec<u32>) {
+        let trace = crate::synthesis::diag::trace_enabled();
+        let cross_lde_abort = AtomicBool::new(false);
+        let window_size: u32 = self.parallel_lde_window.max(1);
+        let trigger_nodes = self.parallel_lde_trigger_nodes;
+        let pass2_queue: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+        let mut k_cursor = start_k;
+
+        while k_cursor <= self.effective_max_lde()
+            && !cross_lde_abort.load(Ordering::Relaxed)
+        {
+            let window_end = (k_cursor + window_size - 1).min(self.max_lde);
+            let lde_window: Vec<u32> = (k_cursor..=window_end).collect();
+            if trace {
+                eprintln!("[zeta] dc m={m_split} pass1 parallel-lde window={:?} dispatching ...", lde_window);
+            }
+            let t_window = std::time::Instant::now();
+
+            let consumed_counters: Vec<std::sync::Arc<std::sync::atomic::AtomicU64>> =
+                (0..lde_window.len())
+                    .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
+                    .collect();
+            let finished_flags: Vec<std::sync::Arc<AtomicBool>> = (0..lde_window.len())
+                .map(|_| std::sync::Arc::new(AtomicBool::new(false)))
+                .collect();
+            let results: Mutex<Vec<(u32, Option<SynthResultQ>, bool)>> =
+                Mutex::new(Vec::new());
+            std::thread::scope(|s| {
+                for (i, &k) in lde_window.iter().enumerate() {
+                    let results_ref = &results;
+                    let abort_ref = &cross_lde_abort;
+                    let pass2_ref = &pass2_queue;
+                    let my_consumed = consumed_counters[i].clone();
+                    let my_finished = finished_flags[i].clone();
+                    let predecessor_consumed =
+                        if i > 0 { Some(consumed_counters[i - 1].clone()) } else { None };
+                    let predecessor_finished =
+                        if i > 0 { Some(finished_flags[i - 1].clone()) } else { None };
+                    s.spawn(move || {
+                        // RAII: mark finished on EVERY exit path (normal,
+                        // abort, panic) so a successor's gate can never
+                        // be stranded.
+                        struct FinishedGuard(std::sync::Arc<AtomicBool>);
+                        impl Drop for FinishedGuard {
+                            fn drop(&mut self) {
+                                self.0.store(true, Ordering::Release);
+                            }
+                        }
+                        let _finished_guard = FinishedGuard(my_finished);
+                        if i > 0 && trigger_nodes > 0 {
+                            let pred = predecessor_consumed.as_ref().unwrap();
+                            let pred_done = predecessor_finished.as_ref().unwrap();
+                            loop {
+                                if abort_ref.load(Ordering::Relaxed) { return; }
+                                if pred.load(Ordering::Relaxed) >= trigger_nodes { break; }
+                                if pred_done.load(Ordering::Acquire) { break; }
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                            if abort_ref.load(Ordering::Relaxed) { return; }
+                        }
+                        let t_k = std::time::Instant::now();
+                        // Pass shared signals only when they can fire:
+                        // the walker pays a contended atomic per
+                        // recurse-enter if either is Some.
+                        let abort_opt = if window_size > 1 { Some(abort_ref) } else { None };
+                        let consumed_opt = if trigger_nodes > 0 {
+                            Some(my_consumed.as_ref())
+                        } else {
+                            None
+                        };
+                        let (result, budget_hit) = self.dc_search_q(
+                            target, k, m_split, None,
+                            self.cap_div(dc_pass1_cap_for(self.epsilon)),
+                            abort_opt, consumed_opt, None, None,
+                        );
+                        let dt = t_k.elapsed().as_secs_f64() * 1000.0;
+                        if let Some(ref r) = result {
+                            abort_ref.store(true, Ordering::Relaxed);
+                            if trace {
+                                eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms  (consumed={})",
+                                    r.distance, dt, my_consumed.load(Ordering::Relaxed));
+                            }
+                        } else if trace {
+                            eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms  (consumed={})",
+                                if budget_hit { " (budget hit)" } else { "" }, dt,
+                                my_consumed.load(Ordering::Relaxed));
+                        }
+                        if result.is_none() && budget_hit {
+                            pass2_ref.lock().unwrap().push(k);
+                        }
+                        results_ref.lock().unwrap().push((k, result, budget_hit));
+                    });
+                }
+            });
+            // Lowest-lde finder wins (minimum-circuit semantics).
+            let mut found_results: Vec<(u32, SynthResultQ)> = results
+                .into_inner()
+                .unwrap()
+                .into_iter()
+                .filter_map(|(k, r, _)| r.map(|x| (k, x)))
+                .collect();
+            found_results.sort_by_key(|(k, _)| *k);
+
+            if let Some((found_k, r)) = found_results.into_iter().next() {
+                if trace {
+                    eprintln!("[zeta] dc parallel-lde window wall  t={:.0}ms",
+                        t_window.elapsed().as_secs_f64() * 1000.0);
+                }
+                let queue = pass2_queue.into_inner().unwrap();
+                let unclear_below: Vec<u32> = queue
+                    .iter()
+                    .copied()
+                    .chain(lde_window.iter().copied())
+                    .filter(|&k| k < found_k)
+                    .collect();
+                return (Some(r), queue, unclear_below);
+            }
+            k_cursor = window_end + 1;
+        }
+        (None, pass2_queue.into_inner().unwrap(), Vec::new())
+    }
+
     /// Pass-2 retries for the dc dispatcher: only levels where pass 1
     /// hit budget without finding (every other level was exhausted — no
     /// solution exists there). Returns the find plus the levels that hit
@@ -1532,157 +1675,18 @@ impl SynthesizerQ {
                 return None;
             }
 
-            // window ≥ 2: speculate a window of lde levels concurrently;
-            // the first find aborts in-flight peers. Hard-target wall
-            // drops from "sum of no-sol burns + find" to "find alone",
-            // paid for by thread dilution on easy targets — hence only
-            // enabled where hard targets overshoot the predicted lde.
-            let cross_lde_abort = AtomicBool::new(false);
-            let lde_window_size: u32 = self.parallel_lde_window.max(1);
-            let mut k_cursor = (m_split + 1).max(lattice_start);
-
-            let parallel_result: Option<SynthResultQ> = 'outer: loop {
-                if k_cursor > self.effective_max_lde() { break 'outer None; }
-                if cross_lde_abort.load(Ordering::Relaxed) { break 'outer None; }
-
-                let window_end = (k_cursor + lde_window_size - 1).min(self.max_lde);
-                let lde_window: Vec<u32> = (k_cursor..=window_end).collect();
-                if trace {
-                    eprintln!("[zeta] dc m={m_split} pass1 parallel-lde window={:?} dispatching ...", lde_window);
+            let start_k = (m_split + 1).max(lattice_start);
+            let (found, pass2_queue, unclear_below) =
+                self.parallel_lde_sweep(&target, m_split, start_k);
+            if let Some(r) = found {
+                if let Some(out) = unclear_out.as_deref_mut() {
+                    out.extend(unverified_small.iter().copied());
+                    out.extend(unclear_below);
                 }
-                let t_window = std::time::Instant::now();
-
-                // Staggered speculation: task i waits for task i-1 to
-                // burn `trigger_nodes` without finding (0 = launch
-                // immediately).
-                let trigger_nodes = self.parallel_lde_trigger_nodes;
-                let consumed_counters: Vec<std::sync::Arc<std::sync::atomic::AtomicU64>> =
-                    (0..lde_window.len())
-                        .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
-                        .collect();
-                // LIVENESS: the gate below must also wake when its
-                // predecessor FINISHES — a level can complete cleanly
-                // below the trigger, and a successor polling a counter
-                // that permanently stopped deadlocks the process.
-                let finished_flags: Vec<std::sync::Arc<std::sync::atomic::AtomicBool>> =
-                    (0..lde_window.len())
-                        .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
-                        .collect();
-                let results: Mutex<Vec<(u32, Option<SynthResultQ>, bool)>> =
-                    Mutex::new(Vec::new());
-                std::thread::scope(|s| {
-                    for (i, &k) in lde_window.iter().enumerate() {
-                        let results_ref = &results;
-                        let abort_ref = &cross_lde_abort;
-                        let pass2_ref = &pass2_collector;
-                        let my_consumed = consumed_counters[i].clone();
-                        let my_finished = finished_flags[i].clone();
-                        let predecessor_consumed: Option<std::sync::Arc<std::sync::atomic::AtomicU64>> =
-                            if i > 0 { Some(consumed_counters[i - 1].clone()) } else { None };
-                        let predecessor_finished: Option<std::sync::Arc<std::sync::atomic::AtomicBool>> =
-                            if i > 0 { Some(finished_flags[i - 1].clone()) } else { None };
-                        s.spawn(move || {
-                            // RAII: mark this task finished on EVERY exit
-                            // path (normal, abort early-return, panic) so
-                            // a successor's gate can never be stranded.
-                            struct FinishedGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
-                            impl Drop for FinishedGuard {
-                                fn drop(&mut self) {
-                                    self.0.store(true, Ordering::Release);
-                                }
-                            }
-                            let _finished_guard = FinishedGuard(my_finished);
-                            // Wait for predecessor to consume `trigger_nodes`
-                            // search-tree nodes, FINISH (a clean empty
-                            // completion below the trigger means this level
-                            // should start immediately), or cross-LDE abort.
-                            if i > 0 && trigger_nodes > 0 {
-                                let pred = predecessor_consumed.as_ref().unwrap();
-                                let pred_done = predecessor_finished.as_ref().unwrap();
-                                loop {
-                                    if abort_ref.load(Ordering::Relaxed) { return; }
-                                    if pred.load(Ordering::Relaxed) >= trigger_nodes { break; }
-                                    if pred_done.load(Ordering::Acquire) { break; }
-                                    std::thread::sleep(std::time::Duration::from_millis(50));
-                                }
-                                if abort_ref.load(Ordering::Relaxed) { return; }
-                            }
-                            let t_k = std::time::Instant::now();
-                            // Pass shared signals only when they can
-                            // fire: the walker pays a contended atomic
-                            // per recurse-enter if either is Some.
-                            let abort_opt = if lde_window_size > 1 { Some(abort_ref) } else { None };
-                            let consumed_opt = if trigger_nodes > 0 {
-                                Some(my_consumed.as_ref())
-                            } else {
-                                None
-                            };
-                            let (result, budget_hit) = self.dc_search_q(
-                                &target, k, m_split, None, self.cap_div(dc_pass1_cap_for(self.epsilon)),
-                                abort_opt,
-                                consumed_opt,
-                                None, None,
-                            );
-                            let dt = t_k.elapsed().as_secs_f64() * 1000.0;
-                            if let Some(ref r) = result {
-                                abort_ref.store(true, Ordering::Relaxed);
-                                if trace {
-                                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms  (consumed={})",
-                                        r.distance, dt, my_consumed.load(Ordering::Relaxed));
-                                }
-                            } else if trace {
-                                eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms  (consumed={})",
-                                    if budget_hit { " (budget hit)" } else { "" }, dt,
-                                    my_consumed.load(Ordering::Relaxed));
-                            }
-                            if result.is_none() && budget_hit {
-                                pass2_ref.lock().unwrap().push(k);
-                            }
-                            results_ref.lock().unwrap().push((k, result, budget_hit));
-                        });
-                    }
-                });
-                // Pick the lowest-lde finder (minimum-circuit semantics).
-                let mut found_results: Vec<(u32, SynthResultQ)> = results
-                    .into_inner()
-                    .unwrap()
-                    .into_iter()
-                    .filter_map(|(k, r, _)| r.map(|x| (k, x)))
-                    .collect();
-                found_results.sort_by_key(|(k, _)| *k);
-                let res = found_results.into_iter().next().map(|(_, r)| r);
-
-                if let Some(r) = res {
-                    if trace {
-                        eprintln!("[zeta] dc parallel-lde window wall  t={:.0}ms",
-                            t_window.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    if let Some(out) = unclear_out.as_deref_mut() {
-                        let found_k = r.lde;
-                        out.extend(unverified_small.iter().copied());
-                        // Budget-hit levels from this and earlier windows.
-                        out.extend(
-                            pass2_collector.lock().unwrap().iter().copied()
-                                .filter(|&k| k < found_k),
-                        );
-                        // Window peers below the finder: a peer may have
-                        // been cross-LDE-aborted mid-walk (or never
-                        // launched behind the speculation trigger), which
-                        // is indistinguishable here from a clean exhaust —
-                        // conservatively report every non-finding peer
-                        // level below found_k.
-                        out.extend(lde_window.iter().copied().filter(|&k| k < found_k));
-                    }
-                    break 'outer Some(r);
-                }
-                k_cursor = window_end + 1;
-            };
-
-            if let Some(r) = parallel_result { return Some(r); }
-
-            let (found, still_truncated) = self.dc_pass2_retry(
-                &target, m_split, pass2_collector.into_inner().unwrap(),
-            );
+                return Some(r);
+            }
+            let (found, still_truncated) =
+                self.dc_pass2_retry(&target, m_split, pass2_queue);
             if let Some(r) = found {
                 if let Some(out) = unclear_out.as_deref_mut() {
                     out.extend(unverified_small.iter().copied());
