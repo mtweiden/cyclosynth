@@ -997,7 +997,7 @@ pub enum LeafAction {
 }
 
 /// Parallel + norm-shell-pruned + incremental-x SE walker. This is the
-/// production workhorse used by [`super::phase1`].
+/// production workhorse used by [`super::find_aligned_lattice_points`].
 ///
 /// Combines all three accelerations:
 ///   1. **Norm-shell pruning** via the upper-triangular Euclidean Cholesky
@@ -1126,7 +1126,7 @@ struct PredictiveTrunc {
     items_total: usize,
     /// Work items fully walked so far (one increment per completed item).
     items_done: std::sync::atomic::AtomicUsize,
-    /// Pool value at walk entry (= the walk's full budget: phase1 creates
+    /// Pool value at walk entry (= the walk's full budget: find_aligned_lattice_points creates
     /// a fresh pool per walk).
     initial_budget: u64,
     /// First-fire latch: dedupes the diag counter and short-circuits the
@@ -1395,7 +1395,7 @@ where
     use std::sync::atomic::AtomicBool;
 
     let aborted = AtomicBool::new(false);
-    // Pool value at entry = this walk's full budget (phase1 creates a
+    // Pool value at entry = this walk's full budget (find_aligned_lattice_points creates a
     // fresh pool per walk). Anchor for the predictive-truncation
     // projection; u64::MAX marks the walk unbudgeted.
     let initial_budget = budget.load(Ordering::Relaxed);
@@ -2012,7 +2012,7 @@ mod w1_bench {
         let budget_hit = AtomicBool::new(false);
         let cpu0 = cpu_time_s();
         let t0 = Instant::now();
-        let sols = crate::synthesis::lattice_zeta::phase1_with_stop(
+        let sols = crate::synthesis::lattice_zeta::find_aligned_lattice_points_with_stop(
             scratch.as_mut(),
             &y,
             k,
@@ -2044,7 +2044,7 @@ mod tests {
     use super::super::lll::run_lll_16;
     use super::super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
     use super::super::scratch::IntScratch16;
-    use crate::synthesis::search_zeta::phase1_brute;
+    use crate::synthesis::search_zeta::enumerate_unitary_norm_shell;
     use std::collections::HashSet;
 
     fn realistic_v() -> [f64; 4] {
@@ -2085,7 +2085,7 @@ mod tests {
         let r = run_lll_16(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
 
-        let brute = phase1_brute(1);
+        let brute = enumerate_unitary_norm_shell(1);
         assert!(!brute.is_empty());
         let target = brute[0];
 
@@ -2289,7 +2289,7 @@ mod tests {
         assert_eq!(leaves, 10, "budget should cap leaves at 10");
     }
 
-    /// At k=2 (norm² = 4), `phase1_brute(2)` returns 2848 valid solutions.
+    /// At k=2 (norm² = 4), `enumerate_unitary_norm_shell(2)` returns 2848 valid solutions.
     /// Build the LLL+SE pipeline, run SE with a generous bound, verify any
     /// solution returned by SE that passes the leaf checks is in the brute
     /// set (no spurious solutions from SE's enumeration).
@@ -2316,7 +2316,7 @@ mod tests {
         let z_c = SeCenter16::from_lu_x(&s.lu_x);
 
         // Brute solutions at k=2.
-        let brute_set: HashSet<[i64; 16]> = phase1_brute(2).into_iter().collect();
+        let brute_set: HashSet<[i64; 16]> = enumerate_unitary_norm_shell(2).into_iter().collect();
 
         // Generous bound: large enough that *some* candidates land in the
         // ellipsoid. We don't claim coverage of all 2848; the assertion is
@@ -2424,7 +2424,7 @@ mod tests {
         build_q_mpfr_zeta(&mut s, v, k, eps);
         build_q_int_zeta(&mut s);
         // Cap center c = y · cap_mid (build_q does not populate scratch.c;
-        // mirror of integer.rs's phase1 step 1).
+        // mirror of integer.rs's find_aligned_lattice_points step 1).
         let y = uv_to_xy_zeta(v, k);
         let cap_mid = (1.0 + (1.0 - eps * eps).sqrt()) / 2.0;
         for i in 0..16 {

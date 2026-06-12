@@ -9,7 +9,7 @@
 //! ## Backend status
 //!
 //! The current `Synthesizer (sqrt_t=true)` uses a brute-force backend
-//! (`phase1_brute`) which is exponential in k. Practical operating
+//! (`enumerate_unitary_norm_shell`) which is exponential in k. Practical operating
 //! range:
 //!   - max_lde = 0..2: very fast (milliseconds), tight-ε targets
 //!     unreachable.

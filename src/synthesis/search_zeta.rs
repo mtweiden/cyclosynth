@@ -1,10 +1,10 @@
 //! Brute-force search and y-vector helpers for the Z[ζ_16] / Clifford+√T
 //! flow. Mirrors the role of [`super::search`] for the Z[ω] / Clifford+T
 //! flow: y-vector construction (`compute_align_vec_zeta`, `uv_to_xy_zeta`)
-//! plus a brute-force enumerator (`phase1_brute`) used as a correctness
+//! plus a brute-force enumerator (`enumerate_unitary_norm_shell`) used as a correctness
 //! oracle for the lattice pipeline in [`super::lattice_zeta`].
 //!
-//! Cost of `phase1_brute` is exponential in `k` (the shell at k=4 has
+//! Cost of `enumerate_unitary_norm_shell` is exponential in `k` (the shell at k=4 has
 //! ~5·10⁸ points); useful for `k ≤ 4` for full enumeration. The L²-LLL +
 //! Schnorr-Euchner port is in [`super::lattice_zeta`].
 
@@ -114,7 +114,7 @@ pub fn uv_to_xy_zeta_mpfr(v: &[rug::Float; 4], k: u32, prec: u32) -> [rug::Float
     std::array::from_fn(|i| RFloat::with_val(prec, &raw[i] * &scale))
 }
 
-// ─── Brute-force phase1 ──────────────────────────────────────────────────────
+// ─── Brute-force find_aligned_lattice_points ──────────────────────────────────────────────────────
 
 /// Recursive enumerator: walks integer 16-vectors with `‖x‖² = remaining`
 /// at the current recursion depth.
@@ -141,11 +141,11 @@ fn enumerate<F: FnMut(&[i64; 16])>(
     }
 }
 
-/// Brute-force phase1 for Z[ζ_16]: enumerate all `(u_1, u_2) ∈ Z[ζ_16]²`
+/// Brute-force find_aligned_lattice_points for Z[ζ_16]: enumerate all `(u_1, u_2) ∈ Z[ζ_16]²`
 /// with `‖u_1‖² + ‖u_2‖² = 2^k` and `B_1 = B_2 = B_3 = 0`.
 ///
 /// Returns 16-element integer solutions. Cost is exponential in `k`.
-pub fn phase1_brute(k: u32) -> Vec<[i64; 16]> {
+pub fn enumerate_unitary_norm_shell(k: u32) -> Vec<[i64; 16]> {
     assert!(k < 31, "k too large for i64 norm shell (would overflow)");
     let target_norm_sq = 1i64 << k;
     let mut x = [0i64; 16];

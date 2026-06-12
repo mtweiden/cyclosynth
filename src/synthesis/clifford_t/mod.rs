@@ -412,7 +412,7 @@ fn uv_to_xy(v: [Float; 4], k: u32) -> [Float; 8] {
 const PASS1_CAP: u64 = 2_000_000;
 const PASS2_CAP: u64 = u64::MAX;
 
-/// NODE budgets per `phase1` call: the leaf caps never bind on a
+/// NODE budgets per `find_aligned_lattice_points` call: the leaf caps never bind on a
 /// no-solution level (almost nothing reaches a leaf), so an empty
 /// level used to walk unbudgeted to exhaustion. Pass 1 sits ≥ 700×
 /// above every observed completing walk (empty levels are expensive
@@ -435,7 +435,7 @@ const DC_WALK_MAX_SOLUTIONS: usize = 8;
 /// the norm-shell, bilinear-form, and alignment constraints.
 ///
 /// `max_solutions` caps how many candidates are returned (1 = historical
-/// first-hit walk). `max_phase2_calls` caps the per-prefix SE leaf budget
+/// first-hit walk). `max_leaf_checks` caps the per-prefix SE leaf budget
 /// and `max_nodes` the per-prefix SE NODE budget; if either is reached,
 /// `budget_hit` is set so the caller can retry with a larger budget.
 /// `external_abort` is the cross-branch winner signal (checked at every SE
@@ -447,7 +447,7 @@ fn lll_aligned_search(
     k: u32,
     eps: Float,
     max_solutions: usize,
-    max_phase2_calls: u64,
+    max_leaf_checks: u64,
     max_nodes: u64,
     budget_hit: &std::sync::atomic::AtomicBool,
     external_abort: Option<&std::sync::atomic::AtomicBool>,
@@ -465,8 +465,8 @@ fn lll_aligned_search(
     // MPFR (rug) at adaptive precision in the LLL+Cholesky setup phase. The
     // SE step downcasts to f64. Scratch is reused across all prefixes within
     // one rayon worker via map_init in dc_search.
-    crate::synthesis::lattice::phase1(
-        scratch, &y, k, eps, max_solutions, max_phase2_calls, max_nodes,
+    crate::synthesis::lattice::find_aligned_lattice_points(
+        scratch, &y, k, eps, max_solutions, max_leaf_checks, max_nodes,
         budget_hit, external_abort,
     )
 }
@@ -615,7 +615,7 @@ impl SynthesizerT {
         let raw_uv = unitary_to_uv(&target);
         let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
 
-        // Phase 1: direct_search for small t.  Starts at min_lde (not 0) because
+        // Stage 1: direct_search for small t. Starts at min_lde (not 0) because
         // no generic rotation can be approximated to within ε with fewer T-gates.
         for t in self.min_lde..=self.direct_limit {
             let result = self.try_at_lde(&target, v, t);
@@ -811,10 +811,10 @@ impl SynthesizerT {
     /// Inner step uses lll_aligned_search (CVP-based), which is O(1) near a
     /// solution — fast exactly when DC is needed (large t, small eps).
     /// Even and odd inner branches are both tried per prefix.
-    /// `max_phase2_calls` (SE leaf budget) and `max_nodes` (SE node budget) are
-    /// forwarded to lll_aligned_search → lattice::phase1, per prefix × branch.
+    /// `max_leaf_checks` (SE leaf budget) and `max_nodes` (SE node budget) are
+    /// forwarded to lll_aligned_search → lattice::find_aligned_lattice_points, per prefix × branch.
     /// Returns `(solution, budget_was_hit)` where `budget_was_hit=true` means at least
-    /// one phase1 invocation exhausted an SE budget — the caller may want to
+    /// one find_aligned_lattice_points invocation exhausted an SE budget — the caller may want to
     /// retry at the same lde with a larger budget. If `false` and `solution` is `None`,
     /// the search was exhaustive at this lde and the caller should advance to lde+1.
     ///
@@ -831,7 +831,7 @@ impl SynthesizerT {
         target: &Mat2,
         v: [Float; 4],
         t: u32,
-        max_phase2_calls: u64,
+        max_leaf_checks: u64,
         max_nodes: u64,
     ) -> (Option<SynthResultT>, bool) {
         let eps = self.epsilon;
@@ -962,7 +962,7 @@ impl SynthesizerT {
                             };
                             for sol in lll_aligned_search(
                                 scratch, v_branch, k_inner, eps,
-                                DC_WALK_MAX_SOLUTIONS, max_phase2_calls,
+                                DC_WALK_MAX_SOLUTIONS, max_leaf_checks,
                                 max_nodes, &budget_hit, Some(&found_abort),
                             ) {
                                 let u2t = if odd {

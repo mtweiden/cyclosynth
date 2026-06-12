@@ -1,6 +1,6 @@
 //! Optional per-search diagnostic counters. Most are gated by
 //! `CYCLOSYNTH_TRACE=1`; the budget-truncation outcome counters and the
-//! M2 branch-win telemetry are always-on (at most once per phase1 call,
+//! M2 branch-win telemetry are always-on (at most once per find_aligned_lattice_points call,
 //! so the hot path never sees them).
 //!
 //! Usage:
@@ -67,18 +67,18 @@ pub static N_MAT_TO_UV_REJECTED: AtomicU64 = AtomicU64::new(0);
 /// whose ellipsoid is "fat" relative to alignment requirements.
 pub static N_SE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 
-/// Total 8D SE recurse-entries (true node count) summed across all phase1
+/// Total 8D SE recurse-entries (true node count) summed across all find_aligned_lattice_points
 /// calls since the last reset. Always accumulated (one fetch_add per
-/// phase1 call, not per node) — used to size the PASS1/PASS2 node caps.
+/// find_aligned_lattice_points call, not per node) — used to size the PASS1/PASS2 node caps.
 pub static N_SE_NODES: AtomicU64 = AtomicU64::new(0);
 
-/// Max 8D SE recurse-entries consumed by any single phase1 call (one
+/// Max 8D SE recurse-entries consumed by any single find_aligned_lattice_points call (one
 /// prefix × one branch walk) since the last reset. The per-prefix node
 /// caps must sit well above this on solution-bearing levels.
 pub static N_SE_NODES_MAX: AtomicU64 = AtomicU64::new(0);
 
 /// Record a per-walk node count into [`N_SE_NODES_MAX`] (relaxed cmpxchg
-/// max loop; called once per phase1, not per node).
+/// max loop; called once per find_aligned_lattice_points, not per node).
 pub fn record_se_nodes_max(nodes: u64) {
     let mut cur = N_SE_NODES_MAX.load(Ordering::Relaxed);
     while nodes > cur {
@@ -100,7 +100,7 @@ pub static N_DIST_REJECTED: AtomicU64 = AtomicU64::new(0);
 
 // ─── Per-phase nanosecond accumulators ───────────────────────────────────────
 //
-// CPU-summed nanoseconds across all phase1 calls in the current dc_search.
+// CPU-summed nanoseconds across all find_aligned_lattice_points calls in the current dc_search.
 // Total ≈ wall-time × n_threads in steady state (high parallel efficiency).
 
 pub static T_BUILD_NS: AtomicU64 = AtomicU64::new(0);
@@ -111,7 +111,7 @@ pub static T_SE_NS: AtomicU64 = AtomicU64::new(0);
 
 // ─── LLL iteration telemetry ─────────────────────────────────────────────────
 
-/// Sum of LLL inner-loop iterations across all phase1 calls in this dc_search.
+/// Sum of LLL inner-loop iterations across all find_aligned_lattice_points calls in this dc_search.
 pub static N_LLL_ITERS_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Max iter count seen by any single LLL call in this dc_search.
 pub static N_LLL_ITERS_MAX: AtomicU64 = AtomicU64::new(0);
@@ -130,8 +130,8 @@ pub static N_LAZY_PASSES_MAX: AtomicU64 = AtomicU64::new(0);
 
 // ─── 16D Z[ζ_16] / Clifford+√T-specific counters ─────────────────────────────
 
-/// Number of `phase1` invocations across this synthesize call (one per k).
-pub static N_PHASE1_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Number of `find_aligned_lattice_points` invocations across this synthesize call (one per k).
+pub static N_LATTICE_SEARCH_CALLS: AtomicU64 = AtomicU64::new(0);
 /// Number of times the f64 GS path detected a failure (LLL not converged
 /// or non-unimodular post-LLL basis) and the precision ladder escalated
 /// to MPFR. Should be 0 in our regime (ε ≥ 1e-7); becomes non-zero at
@@ -143,9 +143,9 @@ pub static N_NORM_REJECTED: AtomicU64 = AtomicU64::new(0);
 pub static N_BILINEAR_REJECTED: AtomicU64 = AtomicU64::new(0);
 /// SE leaves rejected by the alignment check (`(y·x)² ≥ threshold_xy`).
 pub static N_ALIGN_REJECTED: AtomicU64 = AtomicU64::new(0);
-/// SE leaves passing all filters (returned by `phase1`).
+/// SE leaves passing all filters (returned by `find_aligned_lattice_points`).
 pub static N_SOLS_RETURNED: AtomicU64 = AtomicU64::new(0);
-/// Time spent inside SE leaf-check closures (sum across all phase1 calls).
+/// Time spent inside SE leaf-check closures (sum across all find_aligned_lattice_points calls).
 pub static T_LEAF_CHECK_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Total norm-shell prune firings across the SE walk.
@@ -167,7 +167,7 @@ pub static T_VERIFY_DD_NS: AtomicU64 = AtomicU64::new(0);
 // ─── Budget-truncation outcome counters (predictive trunc, se.rs) ────────────
 //
 // Both count once per WALK (first-flipper dedupe inside se.rs) and are
-// always-on (not trace-gated): they fire at most once per phase1 call, so
+// always-on (not trace-gated): they fire at most once per find_aligned_lattice_points call, so
 // the hot path never sees them, and tests assert on them without needing
 // CYCLOSYNTH_TRACE.
 
@@ -256,7 +256,7 @@ pub fn reset_all() {
         &N_LAZY_PASSES_TOTAL,
         &N_LAZY_CALLS_TOTAL,
         &N_LAZY_PASSES_MAX,
-        &N_PHASE1_CALLS,
+        &N_LATTICE_SEARCH_CALLS,
         &N_LLL_F64_ESCALATIONS,
         &N_NORM_REJECTED,
         &N_BILINEAR_REJECTED,
@@ -297,7 +297,7 @@ pub struct Snapshot {
     pub lazy_calls_total: u64,
     pub lazy_passes_max: u64,
     // 16D Z[ζ_16] fields.
-    pub phase1_calls: u64,
+    pub lattice_search_calls: u64,
     pub norm_rejected: u64,
     pub bilinear_rejected: u64,
     pub align_rejected: u64,
@@ -328,7 +328,7 @@ pub fn snapshot() -> Snapshot {
         lazy_passes_total: N_LAZY_PASSES_TOTAL.load(Ordering::Relaxed),
         lazy_calls_total: N_LAZY_CALLS_TOTAL.load(Ordering::Relaxed),
         lazy_passes_max: N_LAZY_PASSES_MAX.load(Ordering::Relaxed),
-        phase1_calls: N_PHASE1_CALLS.load(Ordering::Relaxed),
+        lattice_search_calls: N_LATTICE_SEARCH_CALLS.load(Ordering::Relaxed),
         norm_rejected: N_NORM_REJECTED.load(Ordering::Relaxed),
         bilinear_rejected: N_BILINEAR_REJECTED.load(Ordering::Relaxed),
         align_rejected: N_ALIGN_REJECTED.load(Ordering::Relaxed),
@@ -391,8 +391,8 @@ pub fn dump_zeta(s: &Snapshot, label: &str) {
     };
     eprintln!("─── [zeta diag {label}] ───────────────────────────────");
     eprintln!(
-        "  phase1 calls:    {}    LLL iters: total={} max={} at_cap={}",
-        s.phase1_calls, s.lll_iters_total, s.lll_iters_max, s.lll_at_cap,
+        "  find_aligned_lattice_points calls:    {}    LLL iters: total={} max={} at_cap={}",
+        s.lattice_search_calls, s.lll_iters_total, s.lll_iters_max, s.lll_at_cap,
     );
     eprintln!(
         "  SE leaves:       {} ({:.1}M)    leaf-check time: {:.1} ms",

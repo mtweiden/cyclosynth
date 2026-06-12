@@ -31,7 +31,7 @@ pub mod q_metric;
 pub mod scratch;
 pub mod se;
 
-pub use integer::{phase1_with_stop, phase1_with_stop_mpfr};
+pub use integer::{find_aligned_lattice_points_with_stop, find_aligned_lattice_points_mpfr};
 pub use scratch::IntScratch16;
 pub use se::{set_verify_prune_mpfr, verify_prune_mpfr};
 

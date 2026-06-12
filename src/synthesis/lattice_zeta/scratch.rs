@@ -157,7 +157,7 @@ pub struct IntScratch16 {
     pub lu_tmp: RFloat,
     pub lu_acc: RFloat,
 
-    /// Z1 D&C optimisation: when true, `phase1_with_stop` skips the
+    /// Z1 D&C optimisation: when true, `find_aligned_lattice_points_with_stop` skips the
     /// `reset_basis()` call and lets LLL warm-start from the previous
     /// call's reduced basis. Caller is responsible for setting this
     /// after the first call (so LLL gets a clean identity start once).
@@ -169,14 +169,14 @@ pub struct IntScratch16 {
     /// (`coef_p_sigma1 · P_Σ1 + coef_id · I` — everything except the
     /// rank-1 `coef_yy · ŷŷᵀ` term, which is the only part that varies
     /// per prefix). Computed lazily once per scratch per (k, ε) and fed
-    /// through `warm_lll` for every subsequent `phase1` call at that
+    /// through `warm_lll` for every subsequent `find_aligned_lattice_points` call at that
     /// key; rayon `map_init` reuses scratches across an arm's prefixes,
     /// so the cache hits hundreds of times per seed computation.
     /// `None` after a non-converged seed reduction = cold starts.
     pub q_base_seed: Option<IMat16>,
     pub q_base_seed_key: Option<(u32, u64)>,
 
-    /// Experimental f64 GS state: when true, `phase1_with_stop` calls
+    /// Experimental f64 GS state: when true, `find_aligned_lattice_points_with_stop` calls
     /// `lll_f64::run_lll_16_f64` instead of the MPFR-based `run_lll_16`.
     /// Theorem 2 of Nguyen-Stehlé 2009 doesn't cover d=16 in f64, but
     /// fplll's `wrapper.cpp` tries `double` first at every dim — we test
