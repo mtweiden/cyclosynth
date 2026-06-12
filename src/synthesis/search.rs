@@ -6,8 +6,20 @@
 //!   - (x · align_vec)² ≥ 2^k · (1 − ε²)                  (alignment)
 //!
 //! The alignment vector is align_vec = Σ_uv^T · v, where Σ_uv maps the
-//! integer lattice coordinates to the uv parameterization
-//! (Re(u1), Im(u1), Re(u2), Im(u2)) of the SU(2) matrix.
+//! integer lattice coordinates to the uv parameterization.
+//!
+//! ## The coordinate vocabulary (authoritative; cross-linked from the
+//! ζ₁₆ mirror and clifford_sqrt_t)
+//!
+//! - **uv** (`v: [f64; 4]`): the det-normalized first column of the
+//!   target unitary as reals — (Re u₁, Im u₁, Re u₂, Im u₂). All
+//!   synthesis targets reduce to this direction vector.
+//! - **y** (lattice y / cap-center direction): uv pushed into integer-
+//!   lattice coordinates and scaled to the paper's norm convention
+//!   (‖y‖² = 2^(k−1) in 8D, 2^k/4 in 16D); `uv_to_lattice_y*` builds
+//!   it. The enumeration cap is centered on y.
+//! - **align_vec** (`av`): the row vector whose dot with a candidate
+//!   lattice point measures cap alignment; `compute_align_vec*`.
 
 // Search functions thread many tuning knobs (norm bound, alignment vector,
 // max solutions, budget caps, abort flag) through their signatures. The
