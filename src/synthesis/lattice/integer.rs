@@ -379,7 +379,6 @@ mod tests {
     };
     use super::super::q_metric::{build_q_int, build_q_mpfr};
     use super::super::scratch::IntScratch;
-    use super::super::se;
     use i256::i256;
 
     fn realistic_y(k: u32) -> [Float; 8] {
