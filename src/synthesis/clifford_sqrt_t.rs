@@ -676,6 +676,17 @@ pub struct SynthesizerQ {
     /// lde-vs-cost relationship is not monotone). Builder:
     /// [`Self::with_optimal_lde_window`].
     pub optimal_lde_window: u32,
+
+    /// Divisor applied to the first-hit node caps (PASS1/PASS2 and the
+    /// dc per-prefix caps). Default 1 (full budgets). The optimal
+    /// pipeline's stage-2 screen sets this > 1 at deep ε ("screen-lite"):
+    /// the screen's pass-2 completeness guarantee is redundant there —
+    /// budget-truncated levels land in `screen_unclear` and the enum
+    /// grid re-covers them under incumbent pruning — so harsher caps cut
+    /// the no-solution screen tail (measured up to 12.4 s/target at
+    /// ε = 1e-8) at zero completeness risk. A screen that finds nothing
+    /// anywhere falls back to a full-budget retry.
+    pub budget_div: u64,
     /// Anytime enum-stage deadline (milliseconds, per parity branch).
     /// When `Some(ms)` and `certify` is off, stage 3 runs as ONE merged
     /// frontier of prefix work-units across all (k, m) arms, ordered by
@@ -1048,6 +1059,21 @@ fn dc_cap_div() -> u64 {
     })
 }
 
+/// CYCLOSYNTH_SCREEN_DIV: screen-lite budget divisor for the optimal
+/// pipeline's stage-2 screen at deep ε (default 1 = full budgets).
+/// A/B knob; becomes a constant once the sweep lands.
+fn screen_div() -> u64 {
+    use std::sync::OnceLock;
+    static DIV: OnceLock<u64> = OnceLock::new();
+    *DIV.get_or_init(|| {
+        std::env::var("CYCLOSYNTH_SCREEN_DIV")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&d| d >= 1)
+            .unwrap_or(1)
+    })
+}
+
 /// Per-prefix Z1 D&C pass-1 budget; scaled with ε since the post-LLL
 /// SE region grows exponentially in k_inner.
 fn dc_pass1_cap_for(epsilon: f64) -> u64 {
@@ -1250,6 +1276,7 @@ impl SynthesizerQ {
             // regresses (855.0): extra levels dilute the deadline,
             // same failure mode as m={1,2} arms.
             optimal_lde_window: if epsilon < 1e-7 { 3 } else { 2 },
+            budget_div: 1,
             // Open the det-phase filters where the audit showed real
             // cost left behind (ε ≤ 1e-5); keep them closed at shallow
             // ε where opening costs 6× wall for ~nothing.
@@ -1470,6 +1497,11 @@ impl SynthesizerQ {
     /// `max_lde` clamped by the live cross-parity incumbent when present
     /// (lde ≤ cost + 1 staircase bound). Polled per level — the incumbent
     /// tightens concurrently as the peer branch finds circuits.
+    /// First-hit node cap after the `budget_div` policy (min 1).
+    fn cap_div(&self, base: u64) -> u64 {
+        (base / self.budget_div.max(1)).max(1)
+    }
+
     fn effective_max_lde(&self) -> u32 {
         let mut m = self.max_lde;
         if let Some(best) = &self.global_best_cost {
@@ -1673,7 +1705,7 @@ impl SynthesizerQ {
             // (k_inner ≤ 0). These are typically few levels near lattice_start.
             for k in lattice_start..=m_split.min(self.max_lde) {
                 let t_k = std::time::Instant::now();
-                let (sols, small_budget_hit) = try_lattice_k(k, PASS1_CAP, &mut scratch);
+                let (sols, small_budget_hit) = try_lattice_k(k, self.cap_div(PASS1_CAP), &mut scratch);
                 if let Some(r) = check_sols(&sols, k) {
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} (single fallback)  FOUND  dist={:.3e}  t={:.0}ms",
@@ -1714,7 +1746,7 @@ impl SynthesizerQ {
                     }
                     let t_k = std::time::Instant::now();
                     let (result, budget_hit) = self.dc_search_q(
-                        &target, k, m_split, None, dc_pass1_cap_for(self.epsilon),
+                        &target, k, m_split, None, self.cap_div(dc_pass1_cap_for(self.epsilon)),
                         None, None, None, None,
                     );
                     if let Some(r) = result {
@@ -1752,7 +1784,7 @@ impl SynthesizerQ {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
                     }
                     let (result, budget_hit2) = self.dc_search_q(
-                        &target, k, m_split, None, dc_pass2_cap_for(self.epsilon), None, None, None, None,
+                        &target, k, m_split, None, self.cap_div(dc_pass2_cap_for(self.epsilon)), None, None, None, None,
                     );
                     if let Some(r) = result {
                         if trace {
@@ -1881,7 +1913,7 @@ impl SynthesizerQ {
                                 None
                             };
                             let (result, budget_hit) = self.dc_search_q(
-                                &target, k, m_split, None, dc_pass1_cap_for(self.epsilon),
+                                &target, k, m_split, None, self.cap_div(dc_pass1_cap_for(self.epsilon)),
                                 abort_opt,
                                 consumed_opt,
                                 None, None,
@@ -1958,7 +1990,7 @@ impl SynthesizerQ {
                 if trace {
                     eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
                 }
-                let (result, budget_hit2) = self.dc_search_q(&target, k, m_split, None, dc_pass2_cap_for(self.epsilon), None, None, None, None);
+                let (result, budget_hit2) = self.dc_search_q(&target, k, m_split, None, self.cap_div(dc_pass2_cap_for(self.epsilon)), None, None, None, None);
                 if let Some(r) = result {
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2  FOUND  dist={:.3e}  t={:.0}ms",
@@ -1989,7 +2021,7 @@ impl SynthesizerQ {
                 break;
             }
             let t_k = std::time::Instant::now();
-            let (sols, budget_was_hit) = try_lattice_k(k, PASS1_CAP, &mut scratch);
+            let (sols, budget_was_hit) = try_lattice_k(k, self.cap_div(PASS1_CAP), &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
                     eprintln!("[zeta] pass1 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
@@ -2024,7 +2056,7 @@ impl SynthesizerQ {
                 break;
             }
             let t_k = std::time::Instant::now();
-            let (sols, budget_hit2) = try_lattice_k(k, PASS2_CAP, &mut scratch);
+            let (sols, budget_hit2) = try_lattice_k(k, self.cap_div(PASS2_CAP), &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
                     eprintln!("[zeta] pass2 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
@@ -3277,12 +3309,28 @@ impl SynthesizerQ {
             let mut first_hit = self.clone();
             first_hit.optimize_cost = false;
             first_hit.odd_parity_branch = false;
+            // Screen-lite at deep ε (A/B knob CYCLOSYNTH_SCREEN_DIV,
+            // default 1 = off): divide the screen's node caps. See the
+            // `budget_div` field docs — `screen_unclear` makes truncated
+            // below-fl levels the enum stage's job, so the only risk is
+            // a fully-empty screen, handled by the full-budget retry.
+            if self.epsilon < 1e-7 {
+                first_hit.budget_div = screen_div();
+            }
             // Collect screen levels that were budget-truncated below the
             // find-lde and never cleared: the enum grid below must cover
             // them or the [fl, fl+w] window silently misses candidates
             // at those levels (find-lde upward bias).
             let mut unclear = Vec::new();
-            let first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
+            let mut first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
+            if first.is_none() && first_hit.budget_div > 1 {
+                if trace {
+                    eprintln!("[zeta] screen-lite found nothing — full-budget retry");
+                }
+                first_hit.budget_div = 1;
+                unclear.clear();
+                first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
+            }
             (first, unclear, baseline_handle.and_then(|h| h.join().unwrap()))
         });
         // Stage-2 handshake: signal screen completion to the peer
