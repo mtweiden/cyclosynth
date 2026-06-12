@@ -1058,9 +1058,10 @@ impl SynthesizerQ {
     }
 
     /// One (lde, m) variant of the optimal search: m=0 → single-shot
-    /// lattice probe, m≥1 → FGKM-prefix D&C with the default d_R filter.
-    /// Extracted from the m-sweep loop so the enum phase can run all
-    /// (k, m) pairs as independent parallel tasks.
+    /// lattice probe, m≥1 → FGKM-prefix split with the default d_R
+    /// filter. Extracted from the m-sweep loop so the enum phase can run
+    /// all (k, m) pairs as independent parallel tasks.
+    #[allow(clippy::too_many_arguments)] // 4 call sites, all internal
     pub(crate) fn run_enum_arm(
         &self,
         target: Mat2,
@@ -1098,8 +1099,15 @@ impl SynthesizerQ {
             };
             let cap = pass1_prefix_leaf_cap_for(self.epsilon).saturating_mul(budget_mult);
             let (r, budget_hit) = self.prefix_split_search_q(
-                &target, k, m, Some(&filter), cap, None, None, Some(cost_min),
-                shared_best_cost,
+                &target, k, m,
+                PrefixSplitOpts {
+                    dr_filter_override: Some(&filter),
+                    per_prefix_cap: cap,
+                    external_abort: None,
+                    consumed: None,
+                    cost_min_override: Some(cost_min),
+                    shared_best_cost,
+                },
             );
             if budget_hit && crate::synthesis::diag::trace_enabled() {
                 eprintln!("[zeta]   enum (k={k}, m={m}) BUDGET-HIT — level truncated");

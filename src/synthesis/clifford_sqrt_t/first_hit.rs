@@ -260,6 +260,26 @@ pub(crate) fn prefix_dag_times_target_q(u_l: &U2Q, target: &Mat2) -> Mat2 {
 }
 
 
+/// Options tail of [`SynthesizerQ::prefix_split_search_q`]: everything
+/// beyond (target, lde, m) that only some callers set. Defaults are the
+/// plain first-hit configuration.
+pub(crate) struct PrefixSplitOpts<'a> {
+    /// Override the configured det-phase filter (enum-grid arms pass
+    /// their own); `None` = the synthesizer's filter.
+    pub(crate) dr_filter_override: Option<&'a [u32]>,
+    /// Per-prefix SE leaf budget.
+    pub(crate) per_prefix_cap: u64,
+    /// Cross-branch winner signal (parallel-LDE speculation).
+    pub(crate) external_abort: Option<&'a AtomicBool>,
+    /// Shared consumed-nodes counter (speculation trigger).
+    pub(crate) consumed: Option<&'a std::sync::atomic::AtomicU64>,
+    /// Force min-cost (true) or first-hit (false) reduction; `None` =
+    /// the synthesizer's `optimize_cost`.
+    pub(crate) cost_min_override: Option<bool>,
+    /// Cross-call shared incumbent for the cost prune.
+    pub(crate) shared_best_cost: Option<&'a std::sync::atomic::AtomicUsize>,
+}
+
 impl SynthesizerQ {
     /// First-hit node cap after the `budget_div` policy (min 1).
     pub(crate) fn scaled_cap(&self, base: u64) -> u64 {
@@ -358,9 +378,15 @@ impl SynthesizerQ {
                             None
                         };
                         let (result, budget_hit) = self.prefix_split_search_q(
-                            target, k, m_split, None,
-                            self.scaled_cap(pass1_prefix_leaf_cap_for(self.epsilon)),
-                            abort_opt, consumed_opt, None, None,
+                            target, k, m_split,
+                            PrefixSplitOpts {
+                                dr_filter_override: None,
+                                per_prefix_cap: self.scaled_cap(pass1_prefix_leaf_cap_for(self.epsilon)),
+                                external_abort: abort_opt,
+                                consumed: consumed_opt,
+                                cost_min_override: None,
+                                shared_best_cost: None,
+                            },
                         );
                         let dt = t_k.elapsed().as_secs_f64() * 1000.0;
                         if let Some(ref r) = result {
@@ -431,9 +457,15 @@ impl SynthesizerQ {
                 eprintln!("[zeta] dc lde={k:>2} m={m_split} pass2 dispatching ...");
             }
             let (result, budget_hit) = self.prefix_split_search_q(
-                target, k, m_split, None,
-                self.scaled_cap(pass2_prefix_leaf_cap_for(self.epsilon)),
-                None, None, None, None,
+                target, k, m_split,
+                PrefixSplitOpts {
+                    dr_filter_override: None,
+                    per_prefix_cap: self.scaled_cap(pass2_prefix_leaf_cap_for(self.epsilon)),
+                    external_abort: None,
+                    consumed: None,
+                    cost_min_override: None,
+                    shared_best_cost: None,
+                },
             );
             if let Some(r) = result {
                 if trace {
@@ -620,8 +652,15 @@ impl SynthesizerQ {
                     }
                     let t_k = std::time::Instant::now();
                     let (result, budget_hit) = self.prefix_split_search_q(
-                        &target, k, m_split, None, self.scaled_cap(pass1_prefix_leaf_cap_for(self.epsilon)),
-                        None, None, None, None,
+                        &target, k, m_split,
+                        PrefixSplitOpts {
+                            dr_filter_override: None,
+                            per_prefix_cap: self.scaled_cap(pass1_prefix_leaf_cap_for(self.epsilon)),
+                            external_abort: None,
+                            consumed: None,
+                            cost_min_override: None,
+                            shared_best_cost: None,
+                        },
                     );
                     if let Some(r) = result {
                         if trace {
@@ -765,13 +804,16 @@ impl SynthesizerQ {
         target: &Mat2,
         lde_total: u32,
         m_split: u32,
-        dr_filter_override: Option<&[u32]>,
-        per_prefix_cap: u64,
-        external_abort: Option<&AtomicBool>,
-        consumed: Option<&std::sync::atomic::AtomicU64>,
-        cost_min_override: Option<bool>,
-        shared_best_cost: Option<&std::sync::atomic::AtomicUsize>,
+        opts: PrefixSplitOpts<'_>,
     ) -> (Option<SynthResultQ>, bool) {
+        let PrefixSplitOpts {
+            dr_filter_override,
+            per_prefix_cap,
+            external_abort,
+            consumed,
+            cost_min_override,
+            shared_best_cost,
+        } = opts;
         use rayon::prelude::*;
         use crate::synthesis::diag;
 
