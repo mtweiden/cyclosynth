@@ -95,11 +95,9 @@ pub fn cost_lb_half_units(k: u32) -> usize {
 /// contributes ζ₁₆ to det(U) and each T contributes ζ₁₆², while
 /// Cliffords contribute powers of ζ₁₆⁴ — but a circuit equals a target
 /// matrix only **up to a global phase ζ₁₆ʲ**, which shifts the det
-/// class by 2j. Only the parity of `d` survives that freedom:
-///
-///     q ≡ d (mod 2)
-///
-/// so an odd det-phase class forces at least one Q gate (7 half-units);
+/// class by 2j. Only the parity of `d` survives that freedom —
+/// `q ≡ d (mod 2)` — so an odd det-phase class forces at least one Q
+/// gate (7 half-units);
 /// even classes get no information. Combine with
 /// [`cost_lb_half_units`] via `max`. Verified against brute shells in
 /// [`tests::class_bound_holds_on_brute_shells`] (which also pins the
