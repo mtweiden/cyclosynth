@@ -28,34 +28,7 @@ use std::sync::atomic::AtomicBool;
 
 /// Per-worker scratch buffers, allocated once via rayon's `map_init` and
 /// reused across all MA prefixes that worker handles.
-/// Run the 8D Lenstra enumeration for one MA-prefix's `(y, k, eps)` setup.
-/// Returns up to `max_solutions` integer 8-vectors satisfying the synthesis
-/// constraints (norm shell, bilinear, alignment).
-///
-/// `max_leaf_checks` caps SE leaf-callback invocations; `max_nodes` is a
-/// TRUE node budget (one unit per SE recurse-entry — what bounds
-/// no-solution levels). Either cap sets `budget_hit` when it binds.
-/// `external_abort` (cross-branch winner signal) is checked per
-/// recurse-entry; an externally-aborted walk does not set `budget_hit`.
-#[allow(clippy::too_many_arguments)]
-pub fn find_aligned_lattice_points(
-    scratch: &mut scratch::IntScratch,
-    y: &[Float; 8],
-    k: u32,
-    eps: Float,
-    max_solutions: usize,
-    max_leaf_checks: u64,
-    max_nodes: u64,
-    budget_hit: &AtomicBool,
-    external_abort: Option<&AtomicBool>,
-) -> Vec<[i64; 8]> {
-    scratch.reset_basis();
-    integer::find_aligned_lattice_points(
-        scratch, y, k, eps, max_solutions, max_leaf_checks,
-        max_nodes, budget_hit, external_abort,
-    )
-    .solutions
-}
+pub use integer::find_aligned_lattice_points;
 
 #[cfg(test)]
 mod tests {

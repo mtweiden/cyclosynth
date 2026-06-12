@@ -223,7 +223,7 @@ where
     let result = std::cell::RefCell::new(None);
     let zero = RFloat::with_val(SE_PREC, 0.0_f64);
 
-    recurse(
+    recurse_8(
         7,
         r_chol,
         z_c,
@@ -243,7 +243,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn recurse<F>(
+fn recurse_8<F>(
     depth: i32,
     r_chol: &[[RFloat; 8]; 8],
     z_c: &[RFloat; 8],
@@ -305,7 +305,7 @@ fn recurse<F>(
             .to_integer()
             .and_then(|n| n.to_i64())
             .unwrap_or(0);
-        recurse(
+        recurse_8(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             partial_eucl, z, partial, abort, node_budget, budget_exhausted,
             callback, result,
@@ -415,7 +415,7 @@ fn recurse<F>(
         };
 
         z[d] = zd;
-        recurse(
+        recurse_8(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             new_partial_eucl, z, &new_partial, abort, node_budget,
             budget_exhausted, callback, result,

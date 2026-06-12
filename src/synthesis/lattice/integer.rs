@@ -27,7 +27,7 @@ use super::q_metric::{build_q_int, build_q_mpfr};
 use super::scratch::{rfv, IntScratch};
 use crate::rings::Float;
 
-/// Outcome of one `find_aligned_lattice_points` invocation. `should_escalate` is set when the i256
+/// Outcome of one `find_aligned_lattice_points_outcome` invocation. `should_escalate` is set when the i256
 /// Gram overflowed during LLL (transient B-growth at very deep ε beyond what
 /// `TARGET_BITS = 180` absorbs). The dispatcher can use this signal to fall
 /// back to an alternative strategy if needed; the L²-LLL path was designed
@@ -53,6 +53,35 @@ fn se_bound_8d() -> f64 {
             .unwrap_or(1.51)
     });
     *BOUND
+}
+
+/// Run the 8D Lenstra enumeration for one MA-prefix's `(y, k, eps)` setup.
+/// Returns up to `max_solutions` integer 8-vectors satisfying the synthesis
+/// constraints (norm shell, bilinear, alignment).
+///
+/// `max_leaf_checks` caps SE leaf-callback invocations; `max_nodes` is a
+/// TRUE node budget (one unit per SE recurse-entry — what bounds
+/// no-solution levels). Either cap sets `budget_hit` when it binds.
+/// `external_abort` (cross-branch winner signal) is checked per
+/// recurse-entry; an externally-aborted walk does not set `budget_hit`.
+#[allow(clippy::too_many_arguments)]
+pub fn find_aligned_lattice_points(
+    scratch: &mut IntScratch,
+    y: &[Float; 8],
+    k: u32,
+    eps: Float,
+    max_solutions: usize,
+    max_leaf_checks: u64,
+    max_nodes: u64,
+    budget_hit: &AtomicBool,
+    external_abort: Option<&AtomicBool>,
+) -> Vec<[i64; 8]> {
+    scratch.reset_basis();
+    find_aligned_lattice_points_outcome(
+        scratch, y, k, eps, max_solutions, max_leaf_checks,
+        max_nodes, budget_hit, external_abort,
+    )
+    .solutions
 }
 
 /// Per-(k, ε) warm seed (8D mirror of the 16D `warm_seed_q_base`):
@@ -101,7 +130,7 @@ fn warm_seed_q_base(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
 /// set by a peer branch that already found a solution (read-only here).
 /// An externally-aborted walk does NOT set `budget_hit`.
 #[allow(clippy::too_many_arguments)]
-pub fn find_aligned_lattice_points(
+pub fn find_aligned_lattice_points_outcome(
     scratch: &mut IntScratch,
     y: &[Float; 8],
     k: u32,
