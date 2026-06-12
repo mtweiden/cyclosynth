@@ -45,7 +45,7 @@ use crate::synthesis::search::{
     normalize4,
 };
 
-/// Global cache for `build_l_reference` results, keyed by `(t_prime, coset_dedup)`.
+/// Global cache for `build_l` results, keyed by `(t_prime, coset_dedup)`.
 /// Values are wrapped in `Arc` so cache hits return an `O(1)` refcount bump
 /// rather than cloning the full prefix list (at t'=14 that vector holds
 /// ~329 k U2T values, ~32 MB).
@@ -183,7 +183,7 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
         .try_into().unwrap()
 }
 
-/// Right-coset dedup gate for `build_l_reference` (stage 1 of
+/// Right-coset dedup gate for `build_l` (stage 1 of
 /// docs/plan_8d_prefix_rework.md, lever B1). Tri-state:
 /// `CYCLOSYNTH_L_COSET=0` forces plain phase-dedup, `=1` forces coset
 /// dedup at every ε, unset defers to the [`COSET_EPS_FLOOR`] rule.
@@ -229,8 +229,8 @@ pub(crate) fn build_l_reference(t_prime: u32) -> Arc<Vec<U2T>> {
     build_l(t_prime, (*L_COSET_DEDUP).unwrap_or(false))
 }
 
-/// `build_l_reference` with an explicit dedup mode; results cached per
-/// `(t_prime, coset_dedup)`.
+/// The MA prefix set with an explicit coset-dedup mode; results cached
+/// per `(t_prime, coset_dedup)`.
 pub fn build_l(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
     let key = (t_prime, coset_dedup);
     // Check cache first; clone of `Arc` is just a refcount bump.
