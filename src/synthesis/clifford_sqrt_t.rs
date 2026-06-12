@@ -100,7 +100,7 @@ pub fn solution_to_u2q_d(sol: &[i64; 16], k: u32, det_phase: u32) -> U2Q {
 /// completion can absorb: every candidate would sit ≳ residual/2 away
 /// and the search burns to max_lde finding nothing (while the
 /// Clifford+T baseline, which projects via √det, succeeds).
-fn project_det_to_zeta_coset(target: &Mat2) -> Mat2 {
+pub(crate) fn project_det_to_zeta_coset(target: &Mat2) -> Mat2 {
     let det = target[0][0] * target[1][1] - target[0][1] * target[1][0];
     let d = det_phase_of(target) as f64;
     let mut residual = det.arg() - d * PI / 8.0;
