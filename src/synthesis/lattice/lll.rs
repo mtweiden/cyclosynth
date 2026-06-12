@@ -20,28 +20,7 @@ pub use crate::synthesis::lattice_common::{
 
 // ─── i256 → f64 conversion (used by CFA on the exact Gram) ───────────────────
 
-/// Convert i256 to f64. f64 has 53 mantissa bits + 11 exponent bits (range
-/// 2^±1023). Our gram values are bounded by ≈ 2^240, well within range.
-/// Mantissa rounding: low bits beyond 53 are dropped (round-to-nearest-even).
-/// L² requires only ≈ 20 bits of precision per Theorem 2 — f64 gives 53 with
-/// no overflow risk for our magnitudes.
-#[inline]
-pub fn i256_to_f64(v: i256) -> f64 {
-    // Hot path. Use sign-bit check + direct limb access; precompute
-    // constants. See `lattice_zeta::lll_f64::i256_to_f64` for details
-    // (including why the two's-complement direct path is wrong).
-    const SCALE_64: f64 = 18446744073709551616.0;
-    const SCALE_128: f64 = SCALE_64 * SCALE_64;
-    const SCALE_192: f64 = SCALE_128 * SCALE_64;
-    let neg = v.is_negative();
-    let abs = if neg { -v } else { v };
-    let limbs = abs.to_ne_limbs();
-    let r = (limbs[0] as f64)
-        + (limbs[1] as f64) * SCALE_64
-        + (limbs[2] as f64) * SCALE_128
-        + (limbs[3] as f64) * SCALE_192;
-    if neg { -r } else { r }
-}
+pub use crate::synthesis::lattice_common::i256_to_f64;
 
 // ─── Cholesky Factorization Algorithm (Figure 4) ─────────────────────────────
 

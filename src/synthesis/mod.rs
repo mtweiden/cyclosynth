@@ -10,6 +10,7 @@ pub mod lattice_common;
 pub mod lattice_zeta;
 pub mod search;
 pub mod search_zeta;
+#[cfg(test)]
 pub mod sigma;
 pub mod synthesizer;
 
