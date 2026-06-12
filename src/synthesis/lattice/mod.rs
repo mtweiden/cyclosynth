@@ -28,16 +28,6 @@ use std::sync::atomic::AtomicBool;
 
 /// Per-worker scratch buffers, allocated once via rayon's `map_init` and
 /// reused across all MA prefixes that worker handles.
-pub struct LatticeScratch {
-    inner: scratch::IntScratch,
-}
-
-impl LatticeScratch {
-    pub fn new(eps: Float) -> Self {
-        Self { inner: scratch::IntScratch::new(eps) }
-    }
-}
-
 /// Run the 8D Lenstra enumeration for one MA-prefix's `(y, k, eps)` setup.
 /// Returns up to `max_solutions` integer 8-vectors satisfying the synthesis
 /// constraints (norm shell, bilinear, alignment).
@@ -49,7 +39,7 @@ impl LatticeScratch {
 /// recurse-entry; an externally-aborted walk does not set `budget_hit`.
 #[allow(clippy::too_many_arguments)]
 pub fn phase1(
-    scratch: &mut LatticeScratch,
+    scratch: &mut scratch::IntScratch,
     y: &[Float; 8],
     k: u32,
     eps: Float,
@@ -59,9 +49,9 @@ pub fn phase1(
     budget_hit: &AtomicBool,
     external_abort: Option<&AtomicBool>,
 ) -> Vec<[i64; 8]> {
-    scratch.inner.reset_basis();
+    scratch.reset_basis();
     integer::phase1(
-        &mut scratch.inner, y, k, eps, max_solutions, max_phase2_calls,
+        scratch, y, k, eps, max_solutions, max_phase2_calls,
         max_nodes, budget_hit, external_abort,
     )
     .solutions
@@ -85,7 +75,7 @@ mod tests {
 
     #[test]
     fn integer_path_at_eps_1e_3_runs() {
-        let mut scratch = LatticeScratch::new(1e-3);
+        let mut scratch = scratch::IntScratch::new(1e-3);
         let y = realistic_y(14);
         let budget_hit = AtomicBool::new(false);
         let _ = phase1(
@@ -95,7 +85,7 @@ mod tests {
 
     #[test]
     fn integer_path_at_eps_1e_5_runs() {
-        let mut scratch = LatticeScratch::new(1e-5);
+        let mut scratch = scratch::IntScratch::new(1e-5);
         let y = realistic_y(21);
         let budget_hit = AtomicBool::new(false);
         let _ = phase1(
@@ -109,7 +99,7 @@ mod tests {
     /// (at this config the full walk completes in < 50 nodes).
     #[test]
     fn node_budget_terminates_and_reports() {
-        let mut scratch = LatticeScratch::new(1e-3);
+        let mut scratch = scratch::IntScratch::new(1e-3);
         let y = realistic_y(14);
         let budget_hit = AtomicBool::new(false);
         let sols = phase1(
@@ -126,7 +116,7 @@ mod tests {
     /// and must NOT report a budget hit.
     #[test]
     fn external_abort_returns_immediately() {
-        let mut scratch = LatticeScratch::new(1e-3);
+        let mut scratch = scratch::IntScratch::new(1e-3);
         let y = realistic_y(14);
         let budget_hit = AtomicBool::new(false);
         let abort = AtomicBool::new(true);
