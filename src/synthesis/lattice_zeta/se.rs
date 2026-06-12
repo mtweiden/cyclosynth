@@ -1,25 +1,13 @@
-//! Schnorr-Euchner enumeration over the 16D integer lattice (Z[ζ_16] flow).
+//! Schnorr-Euchner enumeration over the 16D integer lattice (Z[ζ_16]).
 //!
-//! ## Status (M4 chunk 2)
+//! The inner walk runs in f64 (vs the 8D path's MPFR): post-L²-LLL,
+//! κ(G) ≤ (4/3)^15 ≈ 240 costs ~8 bits of conditioning — well inside
+//! the 53-bit mantissa and far below SE's 10⁻⁹ tolerance. Deep-ε
+//! corrections (dd accumulators, MPFR verify) layer on top where f64
+//! runs out.
 //!
-//! Full Schnorr-Euchner walk with Q-bound pruning, in f64 arithmetic. Mirrors
-//! the 8D path in `super::super::lattice::se`, dimension-bumped to d=16 and
-//! switched from MPFR to f64 for the inner walk: at d=16 with the L³-reduced
-//! invariant after L²-LLL, the conditioning bound `κ(G) ≤ (4/3)^15 ≈ 240`
-//! gives ~8 bits of conditioning loss in f64, well within the 53-bit mantissa
-//! and four orders below SE's 10⁻⁹ tolerance.
-//!
-//! Helpers ported alongside the walk:
-//!   - [`det16_exact`] — exact i64 determinant for unimodularity sanity checks
-//!     after LLL. Returns `None` on overflow.
-//!   - [`euclidean_cholesky_16`] — alternative f64 Cholesky path used as a
-//!     numerical sanity-check oracle for `cholesky_f64_16`. Not exercised in
-//!     production but ported for completeness so chunk 3 can wire either path.
-//!
-//! The walk's signature uses an **upper-triangular** Cholesky factor `l` such
-//! that `lᵀ l = G` (post-LLL Gram in basis coords). The chunk-1 `l_f64` is
-//! lower-triangular (`l_f64 · l_f64ᵀ = G`); chunk 3's call site transposes
-//! before invoking SE.
+//! The walk takes an UPPER-triangular Cholesky factor `l` (`lᵀl = G`);
+//! call sites transpose the lower-triangular `l_f64` before invoking.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -63,15 +51,11 @@ pub fn qbracket_dd_disabled() -> bool {
     })
 }
 
-/// Verify-ratio cap for the dd norm-prune verification: prune-fires with
-/// `partial_eucl / threshold` beyond this cap skip the dd verify and prune
-/// unconditionally. The default 5.0 was calibrated EMPIRICALLY at the
-/// ε=1.5e-8 cliff ("0 FNs in 1000 samples at ratio ≥ 5"), but the
-/// w-cancellation bound at ε=1e-8, k=20-26 is e ≈ 16·2⁻⁵³·max|z_c·R| ≈
-/// 30·√T (audit probe `audit_w_cancellation_probe`), so overshoot ratios
-/// up to ~(1+30)² ≈ 10³ are reachable in the worst case — fires in
-/// (5, 10³] would prune silently. `CYCLOSYNTH_VERIFY_RATIO_CAP` overrides
-/// for A/B conviction runs (docs/w_precision_audit_notes.md E4).
+/// Prune-fires whose overshoot ratio exceeds this cap skip the dd
+/// verify and prune unconditionally. 5.0 is empirical (0 false
+/// negatives in 1000 cliff samples) though the worst-case
+/// w-cancellation bound admits far larger overshoots;
+/// CYCLOSYNTH_VERIFY_RATIO_CAP overrides for conviction runs.
 static VERIFY_RATIO_CAP_OVERRIDE: OnceLock<f64> = OnceLock::new();
 
 #[inline]
@@ -84,13 +68,9 @@ pub fn verify_ratio_cap() -> f64 {
     })
 }
 
-/// MPFR-128 verification of the f64 norm-shell prune predicate. When ON,
-/// every f64 prune-fire event is re-checked at 128-bit precision using the
-/// MPFR Cholesky factor; if MPFR says "keep" (true partial < threshold),
-/// the prune does NOT actually fire. Necessary at ε ≤ 1.5e-8 where the f64
-/// dot product suffers catastrophic cancellation (oracle-measured FN ratio
-/// up to 3.8×, p99 = 3.5×). At shallower ε, leave OFF — f64 is precise enough
-/// and the MPFR recompute would be pure overhead.
+/// Re-check every f64 prune-fire at MPFR-128; MPFR's verdict wins.
+/// Necessary at ε ≤ 1.5e-8 where the f64 dot product suffers
+/// catastrophic cancellation; pure overhead at shallower ε.
 static VERIFY_PRUNE_MPFR: AtomicBool = AtomicBool::new(false);
 
 #[inline]
@@ -352,25 +332,13 @@ pub fn verify_partial_dd_exceeds(
     total.0 + total.1 > threshold
 }
 
-/// Per-walk seeding state for the center-relative Euclidean accumulator
-/// (docs/w_center_relative_w_notes.md; precision-audit ranked fix 2).
-///
-/// Returns `(x_base, u_dd, u)` where:
-///   - `x_base = B·z_c.int` in wrapping i64. Individual products
-///     `z_c.int[j]·basis[j][c]` wrap at deep ε (|z_c| can reach ~5e16,
-///     basis entries ~2^41), but the SUM is a coordinate of a near-center
-///     lattice point — O(√T), exact mod 2^64, hence exact.
-///   - `u_dd[i] = (R_eucl·z_c.int)[i]` accumulated in double-double from
-///     the dd factor. MUST NOT be done in plain f64: the row sum passes
-///     through ±M ≈ 30·√T·2^53 intermediates (E3 of the precision audit)
-///     and a single f64 rounding there is √T-scale — the very defect this
-///     fix removes. In dd the absolute error is ≤ 16·2⁻¹⁰⁶·M ≈ 3e-11.
-///   - `u[i]`: f64 projection of `u_dd[i]` (each component O(√T), so the
-///     projection is relative-2⁻⁵³ honest).
-///
-/// Seeding the walkers with `z = z_c.int`, `x = x_base`, `w = u` keeps the
-/// delta-update scheme bit-identical while making every subsequent f64
-/// rounding happen at bound-scale magnitude (~√T·O(1)).
+/// Center-relative seeding: walkers start at `z = z_c.int, x = x_base,
+/// w = u` so every subsequent f64 rounding happens at bound-scale
+/// magnitude (~√T·O(1)) instead of the ±30·√T·2^53 intermediates the
+/// absolute accumulator passed through. `x_base` may wrap per-product
+/// but the SUM is a near-center lattice coordinate — exact mod 2^64.
+/// `u_dd` must be accumulated in dd: one f64 rounding in that row sum
+/// is √T-scale, the very defect this scheme removes.
 fn center_relative_seed(
     basis: &[[i64; 16]; 16],
     r_eucl_dd: &[[(f64, f64); 16]; 16],
@@ -1441,19 +1409,13 @@ pub enum LeafAction {
 /// matching the legacy `budget_prior & 4095` batching.
 const BUDGET_CHUNK: u64 = 4096;
 
-/// Per-worker budget cache (W1). The legacy walk charged the shared budget
-/// atomic with one `fetch_sub(1)` per recurse-enter — including leaf enters —
-/// which was harmless while the walk was effectively serial, but serializes
-/// the whole walk once 14 workers actually run: ~374M contended RMWs on one
-/// cache line at (ε=1e-3, k=9) measured 35× CPU inflation (10.5 s → 366 s).
-/// This cache reserves `BUDGET_CHUNK`-unit chunks from the SAME shared pool,
-/// charges nodes locally, returns the unused remainder on item completion,
-/// and flushes the shared `consumed` progress counter once per refill (≈ per
-/// 4096 nodes — the same observable granularity as the legacy
-/// `budget_prior & 4095` batching). Budget exhaustion aborts at chunk
-/// granularity (`prior <= BUDGET_CHUNK` mirrors the per-node `prior <= 1`),
-/// so admitted work can deviate from the legacy walk by at most
-/// ±workers × 4096 nodes — noise against the ≥1M production caps.
+/// Per-worker budget cache: a per-node fetch_sub on the shared atomic
+/// serializes the whole walk once many workers run (one contended
+/// cache line). Chunks are reserved from the same shared pool, charged
+/// locally, and the remainder returned on completion; exhaustion
+/// aborts at chunk granularity, so admitted work deviates from the
+/// per-node scheme by at most ±workers × 4096 nodes — noise against
+/// the ≥1M production caps.
 struct BudgetCache<'a> {
     remaining: u64,
     used_since_flush: u64,
@@ -1534,41 +1496,23 @@ impl<'a> BudgetCache<'a> {
     }
 }
 
-/// Predictive-truncation abort threshold: abort a budget-capped walk when
-/// the projected total node spend exceeds MARGIN × the walk's initial
-/// budget. Although the frontier is SORTED closest-to-center-first
-/// (fattest items first), rayon work-stealing COMPLETES skinny items
-/// disproportionately early, so the linear projection
-/// `consumed / fraction_done` systematically UNDERestimates the true
-/// total — measured ~6× under on the (k=11, m=0) certify arm at ε=1e-3
-/// (projected 17G at 37.6% items done vs true ≳100G; see
-/// docs/w_predictive_trunc_notes.md). A false abort would need a ~2.5×
-/// OVERestimate against a ~6× UNDER bias — physically out of reach. 2.5
-/// (down from the initial conservative 3.0, which that headline arm
-/// escaped at projected 2.66× budget) catches every measured hopeless
-/// arm while retaining the full bias gap as safety. Kill switch:
-/// `CYCLOSYNTH_PREDICTIVE_TRUNC=0`.
+/// Abort a budget-capped walk when the projected total spend exceeds
+/// MARGIN × the initial budget. Work-stealing completes skinny items
+/// early, so the linear projection systematically UNDERestimates
+/// (~6× measured) — a false abort would need a 2.5× overestimate
+/// against that bias, physically out of reach.
 const PREDICTIVE_TRUNC_MARGIN: f64 = 2.5;
 /// Don't project before this fraction of frontier items has completed —
 /// earlier projections are too noisy (and maximally biased by the fat
 /// head items still in flight).
 const PREDICTIVE_TRUNC_MIN_FRAC: f64 = 0.10;
 
-/// Predictive budget truncation (shared per-walk context). Rationale: a
-/// truncated arm of the optimal/certify enum grid reaches the IDENTICAL
-/// ledger state whether it burns 100% of its node budget or aborts at 10%
-/// — completion is all that matters — yet budget-capped arms used to burn
-/// the entire pool (up to ~320M nodes for certify m=0 coverage walks)
-/// before recording the truncation. This context projects walk
-/// infeasibility from frontier-item completion progress and aborts early
-/// through the existing `aborted` plumbing, so the abort surfaces exactly
-/// like a plain budget hit.
-///
-/// Only attached to budget-capped flat walks: never when the budget is
-/// u64::MAX (certificates' coverage-complete runs and the probes must
-/// stay exhaustive), and never on the legacy z15-sharded path
-/// (`CYCLOSYNTH_FLAT_WALK=0`), whose 1-3 item frontier is too coarse to
-/// project from.
+/// Predictive budget truncation: a truncated arm reaches the identical
+/// ledger state whether it burns 100% of its budget or aborts at 10%,
+/// so project infeasibility from item-completion progress and abort
+/// early through the normal `aborted` plumbing. Never attached when
+/// budget = u64::MAX (exhaustive runs must stay exhaustive) or on the
+/// legacy z15-sharded path (1-3 item frontier — too coarse to project).
 struct PredictiveTrunc {
     /// Flat-frontier length at stage-3 launch.
     items_total: usize,
@@ -2166,23 +2110,10 @@ fn recurse_collect_norm_pruned<F>(
         aborted.store(true, Ordering::Relaxed);
         return;
     }
-    // Per-node budget (phase 1): charge on every recurse-enter so the
-    // budget bounds total tree-traversal work, not just leaf checks. This
-    // is the prerequisite for depth-1 / depth-0 analytical filters whose
-    // gain is "skip subtrees" — under a per-leaf budget those filters
-    // regressed because cheaper leaves let the walker enter more depth-0
-    // nodes within the same budget (full recursion-from-depth-15 each
-    // time). Bounding nodes makes the budget proportional to traversal
-    // cost. PASS{1,2}_CAP are calibrated empirically (see
-    // clifford_sqrt_t.rs); the units are nodes, not leaves.
-    //
-    // W1: charged through the per-worker chunked BudgetCache (one shared
-    // fetch_sub per 4096 nodes) instead of a per-node fetch_sub — the
-    // per-node RMW on one shared cache line serialized the now-truly-
-    // parallel walk. The cache also flushes the `consumed` progress
-    // counter once per refill, the same observable batching the legacy
-    // `budget_prior & 4095` trick provided. `charge` sets `aborted` itself
-    // on pool exhaustion / predictive truncation.
+    // Charge per recurse-enter (units are nodes, not leaves) so the
+    // budget bounds traversal work — subtree-skipping filters regress
+    // under a per-leaf budget. Routed through the chunked BudgetCache;
+    // `charge` sets `aborted` itself on exhaustion/truncation.
     if !bcache.charge(1, budget, consumed, aborted) {
         return;
     }
@@ -2273,17 +2204,10 @@ fn recurse_collect_norm_pruned<F>(
     let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
-    // NOTE: a depth-0 analytical shell-equation elimination is available via
-    // [`analytical_depth0_z0_candidates`] (i128-exact integer roots of
-    // `‖x‖² = 2^k`). Plugging it into the SE walk here was tried multiple
-    // times and consistently regresses cliff wall-time (up to 5×) under
-    // the current per-leaf budget: fewer leaves per depth-0 enter just
-    // makes the walker exhaust budget after more depth-0 enters, each
-    // costing full recursion from depth 15 down. Unlocking it requires
-    // switching to a per-recurse-enter (or per-depth-0-enter) budget +
-    // recalibrating `dc_pass1_cap_for(eps)` / `PASS{1,2}_CAP` constants
-    // across the supported ε range. The helper is preserved for that
-    // future refactor.
+    // NOTE: plugging [`analytical_depth0_z0_candidates`] in here was
+    // tried repeatedly and regresses (fewer leaves per depth-0 enter
+    // just buys more full-depth recursions under the budget); it needs
+    // a budget recalibration first. The helper is preserved for that.
 
     for raw in 0..=(2 * max_off + 1) {
         if aborted.load(Ordering::Relaxed) {
@@ -2356,19 +2280,10 @@ fn recurse_collect_norm_pruned<F>(
                 });
             }
         }
-        // Extended-precision verification of the prune-fire decision via
-        // inline double-double (~106 bits). Necessary at ε ≤ 1.5e-8 where
-        // the f64 partial-eucl accumulator suffers catastrophic cancellation
-        // in the dot product. Guard: only verify when ratio ≤ VERIFY_RATIO_CAP.
-        // Empirically 0 FNs in 1000 samples at ratio ≥ 5×T.
-        //
-        // Integer-exact fast-path: at depth d with z[0..d]=0, the relation
-        // ‖x‖² = z^T G z = prefix_d + partial_eucl_d (prefix_d ≥ 0) means
-        //   ‖x‖² ≤ T_int  ⟹  partial_eucl_d ≤ T_int  ⟹  do not prune.
-        // This is cheap (16 i64 muls; ~30 ns) and catches the FN subset
-        // where integer-exact norm proves the prune wrong, BEFORE running
-        // dd verify (~450 ns). Net win iff a non-negligible fraction of
-        // prune-fires have ‖x‖² ≤ T_int.
+        // dd verification of the prune decision (needed at ε ≤ 1.5e-8:
+        // catastrophic cancellation in the f64 dot product), guarded by
+        // VERIFY_RATIO_CAP. The integer-exact fast path first: ‖x‖² ≤
+        // T_int proves the prune wrong for ~30 ns vs dd's ~450 ns.
         let actually_prune = if prune_fires {
             // Integer-exact short-circuit (no false negatives, may miss some
             // true keeps where prefix_d > ‖x‖² − T).
