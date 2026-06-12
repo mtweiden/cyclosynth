@@ -70,6 +70,23 @@ fn cost_half_units(gates: &str) -> usize {
     2 * t + 7 * q
 }
 
+// ─── target construction ─────────────────────────────────────────────────────
+
+fn rz(theta: f64) -> Mat2 {
+    let z = Complex64::new(0.0, 0.0);
+    [
+        [Complex64::from_polar(1.0, -theta / 2.0), z],
+        [z, Complex64::from_polar(1.0, theta / 2.0)],
+    ]
+}
+
+fn scale(m: &Mat2, g: Complex64) -> Mat2 {
+    [
+        [m[0][0] * g, m[0][1] * g],
+        [m[1][0] * g, m[1][1] * g],
+    ]
+}
+
 fn nodes_total() -> u64 {
     diag::N_RECURSE_ENTER_AT_DEPTH
         .iter()
