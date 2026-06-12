@@ -117,6 +117,26 @@ impl Synthesizer {
         self
     }
 
+    /// Clifford+√T only: wall-clock budget in ms for the min-cost
+    /// enumeration (see [`SynthesizerQ::with_optimal_deadline_ms`]);
+    /// `None` removes the deadline. Ignored for Clifford+T.
+    pub fn with_optimal_deadline_ms(mut self, ms: Option<u64>) -> Self {
+        if let Backend::Q(s) = self.inner {
+            self.inner = Backend::Q(s.with_optimal_deadline_ms(ms));
+        }
+        self
+    }
+
+    /// Clifford+√T only: override the deep-ε sequential-parity schedule
+    /// (see [`SynthesizerQ::with_seq_parity`]); `Some(false)` is the
+    /// fast mode at ε ≤ 1e-8. Ignored for Clifford+T.
+    pub fn with_seq_parity(mut self, seq: Option<bool>) -> Self {
+        if let Backend::Q(s) = self.inner {
+            self.inner = Backend::Q(s.with_seq_parity(seq));
+        }
+        self
+    }
+
     /// Synthesize `target` (a 2×2 unitary). Returns `None` if no circuit
     /// in the chosen gate set within `max_lde` reaches diamond distance
     /// below `epsilon`.
@@ -230,7 +250,8 @@ pub struct PySynthesizer {
 impl PySynthesizer {
     #[new]
     #[pyo3(signature = (epsilon, *, sqrt_t=false, max_lde=None, min_lde=None,
-                        optimize_cost=None, q_cost=None, lde_window=None))]
+                        optimize_cost=None, q_cost=None, lde_window=None,
+                        deadline_ms=None, seq_parity=None))]
     fn new(
         epsilon: f64,
         sqrt_t: bool,
@@ -239,6 +260,8 @@ impl PySynthesizer {
         optimize_cost: Option<bool>,
         q_cost: Option<f64>,
         lde_window: Option<u32>,
+        deadline_ms: Option<u64>,
+        seq_parity: Option<bool>,
     ) -> Self {
         let mut s = Synthesizer::new(epsilon, sqrt_t);
         if let Some(v) = max_lde {
@@ -257,6 +280,14 @@ impl PySynthesizer {
         }
         if let Some(w) = lde_window {
             s = s.with_optimal_lde_window(w);
+        }
+        // None = keep the ε-based default deadline; an explicit value
+        // overrides it (there is no kwarg form for "no deadline").
+        if let Some(ms) = deadline_ms {
+            s = s.with_optimal_deadline_ms(Some(ms));
+        }
+        if seq_parity.is_some() {
+            s = s.with_seq_parity(seq_parity);
         }
         Self { inner: s }
     }
