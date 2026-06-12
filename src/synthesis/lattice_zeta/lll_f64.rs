@@ -15,7 +15,7 @@
 //!
 //! ## Why this might fail
 //!
-//! At deep ε the post-LLL Gram has condition number κ(G) ≈ 2^(2k_total)
+//! At deep ε the post-LLL Gram has condition number κ(G) ≈ 2^(2·lde_total)
 //! ≈ 2^60 at ε=1e-9. The GS state of an unreduced row carries this
 //! condition number; f64 then sees ~60 bits of cancellation in
 //! `r_bar[i][j] − Σ μ_bar·r_bar`, leaving 53−60 = -7 useful bits.

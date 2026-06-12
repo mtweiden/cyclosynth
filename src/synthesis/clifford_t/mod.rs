@@ -357,7 +357,7 @@ fn trace_dump_pass(
     eprintln!(
         "[trace] lde={:>2} pass{} t'={:>2} prefixes={:>6} mat_uv_rej={:>6} \
          se_cb={:>9} se_nodes={:>11} (max/walk {:>9}) dist_rej={} budget={} {:>9.1}ms result={}",
-        t, pass, t_prime, s.prefixes, s.mat_to_uv_rejected, s.se_callbacks,
+        t, pass, t_prime, s.prefixes, s.uv_extract_rejected, s.se_callbacks,
         s.se_nodes, s.se_nodes_max, s.dist_rejected, budget_hit as u8, pass_ms,
         if found { "FOUND" } else { "none" }
     );
@@ -368,7 +368,7 @@ fn trace_dump_pass(
              chol={:>7.1} lu={:>7.1} se={:>7.1} sum={:>7.1}",
             s.t_build_ms, s.t_lll_ms, s.t_cholesky_ms, s.t_lu_ms, s.t_se_ms, phase_total
         );
-        let n_lll_calls = s.prefixes.saturating_sub(s.mat_to_uv_rejected);
+        let n_lll_calls = s.prefixes.saturating_sub(s.uv_extract_rejected);
         let lll_avg = if n_lll_calls > 0 {
             s.lll_iters_total as f64 / n_lll_calls as f64
         } else {
@@ -937,7 +937,7 @@ impl SynthesizerT {
                         let u_l = &prefixes[pi as usize];
                         if let Some(tp) = target_parity {
                             if det_zeta_parity(&u_l.to_float()) != Some(tp) {
-                                crate::synthesis::diag::N_MAT_TO_UV_REJECTED
+                                crate::synthesis::diag::N_UV_EXTRACT_REJECTED
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 return None;
                             }
@@ -946,7 +946,7 @@ impl SynthesizerT {
                         let v_inner = match try_unitary_to_uv(&m_inner) {
                             Some(v) => v,
                             None => {
-                                crate::synthesis::diag::N_MAT_TO_UV_REJECTED
+                                crate::synthesis::diag::N_UV_EXTRACT_REJECTED
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 return None;
                             }
