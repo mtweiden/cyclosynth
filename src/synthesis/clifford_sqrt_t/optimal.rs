@@ -225,11 +225,6 @@ impl SynthesizerQ {
         // incumbent-floor kill (as in `prefix_split_search_q`) and the deadline
         // abort (which additionally marks the unit's level truncated —
         // the watcher is the only place that knows WHY it killed a walk).
-        struct PrefixWatch {
-            abort: AtomicBool,
-            active: AtomicBool,
-            floor: usize,
-        }
         let watches: Vec<PrefixWatch> = units
             .iter()
             .map(|u| PrefixWatch {
@@ -316,55 +311,31 @@ impl SynthesizerQ {
             s
         };
 
-        let walks_done = AtomicBool::new(false);
-        struct DoneGuard<'a>(&'a AtomicBool);
-        impl Drop for DoneGuard<'_> {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Relaxed);
-            }
-        }
-        let result_pair: Option<(usize, SynthResultQ)> = std::thread::scope(|wscope| {
-            let _done_guard = DoneGuard(&walks_done);
-            let watches_ref = &watches;
-            let units_ref = &units;
-            let truncated_ref = &truncated;
-            let walks_done_ref = &walks_done;
-            wscope.spawn(move || {
-                while !walks_done_ref.load(Ordering::Relaxed) {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                    let cur_best =
-                        best_cost.load(std::sync::atomic::Ordering::Relaxed);
-                    let dl = start.elapsed() >= deadline;
-                    for (i, w) in watches_ref.iter().enumerate() {
-                        if !w.active.load(Ordering::Relaxed) {
-                            continue;
-                        }
-                        if cur_best <= w.floor {
-                            // Sound incumbent-floor kill — not truncation.
-                            w.abort.store(true, Ordering::Relaxed);
-                        } else if dl {
-                            w.abort.store(true, Ordering::Relaxed);
-                            truncated_ref[units_ref[i].level_idx]
-                                .store(true, Ordering::Relaxed);
-                        }
-                    }
-                }
-            });
-            let r = units
-                .par_iter()
-                .enumerate()
-                .with_min_len(opt_chunk)
-                .map_init(make_scratch, |s, (i, u)| per_unit(s, i, u))
-                .reduce(
-                    || None,
-                    |a, b| match (a, b) {
-                        (None, x) | (x, None) => x,
-                        (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
-                    },
-                );
-            walks_done.store(true, Ordering::Relaxed);
-            r
-        });
+        // Deadline kills additionally mark the unit's level truncated —
+        // the watcher is the only place that knows WHY it killed a walk;
+        // incumbent-floor kills are sound prunes, not truncation.
+        let result_pair: Option<(usize, SynthResultQ)> = with_incumbent_watcher(
+            &watches,
+            best_cost,
+            || start.elapsed() >= deadline,
+            |i| {
+                truncated[units[i].level_idx].store(true, Ordering::Relaxed);
+            },
+            || {
+                units
+                    .par_iter()
+                    .enumerate()
+                    .with_min_len(opt_chunk)
+                    .map_init(make_scratch, |s, (i, u)| per_unit(s, i, u))
+                    .reduce(
+                        || None,
+                        |a, b| match (a, b) {
+                            (None, x) | (x, None) => x,
+                            (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+                        },
+                    )
+            },
+        );
 
         (
             result_pair,

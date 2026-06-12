@@ -865,11 +865,6 @@ impl SynthesizerQ {
         // the leaf-level check alone never fires on walks that produce
         // no ε-close leaf. Sound: only cuts walks whose every candidate
         // costs ≥ the incumbent.
-        struct PrefixWatch {
-            abort: AtomicBool,
-            active: AtomicBool,
-            floor: usize,
-        }
         let watches: Vec<PrefixWatch> = if optimize_cost {
             usable
                 .iter()
@@ -1026,53 +1021,28 @@ impl SynthesizerQ {
 
         let result_pair: Option<(usize, SynthResultQ)> = if optimize_cost {
             // Min-cost reduce across prefixes; the scoped watcher kills
-            // walks whose floor can no longer beat the incumbent.
-            let walks_done = AtomicBool::new(false);
-            // RAII: set `walks_done` even if the par_iter panics —
-            // otherwise `thread::scope` would join a watcher that never
-            // exits (deadlock on unwind).
-            struct DoneGuard<'a>(&'a AtomicBool);
-            impl Drop for DoneGuard<'_> {
-                fn drop(&mut self) {
-                    self.0.store(true, Ordering::Relaxed);
-                }
-            }
-            std::thread::scope(|wscope| {
-                let _done_guard = DoneGuard(&walks_done);
-                let watches_ref = &watches;
-                let walks_done_ref = &walks_done;
-                wscope.spawn(move || {
-                    while !walks_done_ref.load(Ordering::Relaxed) {
-                        std::thread::sleep(std::time::Duration::from_millis(20));
-                        let cur_best =
-                            best_cost.load(std::sync::atomic::Ordering::Relaxed);
-                        let ext = external_abort
-                            .map(|a| a.load(Ordering::Relaxed))
-                            .unwrap_or(false);
-                        for w in watches_ref {
-                            if w.active.load(Ordering::Relaxed)
-                                && (ext || cur_best <= w.floor)
-                            {
-                                w.abort.store(true, Ordering::Relaxed);
-                            }
-                        }
-                    }
-                });
-                let r = usable
-                    .par_iter()
-                    .enumerate()
-                    .with_min_len(opt_chunk)
-                    .map_init(make_scratch, |s, (i, e)| per_prefix(s, i, e))
-                    .reduce(
-                        || None,
-                        |a, b| match (a, b) {
-                            (None, x) | (x, None) => x,
-                            (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
-                        },
-                    );
-                walks_done.store(true, Ordering::Relaxed);
-                r
-            })
+            // walks whose floor can no longer beat the incumbent, plus
+            // everything once a cross-branch peer wins.
+            with_incumbent_watcher(
+                &watches,
+                best_cost,
+                || external_abort.map(|a| a.load(Ordering::Relaxed)).unwrap_or(false),
+                |_| {},
+                || {
+                    usable
+                        .par_iter()
+                        .enumerate()
+                        .with_min_len(opt_chunk)
+                        .map_init(make_scratch, |s, (i, e)| per_prefix(s, i, e))
+                        .reduce(
+                            || None,
+                            |a, b| match (a, b) {
+                                (None, x) | (x, None) => x,
+                                (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+                            },
+                        )
+                },
+            )
         } else {
             // First-hit: abort other prefixes as soon as one finds.
             usable
