@@ -48,13 +48,13 @@ pub static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
 /// the Cliffords whose U2T denominator exponent `k` is 0 (entries are
 /// units of Z[ω], no 1/√2 factor).
 ///
-/// Used by `build_l`'s right-coset dedup (stage 1 of
+/// Used by `build_ma_prefix_set`'s right-coset dedup (stage 1 of
 /// docs/plan_8d_prefix_rework.md): for lde-0 `C`, the prefix-split subproblems of
 /// prefixes `U_L` and `U_L·C` are Q-isometric bijections with identical
 /// total unitaries (`U_L·C·U_R = U_L·(C·U_R)`, and `C·U_R` lies on the
 /// same norm shell with the same lde), so one representative per right
 /// coset `U_L·⟨S,X⟩` suffices. The 24 Cliffords fall into 3 right cosets
-/// of this subgroup, which is why `build_l`'s 24-fold Clifford
+/// of this subgroup, which is why `build_ma_prefix_set`'s 24-fold Clifford
 /// postmultiplication is ~2/3+ duplicated work that plain phase-dedup
 /// misses.
 pub static CLIFFORD_LDE0_IDX: [usize; 8] = [0, 2, 3, 4, 5, 9, 10, 11];

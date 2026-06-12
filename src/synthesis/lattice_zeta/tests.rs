@@ -9,7 +9,7 @@
         compute_align_vec_zeta, enumerate_unitary_norm_shell, uv_to_lattice_y_zeta,
     };
     use crate::synthesis::clifford_sqrt_t::{
-        det_phase_of, solution_to_u2q, solution_to_u2q_d,
+        det_phase_of, solution_to_u2q, solution_to_u2q_with_det_phase,
     };
     use super::q_metric::build_q_zzeta_lattice;
     use crate::rings::ZZeta;
@@ -444,7 +444,7 @@
             let d_target = det_phase_of(&target);
             let sols = enumerate_unitary_norm_shell(k);
             let min_dist = sols.iter().map(|sol| {
-                let cand = solution_to_u2q_d(sol, k, d_target);
+                let cand = solution_to_u2q_with_det_phase(sol, k, d_target);
                 diamond_distance_float(&cand.to_float(), &target)
             }).fold(f64::INFINITY, f64::min);
             assert!(min_dist < 1e-9,
@@ -510,7 +510,7 @@
         let sols = enumerate_unitary_norm_shell(2);
         let mut min_dist = f64::INFINITY;
         for sol in &sols {
-            let cand = solution_to_u2q_d(sol, 2, 1);
+            let cand = solution_to_u2q_with_det_phase(sol, 2, 1);
             let d = diamond_distance_float(&cand.to_float(), &target);
             if d < min_dist { min_dist = d; }
         }
@@ -521,7 +521,7 @@
     fn solution_to_u2q_d_0_matches_su2() {
         let sol = [1, 2, -1, 0, 0, 1, 0, -1,    -2, 1, 0, 1, 1, 0, -1, 0];
         let u_default = solution_to_u2q(&sol, 4);
-        let u_d0 = solution_to_u2q_d(&sol, 4, 0);
+        let u_d0 = solution_to_u2q_with_det_phase(&sol, 4, 0);
         assert_eq!(u_default.u11, u_d0.u11);
         assert_eq!(u_default.u12, u_d0.u12);
         assert_eq!(u_default.u21, u_d0.u21);
@@ -539,7 +539,7 @@
         let mut min_dist = f64::INFINITY;
         for sol in &sols {
             for d in 0..16 {
-                let cand = solution_to_u2q_d(sol, 0, d);
+                let cand = solution_to_u2q_with_det_phase(sol, 0, d);
                 let dd = diamond_distance_float(&cand.to_float(), &target);
                 if dd < min_dist { min_dist = dd; }
             }
@@ -571,7 +571,7 @@
             let mut min_dist = f64::INFINITY;
             for sol in &sols {
                 for d in 0..16 {
-                    let cand = solution_to_u2q_d(sol, k, d);
+                    let cand = solution_to_u2q_with_det_phase(sol, k, d);
                     let dd = diamond_distance_float(&cand.to_float(), &target);
                     if dd < min_dist { min_dist = dd; }
                 }

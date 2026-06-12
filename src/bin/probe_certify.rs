@@ -1,4 +1,4 @@
-//! Quick driver for `synthesize_certified` — fast iteration + trace
+//! Quick driver for `synthesize_exhaustive_certified` — fast iteration + trace
 //! visibility without the cargo-test rebuild cycle.
 //! Args: <which: t|q|rz> [<k_max> [<eps>]]
 use cyclosynth::matrix::u2::U2Q;
@@ -54,7 +54,7 @@ fn main() {
     }
 
     let t0 = Instant::now();
-    match SynthesizerQ::new(eps).synthesize_certified(target, k_max) {
+    match SynthesizerQ::new(eps).synthesize_exhaustive_certified(target, k_max) {
         Some((r, c)) => println!(
             "{which} k={k_max} eps={eps:e} → cost={} HU in [{}, {}] certified={} gates={:?} dist={:.2e} t={:.2}s",
             c.upper_half_units, c.lower_half_units, c.upper_half_units,

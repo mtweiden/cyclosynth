@@ -22,7 +22,7 @@
 //! ## Reconstruction
 //!
 //! Single det-phase reconstruction: `d = det_phase_of(target)` chosen
-//! once, then `solution_to_u2q_d(sol, k, d)` per candidate. Column-1
+//! once, then `solution_to_u2q_with_det_phase(sol, k, d)` per candidate. Column-1
 //! direction extracted directly from the target (no `/√det`
 //! normalization — unlike 8D's `unitary_to_uv` — because our `d` parameter
 //! in the reconstruction already absorbs the det-phase mismatch).
@@ -48,7 +48,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Convention: `sol = [u_1.a, …, u_1.h, u_2.a, …, u_2.h]` with
 /// `U = [[u_1, −u_2*], [u_2, u_1*]] / √(2^k)` (SU(2) form, det = 1).
 pub fn solution_to_u2q(sol: &[i64; 16], k: u32) -> U2Q {
-    solution_to_u2q_d(sol, k, 0)
+    solution_to_u2q_with_det_phase(sol, k, 0)
 }
 
 /// `ζ_16^d` as a `ZZeta` element, for `d` in `0..16`. `ζ_16^8 = −1`, so
@@ -77,7 +77,7 @@ fn zeta_16_pow(d: u32) -> ZZeta {
 /// the second column is rotated by `ζ_16^d`, making `U` reach Clifford+√T
 /// products with non-unit determinant (e.g. circuits containing an odd
 /// number of Q gates).
-pub fn solution_to_u2q_d(sol: &[i64; 16], k: u32, det_phase: u32) -> U2Q {
+pub fn solution_to_u2q_with_det_phase(sol: &[i64; 16], k: u32, det_phase: u32) -> U2Q {
     let mk = |s: &[i64]| ZZeta::new(
         Int::from_i64(s[0]), Int::from_i64(s[1]), Int::from_i64(s[2]), Int::from_i64(s[3]),
         Int::from_i64(s[4]), Int::from_i64(s[5]), Int::from_i64(s[6]), Int::from_i64(s[7]),
@@ -123,7 +123,7 @@ pub fn det_phase_of(target: &Mat2) -> u32 {
 
 // ─── FGKM canonical-form prefix generation (Z1, syllable-count enumeration) ──
 //
-// Mirrors `clifford_t::build_l`. Where Clifford+T enumerates Matsumoto–Amano
+// Mirrors `clifford_t::build_ma_prefix_set`. Where Clifford+T enumerates Matsumoto–Amano
 // words `T^{a₀} · ∏ (HS^bᵢ T) · C` of T-count t', this enumerates
 // Forest–Gosset–Kliuchnikov–McKinnon words `∏ R_{pᵢ}(aᵢπ/8) · C` of
 // **syllable count** m. A "syllable" is one `R_p(a·π/8)` with
@@ -133,14 +133,14 @@ pub fn det_phase_of(target: &Mat2) -> u32 {
 // (Σaᵢ ∈ [m, 3m]) does not.
 //
 
-/// Global cache for `build_l_q` results, keyed by syllable count `m`.
-static BUILD_L_Q_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<U2Q>>>>> =
+/// Global cache for `build_fgkm_prefix_set` results, keyed by syllable count `m`.
+static FGKM_PREFIX_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<U2Q>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Canonical float key for a `U2Q` matrix, invariant under global U(1)
 /// phase. Mirrors `clifford_t::canonical_key`: rotates the flattened
 /// matrix so the largest-magnitude entry is real-positive, then rounds to
-/// 6 decimals. Used for O(n)-average dedup in `build_l_q_inner`.
+/// 6 decimals. Used for O(n)-average dedup in `build_fgkm_prefix_set_inner`.
 fn canonical_key_q(u: &U2Q) -> [i64; 8] {
     let m = u.to_float();
     let flat = [m[0][0], m[0][1], m[1][0], m[1][1]];
@@ -173,39 +173,39 @@ fn canonical_key_q(u: &U2Q) -> [i64; 8] {
 
 /// Build `L_m^Q`: the FGKM canonical-form prefix set with Clifford suffix,
 /// at syllable count `m`. Cached by `m` (Arc-cloned on hit).
-pub fn build_l_q(m: u32) -> Arc<Vec<U2Q>> {
+pub fn build_fgkm_prefix_set(m: u32) -> Arc<Vec<U2Q>> {
     {
-        let cache = BUILD_L_Q_CACHE.lock().unwrap();
+        let cache = FGKM_PREFIX_CACHE.lock().unwrap();
         if let Some(v) = cache.get(&m) {
             return Arc::clone(v);
         }
     }
-    let result = Arc::new(build_l_q_inner(m));
-    BUILD_L_Q_CACHE
+    let result = Arc::new(build_fgkm_prefix_set_inner(m));
+    FGKM_PREFIX_CACHE
         .lock()
         .unwrap()
         .insert(m, Arc::clone(&result));
     result
 }
 
-/// Cache for prefix `(T, Q)` gate counts (parallel to `BUILD_L_Q_CACHE`).
+/// Cache for prefix `(T, Q)` gate counts (parallel to `FGKM_PREFIX_CACHE`).
 static BUILD_L_Q_TQ_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<(usize, usize)>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Pre-computed `(T_count, Q_count)` of the canonical [`BlochDecomposer`]
-/// decomposition for each prefix in `build_l_q(m)`, indexed parallel to
+/// decomposition for each prefix in `build_fgkm_prefix_set(m)`, indexed parallel to
 /// that Vec. Cached forever per `m`; the caller applies its own Q-cost
 /// weight. NB: the weighted cost is **not a lower bound** on
 /// `cost(U_L · U_R)` — U_R can cancel parts of U_L. It is used as a
 /// heuristic ranking + prune, not a sound bound.
-pub fn build_l_q_tq(m: u32) -> Arc<Vec<(usize, usize)>> {
+pub fn build_fgkm_prefix_gate_counts(m: u32) -> Arc<Vec<(usize, usize)>> {
     {
         let cache = BUILD_L_Q_TQ_CACHE.lock().unwrap();
         if let Some(v) = cache.get(&m) {
             return Arc::clone(v);
         }
     }
-    let prefixes = build_l_q(m);
+    let prefixes = build_fgkm_prefix_set(m);
     let counts: Vec<(usize, usize)> = prefixes
         .iter()
         .map(|u_l| gates_tq(&BlochDecomposer.decompose(u_l)))
@@ -231,10 +231,10 @@ static ZETA_COSET_DEDUP: LazyLock<bool> = LazyLock::new(|| {
 
 /// The 8-element lde-0 Clifford subgroup ⟨S, X⟩ as U2Q, rebuilt from
 /// [`CLIFFORD_TABLE_T`] entry names via [`CLIFFORD_LDE0_IDX`] — the same
-/// name-folding route `build_l_q_inner` uses for its Clifford suffixes
+/// name-folding route `build_fgkm_prefix_set_inner` uses for its Clifford suffixes
 /// (NOT the det-1 U2T table matrices, which differ by ζ-power phases;
 /// orbit keys must match the list's own construction including float
-/// tie-breaking, see `build_l_q_orbits`).
+/// tie-breaking, see `build_fgkm_prefix_orbits`).
 fn lde0_cliffords_q() -> [U2Q; 8] {
     use crate::synthesis::cliffords::CLIFFORD_LDE0_IDX;
     std::array::from_fn(|j| {
@@ -253,26 +253,26 @@ fn lde0_cliffords_q() -> [U2Q; 8] {
 }
 
 /// Cache for per-prefix right-coset orbit ids (parallel to
-/// [`BUILD_L_Q_CACHE`], keyed by syllable count `m`).
-static BUILD_L_Q_ORBIT_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<usize>>>>> =
+/// [`FGKM_PREFIX_CACHE`], keyed by syllable count `m`).
+static FGKM_PREFIX_ORBIT_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<usize>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Orbit id per prefix under RIGHT multiplication by the lde-0
 /// Clifford subgroup ⟨S, X⟩, mod global phase (id = min list index
 /// among key-matched mates). Mates whose float key is absent from the
 /// list stay unlinked — conservative: less dedup, never less coverage.
-/// The linking is by float value and `build_l_q` stores the unreduced
+/// The linking is by float value and `build_fgkm_prefix_set` stores the unreduced
 /// peel-depth k, so an orbit can span several k; production dedup
 /// groups by (orbit, k), within which mates are exact ring-unit coset
 /// partners (pinned by `zeta_coset_orbits_sound`).
-pub fn build_l_q_orbits(m: u32) -> Arc<Vec<usize>> {
+pub fn build_fgkm_prefix_orbits(m: u32) -> Arc<Vec<usize>> {
     {
-        let cache = BUILD_L_Q_ORBIT_CACHE.lock().unwrap();
+        let cache = FGKM_PREFIX_ORBIT_CACHE.lock().unwrap();
         if let Some(v) = cache.get(&m) {
             return Arc::clone(v);
         }
     }
-    let prefixes = build_l_q(m);
+    let prefixes = build_fgkm_prefix_set(m);
     let idx_of: HashMap<[i64; 8], usize> = prefixes
         .iter()
         .enumerate()
@@ -291,7 +291,7 @@ pub fn build_l_q_orbits(m: u32) -> Arc<Vec<usize>> {
         })
         .collect();
     let arc = Arc::new(orbit);
-    BUILD_L_Q_ORBIT_CACHE
+    FGKM_PREFIX_ORBIT_CACHE
         .lock()
         .unwrap()
         .insert(m, Arc::clone(&arc));
@@ -330,21 +330,21 @@ fn coset_keep_mask(cands: &[(usize, usize)], keys: &[(usize, u32)]) -> Vec<bool>
     mask
 }
 
-/// Cached per-m `(orbit id, k)` dedup keys, parallel to `build_l_q(m)`.
+/// Cached per-m `(orbit id, k)` dedup keys, parallel to `build_fgkm_prefix_set(m)`.
 static BUILD_L_Q_COSET_KEY_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<(usize, u32)>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// The `(orbit id, unreduced k)` dedup class per prefix of
-/// `build_l_q(m)` — the key [`coset_keep_mask`] groups by.
-pub fn build_l_q_coset_keys(m: u32) -> Arc<Vec<(usize, u32)>> {
+/// `build_fgkm_prefix_set(m)` — the key [`coset_keep_mask`] groups by.
+pub fn build_fgkm_prefix_coset_keys(m: u32) -> Arc<Vec<(usize, u32)>> {
     {
         let cache = BUILD_L_Q_COSET_KEY_CACHE.lock().unwrap();
         if let Some(v) = cache.get(&m) {
             return Arc::clone(v);
         }
     }
-    let prefixes = build_l_q(m);
-    let orbit = build_l_q_orbits(m);
+    let prefixes = build_fgkm_prefix_set(m);
+    let orbit = build_fgkm_prefix_orbits(m);
     let keys: Vec<(usize, u32)> = prefixes
         .iter()
         .zip(orbit.iter())
@@ -358,7 +358,7 @@ pub fn build_l_q_coset_keys(m: u32) -> Arc<Vec<(usize, u32)>> {
     arc
 }
 
-fn build_l_q_inner(m: u32) -> Vec<U2Q> {
+fn build_fgkm_prefix_set_inner(m: u32) -> Vec<U2Q> {
     if m == 0 {
         return vec![U2Q::eye()];
     }
@@ -482,7 +482,7 @@ pub struct SynthResultQ {
     pub distance: f64,
 }
 
-/// Optimality certificate from [`SynthesizerQ::synthesize_certified`].
+/// Optimality certificate from [`SynthesizerQ::synthesize_exhaustive_certified`].
 ///
 /// `OPT ∈ [lower_half_units, upper_half_units]` is guaranteed, where
 /// costs are in half-units (`2T + 7Q`). `certified_optimal` is true
@@ -695,7 +695,7 @@ fn lattice_lde_estimate(epsilon: f64) -> u32 {
 /// Default enum-stage m-sweep, A/B-tuned per ε band. m=0 was dropped
 /// everywhere (6-7× slower for ≤2% cost); m=2 adds nothing above 1e-6
 /// but earns its keep below. Below 1e-7 the sweep runs as SEQUENTIAL
-/// per-m phases (see `synthesize_optimal_certified`) — interleaved,
+/// per-m phases (see `run_optimal_search_certified`) — interleaved,
 /// m=2's 6× prefix fan-out starves the deep m=1 units that hold the
 /// decisive finds.
 fn default_optimal_m_sweep(epsilon: f64) -> Vec<u32> {
@@ -1003,7 +1003,7 @@ fn prefix_dag_times_target_q(u_l: &U2Q, target: &Mat2) -> Mat2 {
 /// **Differs from 8D's `unitary_to_uv`**: that function divides by `√det`
 /// to project to SU(2) because `solution_to_u2t` produces a fixed SU(2)
 /// form. Here we leave the column unprojected and absorb the det-phase
-/// mismatch via [`solution_to_u2q_d`]'s `d` parameter (set to
+/// mismatch via [`solution_to_u2q_with_det_phase`]'s `d` parameter (set to
 /// [`det_phase_of`]`(target)` at the call site). Column 1 of any 2×2
 /// unitary is unit-norm by construction, so no further normalization is
 /// needed.
@@ -1239,11 +1239,11 @@ impl SynthesizerQ {
     /// BKZ-reduced) and an FGKM-prefix divide-and-conquer mode (`prefix_split_search_q`)
     /// for larger / deep k.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
-        self.synthesize_with_unclear(target, None)
+        self.synthesize_with_unverified_levels(target, None)
     }
 
     /// First-hit node cap after the `budget_div` policy (min 1).
-    fn cap_div(&self, base: u64) -> u64 {
+    fn scaled_cap(&self, base: u64) -> u64 {
         (base / self.budget_div.max(1)).max(1)
     }
 
@@ -1340,7 +1340,7 @@ impl SynthesizerQ {
                         };
                         let (result, budget_hit) = self.prefix_split_search_q(
                             target, k, m_split, None,
-                            self.cap_div(pass1_prefix_leaf_cap_for(self.epsilon)),
+                            self.scaled_cap(pass1_prefix_leaf_cap_for(self.epsilon)),
                             abort_opt, consumed_opt, None, None,
                         );
                         let dt = t_k.elapsed().as_secs_f64() * 1000.0;
@@ -1413,7 +1413,7 @@ impl SynthesizerQ {
             }
             let (result, budget_hit) = self.prefix_split_search_q(
                 target, k, m_split, None,
-                self.cap_div(pass2_prefix_leaf_cap_for(self.epsilon)),
+                self.scaled_cap(pass2_prefix_leaf_cap_for(self.epsilon)),
                 None, None, None, None,
             );
             if let Some(r) = result {
@@ -1454,7 +1454,7 @@ impl SynthesizerQ {
     /// truncated-and-never-cleared level below `fl` may still hold a
     /// solution. `unclear_out` receives exactly those levels so the
     /// cost-optimal enum stage can add them to its (lde, m) grid.
-    fn synthesize_with_unclear(
+    fn synthesize_with_unverified_levels(
         &self,
         target: Mat2,
         mut unclear_out: Option<&mut Vec<u32>>,
@@ -1510,7 +1510,7 @@ impl SynthesizerQ {
             let budget_hit = AtomicBool::new(false);
             let should_stop = |x: &[i64; 16]| -> bool {
                 if optimize_cost { return false; }
-                let cand = solution_to_u2q_d(x, k, d);
+                let cand = solution_to_u2q_with_det_phase(x, k, d);
                 diamond_distance_u2q_float(&cand, &target) < epsilon
             };
             let sols = find_aligned_lattice_points_auto_prec(
@@ -1520,8 +1520,8 @@ impl SynthesizerQ {
         };
 
         let check_sols = |sols: &[[i64; 16]], k: u32| -> Option<SynthResultQ> {
-            let cands = sols.iter().map(|sol| (solution_to_u2q_d(sol, k, d), k));
-            self.best_costed(cands, &target, !optimize_cost).map(|(_, r)| r)
+            let cands = sols.iter().map(|sol| (solution_to_u2q_with_det_phase(sol, k, d), k));
+            self.pick_min_cost_result(cands, &target, !optimize_cost).map(|(_, r)| r)
         };
 
         // Brute regime: iterate every k for exact small-T Clifford+√T finds.
@@ -1566,7 +1566,7 @@ impl SynthesizerQ {
             // (k_inner ≤ 0). These are typically few levels near lattice_start.
             for k in lattice_start..=m_split.min(self.max_lde) {
                 let t_k = std::time::Instant::now();
-                let (sols, small_budget_hit) = try_lattice_k(k, self.cap_div(PASS1_CAP), &mut scratch);
+                let (sols, small_budget_hit) = try_lattice_k(k, self.scaled_cap(PASS1_CAP), &mut scratch);
                 if let Some(r) = check_sols(&sols, k) {
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} (single fallback)  FOUND  dist={:.3e}  t={:.0}ms",
@@ -1601,7 +1601,7 @@ impl SynthesizerQ {
                     }
                     let t_k = std::time::Instant::now();
                     let (result, budget_hit) = self.prefix_split_search_q(
-                        &target, k, m_split, None, self.cap_div(pass1_prefix_leaf_cap_for(self.epsilon)),
+                        &target, k, m_split, None, self.scaled_cap(pass1_prefix_leaf_cap_for(self.epsilon)),
                         None, None, None, None,
                     );
                     if let Some(r) = result {
@@ -1668,7 +1668,7 @@ impl SynthesizerQ {
                 break;
             }
             let t_k = std::time::Instant::now();
-            let (sols, budget_was_hit) = try_lattice_k(k, self.cap_div(PASS1_CAP), &mut scratch);
+            let (sols, budget_was_hit) = try_lattice_k(k, self.scaled_cap(PASS1_CAP), &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
                     eprintln!("[zeta] pass1 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
@@ -1703,7 +1703,7 @@ impl SynthesizerQ {
                 break;
             }
             let t_k = std::time::Instant::now();
-            let (sols, budget_hit2) = try_lattice_k(k, self.cap_div(PASS2_CAP), &mut scratch);
+            let (sols, budget_hit2) = try_lattice_k(k, self.scaled_cap(PASS2_CAP), &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
                     eprintln!("[zeta] pass2 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
@@ -1756,9 +1756,9 @@ impl SynthesizerQ {
         use rayon::prelude::*;
         use crate::synthesis::diag;
 
-        let prefixes = build_l_q(m_split);
+        let prefixes = build_fgkm_prefix_set(m_split);
         let q_cost_x2 = self.q_cost_x2;
-        let prefix_costs: Vec<usize> = build_l_q_tq(m_split)
+        let prefix_costs: Vec<usize> = build_fgkm_prefix_gate_counts(m_split)
             .iter()
             .map(|&(t, q)| 2 * t + q_cost_x2 * q)
             .collect();
@@ -1804,7 +1804,7 @@ impl SynthesizerQ {
         let mut per_prefix_cap = per_prefix_cap;
         if *ZETA_COSET_DEDUP && cand_idx.len() > 1 {
             let pre = cand_idx.len();
-            let keys = build_l_q_coset_keys(m_split);
+            let keys = build_fgkm_prefix_coset_keys(m_split);
             let mask = coset_keep_mask(&cand_idx, &keys);
             let mut it = mask.iter();
             cand_idx.retain(|_| *it.next().unwrap());
@@ -1926,7 +1926,7 @@ impl SynthesizerQ {
                     return best_cost.load(std::sync::atomic::Ordering::Relaxed)
                         <= u_l_cost.saturating_add(suffix_floor);
                 }
-                let u_r = solution_to_u2q_d(x, k_inner, d_r);
+                let u_r = solution_to_u2q_with_det_phase(x, k_inner, d_r);
                 let u_full = u_l_local * u_r;
                 let hit = diamond_distance_u2q_float(&u_full, &target_local) < epsilon;
                 if hit && capture {
@@ -1966,7 +1966,7 @@ impl SynthesizerQ {
             // min-cost one and publishes it for the prefix prune.
             let mut best: Option<(usize, SynthResultQ)> = None;
             for sol in &sols {
-                let u_r = solution_to_u2q_d(sol, k_inner, d_r);
+                let u_r = solution_to_u2q_with_det_phase(sol, k_inner, d_r);
                 let u_full = u_l_local * u_r;
                 let dist = diamond_distance_u2q_float(&u_full, target);
                 if dist < epsilon {
@@ -2195,9 +2195,9 @@ impl SynthesizerQ {
 
         // Keep the per-m prefix caches alive for the unit borrows below.
         let level_prefixes: Vec<Arc<Vec<U2Q>>> =
-            levels.iter().map(|&(_, m)| build_l_q(m)).collect();
+            levels.iter().map(|&(_, m)| build_fgkm_prefix_set(m)).collect();
         let level_costs: Vec<Arc<Vec<(usize, usize)>>> =
-            levels.iter().map(|&(_, m)| build_l_q_tq(m)).collect();
+            levels.iter().map(|&(_, m)| build_fgkm_prefix_gate_counts(m)).collect();
 
         #[derive(Clone, Copy)]
         struct PrefixWorkUnit<'a> {
@@ -2216,7 +2216,7 @@ impl SynthesizerQ {
 
         let mut units: Vec<PrefixWorkUnit> = Vec::new();
         for (li, &(k_total, m)) in levels.iter().enumerate() {
-            // Mirror `try_optimal_variant`: m ≥ k arms don't run (the
+            // Mirror `run_enum_arm`: m ≥ k arms don't run (the
             // D&C split needs k_inner ≥ 1 for every prefix).
             if m == 0 || m >= k_total {
                 continue;
@@ -2254,7 +2254,7 @@ impl SynthesizerQ {
             // floor is the frontier's sort/prune currency).
             // CYCLOSYNTH_ZETA_COSET=0 disables. See `coset_keep_mask`.
             if *ZETA_COSET_DEDUP && cands.len() > 1 {
-                let keys = build_l_q_coset_keys(m);
+                let keys = build_fgkm_prefix_coset_keys(m);
                 let iw: Vec<(usize, usize)> =
                     cands.iter().map(|&(pi, _, f)| (pi, f)).collect();
                 let mask = coset_keep_mask(&iw, &keys);
@@ -2353,7 +2353,7 @@ impl SynthesizerQ {
 
             let mut best: Option<(usize, SynthResultQ)> = None;
             for sol in &sols {
-                let u_r = solution_to_u2q_d(sol, k_inner, u.d_r);
+                let u_r = solution_to_u2q_with_det_phase(sol, k_inner, u.d_r);
                 let u_full = u_l_local * u_r;
                 let dist = diamond_distance_u2q_float(&u_full, target);
                 if dist < epsilon {
@@ -2454,7 +2454,7 @@ impl SynthesizerQ {
     /// half-units under the current (slope-1/2) staircase. Tightening
     /// the staircase (design doc P1') shrinks the required horizon
     /// proportionally without touching this code.
-    pub fn synthesize_certified(
+    pub fn synthesize_exhaustive_certified(
         &self,
         target: Mat2,
         k_max: u32,
@@ -2509,7 +2509,7 @@ impl SynthesizerQ {
                     // of lower-lde circuits (that's the covering
                     // mechanism); reduce before decomposing — the
                     // decomposer expects primitive denominators.
-                    let cand: U2Q = solution_to_u2q_d(sol, k_max, d).reduced();
+                    let cand: U2Q = solution_to_u2q_with_det_phase(sol, k_max, d).reduced();
                     let dist = diamond_distance_u2q_float(&cand, t);
                     if dist < self.epsilon {
                         let gates = BlochDecomposer.decompose(&cand);
@@ -2526,7 +2526,7 @@ impl SynthesizerQ {
             } else {
                 let v = unitary_to_uv_zeta(t);
                 let mut scratch: Option<Box<IntScratch16>> = None;
-                self.run_single_optimal(
+                self.direct_lattice_search_at(
                     t, d, v, k_max, u64::MAX, &mut scratch, /*cost_min=*/true,
                 )
                 .0
@@ -2560,7 +2560,7 @@ impl SynthesizerQ {
 
     /// Stage-2/4 m-sweep and called concurrently from `thread::scope`.
     #[allow(clippy::too_many_arguments)]
-    fn run_single_optimal(
+    fn direct_lattice_search_at(
         &self,
         target: &Mat2,
         d: u32,
@@ -2580,15 +2580,15 @@ impl SynthesizerQ {
         let budget_hit = AtomicBool::new(false);
         let should_stop = |x: &[i64; 16]| -> bool {
             if cost_min { return false; }
-            let cand = solution_to_u2q_d(x, k, d);
+            let cand = solution_to_u2q_with_det_phase(x, k, d);
             diamond_distance_u2q_float(&cand, target) < epsilon
         };
         let sols = find_aligned_lattice_points_auto_prec(
             s.as_mut(), v, None, self.deep_rot_src.as_ref(), k, epsilon, budget, &budget_hit, should_stop, None, None,
         );
         let hit = budget_hit.load(std::sync::atomic::Ordering::Relaxed);
-        let cands = sols.iter().map(|sol| (solution_to_u2q_d(sol, k, d), k));
-        (self.best_costed(cands, target, !cost_min), hit)
+        let cands = sols.iter().map(|sol| (solution_to_u2q_with_det_phase(sol, k, d), k));
+        (self.pick_min_cost_result(cands, target, !cost_min), hit)
     }
 
     /// Cost-optimal synthesis. Three stages:
@@ -2607,7 +2607,7 @@ impl SynthesizerQ {
     ///    cost. The screen candidate is the floor for the final min, so
     ///    this stage can only improve it.
     fn synthesize_optimal(&self, target: Mat2) -> Option<SynthResultQ> {
-        self.synthesize_optimal_certified(target).map(|(r, _)| r)
+        self.run_optimal_search_certified(target).map(|(r, _)| r)
     }
 
     /// Production search + certificate: same hybrid search, with the
@@ -2624,10 +2624,10 @@ impl SynthesizerQ {
     ) -> Option<(SynthResultQ, CostCertificate)> {
         let mut certified = self.clone();
         certified.certify = true;
-        certified.synthesize_optimal_certified(target)
+        certified.run_optimal_search_certified(target)
     }
 
-    fn synthesize_optimal_certified(
+    fn run_optimal_search_certified(
         &self,
         target: Mat2,
     ) -> Option<(SynthResultQ, CostCertificate)> {
@@ -2787,7 +2787,7 @@ impl SynthesizerQ {
     /// Scan ε-close candidates, decompose each, and keep the min-cost
     /// one — or return the FIRST ε-close one when `first_hit` (the
     /// legacy non-optimal semantics, which must stay order-sensitive).
-    fn best_costed<I>(
+    fn pick_min_cost_result<I>(
         &self,
         cands: I,
         target: &Mat2,
@@ -2828,8 +2828,8 @@ impl SynthesizerQ {
                 .iter()
                 .zip(&shell.mats)
                 .filter(|(_, m)| brute_dist_est(m, zd, target) < thr)
-                .map(|(sol, _)| (solution_to_u2q_d(sol, k, d), k));
-            let best = self.best_costed(close, target, false);
+                .map(|(sol, _)| (solution_to_u2q_with_det_phase(sol, k, d), k));
+            let best = self.pick_min_cost_result(close, target, false);
             if best.is_some() {
                 return best;
             }
@@ -2877,11 +2877,11 @@ impl SynthesizerQ {
             // Truncated-and-never-cleared levels below find-lde must
             // reach the enum grid or the window silently misses them.
             let mut unclear = Vec::new();
-            let mut first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
+            let mut first = first_hit.synthesize_with_unverified_levels(target, Some(&mut unclear));
             if first.is_none() && first_hit.budget_div > 1 {
                 first_hit.budget_div = 1;
                 unclear.clear();
-                first = first_hit.synthesize_with_unclear(target, Some(&mut unclear));
+                first = first_hit.synthesize_with_unverified_levels(target, Some(&mut unclear));
             }
             (first, unclear, baseline_handle.and_then(|h| h.join().unwrap()))
         });
@@ -3081,7 +3081,7 @@ impl SynthesizerQ {
                         std::thread::Builder::new()
                             .stack_size(16 * 1024 * 1024)
                             .spawn_scoped(s, move || {
-                                let (r, truncated) = self.try_optimal_variant(
+                                let (r, truncated) = self.run_enum_arm(
                                     target, d, v, k, m, /*cost_min=*/true,
                                     Some(shared_best),
                                 );
@@ -3130,7 +3130,7 @@ impl SynthesizerQ {
                 && (t_ext.elapsed().as_millis() as u64) < self.certify_extra_ms
             {
                 let (r, truncated) =
-                    self.try_optimal_variant(target, d, v, k, 0, true, Some(shared_best));
+                    self.run_enum_arm(target, d, v, k, 0, true, Some(shared_best));
                 ledger.push((k, 0, truncated));
                 if trace {
                     eprintln!("[zeta] certify-extend k={k} truncated={truncated} t={:.0}ms",
@@ -3156,7 +3156,7 @@ impl SynthesizerQ {
     /// lattice probe, m≥1 → FGKM-prefix D&C with the default d_R filter.
     /// Extracted from the m-sweep loop so the enum phase can run all
     /// (k, m) pairs as independent parallel tasks.
-    fn try_optimal_variant(
+    fn run_enum_arm(
         &self,
         target: Mat2,
         d: u32,
@@ -3177,7 +3177,7 @@ impl SynthesizerQ {
                 .saturating_mul(cert_boost);
             let mut local_scratch: Option<Box<IntScratch16>> = None;
             let (r, hit) =
-                self.run_single_optimal(&target, d, v, k, cap, &mut local_scratch, cost_min);
+                self.direct_lattice_search_at(&target, d, v, k, cap, &mut local_scratch, cost_min);
             if hit && crate::synthesis::diag::trace_enabled() {
                 eprintln!("[zeta]   enum (k={k}, m=0) BUDGET-HIT — coverage lost");
             }
