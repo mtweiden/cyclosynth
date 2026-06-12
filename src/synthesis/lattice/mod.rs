@@ -23,8 +23,6 @@ pub mod q_metric;
 pub mod scratch;
 pub mod se;
 
-use crate::rings::Float;
-use std::sync::atomic::AtomicBool;
 
 /// Per-worker scratch buffers, allocated once via rayon's `map_init` and
 /// reused across all MA prefixes that worker handles.
@@ -33,6 +31,7 @@ pub use integer::find_aligned_lattice_points;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rings::Float;
     use std::sync::atomic::AtomicBool;
 
     fn realistic_y(k: u32) -> [Float; 8] {

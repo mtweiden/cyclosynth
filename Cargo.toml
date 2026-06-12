@@ -21,11 +21,10 @@ rand = "0.9"
 
 # Index-based loops in the lattice kernels mirror the matrix math they
 # implement; iterator rewrites obscure the correspondence with the paper's
-# pseudocode. Numeric kernels also thread scratch buffers + several scalar
-# params, tripping the arg-count lint without an ergonomic win.
+# pseudocode. The arg-count lint is allowed per-function on the hot
+# walkers (lockstep-edit contract: do not bundle their params).
 [lints.clippy]
 needless_range_loop = "allow"
-too_many_arguments = "allow"
 
 [profile.release]
 debug = 1
