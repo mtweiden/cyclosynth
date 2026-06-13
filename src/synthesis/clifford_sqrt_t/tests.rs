@@ -39,7 +39,9 @@
     ///   S(m, α) = Σ_k count(m, k) / α^k
     /// and is independent of lde_total (the c·α^{lde_total} term cancels).
     /// D&C wins at m when S(m, α) < 1.
+    /// Census probe (no assertions): run with `-- --ignored --nocapture`.
     #[test]
+    #[ignore]
     fn fgkm_prefix_split_cost_ratio() {
         // Coarse k → count map per m, then evaluate S(m, α) for several α.
         for m in 1..=5 {
@@ -96,7 +98,9 @@
     /// by ≥ 1, so the word's denominator exponent grows by at most m).
     /// The shape of the distribution determines how we bin prefixes by
     /// k for the inner LLL+SE search.
+    /// Census probe (no assertions): run with `-- --ignored --nocapture`.
     #[test]
+    #[ignore]
     fn fgkm_prefix_k_distribution() {
         for m in 1..=5 {
             let l = build_fgkm_prefix_set(m);
