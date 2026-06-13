@@ -77,7 +77,7 @@ pub fn snapshot_gram_to_mpfr(scratch: &mut IntScratch) {
     for i in 0..8 {
         for j in 0..8 {
             i256_to_rfloat(scratch.gram[i][j], &mut tmp);
-            // Divide by 2^scale_bits to recover natural-scale G.
+            // Recover natural-scale G: ÷ 2^scale_bits.
             if shift > 0 {
                 tmp >>= shift as u32;
             } else if shift < 0 {
@@ -355,8 +355,7 @@ pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
     if dmax > 1e6 * dmin {
         return None;
     }
-    // Transpose to upper-triangular R = Lᵀ.
-    let mut r = [[0.0_f64; 8]; 8];
+    let mut r = [[0.0_f64; 8]; 8]; // R = Lᵀ
     for i in 0..8 {
         for j in 0..8 {
             r[i][j] = l[j][i];
