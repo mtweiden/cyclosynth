@@ -1,41 +1,14 @@
-//! Experimental f64-only Gram-Schmidt LLL for the 16D Z[ζ_16] lattice.
-//!
-//! Mirrors [`super::lll`]'s structure but uses plain `f64` for the
-//! Gram-Schmidt state (`r_bar_f64`, `mu_bar_f64`, `s_bar_f64` on
-//! [`super::scratch::IntScratch16`]) instead of MPFR `RFloat`.
-//!
-//! ## Why this might work
-//!
-//! Theorem 2 of Nguyen-Stehlé 2009 covers d ≤ 11 in f64 at the L²
-//! parameters (δ=0.75, η=0.55). At d=16 the proof's headroom disappears
-//! (precision requirement ~50 bits at ε=1e-7, leaving f64 with no margin).
-//! **However**, fplll's `wrapper.cpp` tries `double` first at every
-//! dimension and only escalates on failure — empirically successful most
-//! of the time.
-//!
-//! ## Why this might fail
-//!
-//! At deep ε the post-LLL Gram has condition number κ(G) ≈ 2^(2·lde_total)
-//! ≈ 2^60 at ε=1e-9. The GS state of an unreduced row carries this
-//! condition number; f64 then sees ~60 bits of cancellation in
-//! `r_bar[i][j] − Σ μ_bar·r_bar`, leaving 53−60 = -7 useful bits.
-//! Lazy size-reduce *could* iterate forever or produce wrong basis
-//! transforms.
-//!
-//! ## How we detect failure
-//!
-//! The caller wraps this in a precision ladder: try f64 first; if the
-//! returned basis is non-unimodular, or if `lazy_size_reduce` cycles
-//! (hits MAX_LAZY_PASSES on too many κ values), fall back to MPFR.
-//!
-//! ## What's reused from `super::lll`
-//!
-//! All integer-arithmetic helpers: `gram_update_size_reduce`,
-//! `gram_update_swap`, `basis_insert`, `compute_gram_full`,
-//! `gram_overflow_check`, `i256_log2_ceil`. These are MPFR-free.
+//! Experimental f64 Gram-Schmidt LLL for the 16D Z[ζ_16] lattice — the
+//! `super::lll` structure on the `_f64` state buffers of
+//! [`super::scratch::IntScratch16`] instead of MPFR. d=16 is outside the
+//! NS09 f64 proof (d ≤ 11), and at deep ε the post-LLL Gram's condition
+//! number can exceed f64's mantissa, so lazy size-reduce may cycle or
+//! mis-transform. The caller (`run_lll_ladder`) tries f64 first and
+//! escalates to MPFR on a non-unimodular result or `IterCap`. The
+//! MPFR-free integer helpers (`gram_update_size_reduce`, `basis_insert`,
+//! `compute_gram_full`, `gram_overflow_check`) are reused from `super::lll`.
 
 #![allow(clippy::needless_range_loop)]
-
 
 use super::scratch::IntScratch16;
 use crate::synthesis::lattice_common::{LllResult, L2_DELTA_BAR, L2_ETA_BAR, MAX_LAZY_PASSES};
@@ -63,7 +36,8 @@ pub fn cfa_row_f64(scratch: &mut IntScratch16, i: usize) {
     scratch.r_bar_f64[i][i] = scratch.s_bar_f64[i][i];
 }
 
-/// f64 lazy size-reduce. Returns the number of passes used.
+/// f64 lazy size-reduce. Returns a value < MAX_LAZY_PASSES on convergence
+/// (the pass index) and MAX_LAZY_PASSES on non-convergence.
 pub fn lazy_size_reduce_f64(scratch: &mut IntScratch16, kappa: usize) -> usize {
     let mut x = [0i64; 16];
     for pass in 0..MAX_LAZY_PASSES {
@@ -127,10 +101,9 @@ pub fn lll_l2_16_f64(scratch: &mut IntScratch16) -> LllResult {
             return LllResult::GramOverflow;
         }
 
-        // Lovász cascade. Walks κ down comparing `δ̄ · r̄_{κ-1,κ-1}` against
-        // `s̄_{κ_orig, κ-1}` (the prefix-sum array, populated in cfa_row).
-        // Empirically cascades only 1.86 levels deep on average — lazy
-        // muls beat precomputing all 16 `δ̄·r̄_{i,i}` upfront.
+        // Lovász cascade: walk κ down comparing `δ̄ · r̄_{κ-1,κ-1}` against
+        // the prefix-sum `s̄_{κ_orig, κ-1}`. It descends ~2 levels on
+        // average, so lazy muls beat precomputing all 16 `δ̄·r̄_{i,i}`.
         let kappa_orig = kappa;
         loop {
             if kappa == 0 {
@@ -165,8 +138,8 @@ pub fn lll_l2_16_f64(scratch: &mut IntScratch16) -> LllResult {
     }
 }
 
-/// f64 entry-point analog of `super::lll::run_lll_16`. Honors
-/// `scratch.warm_lll` for the Z1 D&C warm-start path.
+/// f64 analog of `super::lll::run_lll_16`. Honors `scratch.warm_lll` for
+/// the prefix-split warm-start path.
 pub fn run_lll_16_f64(scratch: &mut IntScratch16) -> LllResult {
     if !scratch.warm_lll {
         scratch.reset_basis();
