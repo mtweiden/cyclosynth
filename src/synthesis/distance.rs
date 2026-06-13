@@ -72,12 +72,10 @@ pub fn diamond_distance_float(a: &Mat2, b: &Mat2) -> Float {
 }
 
 /// MPFR-precision diamond distance via the trace formula `1 − |tr|²/4`.
-/// Kept for tests as an oracle against the f64 algebraic version. Returns
-/// an `f64` for caller convenience; `prec` is the working precision in
-/// bits (128 is the recommended default — at that precision the trace
-/// formula's cancellation is well below the noise floor for any ε we care
-/// about, so the formula choice doesn't matter and we keep the original
-/// mathematical statement).
+/// Used by the `diamond_bench` microbenchmark as a high-precision reference
+/// against the f64 algebraic version. `prec` is the working precision in
+/// bits (128 recommended — there the trace formula's cancellation is well
+/// below the noise floor for any ε we care about).
 pub fn diamond_distance_float_mpfr(a: &Mat2, b: &Mat2, prec: u32) -> Float {
     let mut tr_re = RFloat::with_val(prec, 0.0);
     let mut tr_im = RFloat::with_val(prec, 0.0);
@@ -239,7 +237,11 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
     d_sq.sqrt().to_f64()
 }
 
-/// Cost: ~3 μs/call (vs ~2 μs for U2T — twice the coefficients).
+/// U2Q/ZZeta analogue of [`diamond_distance_u2t_float`]: diamond distance
+/// between an exact U2Q and an f64 target at MPFR-128, evaluating each ZZeta
+/// entry directly (basis `ζ^k = (cos kπ/8, sin kπ/8)`) instead of through
+/// `to_float()`, and using the same Frobenius `D² = q(8−q)/16` reformulation.
+/// ~3 μs/call (vs ~2 for U2T — twice the ring coefficients).
 pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
     use std::f64::consts::PI;
     let prec: u32 = 128;
