@@ -701,10 +701,6 @@ mod tests {
     }
 
     // ── ZZeta / Clifford+√T decomposer round-trip tests ───────────────────────
-    //
-    // Phase 0 of the Clifford+√T effort: the Bloch decomposer claims to be
-    // generic over `R: GateRing`, but only ZOmega has been exercised. These
-    // tests run the analogous coverage for U2<ZZeta>.
 
     #[test]
     fn test_zzeta_identity_decomposes_to_empty() {
@@ -754,29 +750,12 @@ mod tests {
             "decomp \"{decomp}\" doesn't match input \"{gates}\": dist={dist:.3e}");
     }
 
-    // ── ZZeta decomposer history ──────────────────────────────────────────────
-    //
-    // Phase 0 of the Clifford+√T effort fixed a value-level bug in
-    // `SO3Q::from_u2` (γ-denominator → √2-denominator), then surfaced an
-    // *algorithmic* gap: the greedy single-step peeling that decomposes
-    // SO3T correctly does not converge on SO3Q for non-trivial inputs.
-    //
-    //   - SO3T (Clifford+T): cos(nπ/4) has √2-exp ∈ {0, 1, 0, 1, …} —
-    //     monotone-decreasing per single Rz peel. Greedy converges in
-    //     `max_exp` steps.
-    //   - SO3Q (Clifford+√T): cos(nπ/8) has √2-exp ∈ {0, 2, 1, 2, …}. A
-    //     single Rz(π/8) peel can transiently *increase* max_exp, which
-    //     makes single-step argmin go off-axis on non-trivial inputs.
-    //
-    // The fix lives in `decompose_so3_canonical_q` (above), which
-    // implements the canonical-form algorithm of Forest, Gosset,
-    // Kliuchnikov, McKinnon (arXiv:1501.04944, Section 4) for n=8: at each
-    // step it tries all 9 candidate peels `R_p(a·π/8)` for
-    // `p ∈ {x,y,z}, a ∈ {1,2,3}` and picks the (unique, by Theorem 4.1(c))
-    // argmin in `max_exp`. `BlochDecomposer::decompose` dispatches via
-    // `GateRing::decompose_target`: ZOmega keeps the original greedy peel
-    // (correct for Clifford+T), ZZeta routes through the canonical-form
-    // algorithm.
+    // Why ZZeta needs `decompose_so3_canonical_q` and ZOmega doesn't: SO3T's
+    // cos(nπ/4) has √2-exp ∈ {0,1,0,1,…} (monotone per Rz peel, so greedy
+    // single-step argmin converges), but SO3Q's cos(nπ/8) has √2-exp ∈
+    // {0,2,1,2,…} — a single Rz(π/8) peel can transiently *increase* max_exp,
+    // sending greedy off-axis. The canonical-form algorithm tries all 9 peels
+    // per step and picks the unique max_exp-reducing one instead.
 
     #[test]
     fn test_zzeta_mixed_t_and_q() {
@@ -860,8 +839,7 @@ mod tests {
             .unwrap_or(0)
     }
 
-    /// One FGKM syllable R_p(a·π/8) as a reduced U2Q (same construction as
-    /// src/bin/probe_e4_identity.rs).
+    /// One FGKM syllable R_p(a·π/8) as a reduced U2Q.
     fn fgkm_syllable(axis: usize, a: u32) -> U2Q {
         let mut d = U2Q::eye();
         for _ in 0..a {
@@ -874,7 +852,7 @@ mod tests {
         }
     }
 
-    /// Deterministic splitmix64 (same generator as probe_e4_identity).
+    /// Deterministic splitmix64 PRNG for reproducible random test inputs.
     struct Xs(u64);
     impl Xs {
         fn next(&mut self) -> u64 {
@@ -957,7 +935,7 @@ mod tests {
             // (same candidate order, same strict-< argmin), instrumented
             // with N and Nγ before/after each peel.
             let mut so3 = SO3Q::from_u2(&u);
-            so3.reduce(); // entries are already simplified; explicit per claim wording
+            so3.reduce();
             let max_steps = (so3.max_exp() as usize) * 4 + 32;
 
             for _ in 0..max_steps {
