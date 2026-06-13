@@ -25,8 +25,9 @@
 use std::fmt::Debug;
 use std::ops::{Mul, Sub};
 use crate::rings::{ZOmega, ZZeta};
-use crate::rings::types::INT_ZERO;
-use crate::matrix::so3::{SO3, SO3T, SO3Q, SO3Ops, R2, R4, Ratio};
+use crate::matrix::so3::{SO3T, SO3Q, SO3Ops};
+#[cfg(test)]
+use crate::matrix::so3::R4;
 use crate::matrix::u2::{U2, U2T, U2Q, RingElem};
 #[cfg(feature = "python")]
 use crate::matrix::u2::{PyU2, U2Variant};
@@ -60,10 +61,6 @@ pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self>{
     fn rx_pos_u2() -> U2<Self>;
     fn ry_pos_u2() -> U2<Self>;
     fn rz_pos_u2() -> U2<Self>;
-
-    /// Find the Clifford gate whose SO3 equals `residual` exactly.
-    /// (Used for debug; correctness in synthesis uses `identify_clifford_from_u2`.)
-    fn identify_clifford(residual: &Self::SO3) -> Option<&'static str>;
 
     /// Find the Clifford gate label whose gate-primitive U2 matches `u` by diamond distance.
     /// This is the correct identification for synthesis (avoids S-convention mismatch).
@@ -103,13 +100,6 @@ impl GateRing for ZOmega {
     }
     fn rz_pos_u2() -> U2T { U2T::t() }
 
-    fn identify_clifford(residual: &SO3T) -> Option<&'static str> {
-        CLIFFORD_TABLE_T
-            .iter()
-            .find(|(_, u)| SO3T::from_u2(u) == *residual)
-            .map(|(name, _)| *name)
-    }
-
     fn identify_clifford_from_u2(u: &U2T) -> Option<&'static str> {
         // Pick the closest Clifford (argmin) rather than the first within
         // an absolute tolerance. Cliffords are pairwise distinct
@@ -143,17 +133,6 @@ impl GateRing for ZOmega {
 
 // ─── GateRing for ZZeta (Clifford+√T) ────────────────────────────────────────
 
-/// Embed a Clifford SO3T (entries in Z[√2]) into SO3Q (entries in Z[γ]).
-///
-/// Z[√2] ↪ Z[γ]:  R2(a, b) → R4(a, b, 0, 0).
-fn embed_so3t_in_so3q(m: &SO3T) -> SO3Q {
-    let e: [Ratio<R4>; 9] = std::array::from_fn(|i| {
-        let R2(a, b) = m.e[i].num;
-        Ratio { num: R4(a, b, INT_ZERO, INT_ZERO), exp: m.e[i].exp }
-    });
-    SO3 { e }
-}
-
 impl GateRing for ZZeta {
     type SO3 = SO3Q;
 
@@ -171,13 +150,6 @@ impl GateRing for ZZeta {
         U2Q::s() * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s().dagger()
     }
     fn rz_pos_u2() -> U2Q { U2Q::q() }
-
-    fn identify_clifford(residual: &SO3Q) -> Option<&'static str> {
-        CLIFFORD_TABLE_T
-            .iter()
-            .find(|(_, u)| embed_so3t_in_so3q(&SO3T::from_u2(u)) == *residual)
-            .map(|(name, _)| *name)
-    }
 
     fn identify_clifford_from_u2(u: &U2Q) -> Option<&'static str> {
         // Pick the closest Clifford (argmin over the 24 entries) rather than
@@ -246,33 +218,11 @@ impl BlochDecomposer {
 /// `magic` is `"T"` for Clifford+T or `"Q"` for Clifford+√T.
 /// After substitution, a fixpoint rewrite loop simplifies the result.
 fn translate(raw: &str, magic: &str) -> String {
-    let mut s = raw
+    let substituted = raw
         .replace('x', &format!("H{}H", magic))
         .replace('y', &format!("SH{}HSSS", magic))
         .replace('z', magic);
-
-    let mut prev = String::new();
-    while s != prev {
-        prev = s.clone();
-        // Commutations
-        s = s.replace("SZ", "ZS");
-        s = s.replace("TZ", "ZT");
-        s = s.replace("QZ", "ZQ");
-        s = s.replace("TS", "ST");
-        s = s.replace("QS", "SQ");
-        s = s.replace("QT", "TQ");
-        // Combinations
-        s = s.replace("QQ", "T");
-        s = s.replace("TT", "S");
-        s = s.replace("SS", "Z");
-        // Cancellations
-        s = s.replace("HH", "");
-        s = s.replace("XX", "");
-        s = s.replace("YY", "");
-        s = s.replace("ZZ", "");
-        s = s.replace('I', "");
-    }
-    s
+    simplify_gate_string(&substituted)
 }
 
 /// Core peel-off loop and Clifford identification, generic over ring.
@@ -312,17 +262,11 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
     let mut raw = String::new();
     let mut so3 = R::so3_from_u2(target);  // start from SO3(target), not SO3(target†)
     let mut p_output_u2 = U2::<R>::eye();
-    // For SO3T (Clifford+T) max_exp counts T-count, so each peel reduces by 1
-    // and `max_steps = max_exp` is a tight bound. For SO3Q (Clifford+√T) the
-    // √2-denom convention makes max_exp non-monotone per peel: SO3(T) has
-    // max_exp=1 but T = QQ requires 2 Rz peels (T → Q → I, going 1 → 2 → 0).
-    // Use a generous bound; the loop early-exits via `best == 0` when the
-    // residual reaches a Clifford.
-    // SO3T (Clifford+T) max_exp counts T-count, monotone-decreasing per peel:
-    // `max_steps = max_exp` is tight. SO3Q (Clifford+√T) in √2-denom has
-    // non-monotone max_exp per peel (e.g., SO3(T) max_exp=1 but T = QQ needs
-    // 2 Rz peels: 1 → 2 → 0). Bound is generous; loop early-exits via
-    // `best == 0` once a Clifford residual is reached.
+    // SO3T (Clifford+T) max_exp counts T-count, monotone-decreasing per
+    // peel, so `max_steps = max_exp` would be tight. SO3Q (Clifford+√T)
+    // in the √2-denom convention is non-monotone per peel (SO3(T) has
+    // max_exp 1 but T = QQ needs 2 Rz peels: 1 → 2 → 0), so the bound is
+    // generous; the loop early-exits via `best == 0` at a Clifford residual.
     let max_steps = (so3.max_exp() as usize) * 4 + 32;
 
     for _ in 0..max_steps {
@@ -674,123 +618,6 @@ mod tests {
             u1.diamond_distance(&u2));
     }
 
-    /// Debug: print gate_c details for the 5-T circuit.
-    #[test]
-    fn test_debug_gate_c() {
-        let gates = "HTHSTHTHSTHTH";
-        let target = gates_to_u2t(gates);
-
-        let rz = rz_pos();
-        let rx = rx_pos();
-        let ry = ry_pos();
-        let rx_u2 = ZOmega::rx_pos_u2();
-        let ry_u2 = ZOmega::ry_pos_u2();
-        let rz_u2 = ZOmega::rz_pos_u2();
-
-        let mut so3 = SO3T::from_u2(&target.dagger());
-        let mut p_output_u2 = U2T::eye();
-        let max_steps = so3.max_exp() as usize;
-
-        for _ in 0..max_steps {
-            if so3.max_exp() == 0 { break; }
-            let mut rx_r = so3.clone(); rx_r.left_mul(&rx);
-            let mut ry_r = so3.clone(); ry_r.left_mul(&ry);
-            let mut rz_r = so3.clone(); rz_r.left_mul(&rz);
-            let ex = rx_r.max_exp();
-            let ey = ry_r.max_exp();
-            let ez = rz_r.max_exp();
-            let best = ex.min(ey).min(ez);
-            if ex == best { so3 = rx_r; p_output_u2 = p_output_u2 * rx_u2; }
-            else if ey == best { so3 = ry_r; p_output_u2 = p_output_u2 * ry_u2; }
-            else { so3 = rz_r; p_output_u2 = p_output_u2 * rz_u2; }
-            if best == 0 { break; }
-        }
-
-        let gate_c_v1 = p_output_u2.dagger() * target;
-        let gate_c_v2 = target * p_output_u2.dagger();
-
-        eprintln!("p_output_u2: u11={:?} u12={:?} u21={:?} u22={:?} k={}",
-            p_output_u2.u11, p_output_u2.u12, p_output_u2.u21, p_output_u2.u22, p_output_u2.k);
-        eprintln!("gate_c (P†·target): u11={:?} u12={:?} u21={:?} u22={:?} k={}",
-            gate_c_v1.u11, gate_c_v1.u12, gate_c_v1.u21, gate_c_v1.u22, gate_c_v1.k);
-        eprintln!("gate_c (target·P†): u11={:?} u12={:?} u21={:?} u22={:?} k={}",
-            gate_c_v2.u11, gate_c_v2.u12, gate_c_v2.u21, gate_c_v2.u22, gate_c_v2.k);
-
-        eprintln!("\nDistances from P†·target to Clifford table entries (U2T table values):");
-        for (name, u2t_entry) in CLIFFORD_TABLE_T {
-            let d = gate_c_v1.diamond_distance(u2t_entry);
-            if d < 0.1 { eprintln!("  {name}: dist={d:.6e}  <-- MATCH"); }
-            else { eprintln!("  {name}: dist={d:.6e}"); }
-        }
-
-        eprintln!("\nDistances from P†·target to gate-primitive Cliffords:");
-        for (name, _) in CLIFFORD_TABLE_T {
-            let gate_u: U2T = name.chars().fold(U2T::eye(), |acc, ch| {
-                acc * match ch {
-                    'H' => U2T::h(), 'S' => U2T::s(), 'X' => U2T::x(),
-                    'Y' => U2T::y(), 'Z' => U2T::z(), _ => U2T::eye(),
-                }
-            });
-            let d = gate_c_v1.diamond_distance(&gate_u);
-            if d < 0.1 { eprintln!("  {name}: dist={d:.6e}  <-- MATCH"); }
-            else { eprintln!("  {name}: dist={d:.6e}"); }
-        }
-
-        eprintln!("\nDistances from target·P† to gate-primitive Cliffords:");
-        for (name, _) in CLIFFORD_TABLE_T {
-            let gate_u: U2T = name.chars().fold(U2T::eye(), |acc, ch| {
-                acc * match ch {
-                    'H' => U2T::h(), 'S' => U2T::s(), 'X' => U2T::x(),
-                    'Y' => U2T::y(), 'Z' => U2T::z(), _ => U2T::eye(),
-                }
-            });
-            let d = gate_c_v2.diamond_distance(&gate_u);
-            if d < 0.1 { eprintln!("  {name}: dist={d:.6e}  <-- MATCH"); }
-            else { eprintln!("  {name}: dist={d:.6e}"); }
-        }
-    }
-
-    /// Debug: trace peel loop for the 5-T circuit.
-    #[test]
-    fn test_debug_peel_5t() {
-        let gates = "HTHSTHTHSTHTH";
-        let u2 = gates_to_u2t(gates);
-        eprintln!("U2T k={}", u2.k);
-        let so3 = SO3T::from_u2(&u2.dagger());
-        eprintln!("Initial max_exp = {}", so3.max_exp());
-
-        let rz = rz_pos();
-        let rx = rx_pos();
-        let ry = ry_pos();
-        let max_steps = so3.max_exp() as usize;
-        eprintln!("max_steps = {max_steps}");
-        let mut so3 = so3;
-        let mut raw = String::new();
-
-        for step in 0..max_steps {
-            let cur = so3.max_exp();
-            if cur == 0 { eprintln!("step {step}: max_exp=0, breaking"); break; }
-
-            let mut rx_r = so3.clone(); rx_r.left_mul(&rx);
-            let mut ry_r = so3.clone(); ry_r.left_mul(&ry);
-            let mut rz_r = so3.clone(); rz_r.left_mul(&rz);
-
-            let ex = rx_r.max_exp();
-            let ey = ry_r.max_exp();
-            let ez = rz_r.max_exp();
-            let best = ex.min(ey).min(ez);
-
-            let ch = if ex == best { so3 = rx_r; 'x' }
-                     else if ey == best { so3 = ry_r; 'y' }
-                     else { so3 = rz_r; 'z' };
-            raw.push(ch);
-            eprintln!("step {step}: cur={cur}, ex={ex} ey={ey} ez={ez} → chose '{ch}', new max_exp={}", so3.max_exp());
-            if best == 0 { eprintln!("best=0, breaking"); break; }
-        }
-        eprintln!("raw = \"{raw}\"");
-        let cliff = ZOmega::identify_clifford(&so3);
-        eprintln!("Clifford = {cliff:?}");
-    }
 
     #[test]
     fn test_roundtrip_random() {

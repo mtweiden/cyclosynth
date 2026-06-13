@@ -1,87 +1,37 @@
 //! Certified cost-vs-lde lower bound for Clifford+√T circuits.
 //!
 //! `L(k) = cost_lb_half_units(k)` lower-bounds the weighted gate cost
-//! (in half-units, `2·T_count + q_cost_x2·Q_count` with the default
-//! `q_cost_x2 = 7`) of **any** Clifford+√T unitary whose reduced
-//! denominator exponent (lde) is `k`. It powers the certified search
-//! cutoff and the sound prefix prune (see
-//! docs/design_certified_optimal_cost.md §3–§5).
-//!
-//! # Derivation
-//!
-//! Write U in FGKM-style normal form `U = s₁ · s₂ · … · sₙ · C` with
-//! syllables `sᵢ ∈ { R_p(a·π/8) : p ∈ {x,y,z}, a ∈ {1,2,3} }`
-//! (adjacent syllables on distinct axes) and a trailing Clifford `C`.
-//!
-//! 1. **lde is submultiplicative**: entries of `A·B` are sums of
-//!    products, so the reduced denominator exponent satisfies
-//!    `lde(A·B) ≤ lde(A) + lde(B)`.
-//! 2. **Per-syllable lde** (verified exactly in [`tests`], over the
-//!    U2Q arithmetic):
-//!    * z-axis syllables are diagonal over Z[ζ₁₆]: lde = 0;
-//!    * x/y-axis syllables (H- / SH-conjugated diagonals): lde = 2.
-//! 3. **Trailing Clifford**: lde(C) ≤ [`CLIFFORD_LDE_MAX`] (= 1,
-//!    verified by closing ⟨H, S⟩ in the tests).
-//!
-//! Hence `k = lde(U) ≤ 2·n_xy + CLIFFORD_LDE_MAX`, where `n_xy` is the
-//! number of x/y-axis syllables. Every syllable costs ≥ 2 half-units
-//! (the T syllable, a = 2), so
-//!
-//! ```text
-//! c̃(U) ≥ 2·n_xy ≥ 2·⌈(k − CLIFFORD_LDE_MAX)/2⌉ ≈ k − 2  half-units.
-//! ```
-//!
-//! # Tightness — and the refinement opportunity
-//!
-//! The single-syllable case is exact: `R_x(T)` alone has lde 2 at one
-//! T gate (2 half-units), matching the staircase at k = 2. But longer
-//! chains *reduce*: with full denominator reduction
-//! (`U2Q::reduced()`), alternating `R_x(T)·R_y(T)·…` chains collapse
-//! to lde ≈ s/2 + 1 at s T gates — an asymptotic ≈ 3.8 half-units per
-//! lde, ~4× above this bound (experiment E1, `probe_lde_growth`; an
-//! earlier run without reduction wrongly suggested the bound was
-//! tight). Every chain family probed so far realizes ≥ 3.8 half-units
-//! per lde. Proving a sharper per-*pair* growth bound (λ-adic analysis
-//! of consecutive syllables — proof obligation P1') would raise the
-//! slope toward the observed value and shrink the certified search
-//! horizon proportionally: at slope 1/2 the horizon is 2·C*; at the
-//! observed 1.9 it would be ≈ C*/1.9.
+//! (half-units `2·T_count + q_cost_x2·Q_count`, default `q_cost_x2 = 7`)
+//! of any Clifford+√T unitary with reduced denominator exponent (lde)
+//! `k`. It powers the certified search cutoff and the sound prefix
+//! prune. Monotone non-decreasing in `k`, which the cutoff relies on.
+//! The derivation lives on [`cost_lb_half_units`].
 
 /// Maximum reduced lde over the single-qubit Clifford group in the
-/// `U2Q` representation (⟨H, S⟩ closure, incl. phases). With full
-/// denominator reduction this is 1 (H itself). Verified by
-/// [`tests::clifford_lde_max_is_1`].
+/// `U2Q` representation (⟨H, S⟩ closure, incl. phases): 1 under full
+/// denominator reduction (H itself). [`tests::clifford_lde_max_is_1`].
 pub const CLIFFORD_LDE_MAX: u32 = 1;
 
-/// Per-x/y-syllable lde contribution. Verified exactly by
-/// [`tests::syllable_lde_constants`].
+/// Per-x/y-syllable lde contribution. [`tests::syllable_lde_constants`].
 pub const XY_SYLLABLE_LDE: u32 = 2;
 
-/// Minimum half-unit cost over the 9 syllables (the T syllable, a=2,
-/// costs `2` half-units; Q costs 7; TQ costs 9).
+/// Minimum half-unit cost over the 9 syllables (the T syllable costs 2;
+/// Q costs 7; TQ costs 9).
 const MIN_SYLLABLE_COST_HALF_UNITS: usize = 2;
 
-/// Certified lower bound, in half-units (`2T + 7Q`), on the weighted
-/// cost of any Clifford+√T unitary with reduced lde `k`.
+/// Certified lower bound, in half-units, on the weighted cost of any
+/// Clifford+√T unitary with reduced lde `k`:
 ///
-/// **Slope-2 floor (2026-06-10, P-a + P-b)**: `c̃ ≥ 4k − 6` from the
-/// chain
-///
-///   c̃ = 2t + 7q ≥ 2·(t + 2q) ≥ 2·N ≥ 2·(2k − 3),
+///   c̃ = 2t + 7q ≥ 2·(t + 2q) ≥ 2·N ≥ 2·(2k − 3) = 4k − 6,
 ///
 /// where N is the reduced Bloch/SO(3) denominator exponent:
-///   * `t + 2q ≥ N` — Bloch-exponent subadditivity plus the
-///     machine-verified per-gate constants N(T) = 1, N(Q) = 2,
-///     N(Clifford) = 0 (docs/proof_pa_peel_exactness.md; holds for
-///     EVERY circuit, not just canonical words);
-///   * `N ≥ 2k − 3` — analytic adjugate argument + exhaustively
-///     verified √2/λ conversion lemma (docs/proof_pb_valuation.md);
-///     tight, deficit 3 realized at every k ≥ 3 (250k-word corpus to
-///     k = 19, zero violations).
+///   * `t + 2q ≥ N` — Bloch-exponent subadditivity with per-gate
+///     constants N(T) = 1, N(Q) = 2, N(Clifford) = 0, holding for every
+///     circuit (docs/proof_pa_peel_exactness.md);
+///   * `N ≥ 2k − 3` — adjugate argument + √2/λ conversion lemma
+///     (docs/proof_pb_valuation.md), tight with deficit 3 at every k ≥ 3.
 ///
-/// The older syllable-count staircase (≈ k − 1, kept as the `max` arm)
-/// only matters at k ≤ 2. Monotone non-decreasing in `k`, which the
-/// certified sweep cutoff relies on.
+/// The syllable-count floor (≈ k − 1, the `max` arm) only binds at k ≤ 2.
 pub fn cost_lb_half_units(k: u32) -> usize {
     let excess = k.saturating_sub(CLIFFORD_LDE_MAX);
     // n_xy ≥ ⌈excess / XY_SYLLABLE_LDE⌉, each costing ≥ 2 half-units.
@@ -91,18 +41,13 @@ pub fn cost_lb_half_units(k: u32) -> usize {
     syllable_floor.max(slope2_floor)
 }
 
-/// Per-det-phase-class cost lower bound, in half-units. Each Q syllable
-/// contributes ζ₁₆ to det(U) and each T contributes ζ₁₆², while
-/// Cliffords contribute powers of ζ₁₆⁴ — but a circuit equals a target
-/// matrix only **up to a global phase ζ₁₆ʲ**, which shifts the det
-/// class by 2j. Only the parity of `d` survives that freedom —
-/// `q ≡ d (mod 2)` — so an odd det-phase class forces at least one Q
-/// gate (7 half-units);
-/// even classes get no information. Combine with
-/// [`cost_lb_half_units`] via `max`. Verified against brute shells in
-/// [`tests::class_bound_holds_on_brute_shells`] (which also pins the
-/// parity congruence — a stronger mod-4 bound is NOT sound, observed
-/// counterexample: a k=0 completion with d=0 decomposing to `ZST`).
+/// Per-det-phase-class cost lower bound, in half-units. Q syllables
+/// contribute ζ₁₆ to det(U), T contributes ζ₁₆², Cliffords powers of
+/// ζ₁₆⁴ — but a circuit matches a target only up to a global phase
+/// ζ₁₆ʲ, which shifts the det class by 2j. Only the parity of `d`
+/// survives, so an odd class forces ≥ 1 Q gate (7 half-units); even
+/// classes give nothing. Combine with [`cost_lb_half_units`] via `max`.
+/// A stronger mod-4 bound is NOT sound.
 pub fn class_cost_lb_half_units(d: u32) -> usize {
     if d % 2 == 1 { 7 } else { 0 }
 }
@@ -135,8 +80,8 @@ mod tests {
         d
     }
 
-    /// P1, computational part: exact per-syllable lde over all 9
-    /// syllable types. x/y syllables have lde exactly 2; z syllables 0.
+    /// Exact per-syllable lde over all 9 syllable types: x/y syllables
+    /// have lde exactly 2; z syllables 0.
     #[test]
     fn syllable_lde_constants() {
         for a in 1..=3u32 {
@@ -146,8 +91,8 @@ mod tests {
         }
     }
 
-    /// P1, computational part: max lde over the ⟨H, S⟩ closure (the
-    /// full single-qubit Clifford group in U2Q form, incl. phases).
+    /// Max lde over the ⟨H, S⟩ closure (the full single-qubit Clifford
+    /// group in U2Q form, incl. phases).
     #[test]
     fn clifford_lde_max_is_1() {
         let gens = [U2Q::h(), U2Q::s()];
@@ -171,11 +116,10 @@ mod tests {
              and the L(k) derivation");
     }
 
-    /// E1 regression: along the alternating R_x(T)·R_y(T) chain (s T
-    /// gates, fully reduced), the staircase must stay at or below the
-    /// realized cost, and the derivation's premise lde ≤ 2s + c₀ must
-    /// hold. Also pins the observed reduced ladder so a change in
-    /// reduction behaviour is caught.
+    /// Along the alternating R_x(T)·R_y(T) chain (s T gates, fully
+    /// reduced), the staircase must stay at or below the realized cost,
+    /// the submultiplicative premise lde ≤ 2s + c₀ must hold, and the
+    /// reduced ladder is pinned so a change in reduction is caught.
     #[test]
     fn staircase_sound_on_alternating_chain() {
         let mut u = U2Q::eye();
@@ -192,9 +136,8 @@ mod tests {
                 u.k, cost_lb_half_units(u.k), realized_half_units
             );
         }
-        // Observed reduced ladder (2026-06-09): lde = s/2 + 1 for even
-        // s ≥ 4 — i.e. ≈ 4 half-units of T per lde unit, 2× the
-        // provable staircase slope.
+        // The reduced ladder is lde = s/2 + 1 for even s ≥ 4 (≈ 4
+        // half-units of T per lde unit, 2× the provable staircase slope).
         assert_eq!(u.k, 11, "reduced lde of the s=20 alternating chain");
     }
 
@@ -241,11 +184,10 @@ mod tests {
         assert!(checked > 100, "expected to check many shell unitaries");
     }
 
-    /// E2 (small-k anchor): brute-enumerate full shells at k ≤ 3 via
-    /// `enumerate_unitary_norm_shell`, decompose every completion, and check the
-    /// staircase never exceeds the cheapest realized cost. (The brute
-    /// minimum is an upper bound on the true L(k) — completions fix a
-    /// convention — so this validates soundness, not exactness.)
+    /// Brute-enumerate full shells at k ≤ 3, decompose every completion,
+    /// and check the staircase never exceeds the cheapest realized cost.
+    /// The brute minimum is an upper bound on the true L(k) (completions
+    /// fix a convention), so this validates soundness, not exactness.
     #[test]
     fn staircase_below_brute_minimum_small_k() {
         use crate::synthesis::clifford_sqrt_t::solution_to_u2q;

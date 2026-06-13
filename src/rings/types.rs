@@ -4,17 +4,10 @@
 use i256::i256;
 
 /// Integer coefficient type for ring elements (ZOmega, ZZeta) and SO3 scalars (R2, R4).
-///
-/// `i64`  — sufficient for circuits with fewer than ~32 T gates in any product path.
-/// `i128` — sufficient for circuits with fewer than ~64 T gates in any product path.
-///           Use this when working with circuits up to ~140 random gates from {H, S, T}.
-/// `i256` — TODO
-//pub type Int = i128;
 pub type Int = i256;
 
 /// Float type for element-wise conversion in `to_complex()`.
-/// Changing to `f32` also requires updating the `RingElem::to_complex` return type.
-/// TODO: add support for much higher precisions
+/// Note that for precision epsilon <= 1e-7, mpfr is used (see lattice files).
 pub type Float = f64;
 
 
@@ -26,8 +19,18 @@ pub const INT_THREE:   Int = Int::from_i8(3);
 pub const INT_FOUR:    Int = Int::from_i8(4);
 pub const INT_NEG_ONE: Int = Int::from_i8(-1);
 
-/// Convert an `Int` to `f64`. Values are assumed small enough to fit in i128.
+
+/// Convert an `Int` to `f64`.
 #[inline]
 pub fn int_to_f64(x: Int) -> Float {
-    x.as_i128() as Float
+    const SCALE_64: Float = 18446744073709551616.0; // 2^64
+    const SCALE_128: Float = SCALE_64 * SCALE_64;
+    const SCALE_192: Float = SCALE_128 * SCALE_64;
+    let neg = x.is_negative();
+    let limbs = if neg { -x } else { x }.to_ne_limbs();
+    let r = limbs[0] as Float
+        + limbs[1] as Float * SCALE_64
+        + limbs[2] as Float * SCALE_128
+        + limbs[3] as Float * SCALE_192;
+    if neg { -r } else { r }
 }
