@@ -110,7 +110,7 @@ use std::f64::consts::PI;
             let mut out = Vec::new();
             let m_inner = prefix_dag_times_target(u_l, &target);
             let Some(v_inner) = try_unitary_to_uv(&m_inner) else { return out };
-            let mut scratch = crate::synthesis::lattice::scratch::IntScratch::new(eps);
+            let mut scratch = crate::synthesis::lattice::omega::scratch::IntScratch::new(eps);
             for odd in [false, true] {
                 let v_b = if odd { apply_t_dag_to_uv(v_inner) } else { v_inner };
                 let hit = AtomicBool::new(false);
@@ -226,7 +226,7 @@ use std::f64::consts::PI;
                 // MPFR at the scratch precision (an f64 eval of this form
                 // is garbage: Q eigenvalues reach 1/Δ_y² ~ 1e14 at 1e-5 and
                 // the form only stays O(1) through cancellation).
-                use crate::synthesis::lattice::{q_metric::build_q_mpfr, scratch::IntScratch};
+                use crate::synthesis::lattice::omega::{q_metric::build_q_mpfr, scratch::IntScratch};
                 use rug::Float as RFloat;
                 let mut qs = IntScratch::new(eps);
                 build_q_mpfr(&mut qs, &y, lde_inner, eps);
@@ -250,7 +250,7 @@ use std::f64::consts::PI;
                     let mut s2 = IntScratch::new(eps);
                     s2.reset_basis();
                     let hit = AtomicBool::new(false);
-                    let out = crate::synthesis::lattice::integer::find_aligned_lattice_points_outcome(
+                    let out = crate::synthesis::lattice::omega::integer::find_aligned_lattice_points_outcome(
                         &mut s2, &y, lde_inner, eps, usize::MAX, u64::MAX,
                         50_000_000, &hit, None,
                     );
@@ -265,7 +265,7 @@ use std::f64::consts::PI;
                 // z-path, and print the walker's own per-depth partials to
                 // find which level excludes it.
                 {
-                    use crate::synthesis::lattice::{
+                    use crate::synthesis::lattice::omega::{
                         cholesky_lu::{cholesky_f64_8, lu_solve_int_inplace},
                         lll::lll_l2_8,
                         q_metric::build_q_int,
@@ -444,8 +444,8 @@ use std::f64::consts::PI;
     #[test]
     #[ignore]
     fn q_telemetry_sweep_8d() {
-        use crate::synthesis::lattice::{integer::find_aligned_lattice_points_outcome as find_aligned_lattice_points, q_metric::build_q_mpfr};
-        use crate::synthesis::lattice::scratch::IntScratch;
+        use crate::synthesis::lattice::omega::{integer::find_aligned_lattice_points_outcome as find_aligned_lattice_points, q_metric::build_q_mpfr};
+        use crate::synthesis::lattice::omega::scratch::IntScratch;
         use std::sync::atomic::AtomicBool;
 
         let budget: u64 = std::env::var("T8_BUDGET").ok()
@@ -646,7 +646,7 @@ use std::f64::consts::PI;
         let target = rz(theta);
         let raw_uv = unitary_to_uv(&target);
         let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
-        let mut scratch = crate::synthesis::lattice::scratch::IntScratch::new(eps);
+        let mut scratch = crate::synthesis::lattice::omega::scratch::IntScratch::new(eps);
         let hit = AtomicBool::new(false);
 
         crate::synthesis::diag::N_SE_NODES
@@ -685,9 +685,9 @@ use std::f64::consts::PI;
     #[test]
     #[ignore]
     fn warm_lll_gate() {
-        use crate::synthesis::lattice::lll::{lll_l2_8_seeded, LllResult};
-        use crate::synthesis::lattice::q_metric::{build_q_int, build_q_mpfr};
-        use crate::synthesis::lattice::scratch::IntScratch;
+        use crate::synthesis::lattice::omega::lll::{lll_l2_8_seeded, LllResult};
+        use crate::synthesis::lattice::omega::q_metric::{build_q_int, build_q_mpfr};
+        use crate::synthesis::lattice::omega::scratch::IntScratch;
         use rug::Assign;
 
         fn xorshift64(s: &mut u64) -> u64 {

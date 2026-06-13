@@ -402,7 +402,7 @@ const DC_WALK_MAX_SOLUTIONS: usize = 8;
 /// recurse-entry; does not set `budget_hit`).
 #[allow(clippy::too_many_arguments)]
 fn lll_aligned_search(
-    scratch: &mut crate::synthesis::lattice::scratch::IntScratch,
+    scratch: &mut crate::synthesis::lattice::omega::scratch::IntScratch,
     v: [Float; 4],
     k: u32,
     eps: Float,
@@ -420,7 +420,7 @@ fn lll_aligned_search(
     let y = uv_to_lattice_y(v, k);
     // Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816):
     // MPFR at adaptive precision for LLL+Cholesky, f64 for the SE step.
-    crate::synthesis::lattice::find_aligned_lattice_points(
+    crate::synthesis::lattice::omega::find_aligned_lattice_points(
         scratch, &y, k, eps, max_solutions, max_leaf_checks, max_nodes,
         budget_hit, external_abort,
     )
@@ -832,7 +832,7 @@ impl SynthesizerT {
                 .enumerate()
                 .with_min_len(chunk)
                 .map_init(
-                    || crate::synthesis::lattice::scratch::IntScratch::new(eps),
+                    || crate::synthesis::lattice::omega::scratch::IntScratch::new(eps),
                     |scratch, (pos, &pi)| -> Option<SynthResultT> {
                         let u_l = &prefixes[pi as usize];
                         if let Some(tp) = target_parity {
