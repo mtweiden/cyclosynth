@@ -343,10 +343,11 @@ impl SynthesizerQ {
             } else if epsilon >= 1e-6 {
                 Some(1500)
             } else if epsilon >= 1e-7 {
-                // Post-dedup the 1e-7 cliff is gone (smooth curve); with
-                // window 3 the 2500 ms point matches the old 3500 ms
-                // cost band at 30% less wall.
-                Some(2500)
+                // S2 ladder (2026-06-13, queue dispatch, w3): cost shelf
+                // is flat 1500→3500 ms (~473 ± draw noise) with a ~9 HU
+                // cliff just below 1500. 1500 is the knee — same cost as
+                // the old 2500 default at 1.6× less wall (2.6→1.6 s/t).
+                Some(1500)
             } else {
                 Some(10_000)
             },
