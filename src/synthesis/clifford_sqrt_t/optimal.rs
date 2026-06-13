@@ -3,16 +3,13 @@
 use super::*;
 
 impl SynthesizerQ {
-    /// Dispatch the (k, m ≥ 1) arms to the merged frontier under the
-    /// deadline — as sequential lowest-m-first phases below 1e-7
-    /// (interleaved, m=2's ~6× fan-out starves the deep m=1 units that
-    /// hold the decisive finds; the incumbent carries forward as each
-    /// next phase's prune floor), interleaved above (measured better at
-    /// 1e-6/1e-7). Phase shares roll forward by default: a phase whose
-    /// frontier finishes early (incumbent-pruned levels) donates its
-    /// surplus to later phases — beat or tied every hand-tuned split.
-    /// Env: CYCLOSYNTH_SEQ_M (1/0 forces), CYCLOSYNTH_SEQ_M_SPLIT
-    /// (explicit per-phase ms), CYCLOSYNTH_SEQ_ROLLFWD=0.
+    /// Dispatch the (k, m ≥ 1) arms under the deadline. Below 1e-7 they
+    /// run as sequential lowest-m-first phases (interleaving lets m=2's
+    /// fan-out starve the deep m=1 units that hold the decisive finds; the
+    /// incumbent carries forward as each phase's prune floor); interleaved
+    /// above. A phase whose frontier finishes early donates its leftover
+    /// deadline to later phases. Env: CYCLOSYNTH_SEQ_M, CYCLOSYNTH_SEQ_M_SPLIT,
+    /// CYCLOSYNTH_SEQ_ROLLFWD.
     pub(crate) fn run_frontier_grouped_by_m(
         &self,
         target: &Mat2,
@@ -162,7 +159,6 @@ impl SynthesizerQ {
             } else {
                 default_inner_det_phase_filter(m)
             };
-            // (prefix index, d_R, floor) candidates for this level.
             let mut cands: Vec<(usize, u32, usize)> = Vec::new();
             for (pi, (u_l, &(t, q))) in level_prefixes[li]
                 .iter()
@@ -210,10 +206,10 @@ impl SynthesizerQ {
             return (None, truncated.into_iter().map(|t| t.into_inner()).collect());
         }
 
-        // Global ascending floor sort; tie-break k ascending (smaller SE
-        // regions complete sooner → incumbent drops faster). Queue
-        // dispatch consumes this order directly; the legacy chunked path
-        // approximates it with a cost-rank transpose-interleave.
+        // Ascending floor sort, k-ascending tie-break (smaller SE regions
+        // complete sooner → incumbent drops faster). Queue dispatch
+        // consumes this order directly; the chunked path approximates it
+        // with a cost-rank transpose-interleave.
         units.sort_by(|a, b| a.floor.cmp(&b.floor).then(a.lde_total.cmp(&b.lde_total)));
         let n_threads = rayon::current_num_threads().max(1);
         let queue_dispatch = *FRONTIER_QUEUE_DISPATCH;
@@ -313,9 +309,6 @@ impl SynthesizerQ {
             s
         };
 
-        // Deadline kills additionally mark the unit's level truncated —
-        // the watcher is the only place that knows WHY it killed a walk;
-        // incumbent-floor kills are sound prunes, not truncation.
         let result_pair: Option<(usize, SynthResultQ)> = with_incumbent_watcher(
             &watches,
             best_cost,
@@ -395,9 +388,9 @@ impl SynthesizerQ {
     /// Wall time grows exponentially with `k_max`; `certified_optimal`
     /// requires `upper ≤ cost_lb_half_units(k_max + 1)` ≈ k_max, so
     /// closing the certificate for a cost-C circuit needs k_max ≳ C
-    /// half-units under the current (slope-1/2) staircase. Tightening
-    /// the staircase (design doc P1') shrinks the required horizon
-    /// proportionally without touching this code.
+    /// half-units under the current slope-1/2 staircase; a tighter
+    /// staircase shrinks the required horizon proportionally without
+    /// touching this code.
     pub fn synthesize_exhaustive_certified(
         &self,
         target: Mat2,
@@ -410,11 +403,10 @@ impl SynthesizerQ {
             [target[1][0] * g, target[1][1] * g],
         ];
 
-        // T-baseline floor — only when the target's det class is even:
+        // T-baseline floor only when the target's det class is even:
         // Clifford+T determinants are even ζ₁₆ powers, so an odd-class
-        // target makes the baseline sweep its whole lde range rejecting
-        // every prefix (trace-diagnosed: 100% mat_uv_rej, minutes of
-        // futile work).
+        // target would make the baseline sweep its whole lde range
+        // rejecting every prefix.
         let d_even = det_phase_of(&target) % 2 == 0;
         let baseline: Option<(usize, SynthResultQ)> = if !d_even { None } else {
             crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
@@ -542,9 +534,9 @@ impl SynthesizerQ {
     ///    smallest feasible k is already optimal there.
     /// 2. **Screen**: run the *production first-hit path* (a clone with
     ///    `optimize_cost` off) to locate the smallest feasible lde.
-    ///    This inherits everything the first-hit path has — deep-ε
-    ///    parallel-LDE speculation, 2-pass budget completeness — and is
-    ///    5-10× cheaper per no-solution lde than an enumerating sweep.
+    ///    This inherits the first-hit path's concurrent-lde dispatch and
+    ///    2-pass budget completeness, and is far cheaper per no-solution
+    ///    lde than an enumerating sweep.
     /// 3. **Enum**: flatten `[find_lde .. find_lde+window] × m_sweep`
     ///    into independent parallel tasks, all pruning against one
     ///    shared best-cost tracker seeded with the screen candidate's
@@ -613,12 +605,12 @@ impl SynthesizerQ {
             [target[0][0] * g, target[0][1] * g],
             [target[1][0] * g, target[1][1] * g],
         ];
-        // One shared incumbent serves both branches: costs are directly
-        // comparable across parities, and the staircase bound
-        // (cost < c̃ ⇒ lde ≤ c̃ + 1) lets each branch use it as a
-        // dynamic lde clamp — which is what allows concurrency at all
-        // (the old static odd.max_lde cap forced serial order). 16 MiB
-        // stacks for the deep SE recursion.
+        // One shared incumbent serves both branches: costs compare
+        // directly across parities, and the staircase bound
+        // (cost < c̃ ⇒ lde ≤ c̃ + 1) lets each branch use it as a dynamic
+        // lde clamp, which is what allows the branches to run concurrently
+        // rather than serially capped. 16 MiB stacks for the deep SE
+        // recursion.
         let global_best =
             std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
         let mut even_self = self.clone();
@@ -638,12 +630,10 @@ impl SynthesizerQ {
         let mut ledger_odd = Vec::new();
         let trace = crate::synthesis::diag::trace_enabled();
         let t_branches = std::time::Instant::now();
-        // Deep-ε parities run sequentially by measurement, not fear:
-        // each branch already saturates the pool alone, so concurrency
-        // dilutes both and costs ~2× wall (and trades ~+1pp cost at the
-        // same wall). CYCLOSYNTH_SEQ_PARITY=0 re-enables concurrency —
-        // the halved wall is a legitimate fast-mode trade. The shared
-        // incumbent flows identically either way.
+        // At deep ε each branch saturates the pool alone, so concurrent
+        // parities dilute both (~2× wall for slightly lower cost); run
+        // them sequentially. CYCLOSYNTH_SEQ_PARITY=0 forces concurrency.
+        // The shared incumbent flows identically either way.
         let force_sequential = self.seq_parity.unwrap_or_else(|| {
             self.epsilon < 2.5e-8
                 && std::env::var("CYCLOSYNTH_SEQ_PARITY").as_deref() != Ok("0")
@@ -956,10 +946,10 @@ impl SynthesizerQ {
             && tasks.iter().all(|&(_, m)| m >= 1)
         {
             if let Some(deadline_ms) = self.optimal_deadline_ms {
-                // Wait for the peer's screen before flooding the pool
-                // (a frontier starves a running screen ~50×); bounded,
-                // and the peer's branch-return store guarantees
-                // progress on early exits.
+                // Wait for the peer's screen before flooding the pool (a
+                // frontier starves a running screen badly); bounded, and
+                // the peer's branch-return store guarantees progress on
+                // early exits.
                 if let Some(peer) = &self.peer_screen_done {
                     let t_wait = std::time::Instant::now();
                     let cap = std::time::Duration::from_millis(4 * deadline_ms.max(100));
@@ -1018,11 +1008,10 @@ impl SynthesizerQ {
                 let handles: Vec<_> = tasks
                     .iter()
                     .map(|&(k, m)| {
-                        // 16 MiB stack: these threads participate in
-                        // rayon's in-place execution of prefix_split_search_q,
-                        // whose per-prefix scratch + SE recursion
-                        // overflow the 2 MiB scoped-thread default
-                        // (observed SIGABRT at lde_window = 2).
+                        // 16 MiB stack: these threads run rayon's in-place
+                        // execution of prefix_split_search_q, whose
+                        // per-prefix scratch + SE recursion overflow the
+                        // 2 MiB scoped-thread default.
                         std::thread::Builder::new()
                             .stack_size(16 * 1024 * 1024)
                             .spawn_scoped(s, move || {
@@ -1037,7 +1026,7 @@ impl SynthesizerQ {
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
-        // Legacy grid is the frontier stage's deep-ε/certify form — same
+        // The grid is the frontier stage's deep-ε/certify form — same
         // scoreboard column.
         diag::T_STAGE_FRONTIER_NS
             .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);

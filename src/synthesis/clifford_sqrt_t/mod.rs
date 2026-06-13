@@ -16,8 +16,7 @@
 //! For larger `k`: single-shot 16D L²-LLL + Schnorr-Euchner via
 //! [`crate::synthesis::lattice_zeta::find_aligned_lattice_points`] (with an optional BKZ-β
 //! post-pass), plus an FGKM-prefix divide-and-conquer mode (`prefix_split_search_q`)
-//! for deep `k`. Adaptive leaf budget scales exponentially in `k`;
-//! reaches ε ≲ 1e-5 at k ≈ 30.
+//! for deep `k`. Adaptive leaf budget scales exponentially in `k`.
 //!
 //! ## Reconstruction
 //!
@@ -89,8 +88,7 @@ pub struct CostCertificate {
 
 /// Clifford+√T synthesizer over `Z[ζ_16]`.
 ///
-/// Field names match `crate::synthesis::clifford_t::SynthesizerT`'s for
-/// the future merge. Defaults live in [`Self::new`].
+/// Field names mirror `clifford_t::SynthesizerT`. Defaults in [`Self::new`].
 #[derive(Clone)]
 pub struct SynthesizerQ {
     /// Approximation precision in diamond distance.
@@ -141,10 +139,10 @@ pub struct SynthesizerQ {
     /// re-derive v in MPFR from the exact source and rotate exactly
     /// (the rotation commutes with the prefix product).
     deep_rot_src: Option<(Mat2, u32)>,
-    /// Stage-2 handshake: a branch that finishes its screen first would
-    /// flood the shared rayon pool with frontier tasks and starve the
-    /// peer's still-running screen (~50×), so frontier dispatch waits
-    /// (bounded at 4× the deadline) until both screens are done.
+    /// A branch that finishes its screen first would flood the shared
+    /// rayon pool with frontier tasks and starve the peer's still-running
+    /// screen, so frontier dispatch waits (bounded at 4× the deadline)
+    /// until both screens are done.
     my_screen_done: Option<std::sync::Arc<AtomicBool>>,
     peer_screen_done: Option<std::sync::Arc<AtomicBool>>,
     /// Extra lde levels enumerated above the first feasible one — the
@@ -153,7 +151,7 @@ pub struct SynthesizerQ {
     pub optimal_lde_window: u32,
     /// Per-parity-branch wall deadline (ms) for the merged enum frontier
     /// (one cost-floor-ordered stream of prefix units across all (k, m)
-    /// arms); `None` = legacy per-(k, m) node-budget grid. Never applies
+    /// arms); `None` = per-(k, m) node-budget grid. Never applies
     /// in certify mode, which needs budget-truncation semantics.
     /// Builder: [`Self::with_optimal_deadline_ms`].
     pub optimal_deadline_ms: Option<u64>,
@@ -170,9 +168,8 @@ pub struct SynthesizerQ {
     pub odd_parity_branch: bool,
     /// Override the deep-ε sequential-parity schedule: `None` = ε rule
     /// (sequential below 2.5e-8, where each branch saturates the pool
-    /// alone), `Some(false)` = concurrent branches — the fast trade
-    /// (~⅓ wall for ~+1pp cost at 1e-8 with deadline 3000).
-    /// Builder: [`Self::with_seq_parity`].
+    /// alone); `Some(false)` = concurrent branches (less wall, slightly
+    /// higher cost). Builder: [`Self::with_seq_parity`].
     pub seq_parity: Option<bool>,
     /// Run enum tasks with an open det-phase filter (all 16 classes):
     /// the closed first-hit defaults exclude classes containing cost
@@ -196,12 +193,10 @@ fn lattice_lde_estimate(epsilon: f64) -> u32 {
     raw.max(0) as u32
 }
 
-/// Default enum-stage m-sweep, A/B-tuned per ε band. m=0 was dropped
-/// everywhere (6-7× slower for ≤2% cost); m=2 adds nothing above 1e-6
-/// but earns its keep below. Below 1e-7 the sweep runs as SEQUENTIAL
-/// per-m phases (see `run_optimal_search_certified`) — interleaved,
-/// m=2's 6× prefix fan-out starves the deep m=1 units that hold the
-/// decisive finds.
+/// Default enum-stage m-sweep per ε band. m=2 only earns its keep below
+/// 1e-6. Below 1e-7 the sweep runs as sequential per-m phases (see
+/// `run_optimal_search_certified`): interleaving lets m=2's prefix
+/// fan-out starve the deep m=1 units that hold the decisive finds.
 fn default_optimal_m_sweep(epsilon: f64) -> Vec<u32> {
     if epsilon >= 1e-6 {
         vec![1]
@@ -222,9 +217,8 @@ fn default_inner_det_phase_filter(m: u32) -> Vec<u32> {
 }
 
 /// Resource cost of a decomposed Clifford+√T gate string in half-units
-/// of a T gate: `2·T + q_cost_x2·Q`. With the default `q_cost_x2 = 7`
-/// this realises the `T + 3.5·Q` model from the plotting scripts while
-/// staying integer (exact comparisons, atomic CAS in the prefix prune).
+/// of a T gate: `2·T + q_cost_x2·Q` (default `q_cost_x2 = 7` ⇒ `T + 3.5·Q`).
+/// Integer so prefix-prune comparisons and atomic CAS stay exact.
 fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
     let (t, q) = gates_tq(gates);
     2 * t + q_cost_x2 * q
@@ -245,10 +239,9 @@ fn gates_tq(gates: &str) -> (usize, usize) {
 }
 
 impl SynthesizerQ {
-    /// Construct a synthesizer with ε-tuned defaults: Z1 D&C below 1e-6
-    /// (single search becomes pathological at deeper ε) and BKZ-4 below
-    /// 1e-7 (where the SE region is large enough to pay for the tighter
-    /// Hermite factor).
+    /// ε-tuned defaults: prefix-split D&C below 1e-6 (single search
+    /// becomes pathological at deeper ε) and BKZ-4 below 1e-7 (the SE
+    /// region is then large enough to pay for the tighter Hermite factor).
     pub fn new(epsilon: f64) -> Self {
         // m=2 strict at deep ε (lde_inner coverage); m=1 relaxed at 1e-6
         // (m=2 has structural gaps at low lde); single search above.
@@ -286,13 +279,12 @@ impl SynthesizerQ {
             .and_then(|v| v.parse().ok())
             .unwrap_or(if epsilon <= 1e-7 { 4 } else { 0 });
 
-        // Below 2.5e-8 a no-solution lde level burns its full pass-1
-        // budget before the search moves on; speculating the next lde
+        // Below 2.5e-8 a no-solution lde level burns its whole pass-1
+        // budget before the search advances; launching the next lde
         // behind a consumed-nodes trigger overlaps that burn while
-        // keeping likely-solution levels sequential. The 3× cap at
-        // ≤1e-8: solution levels there can consume ~1× cap before
-        // finding, so a 1× trigger spawns a spurious peer that dilutes
-        // the find.
+        // keeping likely-solution levels sequential. At ≤1e-8 solution
+        // levels can consume ~1× cap before finding, so the trigger is
+        // raised to 3× cap to avoid spawning a peer that dilutes the find.
         let (parallel_lde_window, parallel_lde_trigger_nodes) = if epsilon < 2.5e-8 {
             let cap = pass1_prefix_leaf_cap_for(epsilon);
             let mult: u64 = if epsilon <= 1e-8 { 3 } else { 1 };
@@ -322,31 +314,24 @@ impl SynthesizerQ {
             deep_rot_src: None,
             my_screen_done: None,
             peer_screen_done: None,
-            // Window 3 at and below 1e-7: the cost minimum often sits
-            // above find-lde there (post-dedup, w3+d2500 matches
-            // w2+d3500's cost at 30% less wall); window 4 regresses
-            // (extra levels dilute the deadline).
+            // At ε ≤ 1e-7 the cost minimum often sits above find-lde, so
+            // search a wider window; window 4 regresses (extra levels
+            // dilute the deadline).
             optimal_lde_window: if epsilon <= 1e-7 { 3 } else { 2 },
-            // Open filters only where the cost they recover beats the
-            // 3-6× enum wall they cost (audit: real optima excluded by
-            // the closed first-hit filters at ε ≤ 1e-5; ~nothing above).
+            // Open the d_R filters only at ε ≤ 1e-5, where the closed
+            // first-hit filters exclude real cost optima; above that they
+            // recover nothing and only cost enum wall.
             optimal_open_dr_filter: epsilon <= 1e-5,
             odd_parity_branch: true,
             seq_parity: None,
-            // ε-scaled anytime deadlines, each swept to the knee of its
-            // cost/deadline curve (1e-7 cliffs at 3.0-3.5 s — the deep
-            // arms' time-to-first-candidate; 1e-8 saturates near 10 s
-            // under sequential phases). Certify mode ignores these by
-            // construction.
+            // ε-scaled enum-stage deadlines. Certify mode ignores these
+            // by construction. The 1e-7 cost is flat across a wide deadline
+            // range, so its deadline sits at the low end of that range.
             optimal_deadline_ms: if epsilon >= 1e-5 {
                 Some(600)
             } else if epsilon >= 1e-6 {
                 Some(1500)
             } else if epsilon >= 1e-7 {
-                // S2 ladder (2026-06-13, queue dispatch, w3): cost shelf
-                // is flat 1500→3500 ms (~473 ± draw noise) with a ~9 HU
-                // cliff just below 1500. 1500 is the knee — same cost as
-                // the old 2500 default at 1.6× less wall (2.6→1.6 s/t).
                 Some(1500)
             } else {
                 Some(10_000)
@@ -367,9 +352,9 @@ impl SynthesizerQ {
         self
     }
 
-    /// Z1 prototype: enable FGKM-prefix divide-and-conquer at split parameter
-    /// `m`. Splits each lattice search at lde lde_total into a length-m FGKM
-    /// prefix `U_L` (enumerated from `L_m^Q`) plus an inner LLL+SE search at
+    /// Enable FGKM-prefix divide-and-conquer at split parameter `m`.
+    /// Splits each lattice search at lde_total into a length-m FGKM prefix
+    /// `U_L` (enumerated from `L_m^Q`) plus an inner LLL+SE search at
     /// lde_inner = lde_total − k_prefix, then composes. Off by default.
     pub fn with_prefix_split_m(mut self, m: u32) -> Self {
         self.prefix_split_m = Some(m);
@@ -478,11 +463,6 @@ impl SynthesizerQ {
     /// Returns `None` if no circuit within `max_lde` achieves diamond
     /// distance < `epsilon`. Returns the FIRST candidate found at the
     /// smallest k that works (not necessarily √T-count optimal).
-    ///
-    /// **Backend**: hybrid — brute-force `enumerate_unitary_norm_shell` for `k ≤ BRUTE_LIMIT`
-    /// (=3), then single-shot 16D L²-LLL + Schnorr-Euchner `find_aligned_lattice_points` (optionally
-    /// BKZ-reduced) and an FGKM-prefix divide-and-conquer mode (`prefix_split_search_q`)
-    /// for larger / deep k.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
         self.synthesize_with_unverified_levels(target, None)
     }

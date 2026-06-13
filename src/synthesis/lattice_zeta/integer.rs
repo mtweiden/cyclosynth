@@ -51,7 +51,7 @@ use crate::synthesis::diag;
 /// headroom past the precision walls in the f64 formula at ε ≲ √(machine_eps).
 const ALIGN_PREC: u32 = 128;
 
-/// Run the full 16D Lenstra Z[ζ_16] pipeline for one MA-prefix's `(y, k, eps)`
+/// Run the full 16D Lenstra Z[ζ_16] pipeline for one prefix's `(y, k, eps)`
 /// setup and collect every solution that passes all four leaf checks.
 ///
 /// `y` is the lattice-coord scaled y-vector (output of `uv_to_lattice_y_zeta`).
@@ -201,7 +201,7 @@ fn run_bkz_postpass(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()
 }
 
 /// CYCLOSYNTH_WARM_LLL16=1 enables the per-(k, ε) Q_base warm-LLL seed
-/// (default off pending the A/B on the 1e-8 concurrent-parity config).
+/// (default off).
 fn warm_lll16_enabled() -> bool {
     static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         std::env::var("CYCLOSYNTH_WARM_LLL16").as_deref() == Ok("1")
@@ -251,9 +251,9 @@ pub fn find_aligned_lattice_points_with_stop<F>(
 where
     F: Fn(&[i64; 16]) -> bool + Sync,
 {
-    // Promote f64 y to MPFR. This wrapper is for legacy callers at f64
-    // precision (everything ≥ ε=1e-7); ε ≤ 1e-8 should call
-    // `find_aligned_lattice_points_mpfr` directly to bypass the f64 ULP floor in v.
+    // Promote f64 y to MPFR. This wrapper serves f64-precision callers
+    // (ε ≥ 1e-7); ε ≤ 1e-8 must call `find_aligned_lattice_points_mpfr`
+    // directly to bypass the f64 ULP floor in v.
     let prec = scratch.prec_q;
     let scale = 2.0_f64.powf(k as f64 / 2.0) / 4.0;
     let v_mpfr: [RFloat; 4] = [
@@ -299,8 +299,8 @@ where
 
     let warm_seeded = warm_seed_q_base(scratch, k, eps);
 
-    // Step 1: build Q in MPFR + i256 snapshot. Reset basis unless caller
-    // requested warm_lll (Z1 D&C path) or the Q_base seed is installed.
+    // Step 1: build Q in MPFR + i256 snapshot. Reset basis unless the
+    // caller requested warm_lll or the Q_base seed is installed.
     let t_build = if trace { Some(std::time::Instant::now()) } else { None };
     if !scratch.warm_lll {
         scratch.reset_basis();
@@ -341,12 +341,12 @@ where
         return Vec::new();
     }
 
-    // Deep-ε dd Q-bracket: MPFR-128 Cholesky projected to an f64
-    // snapshot + dd factor, making every Q-prune decision sound at the
-    // tight bound. Gated so moderate-ε hot paths pay nothing
-    // (CYCLOSYNTH_QBRACKET_DD=0 restores f64 + bound 3.0). Computed
-    // BEFORE the f64 Cholesky: an f64 Cholesky failure must not bail a
-    // find_aligned_lattice_points whose MPFR factorization is healthy.
+    // Deep-ε bound: an MPFR-128 Cholesky projected to an f64 snapshot +
+    // double-double factor makes every Q-prune decision sound at the tight
+    // bound. Gated so moderate-ε hot paths pay nothing
+    // (CYCLOSYNTH_QBRACKET_DD=0 restores f64 + bound 3.0). Computed BEFORE
+    // the f64 Cholesky so an f64 Cholesky failure can't bail a search
+    // whose MPFR factorization is healthy.
     let q_chol_dual = if (eps <= 2e-8 || verify_prune_mpfr()) && !qbracket_dd_disabled() {
         let dual = q_cholesky_16_mpfr_dual(&scratch.gram, scratch.scale_bits);
         if dual.is_none() {
@@ -401,8 +401,8 @@ where
     let z_c = SeCenter16::from_lu_x(&scratch.lu_x);
 
     if trace {
-        // Compare MPFR-direct round vs the legacy f64 path to expose the
-        // discrepancy in the trace (zero at moderate ε; up to ULP at deep ε).
+        // Trace-only: MPFR-direct round vs the f64 path (zero at moderate
+        // ε; up to ULP at deep ε).
         let max_diff = (0..16).fold(0i64, |acc, i| {
             let f64_path = scratch.lu_x[i].to_f64().round() as i64;
             (f64_path - z_c.int[i]).abs().max(acc)
@@ -422,27 +422,18 @@ where
     };
 
     // Step 5: SE bound. Every point of the enumeration cap — hence every
-    // valid solution — has geometric Q-norm² in [0.875, 1.25], with both
-    // endpoints attained (docs/bound_sq_soundness.md v3): the 1/4
-    // Σ-embedding factor (cf. the alignment threshold derivation below)
-    // puts EVERY block at lattice radius ρ = R/2, so the 3 bullet blocks
-    // pinned on their spheres contribute exactly 0.75 total, and the σ₁
-    // cap offsets are halved against the Δ_y/Δ_⊥ scales: apex (exact
-    // solutions) +1/4 → Q = 1.0 exactly, rim +1/2 → Q = 1.25 exactly.
-    // Measured: QHQ@k=1 exact solution Q = 1.0000
-    // (qhq_q_decomposition_diagnostic); 7,041 ε-close solutions max at
-    // 1.2500 (q_telemetry_sweep); retention cliff at (1.20, 1.26]
-    // post-fractional-center (was (1.6, 1.75] with the rounded center —
-    // the difference was rounding inflation, removed by SeCenter16).
+    // valid solution — has geometric Q-norm² in [0.875, 1.25], both
+    // endpoints attained (docs/bound_sq_soundness.md): the 1/4 Σ-embedding
+    // factor puts every block at lattice radius ρ = R/2, so the 3 bullet
+    // blocks pinned on their spheres contribute exactly 0.75, and the
+    // halved σ₁ cap offsets give apex (exact solutions) Q = 1.0 and rim
+    // Q = 1.25.
     //
-    // Default 1.5 = tight 1.25 + 20% slack. Historically deep ε (≤ 2e-8)
-    // needed 3.0 because the incremental f64 partial-Q overshot up to
-    // ~1.8× there (the ε=1.5e-8 cliff: 1.25 · 1.8 < 3.0 absorbed it).
-    // With the dd-verified Q bracket (q_chol_dual above) the boundary
-    // decisions are made on ~1e-32-accurate values, so the tight band
-    // [0.875, 1.25] + 20% slack = 1.5 is sound at every ε; 3.0 survives
-    // only as the defensive fallback if the MPFR Q-Cholesky itself fails
-    // at deep ε. Override via env var.
+    // Default 1.5 = tight 1.25 + 20% slack, sound at every ε once the Q
+    // bracket is computed on the MPFR factor (q_chol_dual above). 3.0
+    // survives only as the defensive fallback when the MPFR Q-Cholesky
+    // itself fails at deep ε, where the f64 partial-Q can overshoot.
+    // Override via env var.
     let bound_sq = std::env::var("CYCLOSYNTH_BOUND_SQ")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
@@ -1166,15 +1157,12 @@ mod tests {
     /// ε=1e-3, k=11 — the level whose m=0 coverage walks blow through even
     /// the 32×-boosted certify budgets (true total ≳ 100G nodes).
     ///
-    /// Measured fire window (2026-06-10, 14 threads): completing 10% of
-    /// the 4153 frontier items costs C* ≈ 1.21G nodes, so a budget B fires
-    /// iff B ∈ (C*, C*/0.3 ≈ 4G): at B=3G it fires at consumed 1.21G
-    /// (40% of budget, projected 11.7G > 3×3G), at B=2M/100M/6.4G it
-    /// plain-exhausts (fraction_done at exhaustion 0.003/0.004/0.376 —
-    /// the last projects 17G = 2.66×B, just under MARGIN=3; see
-    /// docs/w_predictive_trunc_notes.md for the bias analysis). Asserts
-    /// the predictive counter fired, the plain-exhaust counter did NOT,
-    /// the walk surfaced as a budget hit, and consumed ≪ budget. Run:
+    /// The budget is chosen inside the fire window: it must exceed the
+    /// cost to complete 10% of the frontier (so the projection has data)
+    /// yet fall below that cost divided by the truncation margin (so the
+    /// projection exceeds the budget). Asserts the predictive counter
+    /// fired, the plain-exhaust counter did NOT, the walk surfaced as a
+    /// budget hit, and consumed ≪ budget. Run:
     /// `cargo test --release --lib predictive_trunc_fires -- --ignored --nocapture`
     #[test]
     #[ignore]

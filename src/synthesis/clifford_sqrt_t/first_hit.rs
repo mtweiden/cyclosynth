@@ -176,7 +176,7 @@ impl Drop for VerifyGuard {
     }
 }
 
-/// Per-prefix Z1 D&C pass-1 budget; scaled with ε since the post-LLL
+/// Per-prefix pass-1 leaf budget; scaled with ε since the post-LLL
 /// SE region grows exponentially in lde_inner.
 pub(crate) fn pass1_prefix_leaf_cap_for(epsilon: f64) -> u64 {
     if epsilon <= 1e-8 {
@@ -201,16 +201,13 @@ pub(crate) fn pass2_prefix_leaf_cap_for(epsilon: f64) -> u64 {
 pub(crate) const PASS1_PREFIX_LEAF_CAP: u64 = 5_000_000;
 pub(crate) const PASS2_PREFIX_LEAF_CAP: u64 = 10_000_000;
 
-/// Rayon `with_min_len` for `prefix_split_search_q`'s **optimize-mode** prefix
-/// par_iter. `0` = legacy `usable.len() / n_threads` chunking.
-///
-/// **A/B 2026-06-10 (1e-6 suite, 6 targets, seed 12648430):** `1`
-/// (every prefix independently stealable) ABORTS — per-job `map_init`
-/// scratch construction nests stolen `per_prefix` frames on rayon's
-/// 2 MiB pool workers and overflows the stack (the coarse chunking only
-/// survives because job count stays ≈ n_threads, bounding the nesting).
-/// Keep 0; the cheap-prefix serialization issue is addressed by
-/// [`OPTIMAL_PREFIX_INTERLEAVE`] instead, at unchanged job granularity.
+/// Rayon `with_min_len` for `prefix_split_search_q`'s optimize-mode
+/// prefix par_iter. `0` = `usable.len() / n_threads` chunking. Do NOT
+/// set `1`: per-job `map_init` scratch construction nests stolen
+/// `per_prefix` frames on rayon's 2 MiB pool workers and overflows the
+/// stack (coarse chunking survives because job count stays ≈ n_threads,
+/// bounding the nesting). The cheap-prefix serialization issue is handled
+/// by [`OPTIMAL_PREFIX_INTERLEAVE`] instead.
 pub(crate) const OPTIMAL_PAR_MIN_LEN: usize = 0;
 
 /// Transpose-interleave the cost-sorted prefix list across rayon chunks
@@ -218,25 +215,23 @@ pub(crate) const OPTIMAL_PAR_MIN_LEN: usize = 0;
 /// chunking hands all the cheapest prefixes to one chunk, serializing
 /// exactly the prefixes most likely to set the incumbent; interleaving
 /// runs the t cheapest in parallel first so later prefixes see maximal
-/// pruning. Stack-safe, unlike `with_min_len(1)` (above). 1.66× wall at
-/// bit-identical costs.
+/// pruning. Stack-safe, unlike `with_min_len(1)`.
 pub(crate) const OPTIMAL_PREFIX_INTERLEAVE: bool = true;
 
 /// Frontier dispatch mode: strict floor-priority pull-queue (workers
 /// take the lowest-floor unstarted unit from an atomic cursor) instead
 /// of pre-chunked `par_iter`. Under a deadline, chunked dispatch makes
-/// the started-set a scheduling draw — the anytime-cost variance
-/// source (±7-10 HU per N=12 at 1e-8); the queue makes it a
-/// deterministic prefix of the floor order. `CYCLOSYNTH_FRONTIER_QUEUE=0`
-/// restores chunked dispatch for A/B.
+/// the started-set a scheduling draw — the main source of anytime-cost
+/// variance; the queue makes it a deterministic prefix of the floor
+/// order. `CYCLOSYNTH_FRONTIER_QUEUE=0` restores chunked dispatch.
 pub(crate) static FRONTIER_QUEUE_DISPATCH: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| {
         !matches!(std::env::var("CYCLOSYNTH_FRONTIER_QUEUE").as_deref(), Ok("0"))
     });
 
-/// Compute `U_L† · target` as a continuous Mat2.
-/// `U_L` is exact (`U2Q`), `target` is float (`Mat2`). Mirrors the 8D
-/// helper `clifford_t::prefix_dag_times_target` for use by the Z1 D&C path.
+/// Compute `U_L† · target` as a continuous Mat2 (`U_L` exact `U2Q`,
+/// `target` float `Mat2`). Mirrors the 8D helper
+/// `clifford_t::prefix_dag_times_target`.
 pub(crate) fn prefix_dag_times_target_q(u_l: &U2Q, target: &Mat2) -> Mat2 {
     let u_f = u_l.to_float();
     // (U_L†)[i][j] = conj(U_L[j][i])
@@ -266,9 +261,9 @@ pub(crate) struct PrefixSplitOpts<'a> {
     pub(crate) dr_filter_override: Option<&'a [u32]>,
     /// Per-prefix SE leaf budget.
     pub(crate) per_prefix_cap: u64,
-    /// Cross-branch winner signal (parallel-LDE speculation).
+    /// Cross-branch winner abort signal (concurrent-lde dispatch).
     pub(crate) external_abort: Option<&'a AtomicBool>,
-    /// Shared consumed-nodes counter (speculation trigger).
+    /// Shared consumed-nodes counter (next-lde launch trigger).
     pub(crate) consumed: Option<&'a std::sync::atomic::AtomicU64>,
     /// Force min-cost (true) or first-hit (false) reduction; `None` =
     /// the synthesizer's `optimize_cost`.
@@ -278,16 +273,15 @@ pub(crate) struct PrefixSplitOpts<'a> {
 }
 
 impl SynthesizerQ {
-    /// Parallel-LDE speculation: windows of `parallel_lde_window` levels
-    /// run concurrently from `start_k` upward; the first find aborts
-    /// in-flight peers. Hard-target wall drops from "sum of no-solution
-    /// burns + find" to "find alone", paid for by thread dilution on
-    /// easy targets — hence only enabled where hard targets overshoot
-    /// the predicted lde. Task i > 0 gates on its predecessor burning
-    /// `parallel_lde_trigger_nodes` without finding (0 = launch
-    /// immediately), and ALSO on predecessor finish: a level can
-    /// complete cleanly below the trigger, and a successor polling a
-    /// permanently-stopped counter deadlocks the process.
+    /// Run windows of `parallel_lde_window` lde levels concurrently from
+    /// `start_k` upward; the first find aborts in-flight peers. This drops
+    /// hard-target wall from "sum of no-solution burns + find" to "find
+    /// alone", paid for by thread dilution on easy targets — hence enabled
+    /// only where hard targets overshoot the predicted lde. Task i > 0
+    /// gates on its predecessor burning `parallel_lde_trigger_nodes`
+    /// without finding (0 = launch immediately) AND on predecessor finish:
+    /// a level can complete below the trigger, and a successor polling a
+    /// permanently-stopped counter would deadlock.
     ///
     /// Returns `(find, pass-2 queue, unclear-below-find levels)`. The
     /// third element is conservative: a non-finding window peer below
@@ -524,7 +518,6 @@ impl SynthesizerQ {
         let d = det_phase_of(&target);
         let v = unitary_to_uv_zeta(&target);
 
-        // Lattice scratch is allocated lazily on first lattice call.
         let mut scratch: Option<Box<IntScratch16>> = None;
 
         let lattice_start = lattice_lde_estimate(self.epsilon)
@@ -632,11 +625,10 @@ impl SynthesizerQ {
             use std::sync::Mutex;
             let pass2_collector: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
-            // window == 1 takes a plain sequential loop with zero
-            // speculation machinery: the shared consumed-counter alone
-            // costs 30-50% wall on shallow-ε million-node walks, and
-            // speculation only pays where no-solution levels burn
-            // seconds (deep ε).
+            // window == 1 uses a plain sequential loop: the shared
+            // consumed-counter alone costs a large fraction of wall on
+            // shallow-ε million-node walks, and concurrent-lde dispatch
+            // only pays where no-solution levels burn seconds (deep ε).
             if self.parallel_lde_window <= 1 {
                 for k in (m_split + 1).max(lattice_start)..=self.max_lde {
                     if k > self.effective_max_lde() {
@@ -933,13 +925,11 @@ impl SynthesizerQ {
             let k_prefix = u_l.k;
             let lde_inner = lde_total - k_prefix;
 
-            // d_L from prefix's float det.
             let d_l = det_phase_of(&u_l.to_float());
             let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
 
-            // Heuristic prune: U_R can cancel parts of U_L, so this
-            // can in principle miss the optimum; empirically it never
-            // has on random SU(2) targets.
+            // Heuristic prune: U_R can cancel parts of U_L, so this can in
+            // principle miss the optimum.
             if optimize_cost {
                 let cur_best = best_cost.load(std::sync::atomic::Ordering::Relaxed);
                 // Sound because syllable costs are additive in normal
@@ -956,7 +946,6 @@ impl SynthesizerQ {
                 }
             }
 
-            // m_inner = U_L† · target as a continuous Mat2.
             let m_inner = prefix_dag_times_target_q(u_l, target);
             let v_inner = unitary_to_uv_zeta(&m_inner);
 
