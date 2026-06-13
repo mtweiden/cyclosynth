@@ -52,7 +52,8 @@ impl ZOmega {
         Self { a: self.a, b: -self.d, c: -self.c, d: -self.b }
     }
 
-    /// The squared norm of the complex number (in Z[√2] ≅ ℤ, but computed as Int).
+    /// Sum of squared coefficients (the coefficient-vector norm, not |z|² —
+    /// the {1,ω,ω²,ω³} basis is not orthonormal as complex numbers).
     #[inline]
     pub fn norm_sqr(self) -> Int {
         self.a * self.a + self.b * self.b + self.c * self.c + self.d * self.d
@@ -73,8 +74,6 @@ impl ZOmega {
     }
 
     /// Largest power of 2 that divides all four coefficients.
-    /// Used for normalization: if all coefficients are even, divide by 2
-    /// and reduce the √2-exponent by 2.
     pub fn gcd_power_of_2(self) -> u32 {
         let bits = self.a | self.b | self.c | self.d;
         if bits == INT_ZERO {
@@ -94,9 +93,8 @@ impl ZOmega {
         }
     }
 
-    /// Multiply by √2 in Z[ω]: √2 = ω − ω³ (since (ω−ω³)² = ω²−2+ω⁻² ... wait)
-    /// Actually ω − ω³ = e^{iπ/4} − e^{3iπ/4} = (1+i)/√2 − (−1+i)/√2 = 2/√2 = √2. ✓
-    /// So (self) · √2 = self · (ω − ω³).
+    /// Multiply by √2 in Z[ω], using √2 = ω − ω³
+    /// (= (1+i)/√2 − (−1+i)/√2 = 2/√2 = √2).
     pub fn mul_sqrt2(self) -> Self {
         // self * (0 + 1·ω + 0·ω² + (−1)·ω³)
         let rhs = Self { a: INT_ZERO, b: INT_ONE, c: INT_ZERO, d: INT_NEG_ONE };
