@@ -126,7 +126,7 @@ impl <R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
         Self::new(R::one(), R::zero(), R::zero(), R::i(), 0)
     }
 
-    /// T gate: [[1,0],[0,ω]] / √2^0 (for U2T)
+    /// T gate: [[1,0],[0,ω]] (ω = e^{iπ/4} in both rings).
     pub fn t() -> Self {
         Self::new(R::one(), R::zero(), R::zero(), R::omega(), 0)
     }
@@ -187,9 +187,8 @@ impl U2<ZZeta> {
 
 // ─── Multiplication (matrix product) ─────────────────────────────────────────
 
-/// U2 matrix multiplication
-/// TODO: There should be a "reduction" method that I can call that reduces the 
-/// value of k as much as possible while keeping coefficients as integers.
+/// Matrix product. `k` accumulates (`self.k + rhs.k`) without reduction;
+/// call `reduced()` (ZZeta only) to recover the true lde.
 impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> Mul for U2<R> {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
