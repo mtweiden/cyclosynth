@@ -9,12 +9,9 @@
 use crate::matrix::{U2T, U2Q};
 use crate::rings::{ZOmega, ZZeta};
 
-/// All 24 single-qubit Clifford gates as (gate_string, U2T) pairs.
-///
-/// These are SU(2) representatives (det = 1 up to global phase — the diamond
-/// distance is phase-invariant so global phases are irrelevant for synthesis).
-// Conversion from old (u1,u2,k) form: u11=u1, u12=-conj(u2), u21=u2, u22=conj(u1).
-// For ZOmega: conj(a,b,c,d)=(a,-d,-c,-b), so -conj(a,b,c,d)=(-a,d,c,b).
+/// All 24 single-qubit Clifford gates as (gate_string, U2T) pairs, SU(2)
+/// representatives (global phase is irrelevant — diamond distance is
+/// phase-invariant).
 pub static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
     //         u11                     u12                     u21                     u22                     k
     ("I",    U2T::new(ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), 0)),
@@ -43,30 +40,19 @@ pub static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
     ("ZHSH", U2T::new(ZOmega::from_i32( 0, 0, 1, 0), ZOmega::from_i32(-1, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0,-1, 0), 1)),
 ];
 
-/// Indices into [`CLIFFORD_TABLE_T`] of the 8 Cliffords with lde 0 — the
-/// subgroup ⟨S, X⟩ mod global phase: I, S, X, Y, Z, XS, YS, ZS. Exactly
-/// the Cliffords whose U2T denominator exponent `k` is 0 (entries are
-/// units of Z[ω], no 1/√2 factor).
-///
-/// Used by `build_ma_prefix_set`'s right-coset dedup (stage 1 of
-/// docs/plan_8d_prefix_rework.md): for lde-0 `C`, the prefix-split subproblems of
-/// prefixes `U_L` and `U_L·C` are Q-isometric bijections with identical
-/// total unitaries (`U_L·C·U_R = U_L·(C·U_R)`, and `C·U_R` lies on the
-/// same norm shell with the same lde), so one representative per right
-/// coset `U_L·⟨S,X⟩` suffices. The 24 Cliffords fall into 3 right cosets
-/// of this subgroup, which is why `build_ma_prefix_set`'s 24-fold Clifford
-/// postmultiplication is ~2/3+ duplicated work that plain phase-dedup
-/// misses.
+/// Indices into [`CLIFFORD_TABLE_T`] of the 8 lde-0 Cliffords — the
+/// subgroup ⟨S, X⟩ mod phase (units of Z[ω], no 1/√2). Used by
+/// `build_ma_prefix_set`'s right-coset dedup: for lde-0 `C`, `U_L` and
+/// `U_L·C` have Q-isometric subproblems (`U_L·C·U_R = U_L·(C·U_R)`, same
+/// shell and lde), so one rep per coset `U_L·⟨S,X⟩` suffices. The 24
+/// Cliffords fall into 3 such cosets — the 24-fold postmultiplication is
+/// ~2/3 redundant work that plain phase-dedup misses.
 pub static CLIFFORD_LDE0_IDX: [usize; 8] = [0, 2, 3, 4, 5, 9, 10, 11];
 
-// Note on the T gate: T = Rz(π/4) = diag(e^{−iπ/8}, e^{iπ/8}). The phase
-// e^{iπ/8} is *not* in Z[ω], so T as an exact unitary needs the larger Z[ζ]
-// ring (or a base-8 DyadicComplex). For Clifford+T synthesis we never need T
-// as a U2T object: the "T branch" applies T as a right-factor on the
-// alignment vector rather than constructing an exact U2T value. In the
-// output, the literal 'T' in a gate string denotes Rz(π/4) up to the global
-// phase, which is the convention the synthesizer's tests and decomposer
-// agree on.
+// T = Rz(π/4) has phase e^{iπ/8} ∉ Z[ω], so it can't be a U2T value. We
+// never need it as one: the "T branch" applies T as a right-factor on the
+// alignment vector, and the literal 'T' in a gate string denotes Rz(π/4)
+// up to global phase.
 
 /// Find the Clifford (by index into CLIFFORD_TABLE_T) that best matches target.
 /// Returns the index and the diamond distance.
