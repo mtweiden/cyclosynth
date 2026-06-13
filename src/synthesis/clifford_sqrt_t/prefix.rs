@@ -278,23 +278,18 @@ pub(crate) fn build_fgkm_prefix_set_inner(m: u32) -> Vec<U2Q> {
         })
         .collect();
 
-    // Enumerate all length-m FGKM bodies (axis-adjacency-distinct).
     let mut bodies: Vec<U2Q> = Vec::new();
     enumerate_bodies(m, 3, U2Q::eye(), &syllables, &mut bodies);
 
     // Append every Clifford suffix to every body.
     //
-    // NOTE on `k` semantics (2026-06-10): the stored `k` here is the
-    // UNREDUCED accumulation — a *peel-depth* coordinate matching the
-    // inner-LLL+SE shell split (`lde_inner = lde_total − u_l.k`), NOT the
-    // prefix's reduced matrix lde. Reducing here (tried) makes z-axis
-    // and Clifford-heavy prefixes drop to k ≈ 0-1, so their suffix
-    // searches run at nearly full depth — a ~30× wall explosion — while
-    // only partially fixing the coverage gap it was meant to address
-    // (canonical routes clipped by heterogeneous inflation; see the
-    // critic review in docs/design_certified_optimal_cost.md). The
-    // right fix needs a dual-coordinate design: reduced lde for cost
-    // accounting, peel depth for shell selection.
+    // The stored `k` is the UNREDUCED accumulation — a *peel-depth*
+    // coordinate matching the inner-LLL+SE shell split (`lde_inner =
+    // lde_total − u_l.k`), NOT the prefix's reduced matrix lde. Reducing it
+    // makes z-axis and Clifford-heavy prefixes drop to k ≈ 0-1, so their
+    // suffix searches run at nearly full depth (large wall regression); a
+    // sound reduction needs a dual coordinate (reduced lde for cost, peel
+    // depth for shell selection — see docs/design_certified_optimal_cost.md).
     let mut candidates: Vec<U2Q> = Vec::with_capacity(bodies.len() * cliffords_q.len());
     for body in &bodies {
         for c in &cliffords_q {
