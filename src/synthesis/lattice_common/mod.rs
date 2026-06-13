@@ -1,35 +1,11 @@
-//! Items shared between the two Lenstra-style LLL+SE backends:
-//! [`super::lattice`] (8D, Z[ω], Clifford+T) and
-//! [`super::lattice_zeta`] (16D, Z[ζ_16], Clifford+√T).
-//!
-//! Most of each backend is dim-specialized hot-path code (using
-//! `[[T; 8]; 8]` vs `[[T; 16]; 16]`), and the inner-loop performance
-//! depends on those constants being known at compile time. We don't try
-//! to unify those.
-//!
-//! What we DO unify:
-//!
-//! - **L²-LLL parameters** (`L2_ETA`, `L2_DELTA`, etc.) — pure algorithmic
-//!   constants from Nguyen-Stehlé 2009, identical for any dimension.
-//! - **Iteration / overflow caps** — `MAX_LAZY_PASSES`, `TARGET_BITS`,
-//!   `GRAM_OVERFLOW_THRESHOLD_BITS`. Not strictly dim-independent
-//!   numerically (the GS proof has dim-dependent constants) but the
-//!   *values* we pick happen to be the same.
-//! - **`LllResult`** — return-type enum of every LLL entry-point.
-//! - **`compute_scale_bits`** — tiny helper, identical formula.
-//!
-//! What we DON'T unify:
-//!
-//! - Dim-specific `IntScratch` / `IntScratch16` structs.
-//! - Per-iteration LLL inner loops (`lll_l2_8` vs `lll_l2_16`).
-//! - Bilinear forms (1 form for Z[ω], 3 for Z[ζ_16] — different
-//!   structure, not just dim).
-//! - Solution reconstruction (`solution_to_u2t` vs `solution_to_u2q_with_det_phase`).
-//! - Q-metric construction (different ring embeddings).
-//!
-//! When future fplll-inspired optimizations land (adaptive precision
-//! ladder, prefix-sum Lovász cascade), they go in subordinate files of
-//! this module so both backends pick them up.
+//! Dimension-independent items shared between the two Lenstra-style
+//! LLL+SE backends: [`super::lattice`] (8D, Z[ω], Clifford+T) and
+//! [`super::lattice_zeta`] (16D, Z[ζ_16], Clifford+√T). The hot-path code
+//! (dim-specialized `[[T; 8]]` vs `[[T; 16]]` loops, bilinear forms,
+//! ring-specific Q-metric and reconstruction) stays separate per backend
+//! so the dimension is a compile-time constant. Only the L²-LLL
+//! parameters, iteration/overflow caps, `LllResult`, and the i256/scale
+//! helpers are unified here.
 
 // ─── L²-LLL parameters (Nguyen-Stehlé 2009, Figures 5-7) ─────────────────────
 
@@ -71,41 +47,24 @@ pub fn compute_scale_bits(max_q_log2: i32) -> i32 {
 
 // ─── Result type ─────────────────────────────────────────────────────────────
 
-/// Outcome of an LLL run. Convergence with a unimodular basis on success;
-/// overflow or iteration-cap on failure.
-///
-/// `GramOverflow`: the caller should reject this prefix and let the
-/// dispatcher advance.
-///
-/// `IterCap`: indicates cycling or near-boundary precision noise. The
-/// basis is still a valid lattice basis (just possibly under-reduced),
-/// so most callers treat this as "convergence with reduced quality" and
-/// proceed.
+/// Outcome of an LLL run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LllResult {
-    /// LLL converged within the iteration cap and no overflow.
     Converged,
-    /// A Gram entry's magnitude exceeded `GRAM_OVERFLOW_THRESHOLD_BITS`.
+    /// A Gram entry exceeded `GRAM_OVERFLOW_THRESHOLD_BITS`; the caller
+    /// should reject this prefix and let the dispatcher advance.
     GramOverflow,
-    /// Reached the iteration cap without convergence.
+    /// Iteration cap hit (cycling or near-boundary noise). The basis is
+    /// still valid, just possibly under-reduced — most callers proceed.
     IterCap,
 }
 
 use i256::i256;
 
-/// Convert i256 to f64. Combines limbs in increasing-precision order so
-/// low bits round, not high.
-///
-/// **Hot path notes**:
-/// - `i256::is_negative` is a single sign-bit check; skip the early-zero
-///   return (zero lands at 0.0 naturally); pull limbs via `to_ne_limbs`;
-///   hoist the 2^64/2^128/2^192 scales to consts.
-///
-/// Tried (and abandoned): two's-complement direct conversion (signed
-/// high limb, unsigned low limbs). Catastrophic cancellation for small
-/// negative values whose high limb is `0xFF...FF` — subtracts two
-/// near-equal large f64 numbers, loses all precision below ~2^140. Must
-/// take abs() in i256 first to keep mantissa precision.
+/// Convert i256 to f64, summing limbs low-to-high so low bits round, not
+/// high. Take abs() in i256 FIRST: a two's-complement conversion of a
+/// small negative (high limb `0xFF…FF`) subtracts two near-equal large
+/// f64s and loses all precision below ~2^140.
 #[inline]
 pub fn i256_to_f64(v: i256) -> f64 {
     const SCALE_64: f64 = 18446744073709551616.0; // 2^64
