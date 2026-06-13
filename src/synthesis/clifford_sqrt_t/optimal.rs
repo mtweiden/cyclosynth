@@ -375,15 +375,11 @@ impl SynthesizerQ {
         )
     }
 
-    /// Single-search lattice probe at lde `k`, returning the best
-    /// `(cost, SynthResultQ)` under the current `optimize_cost` mode.
-    /// Mirrors the `try_lattice_k` + `check_sols` closures in
-    /// [`Self::synthesize`] but as a method so it can be reused by the
-    /// Tier-1 certified synthesis: exhaustively enumerate every
-    /// Clifford+√T circuit with reduced lde ≤ `k_max` (single
-    /// unbudgeted shell enumeration per parity branch — see
-    /// [`CostCertificate`] for the covering argument), floor with the
-    /// Clifford+T baseline, and report a proven optimality interval.
+    /// Certified synthesis: exhaustively enumerate every Clifford+√T circuit
+    /// with reduced lde ≤ `k_max` (single unbudgeted shell enumeration per
+    /// parity branch — see [`CostCertificate`] for the covering argument),
+    /// floor with the Clifford+T baseline, and report a proven optimality
+    /// interval.
     ///
     /// Wall time grows exponentially with `k_max`; `certified_optimal`
     /// requires `upper ≤ cost_lb_half_units(k_max + 1)` ≈ k_max, so
@@ -494,7 +490,11 @@ impl SynthesizerQ {
         Some((result, cert))
     }
 
-    /// Stage-2/4 m-sweep and called concurrently from `thread::scope`.
+    /// Single-search lattice probe at lde `k` for one `(d, m)` arm, returning
+    /// the best `(cost, SynthResultQ)` under the current `optimize_cost` mode.
+    /// Mirrors the `try_lattice_k`/`check_sols` closures in
+    /// `first_hit::synthesize_with_unverified_levels`. Called both sequentially
+    /// (the certified m-sweep) and concurrently (per-parity `thread::scope`).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn direct_lattice_search_at(
         &self,
@@ -1094,7 +1094,7 @@ impl SynthesizerQ {
     /// lattice probe, m≥1 → FGKM-prefix split with the default d_R
     /// filter. Extracted from the m-sweep loop so the enum phase can run
     /// all (k, m) pairs as independent parallel tasks.
-    #[allow(clippy::too_many_arguments)] // 4 call sites, all internal
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_enum_arm(
         &self,
         target: Mat2,
