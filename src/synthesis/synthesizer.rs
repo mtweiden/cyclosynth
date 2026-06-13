@@ -12,12 +12,9 @@
 //! The two flows currently use *different algorithms* (Z[ω]: 8D MA-prefix
 //! divide-and-conquer; Z[ζ_16]: 16D LLL+SE with a brute-force small-k mode
 //! and an FGKM-prefix divide-and-conquer mode for deep k), so they can't be
-//! expressed cleanly as a single generic `Synthesizer<R: GateRing>`. This wrapper
-//! gives users a single API today while the internals keep their own
-//! optimised code paths. Once the algorithmic structure converges (see
-//! the `project_synthesizer_generic_followup` memory), the wrapper will
-//! be replaced with monomorphised generic instantiations and `sqrt_t`
-//! will keep working as a public-API parameter.
+//! expressed cleanly as a single generic `Synthesizer<R: GateRing>`. This
+//! wrapper gives users a single API while the internals keep their own
+//! optimised code paths.
 
 use crate::synthesis::distance::Mat2;
 use crate::synthesis::clifford_t::SynthesizerT;
@@ -128,8 +125,9 @@ impl Synthesizer {
     }
 
     /// Clifford+√T only: override the deep-ε sequential-parity schedule
-    /// (see [`SynthesizerQ::with_seq_parity`]); `Some(false)` is the
-    /// fast mode at ε ≤ 1e-8. Ignored for Clifford+T.
+    /// (see [`SynthesizerQ::with_seq_parity`]); `Some(false)` forces the
+    /// concurrent (lower-wall) branches below the 2.5e-8 sequential
+    /// threshold. Ignored for Clifford+T.
     pub fn with_seq_parity(mut self, seq: Option<bool>) -> Self {
         if let Backend::Q(s) = self.inner {
             self.inner = Backend::Q(s.with_seq_parity(seq));
@@ -270,7 +268,7 @@ impl PySynthesizer {
         if let Some(v) = min_lde {
             s = s.with_min_lde(v);
         }
-        // None = keep the ε-based default (on for √T at ε ≥ 1e-6);
+        // None = keep the backend default (on for √T at every ε);
         // Some(b) = explicit override in either direction.
         if let Some(b) = optimize_cost {
             s = s.with_optimize_cost(b);
