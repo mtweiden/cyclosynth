@@ -83,9 +83,9 @@ pub fn set_verify_prune_mpfr(value: bool) {
 
 // ─── Inline double-double primitives (~106 bits, ~32 decimal digits) ─────────
 //
-// Validated against rug-128 via `probe_dd_unit` to ~1e-33 relative error on
-// sqrt, recip, div, Cholesky, and dot-product cases. Used by
-// `verify_partial_dd_exceeds` for fast prune verification — ~10× cheaper
+// ~1e-33 relative error on sqrt, recip, div, Cholesky, and dot-product
+// cases. Used by `verify_partial_dd_exceeds` for fast prune verification —
+// ~10× cheaper
 // than rug-128 in the hot loop because no heap allocation and no mpfr_t
 // init/clear per op.
 
@@ -380,7 +380,7 @@ fn center_relative_seed(
 // companion, every Q-prune decision on the boundary is made on a value
 // accurate to ~1e-32 — both overshoot (lost solutions) and undershoot
 // (spurious subtrees) are eliminated — so the bound default drops to the
-// tight 1.5 everywhere.
+// tight 1.5 wherever the dd factor is attached (still 3.0 when it is not).
 //
 // Cost model: one dd tail per node (O(16−d) dd mul/adds, replacing the
 // f64 tail loop) + ~4 dd ops per bracket candidate. Zero cost when
@@ -514,7 +514,7 @@ pub fn reconstruct_x(b_lll: &[[i64; 16]; 16], z: &[i64; 16]) -> [i64; 16] {
 /// f64. Measuring Q from this true center (instead of the rounded one)
 /// removes the center-rounding inflation documented in
 /// docs/bound_sq_soundness.md: a valid solution's measured Q now equals its
-/// geometric Q (band [0.75, 2.75]) at every k.
+/// geometric Q (band [0.875, 1.25]) at every k.
 #[derive(Clone, Copy, Debug)]
 pub struct SeCenter16 {
     pub int: [i64; 16],
@@ -1633,8 +1633,6 @@ fn recurse_collect_norm_pruned<F>(
         // cheaper, multiplying tree-traversal cost. The integer check is
         // already inside `leaf_filter`'s first stage; replicating it here
         // is pure overhead without budget-model changes.
-
-        // Depth-1 Q-filter: at z[1] = zd, decide if any integer z[0] makes
         recurse_collect_norm_pruned(
             depth - 1, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
             u_eucl_dd, target_norm_sq, target_norm_sq_i64,
