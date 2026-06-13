@@ -702,7 +702,7 @@ mod tests {
             lll_f64::cfa_row_f64,
             cholesky_lu::det16_exact,
         };
-        use crate::synthesis::brute_search_zeta::uv_to_lattice_y_zeta;
+        use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta;
         use std::sync::atomic::AtomicBool;
 
         // Use Rz(0.3) target as in the rest of the bench suite.

@@ -10,7 +10,7 @@
 
 use std::f64::consts::PI;
 
-use super::lattice::zeta::se::bilinear_forms;
+use super::se::bilinear_forms;
 
 // ─── y-vector helpers ────────────────────────────────────────────────────────
 

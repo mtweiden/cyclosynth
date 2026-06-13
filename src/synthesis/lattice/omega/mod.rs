@@ -16,6 +16,7 @@
 //! (Schnorr-Euchner walk over the candidate ellipsoid). [`scratch`] holds
 //! the pre-allocated MPFR/i256 buffers reused across calls.
 
+pub mod brute;
 pub mod cholesky_lu;
 pub mod integer;
 pub mod lll;

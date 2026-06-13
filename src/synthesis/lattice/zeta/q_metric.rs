@@ -368,7 +368,7 @@ pub fn i256_to_rfloat(v: i256, dst: &mut RFloat) {
 /// the production pipeline (which always goes through MPFR + i256).
 #[cfg(test)]
 pub fn build_q_zzeta_lattice(v: [f64; 4], k: u32, eps: f64) -> [[f64; 16]; 16] {
-    use crate::synthesis::brute_search_zeta::compute_align_vec_zeta;
+    use crate::synthesis::lattice::zeta::brute::compute_align_vec_zeta;
 
     let r_sq = 2.0f64.powi(k as i32);
     let r = r_sq.sqrt();

@@ -597,7 +597,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::synthesis::brute_search_zeta::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta};
+    use crate::synthesis::lattice::zeta::brute::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta};
     use crate::synthesis::clifford_sqrt_t::{
         det_phase_of, solution_to_u2q_with_det_phase, unitary_to_uv_zeta,
     };
@@ -877,7 +877,7 @@ mod tests {
     /// returned candidates.
     #[test]
     fn lattice_search_finds_hqhqh_at_moderate_k() {
-        use crate::synthesis::brute_search_zeta::enumerate_unitary_norm_shell;
+        use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
         use crate::synthesis::distance::diamond_distance_float;
 
         let k = 2u32;

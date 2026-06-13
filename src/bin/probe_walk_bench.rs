@@ -32,8 +32,8 @@ use cyclosynth::synthesis::clifford_sqrt_t::{
 use cyclosynth::synthesis::decomposer::BlochDecomposer;
 use cyclosynth::synthesis::diag;
 use cyclosynth::synthesis::distance::{diamond_distance_u2q_float, Mat2};
-use cyclosynth::synthesis::lattice_zeta::{find_aligned_lattice_points_with_stop, IntScratch16};
-use cyclosynth::synthesis::brute_search_zeta::uv_to_lattice_y_zeta;
+use cyclosynth::synthesis::lattice::zeta::{find_aligned_lattice_points_with_stop, IntScratch16};
+use cyclosynth::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta;
 use num_complex::Complex64;
 use std::f64::consts::PI;
 use std::sync::atomic::{AtomicBool, Ordering};

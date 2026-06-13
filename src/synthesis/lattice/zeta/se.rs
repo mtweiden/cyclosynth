@@ -1765,7 +1765,7 @@ mod w1_bench {
             target = scale(&target, Complex64::from_polar(1.0, PI / 16.0));
         }
         let v = crate::synthesis::clifford_sqrt_t::unitary_to_uv_zeta(&target);
-        let y = crate::synthesis::brute_search_zeta::uv_to_lattice_y_zeta(v, k);
+        let y = crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta(v, k);
 
         // Mirror SynthesizerQ::new scratch defaults (as probe_walk_bench does).
         let mut scratch = Box::new(crate::synthesis::lattice::zeta::IntScratch16::new(eps));
@@ -1807,7 +1807,7 @@ mod tests {
     use super::super::lll::run_lll_16;
     use super::super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
     use super::super::scratch::IntScratch16;
-    use crate::synthesis::brute_search_zeta::enumerate_unitary_norm_shell;
+    use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
     use std::collections::HashSet;
 
     fn realistic_v() -> [f64; 4] {
@@ -2179,7 +2179,7 @@ mod tests {
     #[test]
     fn dd_q_bracket_walk_matches_f64_walk() {
         use super::super::scratch::rfv;
-        use crate::synthesis::brute_search_zeta::uv_to_lattice_y_zeta;
+        use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta;
         let v = realistic_v();
         let k = 2u32;
         let eps = 0.5_f64; // wide cap at k=2 → guaranteed non-empty walk
