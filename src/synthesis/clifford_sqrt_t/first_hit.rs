@@ -176,21 +176,6 @@ impl Drop for VerifyGuard {
     }
 }
 
-/// CYCLOSYNTH_SCREEN_DIV: screen-lite budget divisor for the optimal
-/// pipeline.s stage-2 screen at deep ε (default 1 = full budgets).
-/// A/B knob; becomes a constant once the sweep lands.
-pub(crate) fn screen_div() -> u64 {
-    use std::sync::OnceLock;
-    static DIV: OnceLock<u64> = OnceLock::new();
-    *DIV.get_or_init(|| {
-        std::env::var("CYCLOSYNTH_SCREEN_DIV")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|&d| d >= 1)
-            .unwrap_or(1)
-    })
-}
-
 /// Per-prefix Z1 D&C pass-1 budget; scaled with ε since the post-LLL
 /// SE region grows exponentially in lde_inner.
 pub(crate) fn pass1_prefix_leaf_cap_for(epsilon: f64) -> u64 {
@@ -237,6 +222,18 @@ pub(crate) const OPTIMAL_PAR_MIN_LEN: usize = 0;
 /// bit-identical costs.
 pub(crate) const OPTIMAL_PREFIX_INTERLEAVE: bool = true;
 
+/// Frontier dispatch mode: strict floor-priority pull-queue (workers
+/// take the lowest-floor unstarted unit from an atomic cursor) instead
+/// of pre-chunked `par_iter`. Under a deadline, chunked dispatch makes
+/// the started-set a scheduling draw — the anytime-cost variance
+/// source (±7-10 HU per N=12 at 1e-8); the queue makes it a
+/// deterministic prefix of the floor order. `CYCLOSYNTH_FRONTIER_QUEUE=0`
+/// restores chunked dispatch for A/B.
+pub(crate) static FRONTIER_QUEUE_DISPATCH: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| {
+        !matches!(std::env::var("CYCLOSYNTH_FRONTIER_QUEUE").as_deref(), Ok("0"))
+    });
+
 /// Compute `U_L† · target` as a continuous Mat2.
 /// `U_L` is exact (`U2Q`), `target` is float (`Mat2`). Mirrors the 8D
 /// helper `clifford_t::prefix_dag_times_target` for use by the Z1 D&C path.
@@ -281,11 +278,6 @@ pub(crate) struct PrefixSplitOpts<'a> {
 }
 
 impl SynthesizerQ {
-    /// First-hit node cap after the `budget_div` policy (min 1).
-    pub(crate) fn scaled_cap(&self, base: u64) -> u64 {
-        (base / self.budget_div.max(1)).max(1)
-    }
-
     /// Parallel-LDE speculation: windows of `parallel_lde_window` levels
     /// run concurrently from `start_k` upward; the first find aborts
     /// in-flight peers. Hard-target wall drops from "sum of no-solution
@@ -381,7 +373,7 @@ impl SynthesizerQ {
                             target, k, m_split,
                             PrefixSplitOpts {
                                 dr_filter_override: None,
-                                per_prefix_cap: self.scaled_cap(pass1_prefix_leaf_cap_for(self.epsilon)),
+                                per_prefix_cap: pass1_prefix_leaf_cap_for(self.epsilon),
                                 external_abort: abort_opt,
                                 consumed: consumed_opt,
                                 cost_min_override: None,
@@ -460,7 +452,7 @@ impl SynthesizerQ {
                 target, k, m_split,
                 PrefixSplitOpts {
                     dr_filter_override: None,
-                    per_prefix_cap: self.scaled_cap(pass2_prefix_leaf_cap_for(self.epsilon)),
+                    per_prefix_cap: pass2_prefix_leaf_cap_for(self.epsilon),
                     external_abort: None,
                     consumed: None,
                     cost_min_override: None,
@@ -617,7 +609,7 @@ impl SynthesizerQ {
             // (lde_inner ≤ 0). These are typically few levels near lattice_start.
             for k in lattice_start..=m_split.min(self.max_lde) {
                 let t_k = std::time::Instant::now();
-                let (sols, small_budget_hit) = try_lattice_k(k, self.scaled_cap(PASS1_CAP), &mut scratch);
+                let (sols, small_budget_hit) = try_lattice_k(k, PASS1_CAP, &mut scratch);
                 if let Some(r) = check_sols(&sols, k) {
                     if trace {
                         eprintln!("[zeta] dc lde={k:>2} (single fallback)  FOUND  dist={:.3e}  t={:.0}ms",
@@ -655,7 +647,7 @@ impl SynthesizerQ {
                         &target, k, m_split,
                         PrefixSplitOpts {
                             dr_filter_override: None,
-                            per_prefix_cap: self.scaled_cap(pass1_prefix_leaf_cap_for(self.epsilon)),
+                            per_prefix_cap: pass1_prefix_leaf_cap_for(self.epsilon),
                             external_abort: None,
                             consumed: None,
                             cost_min_override: None,
@@ -726,7 +718,7 @@ impl SynthesizerQ {
                 break;
             }
             let t_k = std::time::Instant::now();
-            let (sols, budget_was_hit) = try_lattice_k(k, self.scaled_cap(PASS1_CAP), &mut scratch);
+            let (sols, budget_was_hit) = try_lattice_k(k, PASS1_CAP, &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
                     eprintln!("[zeta] pass1 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",
@@ -761,7 +753,7 @@ impl SynthesizerQ {
                 break;
             }
             let t_k = std::time::Instant::now();
-            let (sols, budget_hit2) = try_lattice_k(k, self.scaled_cap(PASS2_CAP), &mut scratch);
+            let (sols, budget_hit2) = try_lattice_k(k, PASS2_CAP, &mut scratch);
             if let Some(r) = check_sols(&sols, k) {
                 if trace {
                     eprintln!("[zeta] pass2 lde={k:>2}  FOUND  dist={:.3e}  t={:.0}ms",

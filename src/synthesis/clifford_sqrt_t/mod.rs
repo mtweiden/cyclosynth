@@ -151,12 +151,6 @@ pub struct SynthesizerQ {
     /// lde-vs-cost relationship is not monotone, so the cost minimum can
     /// sit above find-lde. Builder: [`Self::with_optimal_lde_window`].
     pub optimal_lde_window: u32,
-    /// Divisor on the first-hit node caps. The optimal screen may set it
-    /// > 1 ("screen-lite"): budget-truncated below-fl levels land in
-    /// `screen_unclear` and are re-covered by the enum grid, so harsher
-    /// screen caps risk no completeness. A screen that finds nothing
-    /// anywhere retries at full budget.
-    pub budget_div: u64,
     /// Per-parity-branch wall deadline (ms) for the merged enum frontier
     /// (one cost-floor-ordered stream of prefix units across all (k, m)
     /// arms); `None` = legacy per-(k, m) node-budget grid. Never applies
@@ -333,7 +327,6 @@ impl SynthesizerQ {
             // w2+d3500's cost at 30% less wall); window 4 regresses
             // (extra levels dilute the deadline).
             optimal_lde_window: if epsilon <= 1e-7 { 3 } else { 2 },
-            budget_div: 1,
             // Open filters only where the cost they recover beats the
             // 3-6× enum wall they cost (audit: real optima excluded by
             // the closed first-hit filters at ε ≤ 1e-5; ~nothing above).
