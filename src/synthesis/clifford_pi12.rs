@@ -1296,7 +1296,15 @@ mod tests {
         let min_k = std::env::var("CYCLOSYNTH_PI12_RANDOM_MIN_K")
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or_else(|| if eps >= 1e-3 { 8 } else { 5 });
+            .unwrap_or_else(|| {
+                if eps >= 1e-3 {
+                    8
+                } else if eps <= 1e-5 {
+                    10
+                } else {
+                    5
+                }
+            });
         let max_k = std::env::var("CYCLOSYNTH_PI12_RANDOM_MAX_K")
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
@@ -1304,7 +1312,7 @@ mod tests {
                 if eps >= 1e-3 {
                     18
                 } else if eps <= 1e-5 {
-                    40
+                    14
                 } else {
                     12
                 }

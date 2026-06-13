@@ -26,7 +26,9 @@ use crate::matrix::u2::U2;
 use crate::rings::types::Int;
 use crate::rings::ZUpsilon;
 use crate::synthesis::lattice_upsilon::enumerate::{phase1_brute, phase1_brute_first};
+use crate::synthesis::lattice_upsilon::sigma::sigma_el;
 use num_complex::Complex64;
+use std::collections::HashMap;
 
 /// Number of ζ₂₄ phase branches in the U reconstruction sweep (SPEC §6).
 pub const NUM_PHASES: usize = 24;
@@ -121,6 +123,172 @@ pub struct SynthResult {
 /// through LLL+SE so it terminates in finite time.
 pub const BRUTE_K_MAX: u32 = 4;
 
+type NormKey = (Int, Int, Int, Int);
+
+#[inline]
+fn norm_key(z: ZUpsilon) -> NormKey {
+    z.complex_norm_sqr_components_twice()
+}
+
+fn solve_8(mut a: [[f64; 8]; 8], mut b: [f64; 8]) -> Option<[f64; 8]> {
+    for k in 0..8 {
+        let mut piv = k;
+        let mut best = a[k][k].abs();
+        for i in (k + 1)..8 {
+            if a[i][k].abs() > best {
+                best = a[i][k].abs();
+                piv = i;
+            }
+        }
+        if best < 1e-14 {
+            return None;
+        }
+        if piv != k {
+            a.swap(k, piv);
+            b.swap(k, piv);
+        }
+        let akk = a[k][k];
+        for i in (k + 1)..8 {
+            let f = a[i][k] / akk;
+            a[i][k] = 0.0;
+            for j in (k + 1)..8 {
+                a[i][j] -= f * a[k][j];
+            }
+            b[i] -= f * b[k];
+        }
+    }
+
+    let mut x = [0.0; 8];
+    for i in (0..8).rev() {
+        let mut s = b[i];
+        for j in (i + 1)..8 {
+            s -= a[i][j] * x[j];
+        }
+        x[i] = s / a[i][i];
+    }
+    Some(x)
+}
+
+fn cap_center(z: Complex64, k: u32) -> Option<[i64; 8]> {
+    let sigma = sigma_el();
+    let scale = 2.0_f64.powf(k as f64 / 2.0);
+    let v = [z.re * scale, z.im * scale];
+
+    let mut gram = [[0.0; 8]; 8];
+    for i in 0..8 {
+        for j in 0..8 {
+            for row in 0..8 {
+                gram[i][j] += sigma[row][i] * sigma[row][j];
+            }
+        }
+    }
+
+    let mut rhs = [0.0; 8];
+    for j in 0..8 {
+        rhs[j] = sigma[0][j] * v[0] + sigma[1][j] * v[1];
+    }
+    solve_8(gram, rhs).map(|c| std::array::from_fn(|i| c[i].round() as i64))
+}
+
+fn walk_cube<F>(center: &[i64; 8], radius: i64, pos: usize, cur: &mut [i64; 8], cb: &mut F)
+where
+    F: FnMut(&[i64; 8]),
+{
+    if pos == 8 {
+        cb(cur);
+        return;
+    }
+    for dx in -radius..=radius {
+        cur[pos] = center[pos] + dx;
+        walk_cube(center, radius, pos + 1, cur, cb);
+    }
+}
+
+fn completion_radius(k: u32, eps: f64) -> i64 {
+    if let Ok(s) = std::env::var("CYCLOSYNTH_N12_COMPLETION_RADIUS") {
+        if let Ok(r) = s.parse::<i64>() {
+            return r.max(0);
+        }
+    }
+    let scale = 2.0_f64.powf(k as f64 / 2.0);
+    let natural = (eps * scale).ceil() as i64;
+    let max_radius: i64 = if eps <= 1e-5 { 3 } else { 2 };
+    natural.clamp(1, max_radius)
+}
+
+fn synthesize_by_local_completion(
+    target: &[[Complex64; 2]; 2],
+    k: u32,
+    eps: f64,
+) -> Option<SynthResult> {
+    if k < 24 {
+        return None;
+    }
+    let radius = completion_radius(k, eps);
+    let u1_center = cap_center(target[0][0], k)?;
+    let u2_center = cap_center(target[1][0], k)?;
+    let target_norm = Int::from_i64(1) << k;
+    let trace = std::env::var_os("CYCLOSYNTH_TRACE_N12_COMPLETION").is_some();
+    let scale = 2.0_f64.powf(k as f64 / 2.0);
+
+    let mut u2_by_norm: HashMap<NormKey, Vec<[i64; 8]>> = HashMap::new();
+    let mut u2_seen = 0usize;
+    let mut c2 = [0i64; 8];
+    walk_cube(&u2_center, radius, 0, &mut c2, &mut |c| {
+        u2_seen += 1;
+        let z = zu_from_coeffs(c);
+        u2_by_norm.entry(norm_key(z)).or_default().push(*c);
+    });
+
+    let mut best: Option<SynthResult> = None;
+    let mut u1_seen = 0usize;
+    let mut key_hits = 0usize;
+    let mut phase_tests = 0usize;
+    let mut best_cap = f64::INFINITY;
+    let mut c1 = [0i64; 8];
+    walk_cube(&u1_center, radius, 0, &mut c1, &mut |c1| {
+        u1_seen += 1;
+        let u1 = zu_from_coeffs(c1);
+        best_cap = best_cap.min((u1.to_complex() / scale - target[0][0]).norm());
+        let (r, s2, s3, s6) = norm_key(u1);
+        let need = (target_norm - r, -s2, -s3, -s6);
+        let Some(u2s) = u2_by_norm.get(&need) else {
+            return;
+        };
+        key_hits += u2s.len();
+        for c2 in u2s {
+            let u2 = zu_from_coeffs(c2);
+            let phase0 = zeta_pow(0);
+            let mut sol = [0i64; 16];
+            sol[..8].copy_from_slice(c1);
+            sol[8..].copy_from_slice(c2);
+
+            for phase in 0..NUM_PHASES as u32 {
+                phase_tests += 1;
+                let p = if phase == 0 { phase0 } else { zeta_pow(phase) };
+                let u = U2::new(u1, -(u2.conj() * p), u2, u1.conj() * p, k);
+                let d = crate::synthesis::distance::diamond_distance_float(&u.to_float(), target);
+                if d <= eps && best.as_ref().is_none_or(|b| d < b.distance) {
+                    best = Some(SynthResult {
+                        u,
+                        solution: sol,
+                        phase,
+                        distance: d,
+                    });
+                }
+            }
+        }
+    });
+    if trace {
+        eprintln!(
+            "[trace n12 completion] k={k} eps={eps:e} radius={radius} u1_seen={u1_seen} u2_seen={u2_seen} u2_keys={} key_hits={key_hits} phase_tests={phase_tests} best_u1_cap={best_cap:.3e} found={}",
+            u2_by_norm.len(),
+            best.is_some()
+        );
+    }
+    best
+}
+
 /// Synthesize a single-qubit unitary at denominator `√2^k` to within
 /// diamond distance `eps`.
 ///
@@ -135,6 +303,9 @@ pub const BRUTE_K_MAX: u32 = 4;
 /// Returns the best (lowest-distance) reconstruction found across all 24
 /// phase branches, or `None` if no candidates fall within `eps`.
 pub fn synthesize(target: &[[Complex64; 2]; 2], k: u32, eps: f64) -> Option<SynthResult> {
+    if let Some(result) = synthesize_by_local_completion(target, k, eps) {
+        return Some(result);
+    }
     let sols: Vec<[i64; 16]> = if k <= BRUTE_K_MAX {
         phase1_brute(k)
     } else {
@@ -182,6 +353,9 @@ pub fn synthesize(target: &[[Complex64; 2]; 2], k: u32, eps: f64) -> Option<Synt
 /// short-circuit semantics. Faster than [`synthesize`] when a "good
 /// enough" answer is acceptable.
 pub fn synthesize_first(target: &[[Complex64; 2]; 2], k: u32, eps: f64) -> Option<SynthResult> {
+    if let Some(result) = synthesize_by_local_completion(target, k, eps) {
+        return Some(result);
+    }
     // Walk the brute enumerator one sol at a time; on each, try all 24
     // phases; return the first (sol, phase) within eps.
     if k <= BRUTE_K_MAX {
@@ -213,7 +387,7 @@ pub fn synthesize_first(target: &[[Complex64; 2]; 2], k: u32, eps: f64) -> Optio
     let max_leaves: u64 = std::env::var("CYCLOSYNTH_N12_MAX_LEAVES")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or_else(|| if eps <= 1e-5 { 2_000_000 } else { 100_000_000 });
+        .unwrap_or_else(|| if eps <= 1e-5 { 2_000_000_000 } else { 100_000_000 });
     let _ = super::phase1_with_stop(&mut scratch, v, k, eps, max_leaves, &budget_hit, |sol| {
         let (u, phase, d) = best_phase(sol, k, target);
         if d <= eps {

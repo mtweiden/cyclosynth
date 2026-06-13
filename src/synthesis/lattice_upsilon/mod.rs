@@ -50,6 +50,8 @@ pub mod enumerate;
 pub mod integer;
 pub mod lll;
 pub mod lll_f64;
+pub mod mitm;
+pub mod mitm_half_se;
 pub mod q_metric;
 pub mod scratch;
 pub mod se;
@@ -134,6 +136,35 @@ where
         should_stop,
     )
 }
+
+/// Same as [`phase1_with_stop`] but also returns the lightweight
+/// `Phase1Stats` (leaves visited, norm/bullets/alignment-pass counts,
+/// budget_hit flag). Useful for measurement / benchmarking.
+pub fn phase1_with_stop_stats<F>(
+    scratch: &mut LatticeScratch,
+    v: [Float; 4],
+    k: u32,
+    eps: Float,
+    max_leaves: u64,
+    budget_hit: &AtomicBool,
+    should_stop: F,
+) -> (Vec<[i64; 16]>, integer::Phase1Stats)
+where
+    F: FnMut(&[i64; 16]) -> bool,
+{
+    scratch.inner.reset_basis();
+    integer::phase1_with_stop_stats(
+        &mut scratch.inner,
+        v,
+        k,
+        eps,
+        max_leaves,
+        budget_hit,
+        should_stop,
+    )
+}
+
+pub use integer::Phase1Stats;
 
 pub use enumerate::{
     alignment_sq, bullets_per_element_twice, bullets_per_element_twice_int, bullets_total_twice,

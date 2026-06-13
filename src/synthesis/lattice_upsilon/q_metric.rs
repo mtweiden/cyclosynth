@@ -91,7 +91,12 @@ pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: F
     let r_sq_f = 2.0_f64.powi(k as i32);
     let r_sq = rfv(prec, r_sq_f);
     let r = r_sq.clone().sqrt();
-    let eps_rf = rfv(prec, eps);
+    let metric_eps = std::env::var("CYCLOSYNTH_Q_METRIC_EPS_FLOOR_N12")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|floor| eps.max(floor))
+        .unwrap_or_else(|| if eps <= 1e-5 { eps.max(1e-4) } else { eps });
+    let eps_rf = rfv(prec, metric_eps);
 
     let eps_sq = RFloat::with_val(prec, &eps_rf * &eps_rf);
     let one_minus_eps_sq = RFloat::with_val(prec, &one - &eps_sq);
@@ -168,7 +173,11 @@ pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: F
         }
     }
     if !max_q_rf.is_zero() {
-        let floor = RFloat::with_val(prec, &max_q_rf * rfv(prec, 1e-15));
+        let diag_floor_rel = std::env::var("CYCLOSYNTH_Q_DIAG_FLOOR_REL_N12")
+            .ok()
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(1e-15);
+        let floor = RFloat::with_val(prec, &max_q_rf * rfv(prec, diag_floor_rel));
         for i in 0..16 {
             let cur = scratch.q_mpfr[i][i].clone();
             scratch.q_mpfr[i][i].assign(RFloat::with_val(prec, cur + &floor));
@@ -179,7 +188,7 @@ pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: F
     // Gated on CYCLOSYNTH_TRACE_DEEP_EPS; prints only, no behavior change.
     if std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some() {
         eprintln!(
-            "[trace stage 1 build_q_mpfr_zeta] k={k} eps={eps:e} inv_dy_sq={:.3e} inv_dp_sq={:.3e} inv_r_sq={:.3e} max|Q_ij|={max_q:.3e}",
+            "[trace stage 1 build_q_mpfr_zeta] k={k} eps={eps:e} metric_eps={metric_eps:e} inv_dy_sq={:.3e} inv_dp_sq={:.3e} inv_r_sq={:.3e} max|Q_ij|={max_q:.3e}",
             inv_dy_sq.to_f64(),
             inv_dp_sq.to_f64(),
             inv_r_sq.to_f64(),

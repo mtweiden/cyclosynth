@@ -39,7 +39,9 @@ use super::lll::{run_lll_16, LllResult};
 use super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
 use super::scratch::IntScratch16;
 use super::se::{
-    bullet_forms, det16_exact, norm_sqr_i128, reconstruct_x, schnorr_euchner_16d_norm_shell,
+    bullet_forms, bullet_matrices_16_doubled, det16_exact, norm_sqr_i128, reconstruct_x,
+    rotate_bullet_matrices_to_se_basis, schnorr_euchner_16d_norm_shell,
+    schnorr_euchner_16d_norm_shell_with_bullets, BulletPruneCtx,
 };
 use crate::rings::Float;
 
@@ -133,7 +135,9 @@ where
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or_else(|| {
-            if eps <= 1e-4 {
+            if eps <= 1e-5 {
+                8
+            } else if eps <= 1e-4 {
                 super::bkz::BKZ_DEFAULT_BLOCK_SIZE as u32
             } else {
                 0
@@ -206,64 +210,100 @@ where
     let basis = scratch.basis;
     let budget = AtomicU64::new(max_leaves);
 
+    // Bullet-aware pruning: opt-in via env var `CYCLOSYNTH_BULLET_PRUNE_N12=1`.
+    // Default ON at deep ε (≤ 1e-4), where the bullet-zero sparsity dominates
+    // SE budget. Soundness gate (set-equality) covers small k.
+    let bullet_prune_enabled = match std::env::var("CYCLOSYNTH_BULLET_PRUNE_N12") {
+        Ok(s) => matches!(s.as_str(), "1" | "true" | "on"),
+        Err(_) => eps <= 1e-4,
+    };
+    let bullet_ctx: Option<BulletPruneCtx> = if bullet_prune_enabled {
+        let bullets_orig = bullet_matrices_16_doubled();
+        let bullets_se = rotate_bullet_matrices_to_se_basis(&basis, &bullets_orig);
+        Some(BulletPruneCtx::new(bullets_se, &z_c))
+    } else {
+        None
+    };
+
     let mut solutions: Vec<[i64; 16]> = Vec::new();
     let mut should_abort = false;
     let mut stats = Phase1Stats::default();
     let mut best_norm_delta: Option<i128> = None;
     let mut best_norm_seen: i128 = 0;
 
-    let se_leaves = schnorr_euchner_16d_norm_shell(
-        &l_upper,
-        &z_c,
-        bound_sq,
-        &basis,
-        target_norm,
-        |z| -> bool {
-            // External-abort signal honored before any work.
-            if should_abort {
-                return false;
-            }
-            let x = reconstruct_x(&basis, z);
-            // (1) Norm shell.
-            let norm = norm_sqr_i128(&x);
-            if std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some() {
-                let delta = (norm - target_norm).abs();
-                if best_norm_delta.is_none_or(|best| delta < best) {
-                    best_norm_delta = Some(delta);
-                    best_norm_seen = norm;
+    // Leaf callback used by both SE entry points. Captures the same mutable
+    // state — we use a macro to avoid duplicating the closure body twice
+    // (one closure per entry point, since they have different signatures
+    // for the `with_bullets` variant).
+    macro_rules! leaf_cb {
+        () => {
+            |z: &[i64; 16]| -> bool {
+                if should_abort {
+                    return false;
                 }
+                let x = reconstruct_x(&basis, z);
+                // (1) Norm shell.
+                let norm = norm_sqr_i128(&x);
+                if std::env::var_os("CYCLOSYNTH_TRACE_DEEP_EPS").is_some() {
+                    let delta = (norm - target_norm).abs();
+                    if best_norm_delta.is_none_or(|best| delta < best) {
+                        best_norm_delta = Some(delta);
+                        best_norm_seen = norm;
+                    }
+                }
+                if norm != target_norm {
+                    return true;
+                }
+                stats.pass_norm += 1;
+                // (2) Three bullets.
+                if !super::se::bullets_zero_i128(&x) {
+                    let _ = bullet_forms(&x); // keep symbol used
+                    return true;
+                }
+                stats.pass_bullets += 1;
+                // (3) Alignment.
+                let mut dot = RFloat::with_val(ALIGN_PREC, 0.0);
+                for i in 0..16 {
+                    let xi = RFloat::with_val(ALIGN_PREC, x[i]);
+                    dot += xi * &y_mpfr[i];
+                }
+                let dot_sq = RFloat::with_val(ALIGN_PREC, &dot * &dot);
+                if dot_sq < threshold_xy {
+                    return true;
+                }
+                stats.pass_align += 1;
+                solutions.push(x);
+                if should_stop(&x) {
+                    should_abort = true;
+                    return false;
+                }
+                true
             }
-            if norm != target_norm {
-                return true;
-            }
-            stats.pass_norm += 1;
-            // (2) Three bullets.
-            if !super::se::bullets_zero_i128(&x) {
-                let _ = bullet_forms(&x); // keep symbol used
-                return true;
-            }
-            stats.pass_bullets += 1;
-            // (3) Alignment.
-            let mut dot = RFloat::with_val(ALIGN_PREC, 0.0);
-            for i in 0..16 {
-                let xi = RFloat::with_val(ALIGN_PREC, x[i]);
-                dot += xi * &y_mpfr[i];
-            }
-            let dot_sq = RFloat::with_val(ALIGN_PREC, &dot * &dot);
-            if dot_sq < threshold_xy {
-                return true;
-            }
-            stats.pass_align += 1;
-            // Passed all three leaf checks. Save and maybe short-circuit.
-            solutions.push(x);
-            if should_stop(&x) {
-                should_abort = true;
-                return false;
-            }
-            true
-        },
-        &budget,
-    );
+        };
+    }
+
+    let se_leaves = if let Some(ref ctx) = bullet_ctx {
+        schnorr_euchner_16d_norm_shell_with_bullets(
+            &l_upper,
+            &z_c,
+            bound_sq,
+            &basis,
+            target_norm,
+            ctx,
+            leaf_cb!(),
+            &budget,
+        )
+    } else {
+        schnorr_euchner_16d_norm_shell(
+            &l_upper,
+            &z_c,
+            bound_sq,
+            &basis,
+            target_norm,
+            leaf_cb!(),
+            &budget,
+        )
+    };
     stats.se_leaves = se_leaves;
 
     if budget.load(Ordering::Relaxed) == 0 {
