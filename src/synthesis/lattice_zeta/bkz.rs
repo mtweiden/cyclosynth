@@ -10,8 +10,7 @@
 //! ±1 absorbs the combination via `row_addmul` then moves; otherwise a
 //! binary-GCD tree on `|x|`. Only `b_κ` changes, so the re-reduction is
 //! size-reduction over `[0, κ+1)`, not a full LLL. A tour is clean when no
-//! insertion shortened any `r̄_{κ,κ}`; stop on a clean tour, `max_loops`,
-//! or (fplll-style) 5 non-improving tours by GSO slope.
+//! insertion shortened any `r̄_{κ,κ}`; stop on a clean tour or `max_loops`.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -139,30 +138,11 @@ fn enumerate_recursive(
         let inc = delta * delta * r[i];
         let new_partial = partial_dist + inc;
 
-        // Termination: once `new_partial >= best_norm_sq` AND we've
-        // moved past the centre on both sides, no future candidate
-        // can do better at this depth.
-        //
-        // SE order: each time we move one further out (step grows),
-        // |offset| grows monotonically up to step/2 (rounded). Once
-        // even the closest unexplored offset's contribution exceeds
-        // the budget, all further offsets only make it worse, so
-        // stop.
+        // SE walks |offset| monotonically outward, alternating ±, so once
+        // the closest unexplored offset already exceeds the budget every
+        // further one does too. step >= 1 confirms both sides were pruned.
         if new_partial >= *best_norm_sq {
-            // Determine if both directions have been explored past
-            // the prune threshold. Cleanest test: once the **next**
-            // candidate's |delta·√r| would exceed √(best - partial),
-            // no untested offset can succeed. SE alternates +/-, so
-            // once we've gone "over" on either side, the pattern
-            // ensures we keep going further.
-            //
-            // Practical: break when the **inc** for the next step
-            // would also exceed budget. Since SE walks |offset|
-            // monotonically, after one prune we can safely stop.
-            // (Edge case for even/odd step parity: just walk one
-            // more step to confirm both sides are pruned.)
             if step >= 1 {
-                // Both sides have been seen at distance ≥ |offset|.
                 break;
             }
             step += 1;
@@ -207,9 +187,9 @@ fn enumerate_recursive(
 /// [`super::lll::gram_update_size_reduce`] for `add` ops and
 /// [`super::lll::gram_update_swap`] for swap ops.
 /// Returns `Ok(())` on successful insertion; `Err(())` when the SVP
-/// coordinate vector hits the unimplemented general-case (no ±1 entry)
-/// branch. The caller should skip the BKZ tour step in that case — the
-/// basis remains LLL-reduced (the prior reduction state is preserved).
+/// coordinate vector is non-primitive (`gcd(x) > 1`), which insertion
+/// can't realize with a single unimodular row op. The caller skips the
+/// BKZ tour step then — the basis stays LLL-reduced (prior state preserved).
 // `Err(())` is a documented "skip this tour step" signal, not an error
 // value the caller inspects; a dedicated error type adds nothing.
 #[allow(clippy::result_unit_err)]
@@ -221,8 +201,6 @@ pub fn bkz_insert(
 ) -> Result<(), ()> {
     debug_assert_eq!(x.len(), block_size);
     debug_assert!(kappa + block_size <= 16);
-
-    // Diagnostic: count how often each branch fires (gated on tracing).
 
     // Branch 1: all-zero except one ±1 — just move it to κ.
     let nonzero: Vec<usize> = (0..block_size).filter(|&i| x[i] != 0).collect();
@@ -448,12 +426,10 @@ fn negate_row(scratch: &mut IntScratch16, i: usize) {
 ///
 /// **Termination**: clean tour OR `max_loops`.
 ///
-/// **Limitation (current)**: the general-case unimodular insertion
-/// (binary-GCD tree, fplll bkz.cpp:312–379) is not yet implemented.
-/// Hits `unimplemented!` if SVP-enum returns a vector with no ±1
-/// entry. Empirically rare on LLL-reduced bases (the SE walk usually
-/// finds an x with at least one ±1 coord), but not impossible. Falls
-/// back gracefully via panic catch in `run_lll_16_with_bkz`.
+/// A non-primitive SVP vector (`gcd(x) > 1`) can't be inserted with one
+/// unimodular op; [`bkz_insert`] returns `Err(())` and that tour step is
+/// skipped, leaving the basis LLL-reduced. This is rare on LLL-reduced
+/// bases (the SE walk usually returns an x with a ±1 coord).
 pub fn bkz_tours(
     scratch: &mut IntScratch16,
     block_size: usize,
@@ -498,8 +474,8 @@ pub fn bkz_tours(
             // found_norm_sq < r̄_{κ,κ} means we found something
             // strictly better (within δ-tolerance handled by radius_sq).
             if found_norm_sq < r_kk {
-                // Try the insertion. If it hits the unimplemented
-                // general-case branch, skip this κ and keep going —
+                // Try the insertion. On a non-primitive vector (gcd > 1)
+                // bkz_insert returns Err; skip this κ and keep going —
                 // basis remains LLL-reduced.
                 if bkz_insert(scratch, kappa, block_size, &x).is_err() {
                     continue;
@@ -761,8 +737,8 @@ mod tests {
         }
         let r_00_pre = s.r_bar_f64[0][0];
 
-        // Run BKZ-4 tours. May panic on general-case insertion (rare
-        // for LLL-reduced bases). Just observe.
+        // Run BKZ-4 tours and just observe (non-primitive SVP vectors are
+        // skipped, not inserted).
         let _changed = bkz_tours(&mut s, 4, 4);
 
         // Post-BKZ: still unimodular?
