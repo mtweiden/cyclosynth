@@ -1187,6 +1187,24 @@ where
     let z_high = z_c.int[15].saturating_add((z_c.frac[15] + span_q).floor() as i64);
     let z_mid = z_c.int[15].saturating_add(z_c.frac[15].round() as i64);
 
+    // S3 measurement: per-level span product is minimized when |l_ii|
+    // is largest at the outermost level (15). Dump the diagonal +
+    // implied span so we can see whether LLL already orders it well
+    // before building a permutation. Gated, one line per walk.
+    if std::env::var("CYCLOSYNTH_SE_ORDER_DIAG").as_deref() == Ok("1") {
+        let mut diag = [0.0f64; 16];
+        let mut span_prod = 1.0f64;
+        for i in 0..16 {
+            diag[i] = l[i][i].abs();
+            if diag[i] > 1e-30 {
+                span_prod *= (bound_sq.sqrt() / diag[i]).max(1.0);
+            }
+        }
+        eprintln!("[se_order] diag(|l_ii|, 0..15)=[{}] span_prod={:.3e}",
+            diag.iter().map(|d| format!("{:.3}", d)).collect::<Vec<_>>().join(","),
+            span_prod);
+    }
+
     // Closest-to-center first ordering at the outermost level.
     let mut prefixes: Vec<i64> = (z_low..=z_high).collect();
     prefixes.sort_by_key(|&z| (z - z_mid).abs());
