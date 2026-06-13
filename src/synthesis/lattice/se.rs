@@ -28,9 +28,8 @@ use rug::{Assign, Float as RFloat};
 type IMat8 = [[i64; 8]; 8];
 
 /// MPFR precision used by SE. 128 bits gives enough margin for SE's
-/// 10⁻⁹ bound-check tolerance at all supported ε; f64-only SE is known
-/// to break at ε ≤ 1e-5 from squared-norm cancellation noise (the
-/// "ghost-node" failure mode).
+/// 10⁻⁹ bound-check tolerance at all supported ε; f64-only SE breaks at
+/// ε ≤ 1e-5 from squared-norm cancellation noise.
 pub const SE_PREC: u32 = 128;
 
 /// Convert an arbitrary-precision `RFloat` (built at scratch.prec_q for
@@ -192,7 +191,6 @@ fn recurse_8<F>(
         tail += &prod;
     }
 
-    // rem = bound - partial; check >= 0 then sqrt.
     tmp.assign(bound - partial);
     if tmp.to_f64() < 0.0 {
         return;
@@ -224,7 +222,6 @@ fn recurse_8<F>(
     };
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
-    // Pre-compute the Euclidean tail at level d (uses fixed levels j > d).
     let tail_eucl = if let Some(re) = r_chol_eucl {
         let mut t = 0.0_f64;
         for j in (d + 1)..8 {
@@ -255,8 +252,7 @@ fn recurse_8<F>(
             continue;
         }
 
-        // level = r_dd · (zd − z_c[d]) + tail; squared.
-        // Exact i64 → MPFR lift (see the tail-loop comment).
+        // level = r_dd·(zd − z_c[d]) + tail; exact i64 lift (see tail loop).
         zd_rf.assign(zd);
         diff.assign(&zd_rf - &z_c[d]);
         level.assign(r_dd * &diff);
@@ -268,7 +264,6 @@ fn recurse_8<F>(
             continue;
         }
 
-        // Optional Euclidean-norm prune.
         let new_partial_eucl = if let Some(re) = r_chol_eucl {
             let level_eucl = re[d][d] * (zd as f64) + tail_eucl;
             let p = partial_eucl + level_eucl * level_eucl;
