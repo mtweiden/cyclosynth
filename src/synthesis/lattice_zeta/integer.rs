@@ -731,12 +731,11 @@ mod tests {
     }
 
     /// Diagnostic (ignored): decompose the QHQ@k=1 solution's Q-norm into
-    /// geometric Q (from the true fractional cap center), legacy SE-measured
-    /// Q (from the i64-rounded z_c center), and Q_se_effective (from the
-    /// fractional SeCenter16 the walk now uses — should match Q_geometric
-    /// to ~1e-6). The rounded column explains why the QHQ test historically
-    /// needed bound_sq > 6 while the geometric theory says Q ≤ 2.75
-    /// (docs/bound_sq_soundness.md). Run with --ignored --nocapture.
+    /// geometric Q (true fractional cap center), Q from the i64-rounded
+    /// center, and Q from the fractional SeCenter16 the walk uses (should
+    /// match geometric to ~1e-6). The rounded center is why a generous bound
+    /// was once needed; geometric Q ≤ 1.25 (docs/bound_sq_soundness.md). Run
+    /// with --ignored --nocapture.
     #[test]
     #[ignore]
     fn qhq_q_decomposition_diagnostic() {
@@ -800,11 +799,9 @@ mod tests {
     }
 
     /// Telemetry (ignored): geometric Q-norm² distribution of ε-close
-    /// solutions across a θ × ε × k grid, enumerated at bound 4 (wide
-    /// enough to observe anything up to the geometric max 2.75 of
-    /// docs/bound_sq_soundness.md). Decides whether the observed 1.75
-    /// ceiling is structural (cap part ≤ 1 in implemented scaling → sound
-    /// bound 2.0) or just an unpopulated rim (max → 2.75 → keep 3.0).
+    /// solutions across a θ × ε × k grid, enumerated at a wide bound to
+    /// observe the full distribution. The geometric band is [0.875, 1.25]
+    /// (docs/bound_sq_soundness.md); this sweep is how that was measured.
     /// Run with --ignored --nocapture.
     #[test]
     #[ignore]
