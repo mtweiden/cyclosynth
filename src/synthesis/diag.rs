@@ -201,7 +201,10 @@ pub fn profile_line() -> String {
         n(&N_ALIGN_REJECTED), n(&N_DIST_REJECTED), n(&N_SOLS_RETURNED),
         n(&N_PRUNE_FIRES), n(&N_VERIFY_PRUNE_FIRES), n(&N_VERIFY_PRUNE_CORRECTED),
         n(&N_PREDICTIVE_TRUNC_FIRES), n(&N_BUDGET_EXHAUST_FIRES),
-    )
+    ) + &format!(" depth_enter=[{}]",
+        N_RECURSE_ENTER_AT_DEPTH.iter()
+            .map(|c| c.load(Ordering::Relaxed).to_string())
+            .collect::<Vec<_>>().join(","))
 }
 
 // ─── Budget-truncation outcome counters (predictive trunc, se.rs) ────────────
