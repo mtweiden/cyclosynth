@@ -178,16 +178,25 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
     let mut t_total_wall = 0.0_f64;
     let mut q_total_wall = 0.0_f64;
 
+    let profile = cyclosynth::synthesis::diag::trace_enabled();
     for (i, &(th, ph, la)) in targets.iter().enumerate() {
         let target = u3(th, ph, la);
         if verbose {
             eprint!("  #{i} θ={th:.2} φ={ph:.2} λ={la:.2}  T... ");
             let _ = std::io::stderr().flush();
         }
+        if profile {
+            cyclosynth::synthesis::diag::reset_all();
+        }
         let t0 = Instant::now();
         let rt = SynthesizerT::new(eps).synthesize(target);
         let t_wall = t0.elapsed().as_secs_f64();
         t_total_wall += t_wall;
+        if profile {
+            println!("[profile] i={i} synth=T wall_s={t_wall:.3} {}",
+                cyclosynth::synthesis::diag::profile_line());
+            cyclosynth::synthesis::diag::reset_all();
+        }
         let (t_t, t_q, _t_h, t_len) = gate_cost(rt.as_ref().and_then(|r| r.gates.as_deref()));
         let t_cost = t_t as f64 + 3.5 * t_q as f64;
         let t_lde = rt.as_ref().map(|r| r.lde).unwrap_or(0);
@@ -196,6 +205,10 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
             let _ = std::io::stderr().flush();
         }
         let (qg, q_wall, q_lde) = run_q(target, eps, optimize, lde_window, m_sweep.clone(), deadline.as_deref());
+        if profile {
+            println!("[profile] i={i} synth=Q wall_s={q_wall:.3} {}",
+                cyclosynth::synthesis::diag::profile_line());
+        }
         q_total_wall += q_wall;
         let (q_t, q_q, _q_h, q_len) = gate_cost(qg.as_deref());
         let q_cost = q_t as f64 + 3.5 * q_q as f64;

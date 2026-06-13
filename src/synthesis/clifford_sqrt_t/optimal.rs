@@ -805,8 +805,12 @@ impl SynthesizerQ {
                         // 16 MiB: deep SE recursion.
                         .stack_size(16 * 1024 * 1024)
                         .spawn_scoped(s, || {
-                            crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
-                                .synthesize(target)
+                            let t0 = std::time::Instant::now();
+                            let r = crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
+                                .synthesize(target);
+                            crate::synthesis::diag::T_STAGE_BASELINE_NS
+                                .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                            r
                         })
                         .expect("spawn clifford_t baseline thread"),
                 )
@@ -867,6 +871,8 @@ impl SynthesizerQ {
         let t_s = std::time::Instant::now();
         let (first, mut screen_unclear, baseline) =
             self.screen_and_baseline(target, with_baseline);
+        diag::T_STAGE_SCREEN_NS
+            .fetch_add(t_s.elapsed().as_nanos() as u64, Ordering::Relaxed);
         // Signal screen completion to the peer parity branch; the
         // matching wait sits just before the frontier dispatch below.
         if let Some(flag) = &self.my_screen_done {
@@ -969,6 +975,8 @@ impl SynthesizerQ {
                 let t_w = std::time::Instant::now();
                 let (fr, level_truncated) =
                     self.run_frontier_grouped_by_m(&target, &tasks, deadline_ms, shared_best);
+                diag::T_STAGE_FRONTIER_NS
+                    .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 if trace {
                     eprintln!(
                         "[zeta] optimal frontier {:?} deadline={}ms t={:.0}ms truncated={:?}",
@@ -1029,6 +1037,10 @@ impl SynthesizerQ {
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             });
+        // Legacy grid is the frontier stage's deep-ε/certify form — same
+        // scoreboard column.
+        diag::T_STAGE_FRONTIER_NS
+            .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);
         if trace {
             eprintln!("[zeta] optimal enum {:?} parallel t={:.0}ms",
                 tasks, t_w.elapsed().as_secs_f64() * 1000.0);

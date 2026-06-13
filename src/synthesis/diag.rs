@@ -164,6 +164,46 @@ pub static T_VERIFY_DD_NS: AtomicU64 = AtomicU64::new(0);
 
 
 
+// ─── Stage walls (always-on; once per optimal synthesize call) ───────────────
+//
+// Wall-clock per pipeline stage, summed across parity branches and
+// targets between resets. The screen wall overlaps the baseline thread
+// (they share a scope); the baseline counter isolates its own span so
+// the probe's [profile] line can attribute each.
+
+pub static T_STAGE_SCREEN_NS: AtomicU64 = AtomicU64::new(0);
+pub static T_STAGE_FRONTIER_NS: AtomicU64 = AtomicU64::new(0);
+pub static T_STAGE_BASELINE_NS: AtomicU64 = AtomicU64::new(0);
+
+/// One-line machine-parseable counter snapshot (`key=value` pairs).
+/// The probe prints it per synthesis call as `[profile] ...`;
+/// `scripts/profile_summary.py` parses it into the campaign scoreboard.
+/// Timing keys are zero unless CYCLOSYNTH_TRACE=1 (phase timers are
+/// trace-gated); stage walls and walk-outcome counters are always-on.
+pub fn profile_line() -> String {
+    let ms = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e6;
+    let n = |c: &AtomicU64| c.load(Ordering::Relaxed);
+    format!(
+        "screen_ms={:.1} frontier_ms={:.1} baseline_ms={:.1} \
+         build_ms={:.1} lll_ms={:.1} chol_ms={:.1} lu_ms={:.1} se_ms={:.1} \
+         leaf_ms={:.1} verify_dd_ms={:.1} \
+         lll_iters={} lll_iters_max={} lll_at_cap={} f64_escal={} \
+         se_nodes={} se_cb={} search_calls={} prefixes={} \
+         uv_rej={} norm_rej={} bilin_rej={} align_rej={} dist_rej={} sols={} \
+         prune_fires={} verify_fires={} verify_corrected={} \
+         pred_trunc={} budget_exhaust={}",
+        ms(&T_STAGE_SCREEN_NS), ms(&T_STAGE_FRONTIER_NS), ms(&T_STAGE_BASELINE_NS),
+        ms(&T_BUILD_NS), ms(&T_LLL_NS), ms(&T_CHOLESKY_NS), ms(&T_LU_NS), ms(&T_SE_NS),
+        ms(&T_LEAF_CHECK_NS), ms(&T_VERIFY_DD_NS),
+        n(&N_LLL_ITERS_TOTAL), n(&N_LLL_ITERS_MAX), n(&N_LLL_AT_CAP), n(&N_LLL_F64_ESCALATIONS),
+        n(&N_SE_NODES), n(&N_SE_CALLBACKS), n(&N_LATTICE_SEARCH_CALLS), n(&N_PREFIXES),
+        n(&N_UV_EXTRACT_REJECTED), n(&N_NORM_REJECTED), n(&N_BILINEAR_REJECTED),
+        n(&N_ALIGN_REJECTED), n(&N_DIST_REJECTED), n(&N_SOLS_RETURNED),
+        n(&N_PRUNE_FIRES), n(&N_VERIFY_PRUNE_FIRES), n(&N_VERIFY_PRUNE_CORRECTED),
+        n(&N_PREDICTIVE_TRUNC_FIRES), n(&N_BUDGET_EXHAUST_FIRES),
+    )
+}
+
 // ─── Budget-truncation outcome counters (predictive trunc, se.rs) ────────────
 //
 // Both count once per WALK (first-flipper dedupe inside se.rs) and are
@@ -269,6 +309,9 @@ pub fn reset_all() {
         &T_VERIFY_DD_NS,
         &N_PREDICTIVE_TRUNC_FIRES,
         &N_BUDGET_EXHAUST_FIRES,
+        &T_STAGE_SCREEN_NS,
+        &T_STAGE_FRONTIER_NS,
+        &T_STAGE_BASELINE_NS,
     ] {
         c.store(0, Ordering::Relaxed);
     }
