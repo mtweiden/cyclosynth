@@ -244,6 +244,16 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
     println!("  Wins: T={t_wins}  √T={q_wins}  ties={ties}");
     let ratio = total_q_cost / total_t_cost;
     println!("  cost(√T) / cost(T) = {ratio:.3}");
+
+    if let Some((distinct_u, total_leaves, all4)) = cyclosynth::synthesis::diag::udiag_report() {
+        // Objection #1: distinct-u / total-leaves = the t-multiplicity per
+        // u (the node-count prize halving claims). Objection #3: all4 /
+        // distinct = real-population totally-positive density.
+        println!("  [udiag] distinct_u={distinct_u}  total_leaves={total_leaves}  \
+                  t_mult={:.1}×  all4_in_disk={all4}  real_density={:.3}",
+            total_leaves as f64 / distinct_u.max(1) as f64,
+            all4 as f64 / distinct_u.max(1) as f64);
+    }
 }
 
 fn run_compare(targets: &[(f64, f64, f64)], eps: f64, verbose: bool, lde_window: u32, m_sweep: Option<Vec<u32>>, deadline: Option<String>) {

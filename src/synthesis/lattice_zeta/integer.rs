@@ -505,10 +505,14 @@ where
     // Leaf filter: Fn + Sync. Captures only immutable references / Copy
     // values. Trace counters use the global `diag::*` atomics — zero
     // overhead when tracing is off (the `if trace` branch is predictable).
+    let udiag = diag::udiag_enabled();
     let leaf_filter = |x: &[i64; 16]| -> LeafAction {
         let t_leaf = if trace { Some(std::time::Instant::now()) } else { None };
         if trace {
             diag::N_SE_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+        }
+        if udiag {
+            diag::udiag_record(x, k);
         }
         // Norm shell: ‖x‖² == 2^k (hot path — most leaves fail here).
         if use_i64_path {
