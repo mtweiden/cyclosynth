@@ -6,7 +6,7 @@ use super::*;
 /// MPFR-precision column-1 of `U_L† · target` as the alignment vector
 /// `v_inner` — the deep-ε replacement for the f64
 /// `prefix_dag_times_target_q` → `unitary_to_uv_zeta` chain. Why: the f64
-/// product's ~1e-16 error matches the radial cap width ε² at ε = 1e-8
+/// product's ~1e-16 error matches the radial cap width (~ε²/4) at ε = 1e-8
 /// and displaces the constructed cap, and no enumeration bound recovers
 /// a solution the cap no longer contains. `U_L` is exact ring data and
 /// `target` exact f64 data, so the product carries full `prec` bits.
@@ -820,8 +820,8 @@ impl SynthesizerQ {
         // Pre-filter the prefixes once: drop those whose lde already
         // exceeds lde_total (lde_inner would be ≤ 0), and drop those whose
         // required d_R isn't in the allowed-offsets set. Each entry
-        // carries its precomputed decomposed cost for Stage-3 ranking
-        // + heuristic pruning.
+        // carries its precomputed decomposed cost for optimal-mode enum-grid
+        // ranking + heuristic pruning.
         let inner_det_phase_filter: &[u32] = dr_filter_override.unwrap_or(&self.inner_det_phase_filter);
         let mut cand_idx: Vec<(usize, usize)> = prefixes
             .iter()
