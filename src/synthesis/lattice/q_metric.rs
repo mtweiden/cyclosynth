@@ -19,8 +19,7 @@ use crate::rings::Float;
 /// Q is the metric used by the LLL; the cap center is the projection of
 /// the target onto the alignment direction, used by the post-LLL LU solve.
 ///
-/// Stage-4 Q_base hoist (docs/plan_8d_prefix_rework.md lever C): the
-/// algebraic split
+/// Q_base hoist: the algebraic split
 ///
 ///   Q = inv_dy_sq·ŷŷᵀ + inv_dp_sq·(P_u − ŷŷᵀ) + inv_r_sq·P_•
 ///     = Q_base(k, ε) + (inv_dy_sq − inv_dp_sq)/‖y‖² · y·yᵀ
@@ -28,8 +27,8 @@ use crate::rings::Float;
 /// makes everything except the rank-1 `y·yᵀ` term prefix-independent.
 /// `build_q_base` computes the scalars + `q_base` + `cap_mid` once per
 /// `(k, ε)` (cached via `scratch.q_base_key`); the per-prefix remainder is
-/// 36 mul + 36 add (symmetric upper triangle, mirrored) + the ‖y‖² and
-/// cap-center loops — versus ~580 MPFR ops per call before the hoist.
+/// just the rank-1 term over the symmetric lower triangle plus the ‖y‖²
+/// and cap-center loops.
 pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float) {
     let prec = scratch.prec_q;
 
