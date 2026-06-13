@@ -1,27 +1,10 @@
-//! Per-thread scratch buffers for the 16D Z[ζ_16] L²-LLL pipeline.
-//!
-//! Mirrors `super::super::lattice::scratch` but extended to dimension 16:
-//!
-//!   - `q_int`: i256 16x16 scaled Q-metric snapshot.
-//!   - `basis`: i64 16x16 LLL basis (rows = basis vectors).
-//!   - `gram` / `temp_bq`: i256 16x16 working buffers for `G = B·Q·Bᵀ`.
-//!   - `r_bar`, `mu_bar`, `s_bar`: MPFR Gram-Schmidt state at
-//!     [`GS_PREC`] bits. **MPFR is mandatory at d=16** (Theorem 2 of
-//!     Nguyen-Stehlé 2009 covers only d ≤ 11 in f64).
-//!
-//! ## Overflow analysis at d=16
-//!
-//! With `TARGET_BITS = 180` and a basis post-LLL with `max(|B|) ≤ 2^15`:
-//!
-//!   `|G[i][j]| ≤ 16 · max(|B|)² · max(|Q_int|)` (sum of 16 products)
-//!                `≤ 2^4 · 2^30 · 2^180 = 2^214`
-//!
-//! With overflow threshold at `2^240`, this leaves 26 bits of headroom for
-//! transient B-growth during LLL swaps. At deep ε with B inflated to ~2^25
-//! the transient Gram entries can hit ~2^234, still under threshold; beyond
-//! that the i256 path will trip `GramOverflow` and the caller must escalate
-//! to a larger integer type (e.g. `rug::Integer`). For the M3 deliverable
-//! targeting moderate ε (≥ 10⁻⁵, k ≤ 30) this is comfortable.
+//! Per-thread scratch buffers for the 16D Z[ζ_16] L²-LLL pipeline, the
+//! dimension-16 analog of `super::super::lattice::scratch`. All MPFR/i256
+//! storage is allocated up front so the inner LLL loop never allocates.
+//! MPFR Gram-Schmidt is mandatory at d=16 (Theorem 2 of Nguyen-Stehlé 2009
+//! covers only d ≤ 11 in f64). Gram entries reach ~2^214 (= 16·2^30·2^180
+//! from B² · Q_int), under the 2^240 overflow threshold; only extreme deep
+//! ε trips `GramOverflow`, where the caller must escalate the integer type.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -31,23 +14,14 @@ use rug::Float as RFloat;
 
 // ─── Adaptive precision constants ────────────────────────────────────────────
 
-// TARGET_BITS, GRAM_OVERFLOW_THRESHOLD_BITS, and compute_scale_bits live
-// in lattice_common — same values for both backends. (At d=16 the
-// dimensional growth in the Gram budget is absorbed via the threshold
-// headroom rather than a smaller TARGET_BITS.)
 pub use crate::synthesis::lattice_common::{
     compute_scale_bits, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
 };
 
-/// MPFR Gram-Schmidt precision. Theorem 2 of Nguyen-Stehlé 2009 covers d ≤ 11
-/// at L²-LLL parameters (δ=0.75, η=0.55) in f64; for d=16 the proof doesn't
-/// apply, so we use MPFR. The algorithmic requirement is
-/// `ℓ ≥ 10 + 2·log d − log ε + d·log ρ` (fplll's `l2_min_prec`), which is
-/// ~32 bits at d=16, ε=1e-4 and ~42 bits at ε=1e-7. **80 bits** leaves
-/// ~40-bit headroom over the deep-ε requirement and was empirically the
-/// sweet spot in a sweep at ε=1e-4 (8% faster than 128, with no
-/// correctness regressions and *better* lde landing). Configurable
-/// per-construction via [`IntScratch16::with_gs_prec`].
+/// MPFR Gram-Schmidt precision. d=16 is outside the NS09 f64 proof (d ≤ 11),
+/// and fplll's `l2_min_prec` needs ~42 bits at ε=1e-7; 80 leaves ~40-bit
+/// headroom and was the fastest in a sweep. Per-construction override:
+/// [`IntScratch16::with_gs_prec`].
 pub const GS_PREC: u32 = 80;
 
 /// MPFR precision in bits used to construct the anisotropic Q metric.
@@ -157,46 +131,29 @@ pub struct IntScratch16 {
     pub lu_tmp: RFloat,
     pub lu_acc: RFloat,
 
-    /// Z1 D&C optimisation: when true, `find_aligned_lattice_points_with_stop` skips the
-    /// `reset_basis()` call and lets LLL warm-start from the previous
-    /// call's reduced basis. Caller is responsible for setting this
-    /// after the first call (so LLL gets a clean identity start once).
-    /// Default: false (cold start, single-search behaviour).
+    /// When true, the LLL warm-starts from the previous call's reduced
+    /// basis instead of resetting to identity. The caller sets it after
+    /// the first call (which needs a clean start). Default false.
     pub warm_lll: bool,
 
-    /// Per-(k, ε) warm-LLL seed (the 8D `q_base_seed` transplant): the
-    /// LLL-reduced basis of the prefix-independent part of the metric
-    /// (`coef_p_sigma1 · P_Σ1 + coef_id · I` — everything except the
-    /// rank-1 `coef_yy · ŷŷᵀ` term, which is the only part that varies
-    /// per prefix). Computed lazily once per scratch per (k, ε) and fed
-    /// through `warm_lll` for every subsequent `find_aligned_lattice_points` call at that
-    /// key; rayon `map_init` reuses scratches across an arm's prefixes,
-    /// so the cache hits hundreds of times per seed computation.
-    /// `None` after a non-converged seed reduction = cold starts.
+    /// Per-(k, ε) warm-LLL seed: the LLL-reduced basis of the
+    /// prefix-independent part of the metric (everything but the rank-1
+    /// per-prefix term). Computed lazily once per (k, ε) and reused via
+    /// `warm_lll`; `None` after a non-converged seed reduction.
     pub q_base_seed: Option<IMat16>,
     pub q_base_seed_key: Option<(u32, u64)>,
 
-    /// Experimental f64 GS state: when true, `find_aligned_lattice_points_with_stop` calls
-    /// `lll_f64::run_lll_16_f64` instead of the MPFR-based `run_lll_16`.
-    /// Theorem 2 of Nguyen-Stehlé 2009 doesn't cover d=16 in f64, but
-    /// fplll's `wrapper.cpp` tries `double` first at every dim — we test
-    /// whether it converges in our regime. Default: false (MPFR path).
+    /// Use the experimental f64 Gram-Schmidt LLL (`lll_f64::run_lll_16_f64`)
+    /// instead of MPFR — outside the NS09 d ≤ 11 proof, but fplll tries f64
+    /// first at every dim. Default false.
     pub use_f64_gs: bool,
 
-    /// BKZ block size (0 = disable, 3..=8 = run BKZ-β tours after LLL).
-    /// `bkz_tours` strengthens the LLL output by replacing Lovász with
-    /// β-block SVP. Quality gain is largest at deep ε (smaller post-LLL
-    /// SE region). β=2 is LLL-equivalent so don't use it.
+    /// BKZ block size (0 = off, 3..=8 = β-block SVP tours after LLL,
+    /// strengthening the basis most at deep ε). β=2 is LLL-equivalent.
     pub bkz_block_size: u32,
 
-    // ── f64 GS state (experimental, fplll-style) ──
-    //
-    // Parallel buffers to `r_bar`/`mu_bar`/`s_bar` but in plain f64.
-    // Used by the experimental [`super::lll_f64`] path: bypasses MPFR for
-    // the GS state during LLL. Theorem 2 of Nguyen-Stehlé 2009 doesn't
-    // cover d=16 in f64, but fplll's wrapper tries `double` first at every
-    // dim. If LLL converges and produces a valid unimodular basis, this
-    // gives a ~5× per-LLL-iter speedup vs the MPFR path.
+    // f64 mirrors of r_bar/mu_bar/s_bar for the lll_f64 path (~5× per-iter
+    // faster when it converges).
     pub r_bar_f64: [[f64; 16]; 16],
     pub mu_bar_f64: [[f64; 16]; 16],
     pub s_bar_f64: [[f64; 16]; 16],
@@ -207,11 +164,8 @@ impl IntScratch16 {
         Self::with_gs_prec(eps, GS_PREC)
     }
 
-    /// Construct a scratch with an overridden Gram-Schmidt precision.
-    /// The default `GS_PREC=128` has ~78 bits of margin over the
-    /// Nguyen-Stehlé requirement at ε=1e-7. Lower values trade
-    /// correctness margin for faster MPFR ops in the LLL hot path.
-    /// Used by Z1 D&C experiments and benchmarks.
+    /// Construct with an overridden Gram-Schmidt precision (lower = faster
+    /// MPFR ops, less correctness margin). The default is [`GS_PREC`].
     pub fn with_gs_prec(eps: Float, gs_prec: u32) -> Self {
         let prec_q = compute_prec_q(eps);
         let lu_prec = compute_lu_prec(eps);
