@@ -211,11 +211,13 @@ impl SynthesizerQ {
         }
 
         // Global ascending floor sort; tie-break k ascending (smaller SE
-        // regions complete sooner → incumbent drops faster). Then the
-        // cost-rank transpose-interleave across rayon's chunking.
+        // regions complete sooner → incumbent drops faster). Queue
+        // dispatch consumes this order directly; the legacy chunked path
+        // approximates it with a cost-rank transpose-interleave.
         units.sort_by(|a, b| a.floor.cmp(&b.floor).then(a.lde_total.cmp(&b.lde_total)));
         let n_threads = rayon::current_num_threads().max(1);
-        if OPTIMAL_PREFIX_INTERLEAVE {
+        let queue_dispatch = *FRONTIER_QUEUE_DISPATCH;
+        if OPTIMAL_PREFIX_INTERLEAVE && !queue_dispatch {
             units = crate::synthesis::stride_interleave(&units, n_threads);
         }
         let chunk = (units.len() / n_threads).max(1);
@@ -322,18 +324,55 @@ impl SynthesizerQ {
                 truncated[units[i].level_idx].store(true, Ordering::Relaxed);
             },
             || {
-                units
-                    .par_iter()
-                    .enumerate()
-                    .with_min_len(opt_chunk)
-                    .map_init(make_scratch, |s, (i, u)| per_unit(s, i, u))
-                    .reduce(
-                        || None,
-                        |a, b| match (a, b) {
-                            (None, x) | (x, None) => x,
-                            (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
-                        },
-                    )
+                if queue_dispatch {
+                    let cursor = std::sync::atomic::AtomicUsize::new(0);
+                    let merged: std::sync::Mutex<Option<(usize, SynthResultQ)>> =
+                        std::sync::Mutex::new(None);
+                    let per_unit = &per_unit;
+                    let make_scratch = &make_scratch;
+                    let units = &units;
+                    let cursor = &cursor;
+                    let merged_ref = &merged;
+                    rayon::scope(|sc| {
+                        for _ in 0..n_threads.min(units.len()) {
+                            sc.spawn(move |_| {
+                                let mut scratch = make_scratch();
+                                let mut local: Option<(usize, SynthResultQ)> = None;
+                                loop {
+                                    let i = cursor.fetch_add(1, Ordering::Relaxed);
+                                    if i >= units.len() {
+                                        break;
+                                    }
+                                    if let Some(r) = per_unit(&mut scratch, i, &units[i]) {
+                                        if local.as_ref().is_none_or(|b| r.0 < b.0) {
+                                            local = Some(r);
+                                        }
+                                    }
+                                }
+                                if let Some(r) = local {
+                                    let mut g = merged_ref.lock().unwrap();
+                                    if g.as_ref().is_none_or(|b| r.0 < b.0) {
+                                        *g = Some(r);
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    merged.into_inner().unwrap()
+                } else {
+                    units
+                        .par_iter()
+                        .enumerate()
+                        .with_min_len(opt_chunk)
+                        .map_init(make_scratch, |s, (i, u)| per_unit(s, i, u))
+                        .reduce(
+                            || None,
+                            |a, b| match (a, b) {
+                                (None, x) | (x, None) => x,
+                                (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
+                            },
+                        )
+                }
             },
         );
 
@@ -777,19 +816,10 @@ impl SynthesizerQ {
             let mut first_hit = self.clone();
             first_hit.optimize_cost = false;
             first_hit.odd_parity_branch = false;
-            // Screen-lite (CYCLOSYNTH_SCREEN_DIV; see `budget_div` docs).
-            if self.epsilon < 1e-7 {
-                first_hit.budget_div = screen_div();
-            }
             // Truncated-and-never-cleared levels below find-lde must
             // reach the enum grid or the window silently misses them.
             let mut unclear = Vec::new();
-            let mut first = first_hit.synthesize_with_unverified_levels(target, Some(&mut unclear));
-            if first.is_none() && first_hit.budget_div > 1 {
-                first_hit.budget_div = 1;
-                unclear.clear();
-                first = first_hit.synthesize_with_unverified_levels(target, Some(&mut unclear));
-            }
+            let first = first_hit.synthesize_with_unverified_levels(target, Some(&mut unclear));
             (first, unclear, baseline_handle.and_then(|h| h.join().unwrap()))
         });
         // The baseline's gate string contains no Q, so its cost is
