@@ -167,6 +167,9 @@ pub fn build_q_base_mpfr_zeta(scratch: &mut IntScratch16, k: u32, eps: Float) {
     }
 }
 
+/// Build Q from an f64 `v`. Test-only entry point (production uses
+/// `build_q_mpfr_zeta_from_mpfr_v` per prefix and `build_q_base_mpfr_zeta`
+/// for the seed); kept as the oracle for `build_q_zzeta_lattice`.
 pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: Float) {
     let prec = scratch.prec_q;
     let one = rfv(prec, 1.0);
