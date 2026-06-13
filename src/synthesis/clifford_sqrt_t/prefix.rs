@@ -2,17 +2,16 @@
 
 use super::*;
 
-// ─── FGKM canonical-form prefix generation (Z1, syllable-count enumeration) ──
+// ─── FGKM canonical-form prefix generation (syllable-count enumeration) ──
 //
-// Mirrors `clifford_t::build_ma_prefix_set`. Where Clifford+T enumerates Matsumoto–Amano
-// words `T^{a₀} · ∏ (HS^bᵢ T) · C` of T-count t', this enumerates
-// Forest–Gosset–Kliuchnikov–McKinnon words `∏ R_{pᵢ}(aᵢπ/8) · C` of
-// **syllable count** m. A "syllable" is one `R_p(a·π/8)` with
-// `p ∈ {x,y,z}, a ∈ {1,2,3}`; consecutive syllables must have distinct
-// axes (Lemma 3.1). m is the right enumeration coordinate because each
-// syllable peels √2-exp by ≥1, matching the inner lde split; Q-count
-// (Σaᵢ ∈ [m, 3m]) does not.
-//
+// Mirrors `clifford_t::build_ma_prefix_set`. Where Clifford+T enumerates
+// Matsumoto–Amano words `T^{a₀} · ∏ (HS^bᵢ T) · C` of T-count t', this
+// enumerates Forest–Gosset–Kliuchnikov–McKinnon words
+// `∏ R_{pᵢ}(aᵢπ/8) · C` of syllable count m. A syllable is one
+// `R_p(a·π/8)` with `p ∈ {x,y,z}, a ∈ {1,2,3}`; consecutive syllables
+// have distinct axes (Lemma 3.1). m is the right enumeration coordinate
+// because each syllable peels √2-exp by ≥1, matching the inner lde
+// split; Q-count (Σaᵢ ∈ [m, 3m]) does not.
 
 /// Global cache for `build_fgkm_prefix_set` results, keyed by syllable count `m`.
 pub(crate) static FGKM_PREFIX_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<U2Q>>>>> =
@@ -99,13 +98,9 @@ pub fn build_fgkm_prefix_gate_counts(m: u32) -> Arc<Vec<(usize, usize)>> {
     arc
 }
 
-/// Right-coset dedup gate for the ζ prefix lists — the zeta mirror of
-/// 8D's stage-1 `CYCLOSYNTH_L_COSET` (docs/w_8d_rework_notes.md):
-/// `CYCLOSYNTH_ZETA_COSET=0` disables the dedup (no-dedup A/B escape),
-/// anything else (or unset) enables it. Read once per process. Unlike
-/// 8D there is no ε floor to start with: the zeta deep-ε pipeline
-/// already computes `v_inner` in MPFR (`prefix_residual_uv_mpfr`), which
-/// is exactly the per-frame-cap precision fix 8D's floor is waiting on.
+/// Right-coset dedup gate for the ζ prefix lists.
+/// `CYCLOSYNTH_ZETA_COSET=0` disables it; anything else (or unset)
+/// enables. Read once per process.
 pub(crate) static ZETA_COSET_DEDUP: LazyLock<bool> = LazyLock::new(|| {
     !matches!(std::env::var("CYCLOSYNTH_ZETA_COSET").as_deref(), Ok("0"))
 });
