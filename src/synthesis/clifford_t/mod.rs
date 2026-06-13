@@ -45,23 +45,18 @@ use crate::synthesis::brute_search::{
     normalize4,
 };
 
-/// Global cache for `build_ma_prefix_set` results, keyed by `(t_prime, coset_dedup)`.
-/// Values are wrapped in `Arc` so cache hits return an `O(1)` refcount bump
-/// rather than cloning the full prefix list (at t'=14 that vector holds
-/// ~329 k U2T values, ~32 MB).
+/// `Arc`-wrapped so cache hits are a refcount bump, not a clone of the
+/// full prefix list (~329 k U2T values at t'=14).
 static MA_PREFIX_CACHE: LazyLock<Mutex<HashMap<(u32, bool), Arc<Vec<U2T>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Extract uv = [Re(u1), Im(u1), Re(u2), Im(u2)] from a 2×2 unitary matrix.
-///
-/// Normalizes to SU(2) first by dividing by √det, so that targets like
-/// diag(1, i) (which has det=i) map to the same search direction as their
-/// SU(2) representative diag(e^{−iπ/4}, e^{iπ/4}).
-///
-/// Convention: V ≈ e^{iφ} · [[u1, −ū2],[u2, ū1]].
+/// `uv = [Re(u1), Im(u1), Re(u2), Im(u2)]` from a 2×2 unitary, normalized
+/// to SU(2) by dividing by √det so that e.g. diag(1, i) (det = i) maps to
+/// the same search direction as its SU(2) representative.
+/// Convention: `V ≈ e^{iφ} · [[u1, −ū2],[u2, ū1]]`.
 fn unitary_to_uv(v: &Mat2) -> [Float; 4] {
     let det = v[0][0] * v[1][1] - v[0][1] * v[1][0];
-    let phase = det.sqrt(); // principal square root of det
+    let phase = det.sqrt();
     if phase.norm() > 1e-12 {
         let u1 = v[0][0] / phase;
         let u2 = v[1][0] / phase;
@@ -71,11 +66,9 @@ fn unitary_to_uv(v: &Mat2) -> [Float; 4] {
     }
 }
 
-/// Convert a 2×2 unitary to uv by trying all 8 global phases e^{ikπ/4} to find
-/// the SU(2) form [[u1, −ū2], [u2, ū1]]. Returns None if no phase works.
-///
-/// Matches Python's try_unitary_to_uv in bandb6.py.  The 8 phases correspond to the
-/// possible determinants of Clifford+T products (det ∈ {e^{ikπ/4}}).
+/// `uv` of the SU(2) form `[[u1, −ū2], [u2, ū1]]`, found by trying the 8
+/// global phases e^{ikπ/4} (the possible Clifford+T determinants). `None`
+/// if no phase yields that form.
 fn try_unitary_to_uv(u: &Mat2) -> Option<[Float; 4]> {
     use std::f64::consts::FRAC_PI_4;
     for k in 0..8 {
@@ -84,8 +77,7 @@ fn try_unitary_to_uv(u: &Mat2) -> Option<[Float; 4]> {
         let m01 = ph * u[0][1];
         let m10 = ph * u[1][0];
         let m11 = ph * u[1][1];
-        // Check [[u1, -ū2], [u2, ū1]]: u1 = m00, u2 = m10.
-        // Need: m11 == conj(m00) and m01 == -conj(m10).
+        // Need m11 == conj(m00) and m01 == -conj(m10).
         let d11 = m11 - Complex::new(m00.re, -m00.im);
         let d01 = m01 - Complex::new(-m10.re, m10.im);
         if d11.norm() < 1e-9 && d01.norm() < 1e-9 {
@@ -101,25 +93,19 @@ fn try_unitary_to_uv(u: &Mat2) -> Option<[Float; 4]> {
     None
 }
 
-/// Return 0 if det(m) is approximately ±1 or ±i (even ζ-power, ζ = e^{iπ/4}),
-/// 1 if det(m) is at the half-integer positions ζ^{odd}, or None if det is
-/// not on the 8th-root-of-unity circle.
-///
-/// Used as an upstream algebraic filter for `prefix_split_search`: the `try_unitary_to_uv`
-/// rejection condition is exactly `det(U_L† · target) ∉ {ζ^{even}}`, which
-/// reduces to `parity(det(U_L)) ≠ parity(det(target))`. Skipping prefixes
-/// whose parity mismatches the target is provably equivalent to skipping
-/// prefixes that try_unitary_to_uv would have rejected — no heuristic, no
-/// completeness loss.
+/// Parity of det(m) as a ζ-power (ζ = e^{iπ/4}): `0` for even powers
+/// ({±1, ±i}), `1` for odd, `None` if det isn't on the 8th-root circle.
+/// Upstream filter for `prefix_split_search`: `try_unitary_to_uv` rejects
+/// exactly when `parity(det(U_L)) ≠ parity(det(target))`, so this prunes
+/// the same prefixes one float matmul earlier — no completeness loss.
 fn det_zeta_parity(m: &Mat2) -> Option<u8> {
     let det = m[0][0] * m[1][1] - m[0][1] * m[1][0];
     let mag_sq = det.norm_sqr();
     if (mag_sq - 1.0).abs() > 1e-3 {
         return None;
     }
+    // Even ζ-powers have max(|re|, |im|) = 1; odd have √2/2 ≈ 0.707.
     let max_axis = det.re.abs().max(det.im.abs());
-    // Even ζ-powers ({1, i, -1, -i}): max(|re|, |im|) = 1.
-    // Odd  ζ-powers ({ζ, ζ³, ζ⁵, ζ⁷}): max(|re|, |im|) = √2/2 ≈ 0.707.
     if max_axis > 0.9 {
         Some(0)
     } else if max_axis > 0.6 && max_axis < 0.85 {
@@ -129,8 +115,7 @@ fn det_zeta_parity(m: &Mat2) -> Option<u8> {
     }
 }
 
-/// Compute U_L† · target as a float matrix.
-/// U_L is stored as U2T (exact), target as Mat2 (float).
+/// `U_L† · target` as a float matrix (`U_L` exact `U2T`, `target` float).
 fn prefix_dag_times_target(u_l: &U2T, target: &Mat2) -> Mat2 {
     let u_f = u_l.to_float();
     // (U_L†)[i][j] = conj(U_L[j][i])
@@ -152,22 +137,17 @@ fn prefix_dag_times_target(u_l: &U2T, target: &Mat2) -> Mat2 {
 
 // ─── MA prefix generation (Lemma 3.10) ───────────────────────────────────────
 
-/// Canonical float key for a U2T matrix, invariant under global U(1) phase.
-///
-/// Rotates the flattened matrix so the largest-magnitude element becomes
-/// real-positive, then rounds to 6 decimal places.  Used for O(n)-average
-/// deduplication in build_L, matching Python's `_canonical_key`.
+/// Phase-invariant canonical key for dedup: rotate so the
+/// largest-magnitude entry is real-positive, then round to 6 decimals.
 fn canonical_key(u: &U2T) -> [i64; 8] {
-    let m = u.to_float(); // [[Complex; 2]; 2]
+    let m = u.to_float();
     let flat = [m[0][0], m[0][1], m[1][0], m[1][1]];
 
-    // Find element with largest magnitude
     let (idx, _) = flat.iter().enumerate()
         .max_by(|(_, a), (_, b)| a.norm_sqr().partial_cmp(&b.norm_sqr()).unwrap())
         .unwrap();
     let piv = flat[idx];
 
-    // Rotate so pivot is real-positive
     let rot: Vec<_> = if piv.norm() < 1e-12 {
         flat.iter().flat_map(|c| [c.re, c.im]).collect()
     } else {
@@ -178,7 +158,6 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
         }).collect()
     };
 
-    // Round to 6 decimal places and encode as i64 (multiply by 1e6)
     rot.iter().map(|x| (x * 1_000_000.0).round() as i64).collect::<Vec<_>>()
         .try_into().unwrap()
 }
@@ -209,42 +188,25 @@ fn coset_mode_for(eps: Float) -> bool {
     (*L_COSET_DEDUP).unwrap_or(eps >= COSET_EPS_FLOOR)
 }
 
-/// Build L_{t'}: the Matsumoto–Amano prefix set with Clifford postmultiplication.
-///
-/// Matches Python's `build_L`:
-///   L_0 = {I}
-///   L_n (n≥1):
-///     even branch: (HS^{b_n}T)·…·(HS^{b_1}T) · C  for b_i ∈ {0,1}, C ∈ C_1
-///     odd  branch: T · (HS^{b_{n-1}}T)·…·(HS^{b_1}T) · C
-///   deduplicated up to global phase, then (at ε ≥ COSET_EPS_FLOOR) up
-///   to RIGHT cosets of the lde-0 Clifford subgroup ⟨S,X⟩: `(U_L·C)·U_R
-///   = U_L·(C·U_R)` on the same shell, so one rep per coset preserves
-///   completeness exactly — PROVIDED the per-frame walk is complete,
-///   which holds above the floor only.
+/// Probe/test entry: plain phase-dedup unless the env forces coset mode.
+/// Production goes through `build_ma_prefix_set` with `coset_mode_for(eps)`.
 #[cfg(test)]
 pub(crate) fn build_ma_prefix_set_reference(t_prime: u32) -> Arc<Vec<U2T>> {
-    // Legacy entry point (probes/tests): plain phase-dedup unless the env
-    // forces coset mode. Production (`prefix_split_search` + the prewarm) goes
-    // through `build_ma_prefix_set` with `coset_mode_for(eps)`.
     build_ma_prefix_set(t_prime, (*L_COSET_DEDUP).unwrap_or(false))
 }
 
-/// The MA prefix set with an explicit coset-dedup mode; results cached
-/// per `(t_prime, coset_dedup)`.
+/// The Matsumoto–Amano prefix set L_{t'} with Clifford postmultiplication,
+/// cached per `(t_prime, coset_dedup)`.
 pub fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
     let key = (t_prime, coset_dedup);
-    // Check cache first; clone of `Arc` is just a refcount bump.
     {
         let cache = MA_PREFIX_CACHE.lock().unwrap();
         if let Some(v) = cache.get(&key) {
             return Arc::clone(v);
         }
     }
-
     let result = Arc::new(build_l_inner_with(t_prime, coset_dedup));
-
-    // Race-tolerant insert: another thread may have populated this entry while
-    // we were computing; either copy is identical so an overwrite is harmless.
+    // A racing thread may have inserted an identical copy; overwrite is harmless.
     MA_PREFIX_CACHE
         .lock()
         .unwrap()
@@ -252,8 +214,11 @@ pub fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
     result
 }
 
-/// `build_ma_prefix_set_inner` with an explicit dedup mode (the M1 census probe
-/// compares both modes in one process, bypassing the env gate + cache).
+/// L_{t'} construction (cache + env bypassed so a probe can compare dedup
+/// modes in one process). L_0 = {I}; otherwise an even branch of
+/// (HS^b·T) products and an odd branch prefixed with T, each times every
+/// Clifford, deduplicated up to global phase (and, in coset mode, up to
+/// the right coset u·⟨S,X⟩).
 fn build_l_inner_with(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
     if t_prime == 0 {
         return vec![U2T::eye()];
@@ -267,7 +232,7 @@ fn build_l_inner_with(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
 
     let mut candidates: Vec<U2T> = Vec::new();
 
-    // Even branch: length-t' product of (HS^b T) blocks, then · C
+    // Even branch: length-t' product of (HS^b·T) blocks, then · C.
     let n = 1u32 << t_prime;
     for bits in 0..n {
         let mut u = U2T::eye();
@@ -280,7 +245,7 @@ fn build_l_inner_with(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
         }
     }
 
-    // Odd branch: T · length-(t'-1) product · C
+    // Odd branch: T · length-(t'-1) product · C.
     let n2 = 1u32 << (t_prime - 1);
     for bits in 0..n2 {
         let mut u = t;
@@ -293,11 +258,9 @@ fn build_l_inner_with(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
         }
     }
 
-    // Deduplicate up to global phase (and, in coset mode, up to the right
-    // coset u·⟨S,X⟩). Coset mode inserts the canonical key of every orbit
-    // member u·c when a representative u is KEPT, so later coset-mates hit
-    // `contains` with a single key computation each — ~2.3n keys total vs
-    // 8n for a min-over-orbit key.
+    // Coset mode inserts every orbit member u·c's key when a rep u is kept,
+    // so later mates dedup with one key computation each (~2.3n keys vs 8n
+    // for a min-over-orbit key).
     let mut seen: std::collections::HashSet<[i64; 8]> = std::collections::HashSet::new();
     let mut unique: Vec<U2T> = Vec::new();
     for u in candidates {
@@ -307,7 +270,6 @@ fn build_l_inner_with(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
         }
         unique.push(u);
         if coset_dedup {
-            // c = I is CLIFFORD_LDE0_IDX[0], which re-inserts `key` itself.
             for &ci in CLIFFORD_LDE0_IDX.iter() {
                 seen.insert(canonical_key(&(u * CLIFFORD_TABLE_T[ci].1)));
             }
@@ -320,10 +282,8 @@ fn build_l_inner_with(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
 
 // ─── Solution conversion ──────────────────────────────────────────────────────
 
-/// Build U2T from an integer lattice solution and denominator exponent.
-///
-/// sol = [a,b,c,d, e,f,g,h] encodes u1=(a,b,c,d), u2=(e,f,g,h) in ZOmega,
-/// with U = [[u1, -ū2], [u2, ū1]] / √2^k (SU(2) convention).
+/// `U2T` from a lattice solution: `sol = [u1(0..4), u2(4..8)]` in ZOmega,
+/// `U = [[u1, -ū2], [u2, ū1]] / √2^k`.
 fn solution_to_u2t(sol: &[i64; 8], k: u32) -> U2T {
     let u1 = ZOmega::new(
         Int::from_i64(sol[0]), Int::from_i64(sol[1]),
@@ -412,13 +372,13 @@ fn uv_to_lattice_y(v: [Float; 4], k: u32) -> [Float; 8] {
 const PASS1_CAP: u64 = 2_000_000;
 const PASS2_CAP: u64 = u64::MAX;
 
-/// NODE budgets per `find_aligned_lattice_points` call: the leaf caps never bind on a
-/// no-solution level (almost nothing reaches a leaf), so an empty
-/// level used to walk unbudgeted to exhaustion. Pass 1 sits ≥ 700×
-/// above every observed completing walk (empty levels are expensive
-/// through prefix COUNT, not any single walk); a level that cannot
-/// finish a walk in the pass-2 cap is pathological exhaustion, skipped
-/// under the accepted speed-over-completeness rule.
+/// NODE budgets per `find_aligned_lattice_points` call: the leaf caps
+/// never bind on a no-solution level (almost nothing reaches a leaf), so
+/// without a node cap an empty level walks to exhaustion. Pass 1 sits far
+/// above every completing walk (empty levels are expensive through prefix
+/// COUNT, not any single walk); a walk that can't finish under the pass-2
+/// cap is pathological exhaustion, skipped per the speed-over-completeness
+/// rule.
 const PASS1_NODE_CAP: u64 = 2_000_000;
 const PASS2_NODE_CAP: u64 = 50_000_000;
 
@@ -452,19 +412,14 @@ fn lll_aligned_search(
     budget_hit: &std::sync::atomic::AtomicBool,
     external_abort: Option<&std::sync::atomic::AtomicBool>,
 ) -> Vec<[i64; 8]> {
-    // Old guard was `k > 62` because `target_norm = 1i64 << k` overflowed at
-    // k ≥ 63. Now that target_norm is i128 and uv_to_lattice_y uses powf, the safe
-    // ceiling is much higher. Cap at 110 to stay comfortably below i128 range
-    // (target_norm = 2^k must fit, and Σ-products in bilinear_b can reach
-    // ~k+log₂(8) bits — 2^110 + log₂(8) ≈ 2^113, well within i128 = 2^127).
+    // k ≤ 110 keeps everything in i128: target_norm = 2^k and the
+    // Σ-products in bilinear_b reach ~k+3 bits ≈ 2^113 < 2^127.
     if max_solutions == 0 || k > 110 {
         return Vec::new();
     }
     let y = uv_to_lattice_y(v, k);
-    // Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816), with
-    // MPFR (rug) at adaptive precision in the LLL+Cholesky setup phase. The
-    // SE step downcasts to f64. Scratch is reused across all prefixes within
-    // one rayon worker via map_init in prefix_split_search.
+    // Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816):
+    // MPFR at adaptive precision for LLL+Cholesky, f64 for the SE step.
     crate::synthesis::lattice::find_aligned_lattice_points(
         scratch, &y, k, eps, max_solutions, max_leaf_checks, max_nodes,
         budget_hit, external_abort,
@@ -473,17 +428,9 @@ fn lll_aligned_search(
 
 // ─── Optimal prefix-split point (Proposition 3.13) ──────────────────────────────────────────────────────────────
 
-/// Compute the optimal t' for the divide-and-conquer split (Proposition 3.13).
-///
-/// t' = max(0, ⌈t − 5/2 · log₂(1/ε)⌉)
-/// t_inner = t − t' is the residual lde passed to direct_search.
-///
-/// DC beats direct when t' > 0, i.e. t > 5/2·log₂(1/ε):
-///   ε = 0.1  → threshold ≈  8.3,  DC kicks in at t ≥  9
-///   ε = 0.01 → threshold ≈ 16.6,  DC kicks in at t ≥ 17
-///   ε = 0.001→ threshold ≈ 24.9,  DC kicks in at t ≥ 25
-///
-/// When ε ≥ 1 the threshold is 0 and DC never helps, so t' = 0.
+/// Optimal D&C split exponent (Proposition 3.13):
+/// `t' = max(0, ⌈t − 5/2·log₂(1/ε)⌉)`. `t' > 0` (D&C beats direct) once
+/// `t > 5/2·log₂(1/ε)`; `t' = 0` for ε ≥ 1.
 fn optimal_t_prime(t: u32, eps: Float) -> u32 {
     if eps >= 1.0 {
         return 0;
@@ -492,9 +439,7 @@ fn optimal_t_prime(t: u32, eps: Float) -> u32 {
     if t as Float <= threshold {
         0
     } else {
-        // ceil(t - threshold)
-        let raw = t as Float - threshold;
-        raw.ceil() as u32
+        (t as Float - threshold).ceil() as u32
     }
 }
 
@@ -524,28 +469,18 @@ enum DirectBranch {
 
 // ─── Synthesizer ──────────────────────────────────────────────────────────────
 
-/// Clifford+T synthesis backend, implementing Algorithm 3.14 of
-/// arXiv:2510.05816. One of two backends behind the unified user-facing
-/// [`crate::synthesis::Synthesizer`] (the other is
-/// [`crate::synthesis::clifford_sqrt_t::SynthesizerQ`] for Clifford+√T).
-/// Code shouldn't construct `SynthesizerT` directly — use `Synthesizer`
-/// without `sqrt_t = true`. Public for direct access from tests.
+/// Clifford+T synthesis backend (Algorithm 3.14 of arXiv:2510.05816).
+/// Prefer the unified [`crate::synthesis::Synthesizer`]; public for tests.
 pub struct SynthesizerT {
     /// Approximation precision in diamond distance.
     pub epsilon: Float,
-    /// Maximum lde to search before giving up.
     pub max_lde: u32,
-    /// Minimum lde to start searching from.
-    /// Defaults to floor(3/2 · log₂(1/ε)), the information-theoretic lower bound
-    /// on the minimum T-count for a generic SU(2) rotation.  Set to 0 to find
-    /// exact low-T-count solutions for Cliffords and other special gates.
+    /// Defaults to floor(3/2·log₂(1/ε)), the information-theoretic T-count
+    /// lower bound for a generic SU(2) rotation. Set 0 for exact low-T-count
+    /// solutions of Cliffords and other special gates.
     pub min_lde: u32,
-    /// Maximum lde for direct_search (brute-force brute_aligned_search).
-    /// For t > direct_limit, skip direct_search and go straight to prefix_split_search
-    /// regardless of the optimal t' split. This prevents brute_aligned_search from
-    /// hanging at large lde where it becomes O(2^(4t)) intractable.
-    /// Default: 6 (brute_aligned_search is fast up to norm shell 2^6=64; beyond that
-    /// DC with forced t_prime = t - direct_limit is used).
+    /// Max lde for direct_search; above it, skip straight to
+    /// prefix_split_search since brute_aligned_search becomes O(2^4ᵗ).
     pub direct_limit: u32,
 }
 
@@ -589,34 +524,20 @@ impl SynthesizerT {
         self
     }
 
-    /// Find a minimum-lde Clifford+T circuit approximating `target`.
-    ///
-    /// Returns `None` if no circuit within `max_lde` achieves distance < `epsilon`.
-    ///
-    /// # Performance
-    ///
-    /// All ε regimes go through the unified Lenstra 8D pipeline (L²-LLL over
-    /// an exact i256 Gram + f64 Gram-Schmidt + MPFR-128 Schnorr-Euchner +
-    /// MPFR-scaled-precision LU for the cap-center solve). MPFR precision
-    /// scales with ε via `compute_prec_q` (build_q at `8·log₂(1/ε)` bits)
-    /// and `compute_lu_prec` (LU at `6·log₂(1/ε)`).
-    ///
-    /// Typical synth times:
-    /// - ε ≥ 1e-3: 1–15 ms
-    /// - ε = 1e-5: 70–400 ms
-    /// - ε = 1e-7: 0.15–2 s
-    /// - ε = 1e-8: ~20 s
+    /// Find a minimum-lde Clifford+T circuit approximating `target`, or
+    /// `None` if none within `max_lde` reaches distance < `epsilon`. All ε
+    /// route through the Lenstra 8D pipeline (L²-LLL over an exact i256
+    /// Gram + f64 GS + MPFR-128 Schnorr-Euchner + MPFR LU for the
+    /// cap-center), with MPFR precision scaled to ε.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultT> {
-        // First-touch rayon init with 16 MiB worker stacks — the 8D path
-        // races the ζ₁₆ entries for global-pool initialisation, and a
-        // 2 MiB-stack pool installed here overflows later deep walks
-        // (see ensure_rayon_stack).
+        // 16 MiB worker stacks: the 8D path races the ζ₁₆ entries for
+        // global-pool init, and a 2 MiB pool overflows later deep walks.
         crate::synthesis::ensure_rayon_stack();
         let raw_uv = unitary_to_uv(&target);
         let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
 
-        // Stage 1: direct_search for small t. Starts at min_lde (not 0) because
-        // no generic rotation can be approximated to within ε with fewer T-gates.
+        // Direct search starts at min_lde, not 0: no generic rotation
+        // reaches ε with fewer T-gates.
         for t in self.min_lde..=self.direct_limit {
             let result = self.try_at_lde(&target, v, t);
             if result.is_some() {
@@ -624,8 +545,8 @@ impl SynthesizerT {
             }
         }
 
-        // Phase 2: DC regime — skip the gap where prefix_split_search exists but prefix lists
-        // are tiny and lll_aligned_search is cheap anyway (t=direct_limit+1 .. t_dc_start-1)
+        // Skip the gap where prefix_split_search exists but prefix lists are
+        // tiny and the inner search is cheap anyway.
         let t_dc_start = if self.epsilon < 1.0 {
             let raw = (5.0 / 2.0) * (1.0 / self.epsilon).log2();
             (raw.ceil() as u32).max(self.direct_limit + 1)
@@ -663,17 +584,11 @@ impl SynthesizerT {
         None
     }
 
-    /// Try to find a solution at denominator exponent `t`.
-    ///
-    /// Dispatches to direct_search or prefix_split_search:
-    ///   - If t <= direct_limit AND optimal_t_prime == 0: direct_search (fast brute-force).
-    ///   - Otherwise: prefix_split_search with adaptive cap retry.
-    ///
-    /// Adaptive cap: first try prefix_split_search with PASS1_CAP (aggressive — bails unproductive
-    /// prefixes quickly). If no solution found AND budget was actually exhausted, retry
-    /// with PASS2_CAP (full budget). If pass 1 found no solution and budget was *not*
-    /// exhausted, the search was already exhaustive at this lde — skip pass 2 and let the
-    /// caller advance to lde+1.
+    /// Find a solution at lde `t`: direct_search for `t ≤ direct_limit`,
+    /// else prefix_split_search with an adaptive 2-pass cap — PASS1 bails
+    /// unproductive prefixes fast, and PASS2's full budget runs only if
+    /// pass 1 actually exhausted its budget (otherwise pass 1 was already
+    /// exhaustive and no solution exists at this lde).
     fn try_at_lde(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResultT> {
         let trace = crate::synthesis::diag::trace_enabled();
         if t <= self.direct_limit {
@@ -726,31 +641,19 @@ impl SynthesizerT {
         }
     }
 
-    /// Algorithm 3.6: direct search at lde `t`.
-    ///
-    /// Uses `search::brute_aligned_search` (fast brute-force with Cauchy-Schwarz pruning)
-    /// for the inner lattice search.  `lll_aligned_search` (LLL+CVP) is reserved
-    /// for the DC path where the inner lde is large and the CVP target is tight.
-    ///
-    /// Tries three top-level branches:
-    ///   Even:  U ≈ target           → search at uv(target)
-    ///   T:     U·T ≈ target         → search at uv(target·T†)
-    ///   T†:    U·T† ≈ target        → search at uv(target·T)
-    ///
-    /// Then for each of the 24 Cliffords C:
-    ///   Even:  C·U ≈ target         → search at uv(C†·target)
-    ///   T:     C·U·T ≈ target       → search at uv(C†·target·T†)
-    ///   T†:    C·U·T† ≈ target      → search at uv(C†·target·T)
+    /// Direct search at lde `t` (Algorithm 3.6): `brute_aligned_search`
+    /// over 75 directions in parallel — the 3 top-level branches
+    /// (U, U·T, U·T† ≈ target) and the same three for each of the 24
+    /// left-Cliffords C. LLL+CVP (`lll_aligned_search`) is reserved for
+    /// the D&C path where the inner lde is large.
     fn direct_search(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResultT> {
         let eps = self.epsilon;
 
-        // Pre-compute search directions for all 24 Clifford left-prefixes.
         let clif_vs: Vec<[Float; 4]> = CLIFFORD_TABLE_T.iter()
             .map(|(_, c_u2t)| apply_u2t_dag_to_uv(c_u2t, v))
             .collect();
 
-        // Build all 75 (v_search, tag) branches: 3 top-level + 23 Cliffords × 3.
-        // Index 0 of CLIFFORD_TABLE_T is "I", covered by Plain/T/Tdg already.
+        // 3 top-level + 23 Cliffords × 3 (index 0 = "I", already covered).
         let mut branches: Vec<([Float; 4], DirectBranch)> = Vec::with_capacity(75);
         branches.push((v, DirectBranch::Plain));
         branches.push((apply_t_dag_to_uv(v), DirectBranch::T));
