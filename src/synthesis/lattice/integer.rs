@@ -1,21 +1,12 @@
-//! L²-LLL pipeline for the Clifford+T synthesis Lenstra path.
-//!
-//! Implements arXiv:2510.05816 Algorithm 3.6 with the L² algorithm of
-//! Nguyen-Stehlé 2009 (SIAM J. Computing, "An LLL Algorithm with Quadratic
-//! Complexity") specialised to dimension 8 and the anisotropic Q metric
-//! used by the paper.
-//!
-//! Aligned-lattice-point search for the 8D Z[ω] pipeline (= the paper's
-//! phase 1, arXiv:2510.05816 Alg 3.6): build Q (eq 3.15 cap × ball metric) →
-//! i256 snapshot (scale only affects snapshot precision; LLL μ-values
-//! are scale-invariant ratios) → L²-LLL with pure-f64 GS (NS09
-//! Theorem 2: f64 is provably sufficient at d=8 with δ=0.75, η=0.55;
-//! INSERT semantics + lazy size-reduction maintain the invariant the
-//! proof needs) → f64 Cholesky (κ(G) ≤ 16 post-LLL) + MPFR LU for the
-//! cap center → Schnorr-Euchner with norm/bilinear/alignment leaf
-//! checks.
+//! 8D Z[ω] aligned-lattice-point search — the Clifford+T "phase 1" of
+//! arXiv:2510.05816 (Alg 3.6) using the L² algorithm of Nguyen-Stehlé 2009.
+//! Pipeline: build Q (eq 3.15 cap×ball metric) → i256 snapshot (scale only
+//! sets snapshot precision; LLL μ-values are scale-invariant) → L²-LLL with
+//! pure-f64 GS (NS09 Theorem 2 proves f64 sufficient at d=8; INSERT + lazy
+//! size-reduction maintain the proof's invariant) → f64 Cholesky (κ(G) ≤ 16
+//! post-LLL) + MPFR LU for the cap center → Schnorr-Euchner with
+//! norm/bilinear/alignment leaf checks.
 
-// 8×8 matrix code reads more clearly with explicit (i, j) indexing.
 #![allow(clippy::needless_range_loop)]
 
 use rug::{Assign, Float as RFloat};
@@ -27,11 +18,9 @@ use super::q_metric::{build_q_int, build_q_mpfr};
 use super::scratch::{rfv, IntScratch};
 use crate::rings::Float;
 
-/// Outcome of one `find_aligned_lattice_points_outcome` invocation. `should_escalate` is set when the i256
-/// Gram overflowed during LLL (transient B-growth at very deep ε beyond what
-/// `TARGET_BITS = 180` absorbs). The dispatcher can use this signal to fall
-/// back to an alternative strategy if needed; the L²-LLL path was designed
-/// to keep this flag clear in our target ε ∈ [1e-10, 1e-3] regime.
+/// `should_escalate` is set when the i256 Gram overflowed during LLL
+/// (transient B-growth at very deep ε beyond what `TARGET_BITS = 180`
+/// absorbs) — clear in the target ε ∈ [1e-10, 1e-3] regime.
 pub struct LatticeSearchOutcome {
     pub solutions: Vec<[i64; 8]>,
     pub should_escalate: bool,
@@ -55,15 +44,8 @@ fn se_bound_8d() -> f64 {
     *BOUND
 }
 
-/// Run the 8D Lenstra enumeration for one MA-prefix's `(y, k, eps)` setup.
-/// Returns up to `max_solutions` integer 8-vectors satisfying the synthesis
-/// constraints (norm shell, bilinear, alignment).
-///
-/// `max_leaf_checks` caps SE leaf-callback invocations; `max_nodes` is a
-/// TRUE node budget (one unit per SE recurse-entry — what bounds
-/// no-solution levels). Either cap sets `budget_hit` when it binds.
-/// `external_abort` (cross-branch winner signal) is checked per
-/// recurse-entry; an externally-aborted walk does not set `budget_hit`.
+/// Reset the basis and run [`find_aligned_lattice_points_outcome`],
+/// returning just the solution vectors (see that fn for the budget contract).
 #[allow(clippy::too_many_arguments)]
 pub fn find_aligned_lattice_points(
     scratch: &mut IntScratch,
@@ -109,26 +91,16 @@ fn warm_seed_q_base(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
     }
 }
 
-/// Run the full Lenstra 8D pipeline for one MA-prefix's `(y, k, eps)` setup.
+/// Run the full Lenstra 8D pipeline for one prefix's `(y, k, eps)`, collecting
+/// up to `max_solutions` valid 8-vectors (production passes 1 = stop at first
+/// hit; telemetry passes `usize::MAX` to enumerate the region).
 ///
-/// Collects up to `max_solutions` valid 8-vector solutions (production
-/// passes 1: the walk stops at the first hit, preserving the historical
-/// first-hit behavior; telemetry passes `usize::MAX` to enumerate the whole
-/// region).
-///
-/// Budgets — both set `budget_hit` when they bind, so the caller's 2-pass
-/// requeue can retry the level:
-///   - `max_leaf_checks`: leaf-callback budget (historical semantics).
-///     Now also ABORTS the walk when it trips (previously the walk kept
-///     running with the callback rejecting everything).
-///   - `max_nodes`: TRUE node budget, one unit per SE recurse-entry. This
-///     is what bounds no-solution levels, where almost nothing reaches a
-///     leaf and the leaf budget never binds (observed: 46 min on one empty
-///     level at ε=1e-3, t=27).
-///
-/// `external_abort`: cross-branch abort signal, checked per recurse-entry;
-/// set by a peer branch that already found a solution (read-only here).
-/// An externally-aborted walk does NOT set `budget_hit`.
+/// Both budgets set `budget_hit` when they bind, so the caller's 2-pass
+/// requeue can retry the level: `max_leaf_checks` caps (and aborts on) leaf
+/// callbacks; `max_nodes` is a TRUE node budget (one unit per SE
+/// recurse-entry) — the one that bounds no-solution levels, where almost
+/// nothing reaches a leaf. `external_abort` (a peer branch's win signal,
+/// read-only) aborts per recurse-entry but does NOT set `budget_hit`.
 #[allow(clippy::too_many_arguments)]
 pub fn find_aligned_lattice_points_outcome(
     scratch: &mut IntScratch,
