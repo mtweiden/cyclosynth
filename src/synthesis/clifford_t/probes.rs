@@ -786,4 +786,51 @@ use std::f64::consts::PI;
         }
     }
 
+    /// Census (ignored): `|L_{t'}|` sizes, `k_prefix` histogram, and the
+    /// `S(t', α) = Σ_k count(t', k)/α^k` D&C cost-ratio for Clifford+T's
+    /// `build_ma_prefix_set_reference` — the empirical sister of
+    /// `clifford_sqrt_t`'s `fgkm_prefix_split_cost_ratio`.
+    /// Run: `cargo test --release --lib build_l_size_and_cost_ratio -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn build_l_size_and_cost_ratio() {
+        eprintln!("\n|L_{{t'}}| sizes:");
+        for t_prime in 0..=10 {
+            let l = build_ma_prefix_set_reference(t_prime);
+            eprintln!("  t'={t_prime:>2}  |L_{{t'}}|={:>8}", l.len());
+        }
+
+        eprintln!("\nk_prefix histogram (Clifford+T, build_ma_prefix_set_reference):");
+        for t_prime in 1..=8 {
+            let l = build_ma_prefix_set_reference(t_prime);
+            let mut k_min = u32::MAX; let mut k_max = 0;
+            for u in l.iter() { k_min = k_min.min(u.k); k_max = k_max.max(u.k); }
+            eprintln!(
+                "  t'={t_prime:>2}  total={:>8}  k range [{k_min}, {k_max}]",
+                l.len()
+            );
+        }
+
+        eprintln!("\nS(t', α) = Σ_k count(t', k) / α^k  (D&C cost ratio):");
+        eprintln!("  t'  total      α=2.0    α=2.5    α=3.0    α=3.5    α=4.0");
+        for t_prime in 1..=10 {
+            let l = build_ma_prefix_set_reference(t_prime);
+            let mut counts: Vec<u64> = vec![0; 64];
+            for u in l.iter() {
+                let k = u.k as usize;
+                if k < counts.len() { counts[k] += 1; }
+            }
+            eprint!("  {t_prime:>2}  {:>8}", l.len());
+            for &alpha in &[2.0_f64, 2.5, 3.0, 3.5, 4.0] {
+                let s: f64 = counts
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &c)| (c as f64) / alpha.powi(k as i32))
+                    .sum();
+                eprint!("   {s:>8.2}");
+            }
+            eprintln!();
+        }
+    }
+
 
