@@ -21,10 +21,10 @@
 //! - **align_vec** (`av`): the row vector whose dot with a candidate
 //!   lattice point measures cap alignment; `compute_align_vec*`.
 
-// Search functions thread many tuning knobs (norm bound, alignment vector,
-// max solutions, budget caps, abort flag) through their signatures. The
-// alternative would be a "search options" struct, which obscures the call
-// site without simplifying the underlying interface.
+// Search functions thread several tuning knobs (norm bound, alignment
+// vector, threshold, max solutions, output sink) through their signatures.
+// The alternative would be a "search options" struct, which obscures the
+// call site without simplifying the underlying interface.
 #![allow(clippy::too_many_arguments)]
 
 use num_complex::Complex64;
@@ -187,7 +187,7 @@ fn record_if_aligned(
 ///   b² + d² = r
 ///   b·A + d·B = rhs,   where A = a+c, B = c−a.
 /// Records valid full 8-vectors into `out`. SLOT is const so each
-/// instantiation monomorphizes to the hand-written original it replaced.
+/// instantiation monomorphizes to a constant-indexed loop nest.
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn solve_bd_pair<const SLOT: usize>(
