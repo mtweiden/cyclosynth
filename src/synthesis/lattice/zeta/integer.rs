@@ -1008,41 +1008,6 @@ mod tests {
         );
     }
 
-    /// A/B diagnostic: run find_aligned_lattice_points (norm-pruned) at a fixed k and report
-    /// timing + sols. To compare against the non-pruned baseline, swap the
-    /// SE call site in `find_aligned_lattice_points` temporarily.
-    #[test]
-    #[ignore]
-    fn diag_norm_prune_vs_baseline() {
-        use crate::synthesis::distance::diamond_distance_float;
-        let theta = 0.3_f64;
-        let target: crate::synthesis::distance::Mat2 = [
-            [num_complex::Complex64::from_polar(1.0, -theta / 2.0),
-             num_complex::Complex64::new(0.0, 0.0)],
-            [num_complex::Complex64::new(0.0, 0.0),
-             num_complex::Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        let v = unitary_to_uv_zeta(&target);
-        let d = det_phase_of(&target);
-        let eps = 1e-3_f64;
-        for k in 9u32..=10 {
-            let y = uv_to_lattice_y_zeta(v, k);
-            let mut s = IntScratch16::new(eps);
-            let abort = AtomicBool::new(false);
-            let budget = 1_000_000_000_u64;
-            let t0 = std::time::Instant::now();
-            let sols = find_aligned_lattice_points(&mut s, &y, k, eps, budget, &abort);
-            let dt = t0.elapsed();
-            let min_dist = sols.iter().map(|sol| {
-                let cand = solution_to_u2q_with_det_phase(sol, k, d);
-                diamond_distance_float(&cand.to_float(), &target)
-            }).fold(f64::INFINITY, f64::min);
-            eprintln!(
-                "k={k:>2}  sols={:>3}  min_dist={min_dist:.3e}  t={:>10.3?}  budget_hit={}",
-                sols.len(), dt, abort.load(Ordering::Relaxed)
-            );
-        }
-    }
 
     /// Diagnostic: for Rz(0.3) at ε=1e-3, first establish the lde the 8D
     /// Clifford+T synthesizer reaches (upper bound for Clifford+√T since
