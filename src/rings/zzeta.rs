@@ -56,7 +56,8 @@ impl ZZeta {
         )
     }
 
-    /// The squared norm of the complex number (computed as Int).
+    /// Sum of squared coefficients (the coefficient-vector norm, not |z|² —
+    /// the ζ^k basis is not orthonormal as complex numbers).
     #[inline]
     pub fn norm_sqr(self) -> Int {
         self.a * self.a + self.b * self.b + self.c * self.c + self.d * self.d
