@@ -1,44 +1,17 @@
-//! BKZ-β block reduction layered on top of the existing 16D L²-LLL.
+//! BKZ-β block reduction on top of the 16D L²-LLL, mirroring fplll's
+//! bkz.cpp. Each frontier κ replaces LLL's Lovász swap with block-SVP
+//! enumeration over the projected β-dim sublattice; if it finds a vector
+//! shorter than b*_κ, that vector is inserted. A tighter basis means a
+//! smaller post-LLL Schnorr-Euchner region downstream.
 //!
-//! ## What BKZ does
-//!
-//! BKZ ("block Korkine–Zolotarev") strengthens LLL by replacing the
-//! Lovász "compare adjacent rows" step with a **block-SVP enumeration**:
-//! for each frontier κ, find the shortest vector in the projected
-//! β-dim sublattice spanned by `π(b_κ)..π(b_{κ+β-1})` (projection onto
-//! `⟨b_0..b_{κ-1}⟩^⊥`). If the shortest vector is shorter than `b*_κ`,
-//! replace `b_κ` with that vector.
-//!
-//! At β=2 this is exactly LLL's swap test (Gauss reduction on a
-//! 2D sublattice). β≥3 gives strictly stronger reduction.
-//!
-//! ## Why we want it for the Z[ζ_16] pipeline
-//!
-//! Tighter LLL output basis → smaller post-LLL Schnorr-Euchner region in
-//! `prefix_split_search_q`. The fplll BKZ wisdom (Chen–Nguyen 2011): root-Hermite
-//! factor drops from `1.0219` (LLL) to `~1.0188` (β=4), `~1.0168`
-//! (β=8). At d=16 a 1.0188/1.0219 ratio compounded over 16 dimensions
-//! gives ~1.5× shorter `b*_0` empirically. The downstream SE region
-//! shrinks ~that much per dimension.
-//!
-//! Mirrors fplll bkz.cpp (tour/trunc_tour/svp_reduction):
-//!
-//! - **No extra basis rows**. After SVP-enum returns a coefficient
-//!   vector `x ∈ Z^β`, we transform the existing β rows in place via
-//!   unimodular ops so one of them becomes the desired short vector.
-//!   Three cases:
-//!     1. All-zero except one ±1: just move that row to position κ.
-//!     2. Any ±1 in `x`: pivot row absorbs the linear combination via
-//!        `row_addmul`, then move-row.
-//!     3. General: binary-GCD tree on `|x|` mirrored on basis rows.
-//! - **Re-LLL is size-reduction only**, not a full LLL run. The
-//!   unimodular insertion preserves basis validity; only `b_κ`
-//!   changed, so size-reduce the prefix `[0, κ+1)`.
-//! - **Clean tour**: a tour is "clean" if no insertion shortened any
-//!   `r̄_{κ,κ}`. Termination on clean OR `max_loops`.
-//!
-//! Auto-abort copies fplll: track GSO slope across tours; exit after
-//! 5 non-improving tours.
+//! Insertion adds no rows: the existing β rows are transformed in place by
+//! unimodular ops so one becomes the short vector — three cases by the
+//! shape of the SVP coefficient vector `x`: a lone ±1 is a row move; any
+//! ±1 absorbs the combination via `row_addmul` then moves; otherwise a
+//! binary-GCD tree on `|x|`. Only `b_κ` changes, so the re-reduction is
+//! size-reduction over `[0, κ+1)`, not a full LLL. A tour is clean when no
+//! insertion shortened any `r̄_{κ,κ}`; stop on a clean tour, `max_loops`,
+//! or (fplll-style) 5 non-improving tours by GSO slope.
 
 #![allow(clippy::needless_range_loop)]
 
