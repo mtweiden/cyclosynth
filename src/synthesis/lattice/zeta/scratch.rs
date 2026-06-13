@@ -14,7 +14,7 @@ use rug::Float as RFloat;
 
 // ─── Adaptive precision constants ────────────────────────────────────────────
 
-pub use crate::synthesis::lattice_common::{
+pub use crate::synthesis::lattice::common::{
     compute_scale_bits, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
 };
 

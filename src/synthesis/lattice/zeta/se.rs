@@ -2115,7 +2115,7 @@ mod tests {
     /// exactly the f64 snapshot (the verify path depends on this).
     #[test]
     fn q_cholesky_dual_matches_gram_and_f64_factor() {
-        use crate::synthesis::lattice_common::i256_to_f64;
+        use crate::synthesis::lattice::common::i256_to_f64;
         let v = realistic_v();
         let mut s = IntScratch16::new(1e-3);
         build_q_mpfr_zeta(&mut s, v, 6, 1e-3);

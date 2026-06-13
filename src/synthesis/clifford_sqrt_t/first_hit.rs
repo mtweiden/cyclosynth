@@ -27,7 +27,7 @@ pub(crate) fn prefix_residual_uv_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [r
         let mut re = RF::with_val(prec, 0.0);
         let mut im = RF::with_val(prec, 0.0);
         for i in 0..8 {
-            let c = crate::synthesis::lattice_common::i256_to_f64(z.coeff(i));
+            let c = crate::synthesis::lattice::common::i256_to_f64(z.coeff(i));
             if c != 0.0 {
                 re += RF::with_val(prec, &cosv[i] * c);
                 im += RF::with_val(prec, &sinv[i] * c);

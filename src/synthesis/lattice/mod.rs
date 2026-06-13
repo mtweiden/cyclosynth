@@ -3,5 +3,6 @@
 //! [`common`] holds the dimension-independent L²-LLL parameters and helpers
 //! shared by both.
 
+pub mod common;
 pub mod omega;
 pub mod zeta;

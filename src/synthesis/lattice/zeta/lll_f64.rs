@@ -11,9 +11,9 @@
 #![allow(clippy::needless_range_loop)]
 
 use super::scratch::IntScratch16;
-use crate::synthesis::lattice_common::{LllResult, L2_DELTA_BAR, L2_ETA_BAR, MAX_LAZY_PASSES};
+use crate::synthesis::lattice::common::{LllResult, L2_DELTA_BAR, L2_ETA_BAR, MAX_LAZY_PASSES};
 
-pub use crate::synthesis::lattice_common::i256_to_f64;
+pub use crate::synthesis::lattice::common::i256_to_f64;
 
 /// f64 CFA: same algorithm as `super::lll::cfa_row` but operates on the
 /// `_f64` state buffers.
