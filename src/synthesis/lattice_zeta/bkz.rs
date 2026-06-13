@@ -16,12 +16,6 @@
 
 use super::scratch::IntScratch16;
 
-/// BKZ block size. β=2 is LLL-equivalent; β≥3 gives strict improvement.
-/// Default β=4 is a sweet spot at d=16: per-tour cost is `(d-β+1)=13`
-/// SVP-enum calls, each ~120 lattice points = trivial. Quality gain is
-/// substantial vs LLL (root-Hermite factor 1.022 → 1.019).
-pub const BKZ_DEFAULT_BLOCK_SIZE: usize = 4;
-
 /// Maximum BKZ tours before bailing. Most useful BKZ runs converge
 /// within 4–8 tours at d=16, β≤8. Hard cap is mostly defensive.
 pub const BKZ_MAX_LOOPS: usize = 16;

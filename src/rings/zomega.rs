@@ -52,13 +52,6 @@ impl ZOmega {
         Self { a: self.a, b: -self.d, c: -self.c, d: -self.b }
     }
 
-    /// Sum of squared coefficients (the coefficient-vector norm, not |z|² —
-    /// the {1,ω,ω²,ω³} basis is not orthonormal as complex numbers).
-    #[inline]
-    pub fn norm_sqr(self) -> Int {
-        self.a * self.a + self.b * self.b + self.c * self.c + self.d * self.d
-    }
-
     /// Convert to a floating-point complex number.
     /// ω = e^{iπ/4} = (1+i)/√2, ω² = i, ω³ = (−1+i)/√2.
     pub fn to_complex(self) -> Complex64 {

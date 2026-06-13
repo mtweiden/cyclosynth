@@ -6,8 +6,8 @@
 //! Convention for gate strings: leftmost character = first gate applied
 //! (rightmost factor in matrix product).
 
-use crate::matrix::{U2T, U2Q};
-use crate::rings::{ZOmega, ZZeta};
+use crate::matrix::U2T;
+use crate::rings::ZOmega;
 
 /// All 24 single-qubit Clifford gates as (gate_string, U2T) pairs, SU(2)
 /// representatives (global phase is irrelevant — diamond distance is
@@ -68,21 +68,6 @@ pub(crate) fn match_clifford(target: &U2T) -> Option<usize> {
         })
         .filter(|(_, (_, c))| c.diamond_distance(target) < 1e-6)
         .map(|(i, _)| i)
-}
-
-/// The 24-element Clifford table embedded into Z[ζ₁₆]/U2Q space, via
-/// `ZZeta::from_zomega` on each U2T entry.
-pub fn clifford_table_q() -> Vec<(&'static str, U2Q)> {
-    CLIFFORD_TABLE_T
-        .iter()
-        .map(|(name, u2t)| {
-            let u11 = ZZeta::from_zomega(u2t.u11.a, u2t.u11.b, u2t.u11.c, u2t.u11.d);
-            let u12 = ZZeta::from_zomega(u2t.u12.a, u2t.u12.b, u2t.u12.c, u2t.u12.d);
-            let u21 = ZZeta::from_zomega(u2t.u21.a, u2t.u21.b, u2t.u21.c, u2t.u21.d);
-            let u22 = ZZeta::from_zomega(u2t.u22.a, u2t.u22.b, u2t.u22.c, u2t.u22.d);
-            (*name, U2Q::new(u11, u12, u21, u22, u2t.k))
-        })
-        .collect()
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
