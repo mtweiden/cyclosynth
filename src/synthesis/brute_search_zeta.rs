@@ -1,5 +1,5 @@
 //! Brute-force search and y-vector helpers for the Z[ζ_16] / Clifford+√T
-//! flow. Mirrors the role of [`super::search`] for the Z[ω] / Clifford+T
+//! flow. Mirrors the role of [`super::brute_search`] for the Z[ω] / Clifford+T
 //! flow: y-vector construction (`compute_align_vec_zeta`, `uv_to_lattice_y_zeta`)
 //! plus a brute-force enumerator (`enumerate_unitary_norm_shell`) used as a correctness
 //! oracle for the lattice pipeline in [`super::lattice_zeta`].
@@ -34,7 +34,8 @@ pub fn compute_align_vec_zeta(v: [f64; 4]) -> [f64; 16] {
 /// Scale a 4-element alignment direction `v` to the 16-element y vector
 /// used by the Z[ζ_16] lattice pipeline. Convention chosen so that
 /// `Σ_full · y = √(2^k) · v_padded` (target × √(2^k) on σ_1, zero on
-/// σ_5/9/13), consistent with the Z[ω] flow's scale convention.
+/// σ_5/9/13); this gives ‖y‖² = 2^k/4, the 16D norm convention (the 8D
+/// flow uses 2^(k−1) — they deliberately differ).
 pub fn uv_to_lattice_y_zeta(v: [f64; 4], k: u32) -> [f64; 16] {
     let scale = 2.0f64.powf(k as f64 / 2.0) / 4.0;
     let raw = compute_align_vec_zeta(v);
