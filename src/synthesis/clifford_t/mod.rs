@@ -634,11 +634,11 @@ impl SynthesizerT {
         };
         let t_dc_start = t_dc_start.max(self.min_lde);
 
-        // Pre-warm the L cache in parallel for the t_prime values expected in the first
-        // few steps of the t-loop.  build_ma_prefix_set_reference is expensive (O(2^t_prime)) and lazily
-        // populated; doing it here fills all cores before the search loop starts.
-        // Cap at a 5-step horizon: solutions are almost always found within the first
-        // few t values above t_dc_start, so building larger L sets is wasteful.
+        // Pre-warm the prefix-set cache in parallel for the t_prime values
+        // the first few t-loop steps will need. `build_ma_prefix_set` is
+        // O(2^t_prime) and lazily populated, so building here fills all
+        // cores before the search loop. Cap at a 5-step horizon: solutions
+        // almost always land within a few t of t_dc_start.
         if t_dc_start <= self.max_lde {
             let horizon = (t_dc_start + 5).min(self.max_lde);
             let needed: Vec<u32> = {
@@ -887,7 +887,7 @@ impl SynthesizerT {
         // other in-flight walk.
         let found_abort = std::sync::atomic::AtomicBool::new(false);
 
-        // build_ma_prefix_set_reference order correlates position with structure, so
+        // build_ma_prefix_set order correlates position with structure, so
         // contiguous chunks concentrate similar prefixes on one worker;
         // dealing lowers time-to-first-hit under find_any.
         let indices: Vec<u32> = (0..n as u32).collect();
@@ -904,10 +904,9 @@ impl SynthesizerT {
         let target_parity = det_zeta_parity(target);
 
         // Inner branches (`odd` flags) run per prefix: even (U_L·U_R) and,
-        // when t_inner > 0, odd (U_L·U_R·T). A branch-ordered "two-sweep"
-        // variant was tried and killed — M2 measured branch wins at ~50/50
-        // with no t_inner-parity rule, so no sweep order dominates
-        // (docs/w_8d_rework_notes.md; removed 2026-06-12).
+        // when t_inner > 0, odd (U_L·U_R·T). Branch wins split ~50/50 with
+        // no t_inner-parity rule, so neither branch order dominates and the
+        // two are swept together.
         let plans: Vec<Vec<bool>> = if t_inner == 0 {
             vec![vec![false]]
         } else {
@@ -974,7 +973,6 @@ impl SynthesizerT {
                                 if dist < eps {
                                     found_abort
                                         .store(true, std::sync::atomic::Ordering::Relaxed);
-                                    // M2: branch-win + sweep-position telemetry.
                                     crate::synthesis::diag::record_branch_win(
                                         odd, pos, n, t,
                                     );
