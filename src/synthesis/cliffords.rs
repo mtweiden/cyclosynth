@@ -54,8 +54,8 @@ pub static CLIFFORD_LDE0_IDX: [usize; 8] = [0, 2, 3, 4, 5, 9, 10, 11];
 // alignment vector, and the literal 'T' in a gate string denotes Rz(π/4)
 // up to global phase.
 
-/// Find the Clifford (by index into CLIFFORD_TABLE_T) that best matches target.
-/// Returns the index and the diamond distance.
+/// Find the Clifford (by index into CLIFFORD_TABLE_T) within 1e-6 diamond
+/// distance of `target`. Returns its index, or `None` if none match.
 #[cfg(test)]
 pub(crate) fn match_clifford(target: &U2T) -> Option<usize> {
     CLIFFORD_TABLE_T
@@ -70,8 +70,8 @@ pub(crate) fn match_clifford(target: &U2T) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// Placeholder: Clifford+√T table would live here.
-/// For now, we embed T-gate Cliffords into ZZeta space.
+/// The 24-element Clifford table embedded into Z[ζ₁₆]/U2Q space, via
+/// `ZZeta::from_zomega` on each U2T entry.
 pub fn clifford_table_q() -> Vec<(&'static str, U2Q)> {
     CLIFFORD_TABLE_T
         .iter()
