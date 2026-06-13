@@ -24,35 +24,21 @@ pub use crate::synthesis::lattice_common::i256_to_f64;
 
 // ─── Cholesky Factorization Algorithm (Figure 4) ─────────────────────────────
 
-/// Row-at-a-time CFA (Figure 4 of Nguyen-Stehlé 2009). Computes
-/// `r_bar[i][*]`, `mu_bar[i][*]`, `s_bar[i][*]` given rows 0..i are already
-/// populated. All arithmetic in f64; reads gram entries via `i256_to_f64`.
-///
-/// Per Figure 4 (with our 0-indexed convention):
-///   For j = 0..i-1:
-///     r̄_{i,j} ← <b_i, b_j>    (from i256 Gram)
-///     For k = 0..j-1: r̄_{i,j} ← r̄_{i,j} - μ̄_{j,k} · r̄_{i,k}
-///     μ̄_{i,j} ← r̄_{i,j} / r̄_{j,j}
-///   s̄_{i,0} ← <b_i, b_i>
-///   For j = 1..=i: s̄_{i,j} ← s̄_{i,j-1} - μ̄_{i,j-1} · r̄_{i,j-1}
-///   r̄_{i,i} ← s̄_{i,i}
-///
-/// IMPORTANT: assumes rows 0..i are already filled by prior `cfa_row` calls
-/// (or by initial setup). The L² main loop calls this at each new κ.
+/// Row-at-a-time Cholesky factorization (Figure 4 of Nguyen-Stehlé 2009):
+/// fills `r_bar[i][*]`, `mu_bar[i][*]`, `s_bar[i][*]` in f64, reading the
+/// exact Gram via `i256_to_f64`. Assumes rows 0..i are already filled —
+/// the L² main loop calls this at each new κ.
 #[inline]
 pub fn cfa_row(scratch: &mut IntScratch, i: usize) {
-    // Off-diagonal entries: j = 0..i-1
     for j in 0..i {
         let mut r = i256_to_f64(scratch.gram[i][j]);
         for k in 0..j {
             r -= scratch.mu_bar[j][k] * scratch.r_bar[i][k];
         }
         scratch.r_bar[i][j] = r;
-        // μ̄_{i,j} = r̄_{i,j} / r̄_{j,j}
         let r_jj = scratch.r_bar[j][j];
         scratch.mu_bar[i][j] = if r_jj.abs() < 1e-300 { 0.0 } else { r / r_jj };
     }
-    // Diagonal: s̄_{i,*} sequence, r̄_{i,i} = s̄_{i,i}
     scratch.s_bar[i][0] = i256_to_f64(scratch.gram[i][i]);
     for j in 1..=i {
         scratch.s_bar[i][j] =
@@ -61,7 +47,7 @@ pub fn cfa_row(scratch: &mut IntScratch, i: usize) {
     scratch.r_bar[i][i] = scratch.s_bar[i][i];
 }
 
-/// Run CFA for ALL rows 0..d. Equivalent to `cfa_row` for i = 0..d-1 in order.
+/// Run CFA for all 8 rows in order.
 pub fn cfa_full(scratch: &mut IntScratch) {
     for i in 0..8 {
         cfa_row(scratch, i);
@@ -78,21 +64,18 @@ pub fn cfa_full(scratch: &mut IntScratch) {
 /// predictively, then applies the basis transform `b_κ -= Σ X_i b_i` and
 /// updates the i256 Gram. Repeats until convergence.
 ///
-/// Per Theorem 3 the f64 precision requirement (ℓ=52) is satisfied when
-/// rows 0..κ-1 are already L³-reduced — the L² main loop maintains this
-/// invariant.
+/// Per Theorem 3 the f64 precision requirement is satisfied when rows
+/// 0..κ-1 are already L³-reduced — the L² main loop maintains this.
 ///
-/// Returns the number of passes used. Caller can detect non-convergence via
-/// MAX_LAZY_PASSES — never expected to fire in practice; the hard bound
-/// guards against pathological inputs.
+/// Returns a value < MAX_LAZY_PASSES on convergence (the pass index) and
+/// MAX_LAZY_PASSES on non-convergence; callers detect the latter by `==`.
+/// The cap never fires in practice; it guards pathological inputs.
 pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
     let mut x = [0i64; 8];
 
     for pass in 0..MAX_LAZY_PASSES {
-        // Step 2: compute CFA for row κ (reads i256 Gram via i256_to_f64).
         cfa_row(scratch, kappa);
 
-        // Step 3: convergence check.
         let mut max_mu: f64 = 0.0;
         for j in 0..kappa {
             let m = scratch.mu_bar[kappa][j].abs();
@@ -107,8 +90,7 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
             return pass;
         }
 
-        // Steps 4-5: compute X_i values descending from κ-1 to 0,
-        // predictively shrinking μ̄_{κ,j} as we go down.
+        // X_i = round(μ̄_{κ,i}) descending from κ-1, shrinking μ̄_{κ,j} as we go.
         for i in (0..kappa).rev() {
             let xi = scratch.mu_bar[kappa][i].round() as i64;
             x[i] = xi;
@@ -120,20 +102,17 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
             }
         }
 
-        // Step 6: apply basis update and Gram update for each non-zero X_i.
-        // gram_update_size_reduce already encodes M·G·Mᵀ for one (k, j, r)
-        // triple; we call it sequentially for each non-zero x[i] so the
-        // chain of updates produces the correct final Gram.
+        // gram_update_size_reduce encodes M·G·Mᵀ for one (k,j,r) triple; call
+        // it sequentially per non-zero x[i] so the chained updates compose.
         for i in 0..kappa {
             if x[i] != 0 {
                 for c in 0..8 {
                     scratch.basis[kappa][c] -= x[i] * scratch.basis[i][c];
                 }
                 gram_update_size_reduce(scratch, kappa, i, x[i]);
-                x[i] = 0; // clear for next pass
+                x[i] = 0;
             }
         }
-        // Step 7: goto step 2.
     }
     if crate::synthesis::diag::trace_enabled() {
         crate::synthesis::diag::record_lazy_passes(MAX_LAZY_PASSES as u64);
@@ -215,13 +194,10 @@ fn basis_insert(scratch: &mut IntScratch, kappa_orig: usize, kappa_insert: usize
 /// Compute G = B · Q_int · Bᵀ entirely in i256, into `scratch.gram`. Uses
 /// `scratch.temp_bq` as intermediate (= B · Q_int).
 ///
-/// **Overflow analysis**: max |Q_int| = 2^TARGET_BITS = 2^180 by `build_q_int`.
-/// For typical post-LLL max(|B[i][j]|) ≤ 2^15, intermediate B·Q_int entries
-/// fit ≤ 2^198, final G entries fit ≤ 2^216 → safe with 40-bit margin to
-/// i256::MAX. For transient B-growth during LLL swaps, max(|B|) can spike to
-/// ~2^40 at deep ε; G entries can then approach 2^260 (overflow). Returns
-/// `false` if any Gram entry exceeds 2^GRAM_OVERFLOW_THRESHOLD_BITS, so the
-/// LLL caller can abort and trigger fallback.
+/// Overflow: with max |Q_int| = 2^180 and post-LLL max(|B|) ≤ 2^15, G
+/// entries fit ≤ 2^216 (40-bit margin to i256::MAX). Transient B-growth
+/// during deep-ε swaps can push them past the 2^GRAM_OVERFLOW_THRESHOLD_BITS
+/// guard, on which this returns `false` so the caller aborts to fallback.
 pub fn compute_gram_full(scratch: &mut IntScratch) -> bool {
     let zero = i256::from_i64(0);
 
@@ -292,12 +268,11 @@ fn gram_overflow_check(scratch: &IntScratch) -> bool {
 
 // ─── L²-LLL main loop (Figure 6) ─────────────────────────────────────────────
 
-/// L²-LLL (Nguyen-Stehlé 2009, Figure 6) on the 8×8 Q-metric Gram already
-/// snapshotted into `scratch.gram`. Builds an LLL-reduced basis recorded in
-/// `scratch.basis`; intermediate state lives in `scratch.r_bar` /
-/// `mu_bar` / `s_bar` and the i256 `gram`.
+/// L²-LLL (Nguyen-Stehlé 2009, Figure 6) over the 8×8 Q-metric. Builds the
+/// integer Gram from `scratch.q_int` internally and records the reduced
+/// basis in `scratch.basis`; GS state lives in `r_bar`/`mu_bar`/`s_bar`.
 ///
-/// The algorithm walks rows κ = 1..d, maintaining the invariant that rows
+/// The algorithm walks rows κ = 1..8, maintaining the invariant that rows
 /// 0..κ-1 are (δ, η)-L³-reduced. At each κ:
 ///   1. Lazily size-reduce row κ (interleaved CFA + basis reduction) until
 ///      `|μ̄_{κ,j}| ≤ η̄` for all j < κ.
@@ -316,14 +291,11 @@ pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
     lll_l2_8_seeded(scratch, None).0
 }
 
-/// `lll_l2_8` with an optional warm-start basis (stage 4 of
-/// docs/plan_8d_prefix_rework.md, lever C). `seed` must be unimodular
-/// (e.g. the LLL-reduced basis of the prefix-independent `Q_base` metric
-/// for the same `(k, ε)`): starting from any unimodular basis of ℤ⁸
-/// instead of the identity yields a reduced basis of the SAME lattice, so
-/// downstream (det ±1 check, Cholesky, LU, SE) is unaffected. Returns the
-/// iteration count for the warm-LLL gate measurement (≥25% reduction
-/// required by the plan before production adoption).
+/// `lll_l2_8` with an optional warm-start `seed` basis, which must be
+/// unimodular (e.g. the reduced basis of the prefix-independent `Q_base`
+/// metric at the same `(k, ε)`): any unimodular basis of ℤ⁸ reduces to the
+/// SAME lattice, so downstream (det ±1, Cholesky, LU, SE) is unaffected.
+/// Returns the LLL iteration count.
 pub fn lll_l2_8_seeded(
     scratch: &mut IntScratch,
     seed: Option<&super::scratch::IMat8>,
@@ -335,7 +307,7 @@ pub fn lll_l2_8_seeded(
     let max_iter: usize = 10_000;
     let mut iters: usize = 0;
 
-    // Step 1: compute exact integer Gram. Basis = identity → Gram = Q_int.
+    // Gram from the current basis (= Q_int when reset to identity, else B·Q_int·Bᵀ).
     if !compute_gram_full(scratch) {
         if crate::synthesis::diag::trace_enabled() {
             crate::synthesis::diag::record_lll_iters(iters as u64, max_iter as u64);
@@ -343,8 +315,7 @@ pub fn lll_l2_8_seeded(
         return (LllResult::GramOverflow, iters);
     }
 
-    // Step 2: initialize r̄_{0,0} = ‖b_0‖² (CFA on row 0).
-    cfa_row(scratch, 0);
+    cfa_row(scratch, 0); // r̄_{0,0} = ‖b_0‖²
     let mut kappa = 1usize;
 
     while kappa < 8 && iters < max_iter {
