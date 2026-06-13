@@ -14,18 +14,9 @@ use super::lattice_zeta::se::bilinear_forms;
 
 // ─── y-vector helpers ────────────────────────────────────────────────────────
 
-/// Convert a 4-element direction `v = (Re V_{11}, Im V_{11}, Re V_{21},
-/// Im V_{21})` (extracted from the SU(2) form of the target) into a 16D
-/// lattice-coord y vector. Analog of [`super::search::compute_align_vec`]
-/// for Z[ω].
-///
-/// Construction: `y_lattice = Σ_full^T · v_padded`, where `v_padded` has
-/// `v` placed at the σ_1 indices `{0, 1, 8, 9}` of the per-element layout
-/// and zero elsewhere. By the orthogonality of Σ rows
-/// (`Σ_full Σ_full^T = 4·I_16`), `Σ_full · y_lattice = 4 · v_padded`
-/// — i.e. the Σ-image of y is `4·target` on σ_1, zero on σ_5/σ_9/σ_13.
-///
-/// Components: for `j ∈ {0..7}`,
+/// 4-element target direction `v` → 16D lattice-coord y, via
+/// `y = Σ_fullᵀ · v_padded` (v on the σ_1 indices, zero elsewhere). By Σ
+/// orthogonality the Σ-image of y is `4·target` on σ_1, zero elsewhere:
 ///   `y[j]   = cos(jπ/8)·v[0] + sin(jπ/8)·v[1]`  (u_1 block)
 ///   `y[8+j] = cos(jπ/8)·v[2] + sin(jπ/8)·v[3]`  (u_2 block)
 pub fn compute_align_vec_zeta(v: [f64; 4]) -> [f64; 16] {
@@ -50,27 +41,11 @@ pub fn uv_to_lattice_y_zeta(v: [f64; 4], k: u32) -> [f64; 16] {
     std::array::from_fn(|i| raw[i] * scale)
 }
 
-/// MPFR-precision variant of [`uv_to_lattice_y_zeta`]. Caller provides an
-/// MPFR `v` (of any precision) and gets back y at the same precision.
-/// The `prec` argument matches the precision of the returned RFloats.
-///
-/// **Deep-ε radial-norm contract** (docs/w_precision_audit_notes.md):
-/// the SE cap's radial window is keyed multiplicatively to ‖y‖, and at
-/// ε = 1e-8 the window is only ε²/2 = 5e-17 wide RELATIVE — below one
-/// f64 ulp. Two ~1e-16 norm-error channels used to live here and
-/// displaced the cap by up to ±1.5 window-widths (the 1e-8 find/miss
-/// flicker):
-///   1. f64 `theta.cos()/sin()` lifted into MPFR (≤1 ulp each — the
-///      "single-rounding is exact" comment was true of the conversion
-///      and irrelevant to the chain);
-///   2. `v` carries the target column's own f64 quantization defect
-///      |v| = 1 + ν, ν ~ 1e-16, which the true acceptance window
-///      cancels out (threshold and |t| scale together) but the cap
-///      construction did not.
-/// Fix: MPFR cos/sin tables, then rescale so ‖y‖ = 2^(k/2)/2 = ρ
-/// EXACTLY (to `prec`). Norm errors of any upstream origin become pure
-/// direction errors, which enter the cap radius only via the ρε
-/// tangential arm (~1e-24·ρ — harmless). Residual η ~ 2^−prec.
+/// MPFR variant of [`uv_to_lattice_y_zeta`]. At deep ε the SE cap's radial
+/// window (ε²/2 ≈ 5e-17 relative at 1e-8) is below an f64 ulp, so any
+/// ~1e-16 error in ‖y‖ displaces the cap and causes find/miss flicker.
+/// Fix: MPFR cos/sin tables, then rescale so ‖y‖ = ρ = 2^(k/2)/2 EXACTLY.
+/// Norm errors then become pure direction errors, harmless to the cap.
 pub fn uv_to_lattice_y_zeta_mpfr(v: &[rug::Float; 4], k: u32, prec: u32) -> [rug::Float; 16] {
     use rug::Float as RFloat;
     // cos/sin(jπ/8) tables at `prec` (MPFR Pi — no f64 trig roundings).
@@ -81,11 +56,9 @@ pub fn uv_to_lattice_y_zeta_mpfr(v: &[rug::Float; 4], k: u32, prec: u32) -> [rug
         let theta = RFloat::with_val(prec, &pi * (j as u32)) / 8u32;
         let c = theta.clone().cos();
         let s = theta.sin();
-        // raw[j] = c·v[0] + s·v[1]
         let cv0 = RFloat::with_val(prec, &c * &v[0]);
         let sv1 = RFloat::with_val(prec, &s * &v[1]);
         raw[j] = RFloat::with_val(prec, &cv0 + &sv1);
-        // raw[8+j] = c·v[2] + s·v[3]
         let cv2 = RFloat::with_val(prec, &c * &v[2]);
         let sv3 = RFloat::with_val(prec, &s * &v[3]);
         raw[8 + j] = RFloat::with_val(prec, &cv2 + &sv3);
