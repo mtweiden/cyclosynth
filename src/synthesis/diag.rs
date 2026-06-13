@@ -31,6 +31,57 @@ pub struct CapturedFind {
 
 pub static CAPTURED_FIND: Mutex<Option<CapturedFind>> = Mutex::new(None);
 
+/// Halving critique experiment (CYCLOSYNTH_UDIAG=1): collect the distinct
+/// u-prefixes (x[0..8]) the 16D SE walk visits at the leaf, vs total leaf
+/// callbacks. distinct/total = the t-multiplicity per u — the node-count
+/// prize halving claims (objection #1). For each distinct u also tally
+/// whether all 4 Galois conjugates land in the 2^k disk (real-population
+/// solvability density — objection #3). Run single-threaded (the Mutex is
+/// hot); measurement only.
+pub struct UDiag {
+    pub us: std::collections::HashSet<[i64; 8]>,
+    pub total_leaves: u64,
+    pub all4_in_disk: u64,
+}
+pub static U_DIAG: Mutex<Option<UDiag>> = Mutex::new(None);
+
+pub fn udiag_enabled() -> bool {
+    std::env::var("CYCLOSYNTH_UDIAG").ok().as_deref() == Some("1")
+}
+
+/// Record one leaf's u-prefix; on first sight evaluate the 4 conjugate
+/// magnitudes (|σ_j(u)|², j=1,3,5,7) against the 2^k disk.
+pub fn udiag_record(x: &[i64; 16], k: u32) {
+    let mut g = U_DIAG.lock().unwrap();
+    let d = g.get_or_insert_with(|| UDiag {
+        us: std::collections::HashSet::new(),
+        total_leaves: 0,
+        all4_in_disk: 0,
+    });
+    d.total_leaves += 1;
+    let mut u = [0i64; 8];
+    u.copy_from_slice(&x[0..8]);
+    if d.us.insert(u) {
+        let disk = (1u128 << k) as f64;
+        let mag2 = |j: u32| -> f64 {
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (m, &c) in u.iter().enumerate() {
+                let ang = std::f64::consts::PI * (j * m as u32) as f64 / 8.0;
+                re += c as f64 * ang.cos();
+                im += c as f64 * ang.sin();
+            }
+            re * re + im * im
+        };
+        if mag2(1) < disk && mag2(3) < disk && mag2(5) < disk && mag2(7) < disk {
+            d.all4_in_disk += 1;
+        }
+    }
+}
+
+pub fn udiag_report() -> Option<(usize, u64, u64)> {
+    U_DIAG.lock().unwrap().as_ref().map(|d| (d.us.len(), d.total_leaves, d.all4_in_disk))
+}
+
 pub fn capture_enabled() -> bool {
     std::env::var("CYCLOSYNTH_CAPTURE").ok().as_deref() == Some("1")
 }
