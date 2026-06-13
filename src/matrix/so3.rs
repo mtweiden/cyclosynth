@@ -19,25 +19,9 @@
 //! basis vector e_j under the rotation. Equivalently, M[i,j] is the
 //! i-th component of R(e_j). Matrix–vector product R·v applies the rotation.
 //!
-//! # SO3<R2> from U2T
-//!
-//! Given U = [[u1, -ū2], [u2, ū1]] / √2^k with u1,u2 ∈ Z[ω]:
-//!
-//!   Let pp = u1², qq = u2², rr = u1·u2,
-//!       cc = u1·conj(u2), nn1 = u1·conj(u1), nn2 = u2·conj(u2).
-//!
-//! The SO(3) matrix (standard convention, columns = images) entries:
-//!
-//!   [ax, ay, az]    ax = Re(pp-qq)   ay = Im(pp-qq)   az = 2Re(cc)
-//!   [bx, by, bz]    bx = -Im(pp+qq)  by = Re(pp+qq)   bz = -2Im(cc)
-//!   [cx, cy, cz]    cx = -2Re(rr)    cy = -2Im(rr)    cz = Re(nn1-nn2)
-//!
-//! all divided by 2^k = √2^{2k}.  With exp = 2k+1 (one extra √2),
-//! the R2 numerators are:
-//!   Re(z) as R2 with exp=1: R2(b-d, a)   for z = a+bω+cω²+dω³
-//!   Im(z) as R2 with exp=1: R2(b+d, c)
-//!   2Re(z) as R2 with exp=1: R2(2(b-d), 2a)
-//!   2Im(z) as R2 with exp=1: R2(2(b+d), 2c)
+//! The U2 → SO(3) conversions and their exact ring derivations live on the
+//! `from_u2` methods (`SO3<R2>::from_u2` for Clifford+T, `SO3<R4>::from_u2`
+//! for Clifford+√T).
 
 // 3×3 matrix code reads more clearly with explicit (i, j) indexing than with
 // iterator combinators threading multiple arrays in lockstep.
@@ -470,10 +454,9 @@ impl Add for Ratio<R4> {
 /// A 3×3 SO(3) matrix with entries in ring R, stored as per-entry ratios.
 ///
 /// Each entry `e[3*row + col]` is a `Ratio<R>`: the actual matrix value is
-/// `e[i].num / denom^{e[i].exp}`, where `denom` is √2 for R2 or γ for R4.
-///
-/// This mirrors the Python `SO3Matrix` design where each entry is an
-/// `AlgebraicIntegerOverRoot2` with its own `denominator_power`.
+/// `e[i].num / √2^{e[i].exp}`. The denominator base is √2 for both R2 and R4
+/// (γ is R4's coefficient ring, not its denominator). Each entry carries its
+/// own exponent rather than sharing a single matrix-wide denominator.
 ///
 /// Standard convention: column j = image of basis vector e_j.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -618,7 +601,7 @@ impl SO3<R4> {
             .unwrap_or(0)
     }
 
-    /// Simplify each entry individually (cancel γ from numerator and denominator).
+    /// Simplify each entry individually (cancel √2 from numerator and denominator).
     pub fn reduce(&mut self) {
         for entry in self.e.iter_mut() { entry.simplify(); }
     }
@@ -678,9 +661,7 @@ impl SO3<R4> {
                 z.d - z.f,
             )
         };
-        // 2·Im(z) for z's coefficients (z.e is the imaginary-axis component).
-        // Im(z) = e + (c+g)·√2/2 + (d+f−b−h)·γ/2... wait, Im of cos terms is 0,
-        // and Im of i·ζ^k = sin terms. Recompute:
+        // 2·Im(z), z.e the imaginary-axis component:
         //   Im(z) = b·sin(π/8) + c·sin(π/4) + d·sin(3π/8) + e·sin(π/2)
         //         + f·sin(5π/8) + g·sin(3π/4) + h·sin(7π/8)
         //         = e + (c+g)·√2/2 + (d+f)·γ/2 + (b+h)·(γ√2−γ)/2
@@ -737,15 +718,15 @@ impl Mul for SO3<R4> {
 
 // ─── Type aliases ─────────────────────────────────────────────────────────────
 
-/// SO3 matrix for Clifford+T unitaries (denominator in Z[√2]).
+/// SO3 matrix for Clifford+T unitaries (numerators in Z[√2]).
 pub type SO3T = SO3<R2>;
 
-/// SO3 matrix for Clifford+√T unitaries (denominator in Z[γ]).
+/// SO3 matrix for Clifford+√T unitaries (numerators in Z[γ]).
 pub type SO3Q = SO3<R4>;
 
 // ─── Display for SO3 ─────────────────────────────────────────────────────────
 
-/// Display SO3 with per-row denominators (matching Python's `exponents()` approach).
+/// Display SO3 with per-row denominators.
 ///
 /// Each row is shown with its own `/ denom^row_exp`, where `row_exp` is the
 /// maximum entry exponent in that row. Numerators are lifted to `row_exp` for display.
@@ -775,7 +756,7 @@ fn fmt_so3_rows_r4(e: &[Ratio<R4>; 9], f: &mut fmt::Formatter<'_>) -> fmt::Resul
             write!(f, "{lifted}")?;
         }
         write!(f, "]")?;
-        if row_exp > 0 { write!(f, " / γ^{row_exp}")?; }
+        if row_exp > 0 { write!(f, " / √2^{row_exp}")?; }
         if row < 2 { writeln!(f)?; }
     }
     Ok(())
