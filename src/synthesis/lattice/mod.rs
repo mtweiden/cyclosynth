@@ -24,8 +24,6 @@ pub mod scratch;
 pub mod se;
 
 
-/// Per-worker scratch buffers, allocated once via rayon's `map_init` and
-/// reused across all MA prefixes that worker handles.
 pub use integer::find_aligned_lattice_points;
 
 #[cfg(test)]
