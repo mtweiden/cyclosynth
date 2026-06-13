@@ -1,7 +1,7 @@
 //! Optional per-search diagnostic counters. Most are gated by
 //! `CYCLOSYNTH_TRACE=1`; the budget-truncation outcome counters and the
-//! M2 branch-win telemetry are always-on (at most once per find_aligned_lattice_points call,
-//! so the hot path never sees them).
+//! prefix branch-win telemetry are always-on (at most once per
+//! find_aligned_lattice_points call, so the hot path never sees them).
 //!
 //! Usage:
 //!   CYCLOSYNTH_TRACE=1 ./time_synthesis ...
@@ -148,10 +148,7 @@ pub static N_SOLS_RETURNED: AtomicU64 = AtomicU64::new(0);
 /// Time spent inside SE leaf-check closures (sum across all find_aligned_lattice_points calls).
 pub static T_LEAF_CHECK_NS: AtomicU64 = AtomicU64::new(0);
 
-/// Total norm-shell prune firings across the SE walk.
-/// Prune firings that triggered MPFR verification (i.e., within the
-/// `VERIFY_RATIO_CAP` band and verify_prune_mpfr was on).
-/// Prune firings in the SE walk (trace-gated).
+/// Norm-shell prune firings in the SE walk (trace-gated).
 pub static N_PRUNE_FIRES: AtomicU64 = AtomicU64::new(0);
 /// Prune firings that triggered MPFR verification.
 pub static N_VERIFY_PRUNE_FIRES: AtomicU64 = AtomicU64::new(0);
@@ -226,11 +223,10 @@ pub static N_PREDICTIVE_TRUNC_FIRES: AtomicU64 = AtomicU64::new(0);
 /// see how many truncations the projection reclaimed.
 pub static N_BUDGET_EXHAUST_FIRES: AtomicU64 = AtomicU64::new(0);
 
-// ─── Per-depth survivorship (critic Step 1) ──────────────────────────────────
+// ─── Per-depth survivorship ───────────────────────────────────────────────────
 //
-// Indexed by depth 0..16. recurse-call enter, prune-fire, and prune-actual
-// counters at each level. Reveal where the SE tree fans out and where
-// pruning actually trims.
+// Indexed by depth 0..16: recurse-enter count per level. Reveals where the
+// SE tree fans out.
 
 pub static N_RECURSE_ENTER_AT_DEPTH: [AtomicU64; 16] = [
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
@@ -387,14 +383,13 @@ pub fn snapshot() -> Snapshot {
     }
 }
 
-// ─── M2: 8D prefix_split_search branch-win telemetry (prefix-rework stage 0) ───────────
+// ─── prefix_split_search branch-win telemetry ───────────────────────────────
 //
-// Appended 2026-06-11 (plan_8d_prefix_rework.md M2). Always-on and
-// CUMULATIVE across the process — deliberately NOT in `reset_all`: they
-// fire at most once per prefix_split_search find (cold path), and try_at_lde's
-// per-pass reset_all would otherwise wipe them before a suite can
-// aggregate. Read at end-of-run by bench_t_breakdown / probes; a per-win
-// `[m2]` stderr line (trace-gated) carries the full distribution.
+// Always-on and CUMULATIVE across the process — deliberately NOT in
+// `reset_all`: they fire at most once per prefix_split_search find (cold
+// path), and the per-pass reset_all would otherwise wipe them before a
+// suite can aggregate. Read at end-of-run by probes; a per-win stderr
+// line (trace-gated) carries the distribution.
 
 /// prefix_split_search finds that landed in the EVEN inner branch (U_L·U_R).
 pub static N_BRANCH_WIN_EVEN: AtomicU64 = AtomicU64::new(0);
@@ -405,8 +400,8 @@ pub static N_WIN_PREFIX_IDX_SUM: AtomicU64 = AtomicU64::new(0);
 /// Sum of sweep lengths at each win (mean fraction = idx_sum / len_sum).
 pub static N_WIN_PREFIX_LEN_SUM: AtomicU64 = AtomicU64::new(0);
 
-/// Record one prefix_split_search find (M2). `idx` is the prefix's position in the
-/// sweep order actually used, `len` the sweep length.
+/// Record one prefix_split_search find. `idx` is the prefix's position in
+/// the sweep order actually used, `len` the sweep length.
 pub fn record_branch_win(odd: bool, idx: usize, len: usize, lde: u32) {
     if odd {
         N_BRANCH_WIN_ODD.fetch_add(1, Ordering::Relaxed);
