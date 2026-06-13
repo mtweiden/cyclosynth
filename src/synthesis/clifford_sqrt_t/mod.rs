@@ -108,13 +108,13 @@ pub struct SynthesizerQ {
     /// BKZ-β post-pass block size (0 = off). Builder: [`Self::with_bkz`].
     pub bkz_block_size: u32,
     /// Number of lde levels the dc path dispatches concurrently, with a
-    /// cross-LDE abort so the first finder cancels its peers. Builder:
-    /// [`Self::with_parallel_lde_window`].
+    /// cross-LDE abort so the first finder cancels its peers. ε-tuned in
+    /// [`Self::new`].
     pub parallel_lde_window: u32,
     /// Node count a predecessor LDE must burn without finding before the
     /// next speculative LDE launches (0 = off). Budget-triggered rather
-    /// than time-based so easy targets never pay for speculation.
-    /// Builder: [`Self::with_parallel_lde_trigger_nodes`].
+    /// than time-based so easy targets never pay for speculation. ε-tuned
+    /// in [`Self::new`].
     pub parallel_lde_trigger_nodes: u64,
     /// Enumerate all ε-close candidates and return the min-cost one
     /// (`cost = T + (q_cost_x2/2)·Q`) instead of the first hit.
@@ -156,15 +156,15 @@ pub struct SynthesizerQ {
     /// Builder: [`Self::with_optimal_deadline_ms`].
     pub optimal_deadline_ms: Option<u64>,
     /// Add m = 0 full-level tasks (the only variant that proves a level
-    /// exhausted) and run the floor-driven extension. Builder:
-    /// [`Self::with_certify`].
+    /// exhausted) and run the floor-driven extension. Set internally by the
+    /// certified entry points, not via a builder.
     pub certify: bool,
     /// Wall budget (ms) for the certify extension loop above the window.
     /// Builder: [`Self::with_certify_extra_ms`].
     pub certify_extra_ms: u64,
     /// Also search e^{iπ/16}·target: one parity class reaches only
-    /// circuits with Q-count ≡ d(target) (mod 2) — half the pool.
-    /// Builder: [`Self::with_odd_parity_branch`].
+    /// circuits with Q-count ≡ d(target) (mod 2) — half the pool. Set
+    /// internally by the optimal pipeline, not via a builder.
     pub odd_parity_branch: bool,
     /// Override the deep-ε sequential-parity schedule: `None` = ε rule
     /// (sequential below 2.5e-8, where each branch saturates the pool
@@ -183,7 +183,7 @@ pub struct SynthesizerQ {
 
 /// Smallest lde where a generic SU(2) target is reachable within ε,
 /// per the Gaussian heuristic over the Minkowski-embedded Z[ζ_16]
-/// lattice. We start the search 2 below this estimate so easy targets
+/// lattice. We start the search 3 below this estimate so easy targets
 /// land without an extra full-shell sweep.
 fn lattice_lde_estimate(epsilon: f64) -> u32 {
     if !(epsilon > 0.0 && epsilon < 1.0) {
@@ -398,9 +398,9 @@ impl SynthesizerQ {
         self
     }
 
-    /// Override the Stage-2 m-sweep list (m=0 = single-search, m≥1 = D&C
-    /// with that FGKM-prefix split). Empty Vec disables the m-sweep and
-    /// falls back to Stage-1 behaviour (use the configured `prefix_split_m`).
+    /// Override the m-sweep list (m=0 = single-search, m≥1 = D&C with that
+    /// FGKM-prefix split). Empty Vec disables the m-sweep and falls back to
+    /// the configured `prefix_split_m`.
     pub fn with_optimal_m_sweep(mut self, ms: Vec<u32>) -> Self {
         self.optimal_m_sweep = ms;
         self
@@ -414,9 +414,9 @@ impl SynthesizerQ {
         self
     }
 
-    /// Set the Stage-4 lde-window. 0 = strict min-lde-first (default,
-    /// current behaviour). N>0 = after finding at lde `f`, also search
-    /// lde `f+1..=f+N` and return the global min-cost candidate.
+    /// Set the optimal-mode lde-window (default 3 at ε ≤ 1e-7, else 2).
+    /// 0 = strict min-lde-first. N > 0 = after finding at lde `f`, also
+    /// search lde `f+1..=f+N` and return the global min-cost candidate.
     pub fn with_optimal_lde_window(mut self, window: u32) -> Self {
         self.optimal_lde_window = window;
         self
