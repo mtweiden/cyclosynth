@@ -8,15 +8,16 @@
 //! The [`SynthesizerT::synthesize`] entry point drives a search over T-count
 //! `t = 0, 1, 2, …`, trying two backends depending on `t`:
 //!
-//! - [`direct_search`] (`t ≤ direct_limit`, default 6): brute-force
-//!   enumeration over the norm shell `‖x‖² = 2^t` via
+//! - [`direct_search`] (`t ≤ direct_limit`; 8 at ε ≥ 1e-4, else 6):
+//!   brute-force enumeration over the norm shell `‖x‖² = 2^t` via
 //!   [`crate::synthesis::brute_search::brute_aligned_search`]. Tries even, T, and T†
 //!   right-side branches, each combined with all 24 Clifford left
 //!   prefixes. Fast for small `t`; exponential beyond that.
 //!
 //! - [`prefix_split_search`] (`t > direct_limit`, Algorithm 3.11): divide-and-
 //!   conquer using Matsumoto–Amano left prefixes `L_{t'}`. Splits at
-//!   `t' = max(t − direct_limit, ⌈t − 5/2·log₂(1/ε)⌉)`. For each prefix
+//!   `t' = max(0, ⌈t − 5/2·log₂(1/ε)⌉)` (returning `None` when that is 0).
+//!   For each prefix
 //!   `U_L ∈ L_{t'}`, searches for the right factor via
 //!   [`lll_aligned_search`] at inner lde `lde_inner` (see below).
 //!   Tries even (U_L·U_R) and odd (U_L·U_R·T) inner branches.
@@ -162,8 +163,7 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
         .try_into().unwrap()
 }
 
-/// Right-coset dedup gate for `build_ma_prefix_set` (stage 1 of
-/// docs/plan_8d_prefix_rework.md, lever B1). Tri-state:
+/// Right-coset dedup gate for `build_ma_prefix_set`. Tri-state:
 /// `CYCLOSYNTH_L_COSET=0` forces plain phase-dedup, `=1` forces coset
 /// dedup at every ε, unset defers to the [`COSET_EPS_FLOOR`] rule.
 /// Read once per process (LazyLock).
@@ -475,9 +475,10 @@ pub struct SynthesizerT {
     /// Approximation precision in diamond distance.
     pub epsilon: Float,
     pub max_lde: u32,
-    /// Defaults to floor(3/2·log₂(1/ε)), the information-theoretic T-count
-    /// lower bound for a generic SU(2) rotation. Set 0 for exact low-T-count
-    /// solutions of Cliffords and other special gates.
+    /// Defaults to floor(coef·log₂(1/ε)) with coef ramping 1.5 → 2.8 over
+    /// ε (see [`Self::new`]); ~the information-theoretic T-count lower bound
+    /// for a generic SU(2) rotation. Set 0 for exact low-T-count solutions
+    /// of Cliffords and other special gates.
     pub min_lde: u32,
     /// Max lde for direct_search; above it, skip straight to
     /// prefix_split_search since brute_aligned_search becomes O(2^4ᵗ).
@@ -642,8 +643,8 @@ impl SynthesizerT {
     }
 
     /// Direct search at lde `t` (Algorithm 3.6): `brute_aligned_search`
-    /// over 75 directions in parallel — the 3 top-level branches
-    /// (U, U·T, U·T† ≈ target) and the same three for each of the 24
+    /// over 72 directions in parallel — the 3 top-level branches
+    /// (U, U·T, U·T† ≈ target) plus 3 for each of the 23 non-identity
     /// left-Cliffords C. LLL+CVP (`lll_aligned_search`) is reserved for
     /// the D&C path where the inner lde is large.
     fn direct_search(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResultT> {
@@ -739,14 +740,11 @@ impl SynthesizerT {
     ) -> (Option<SynthResultT>, bool) {
         let eps = self.epsilon;
 
-        // Compute t_prime: use the optimal split from Prop 3.13, but if that gives
-        // t_prime == 0 (meaning the formula says direct search is fine), force
-        // t_prime = t - direct_limit so the inner LLL/CVP search stays within the
-        // brute-force-tractable regime (inner T-count = direct_limit).
-        // Guard: if opt==0 the formula says t is below the DC threshold, meaning
-        // no split is theoretically needed and forcing t_prime = t-direct_limit
-        // would produce an exponentially large prefix set.  Return None so the
-        // outer loop advances to the next (higher) t where opt > 0.
+        // t_prime is the optimal split from Prop 3.13. When it is 0 the
+        // formula says no split is needed; if t is nonetheless past the
+        // direct-search limit, return None so the outer loop advances to the
+        // next (higher) t where the split is non-trivial. (Forcing a split
+        // here would produce an exponentially large prefix set.)
         let t_prime = {
             let opt = optimal_t_prime(t, eps);
             if opt == 0 && t > self.direct_limit {
