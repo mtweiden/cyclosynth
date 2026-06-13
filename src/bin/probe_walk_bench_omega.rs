@@ -1,4 +1,4 @@
-//! 8D (Z[ω], Clifford+T) counterpart of `probe_walk_bench_16d`: a shared
+//! 8D (Z[ω], Clifford+T) counterpart of `probe_walk_bench_zeta`: a shared
 //! yardstick for exhaustive lattice-level walks.
 //!
 //! Runs ONE unbudgeted single-shell enumeration — the operation
@@ -10,9 +10,9 @@
 //! The walk is rebuilt from public APIs: v = normalize4(unitary_to_uv(target)),
 //! y = uv_to_lattice_y(v, k), then `find_aligned_lattice_points(..., u64::MAX, ...)`,
 //! and reconstruct/score every returned solution. (Supersedes the old
-//! `w1_telemetry_8d` probe; the 16D analog is `probe_walk_bench_16d`.)
+//! `w1_telemetry_8d` probe; the 16D analog is `probe_walk_bench_zeta`.)
 //!
-//! Args: probe_walk_bench_8d <theta> <eps> <k>
+//! Args: probe_walk_bench_omega <theta> <eps> <k>
 
 use cyclosynth::synthesis::clifford_t::{solution_to_u2t, unitary_to_uv, uv_to_lattice_y};
 use cyclosynth::synthesis::lattice::omega::find_aligned_lattice_points;
@@ -72,7 +72,7 @@ fn main() {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        eprintln!("usage: probe_walk_bench_8d <theta> <eps> <k>");
+        eprintln!("usage: probe_walk_bench_omega <theta> <eps> <k>");
         std::process::exit(2);
     }
     let theta: f64 = args[0].parse().expect("theta");
@@ -85,7 +85,7 @@ fn main() {
     let mut scratch = Box::new(IntScratch::new(eps));
 
     println!(
-        "probe_walk_bench_8d: rz({theta}) eps={eps:e} k={k} threads={}",
+        "probe_walk_bench_omega: rz({theta}) eps={eps:e} k={k} threads={}",
         rayon::current_num_threads()
     );
 

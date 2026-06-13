@@ -11,7 +11,7 @@ use super::*; // the tests module
 use super::super::*; // lattice::zeta internals
 
     /// Precision-audit probe E1 (ignored): per-target radial cap
-    /// displacement at ε = 1e-8 for the probe_t_vs_qt seed-12648430
+    /// displacement at ε = 1e-8 for the probe_omega_vs_zeta seed-12648430
     /// targets. Computes, at MPFR-300 (≫ production prec_q = 213, so
     /// only the f64 entry points under audit survive):
     ///
@@ -32,7 +32,7 @@ use super::super::*; // lattice::zeta internals
         use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta_mpfr;
         use rug::Float as RF;
 
-        // SplitMix64 + u3, replicated from src/bin/probe_t_vs_qt.rs.
+        // SplitMix64 + u3, replicated from src/bin/probe_omega_vs_zeta.rs.
         struct Xs(u64);
         impl Xs {
             fn next(&mut self) -> u64 {

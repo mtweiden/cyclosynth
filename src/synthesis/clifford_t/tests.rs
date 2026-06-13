@@ -28,7 +28,7 @@ mod probes;
         ]
     }
 
-    /// Same convention as bin/time_synthesis: U3(a,b,c) = Rz(a)·Ry(b)·Rz(c).
+    /// Same convention as bin/time_synthesis_omega: U3(a,b,c) = Rz(a)·Ry(b)·Rz(c).
     fn u3(a: Float, b: Float, c: Float) -> Mat2 {
         mat_mul(mat_mul(rz(a), ry(b)), rz(c))
     }

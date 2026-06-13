@@ -4,7 +4,7 @@
 //! at one ε with `SynthesizerQ::with_bkz(β)` and again without. Reports
 //! per-target time + lde for both. Run with:
 //!
-//!   cargo run --release --bin bench_bkz -- --eps 1e-7 --beta 4 --n 4
+//!   cargo run --release --bin bench_bkz_zeta -- --eps 1e-7 --beta 4 --n 4
 
 use cyclosynth::synthesis::clifford_sqrt_t::SynthesizerQ;
 use num_complex::Complex;
@@ -65,7 +65,7 @@ fn main() {
         u3(rand_angle(&mut state), rand_angle(&mut state), rand_angle(&mut state))
     }).collect();
 
-    println!("# bench_bkz: ε={:e}, β={}, n={}, max_lde={}", eps, beta, n, max_lde);
+    println!("# bench_bkz_zeta: ε={:e}, β={}, n={}, max_lde={}", eps, beta, n, max_lde);
     println!("# legend: pure = no BKZ, bkz{} = BKZ-{} post-pass", beta, beta);
 
     let mut total_pure = 0.0_f64;

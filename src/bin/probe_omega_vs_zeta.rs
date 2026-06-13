@@ -23,7 +23,7 @@
 //! 8th arg: ζ right-coset prefix dedup A/B — "0" or "1", forwarded to
 //! `CYCLOSYNTH_ZETA_COSET` via set_var before any synthesis (direct
 //! env-prefixed execution is denied in the agent harness — same
-//! workaround as bench_t_breakdown's `--coset`). Empty/unset → leave
+//! workaround as bench_breakdown_omega's `--coset`). Empty/unset → leave
 //! the env/default alone.
 
 use cyclosynth::synthesis::clifford_t::SynthesizerT;

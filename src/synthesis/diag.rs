@@ -4,7 +4,7 @@
 //! find_aligned_lattice_points call, so the hot path never sees them).
 //!
 //! Usage:
-//!   CYCLOSYNTH_TRACE=1 ./time_synthesis ...
+//!   CYCLOSYNTH_TRACE=1 ./time_synthesis_omega ...
 //!
 //! Output is printed to stderr (so it doesn't pollute timing tables on stdout).
 //! The diagnostic boundary is one `prefix_split_search` call: counters are reset at the

@@ -1,6 +1,6 @@
 //! Timing harness for Clifford+√T synthesis.
 //!
-//! Mirrors `time_synthesis.rs` (the Z[ω]/Clifford+T harness) but
+//! Mirrors `time_synthesis_omega.rs` (the Z[ω]/Clifford+T harness) but
 //! synthesizes via `Synthesizer (sqrt_t=true)`. Generates N random SU(2) targets
 //! via Rz(α)·Ry(β)·Rz(γ) once (deterministic given the seed), then
 //! synthesizes each at every ε level. Same targets reused across ε so
@@ -21,7 +21,7 @@
 //! ~30+ and ε down to 1e-7 becomes feasible.
 //!
 //! Usage:
-//!   time_zeta_synthesis [--max-lde N] [--trials N] [--n-targets N]
+//!   time_synthesis_zeta [--max-lde N] [--trials N] [--n-targets N]
 //!                       [--seed HEX] [--filter SUBSTRING]
 //!                       [--eps EPS_LIST]
 //!

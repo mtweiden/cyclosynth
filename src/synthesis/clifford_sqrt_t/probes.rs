@@ -186,7 +186,7 @@ use std::f64::consts::PI;
         }
     }
 
-    /// Coset-regression probe (ignored): probe_t_vs_qt target 0
+    /// Coset-regression probe (ignored): probe_omega_vs_zeta target 0
     /// (θ=2.37 φ=5.73 λ=3.33, seed 12648430) at ε=1e-6 optimal w2 —
     /// coset-off finds cost 52.5, coset-on falls to the T baseline 53.
     /// Runs ONE mode per process (env LazyLock): set the mode via the
@@ -204,7 +204,7 @@ use std::f64::consts::PI;
         probe_zeta_coset_target(0, 1e-6, "1");
     }
 
-    /// 1e-8 flip probe: probe_t_vs_qt target 6 (θ=1.80 φ=0.59 λ=1.62)
+    /// 1e-8 flip probe: probe_omega_vs_zeta target 6 (θ=1.80 φ=0.59 λ=1.62)
     /// — coset-off screen finds lde=24 (cost 73.5), coset-on drifts to
     /// the lde-78 fallback (cost 78).
     #[test]
@@ -225,7 +225,7 @@ use std::f64::consts::PI;
             std::env::set_var("CYCLOSYNTH_TRACE", "1");
         }
         // SplitMix64 target gen, first triple of seed 12648430
-        // (probe_t_vs_qt's Xs) — replicated from tests/qt_guard_1e5.rs.
+        // (probe_omega_vs_zeta's Xs) — replicated from tests/qt_guard_1e5.rs.
         struct Xs(u64);
         impl Xs {
             fn next(&mut self) -> u64 {
@@ -293,7 +293,7 @@ use std::f64::consts::PI;
             (b as f64) / ((1u64 << 53) as f64) * 2.0 * std::f64::consts::PI
         }
         let mut state: u64 = 12648430 | 1;
-        // probe_t_vs_qt target gen: theta in (0.2, PI-0.2), phi/lambda in (0.1, 2PI-0.1)
+        // probe_omega_vs_zeta target gen: theta in (0.2, PI-0.2), phi/lambda in (0.1, 2PI-0.1)
         let mut angles = Vec::new();
         for _ in 0..2 {
             let t = 0.2 + rand_angle(&mut state) / (2.0 * std::f64::consts::PI)

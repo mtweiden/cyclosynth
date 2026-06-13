@@ -3,7 +3,7 @@
 //!
 //! Self-sets `CYCLOSYNTH_TRACE=1` (env-prefixed invocations are not always
 //! possible in the sandboxed harness), then synthesizes the SAME targets as
-//! `time_synthesis` (identical xorshift64 generator, identical `seed | 1`
+//! `time_synthesis_omega` (identical xorshift64 generator, identical `seed | 1`
 //! guard, default seed 0xC0FFEEBAADD0E) at each requested ε.
 //!
 //! Per-pass `[trace]` blocks land on stderr — `try_at_lde` calls
@@ -14,7 +14,7 @@
 //! as the run delimiter by the parser).
 //!
 //! Usage:
-//!   bench_t_breakdown [--threads N] [--n-targets N] [--seed HEX]
+//!   bench_breakdown_omega [--threads N] [--n-targets N] [--seed HEX]
 //!                     [--eps CSV] [--trials N]
 //!                     [--coset 0|1] [--two-sweep 0|1] [--sweep1 even|odd]
 //!                     [--tp-offset N]
@@ -94,7 +94,7 @@ fn main() {
         .build_global()
         .expect("failed to build rayon thread pool");
 
-    // Identical target stream to time_synthesis (seed | 1 guard included).
+    // Identical target stream to time_synthesis_omega (seed | 1 guard included).
     let mut rng_state = seed | 1;
     let targets: Vec<(String, Mat2)> = (0..n_targets)
         .map(|idx| {

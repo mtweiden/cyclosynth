@@ -67,7 +67,7 @@ use std::f64::consts::PI;
         coset_flip_probe(target, 1e-5, 47);
     }
 
-    /// Same forensic probe at the bench-suite 1e-8 flip: time_synthesis
+    /// Same forensic probe at the bench-suite 1e-8 flip: time_synthesis_omega
     /// target_00 (xorshift64, seed 0xC0FFEEBAADD0E|1), lde 78 (t'=12),
     /// which still drifts to 80 under coset dedup after the
     /// euclidean_cholesky trust guards.

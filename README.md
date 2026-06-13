@@ -102,11 +102,11 @@ let result = synth.synthesize(target).unwrap();
 println!("T-count = {}, gates = {}", result.lde, result.gates.unwrap());
 ```
 
-The `time_synthesis` binary runs a benchmark suite across a range of
+The `time_synthesis_omega` binary runs a benchmark suite across a range of
 `(target, ε)` pairs:
 
 ```sh
-cargo run --release --bin time_synthesis -- --threads 8 --trials 3
+cargo run --release --bin time_synthesis_omega -- --threads 8 --trials 3
 ```
 
 ## How synthesis works
@@ -183,7 +183,7 @@ src/
 │   ├── lattice_zeta/       16D pipeline for Z[ζ₁₆]: LLL, BKZ-β, SE walk,
 │   │                       Q-metric, MPFR verification
 │   └── lattice_common/     Code shared by both lattice pipelines
-└── bin/                Benchmarks (time_synthesis, …) and probe_* diagnostics
+└── bin/                Benchmarks (time_synthesis_omega, …) and probe_* diagnostics
 
 scripts/                Benchmark drivers + plotting (comparison*.py,
                         plot_comparison*.py, recompute_csv_cost.py)
@@ -269,7 +269,7 @@ synthesized circuit through the Bloch decomposer and assert
 
 ## Performance
 
-Wall-clock minimums from `time_synthesis --trials 3` on Apple M-series,
+Wall-clock minimums from `time_synthesis_omega --trials 3` on Apple M-series,
 8 threads, against 10 random SU(2) targets per ε from a fixed
 xorshift64 seed. The `lde` column is the inner T-count budget at which
 a solution was found (≈ T-count + small adjustment for the search

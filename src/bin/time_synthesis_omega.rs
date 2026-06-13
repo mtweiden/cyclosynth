@@ -5,7 +5,7 @@
 //! targets are reused across ε so timings are directly comparable.
 //!
 //! Usage:
-//!   time_synthesis [--threads N] [--max-lde N] [--trials N]
+//!   time_synthesis_omega [--threads N] [--max-lde N] [--trials N]
 //!                  [--n-targets N] [--seed HEX] [--skip-tight]
 //!                  [--filter SUBSTRING]
 //!
