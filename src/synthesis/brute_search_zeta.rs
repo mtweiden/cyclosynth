@@ -2,15 +2,15 @@
 //! flow. Mirrors the role of [`super::brute_search`] for the Z[ω] / Clifford+T
 //! flow: y-vector construction (`compute_align_vec_zeta`, `uv_to_lattice_y_zeta`)
 //! plus a brute-force enumerator (`enumerate_unitary_norm_shell`) used as a correctness
-//! oracle for the lattice pipeline in [`super::lattice_zeta`].
+//! oracle for the lattice pipeline in [`super::lattice::zeta`].
 //!
 //! Cost of `enumerate_unitary_norm_shell` is exponential in `k` (the shell at k=4 has
 //! ~5·10⁸ points); useful for `k ≤ 4` for full enumeration. The L²-LLL +
-//! Schnorr-Euchner port is in [`super::lattice_zeta`].
+//! Schnorr-Euchner port is in [`super::lattice::zeta`].
 
 use std::f64::consts::PI;
 
-use super::lattice_zeta::se::bilinear_forms;
+use super::lattice::zeta::se::bilinear_forms;
 
 // ─── y-vector helpers ────────────────────────────────────────────────────────
 

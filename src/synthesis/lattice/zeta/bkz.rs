@@ -697,7 +697,7 @@ mod tests {
     /// unimodular and (b) ||b*_0||² doesn't increase.
     #[test]
     fn bkz_4_smoke_on_lll_basis() {
-        use crate::synthesis::lattice_zeta::{
+        use crate::synthesis::lattice::zeta::{
             integer::find_aligned_lattice_points_with_stop,
             lll_f64::cfa_row_f64,
             cholesky_lu::det16_exact,

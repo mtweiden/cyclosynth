@@ -1,6 +1,6 @@
 //! Dimension-independent items shared between the two Lenstra-style
 //! LLL+SE backends: [`super::lattice`] (8D, Z[ω], Clifford+T) and
-//! [`super::lattice_zeta`] (16D, Z[ζ_16], Clifford+√T). The hot-path code
+//! [`super::lattice::zeta`] (16D, Z[ζ_16], Clifford+√T). The hot-path code
 //! (dim-specialized `[[T; 8]]` vs `[[T; 16]]` loops, bilinear forms,
 //! ring-specific Q-metric and reconstruction) stays separate per backend
 //! so the dimension is a compile-time constant. Only the L²-LLL

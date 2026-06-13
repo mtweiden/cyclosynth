@@ -158,7 +158,7 @@ pub(crate) struct VerifyGuard {
 
 impl VerifyGuard {
     pub(crate) fn enable_for(epsilon: f64) -> Self {
-        use crate::synthesis::lattice_zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
+        use crate::synthesis::lattice::zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
         let was_on = verify_prune_mpfr();
         let need = epsilon < 2e-8;
         if need && !was_on {
@@ -171,7 +171,7 @@ impl VerifyGuard {
 impl Drop for VerifyGuard {
     fn drop(&mut self) {
         if self.changed {
-            crate::synthesis::lattice_zeta::set_verify_prune_mpfr(self.restore_to);
+            crate::synthesis::lattice::zeta::set_verify_prune_mpfr(self.restore_to);
         }
     }
 }

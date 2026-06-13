@@ -755,7 +755,7 @@ mod tests {
         unsafe { std::env::remove_var("CYCLOSYNTH_BOUND_SQ") };
         assert!(!sols.is_empty(), "find_aligned_lattice_points@bound8 must find QHQ");
 
-        let q = crate::synthesis::lattice_zeta::q_metric::build_q_zzeta_lattice(v, k, eps);
+        let q = crate::synthesis::lattice::zeta::q_metric::build_q_zzeta_lattice(v, k, eps);
         // True cap center (ambient), legacy rounded-z_c effective center,
         // and the fractional SE center (int + frac pair) the walk now uses.
         let c_true: [f64; 16] = std::array::from_fn(|i| s.c[i].to_f64());
@@ -830,7 +830,7 @@ mod tests {
                     if sols.is_empty() {
                         continue;
                     }
-                    let q = crate::synthesis::lattice_zeta::q_metric::build_q_zzeta_lattice(
+                    let q = crate::synthesis::lattice::zeta::q_metric::build_q_zzeta_lattice(
                         v, k, eps,
                     );
                     let c: [f64; 16] = std::array::from_fn(|i| s.c[i].to_f64());
@@ -1187,7 +1187,7 @@ mod tests {
         let abort = AtomicBool::new(false);
         let consumed = AtomicU64::new(0);
         let t0 = std::time::Instant::now();
-        let _sols = crate::synthesis::lattice_zeta::find_aligned_lattice_points_with_stop(
+        let _sols = crate::synthesis::lattice::zeta::find_aligned_lattice_points_with_stop(
             &mut s, &y, k, eps, budget, &abort, |_| false, None, Some(&consumed),
         );
         unsafe { std::env::remove_var("CYCLOSYNTH_W1_DEBUG") };

@@ -7,7 +7,6 @@ pub mod diag;
 pub mod distance;
 pub mod lattice;
 pub mod lattice_common;
-pub mod lattice_zeta;
 pub mod brute_search;
 pub mod brute_search_zeta;
 pub mod synthesizer;
