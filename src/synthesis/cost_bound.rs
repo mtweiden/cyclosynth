@@ -46,8 +46,8 @@ pub fn cost_lb_half_units(k: u32) -> usize {
 /// ζ₁₆⁴ — but a circuit matches a target only up to a global phase
 /// ζ₁₆ʲ, which shifts the det class by 2j. Only the parity of `d`
 /// survives, so an odd class forces ≥ 1 Q gate (7 half-units); even
-/// classes give nothing. Combine with [`cost_lb_half_units`] via `max`.
-/// A stronger mod-4 bound is NOT sound.
+/// classes give nothing. Callers add this to a prefix's own cost as a
+/// sound suffix lower bound. A stronger mod-4 bound is NOT sound.
 pub fn class_cost_lb_half_units(d: u32) -> usize {
     if d % 2 == 1 { 7 } else { 0 }
 }
