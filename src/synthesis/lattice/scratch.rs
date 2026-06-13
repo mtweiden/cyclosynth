@@ -32,11 +32,8 @@ pub fn compute_prec_q(eps: Float) -> u32 {
 /// pivot ratios up to ~max(|B|)^(d-1) in pathological cases — usually
 /// much tighter, but enough to consume meaningful precision at deep ε.
 /// Empirically at ε=1e-8 a 96-bit LU loses enough precision in z_c that SE
-/// misses the canonical-lde solution; 6·log₂(1/ε) bits leaves margin.
-///
-/// Versus `prec_q = 8·log₂(1/ε)` this is 75% of the precision, so each MPFR
-/// op is ~1.3× cheaper. Applied to ~13 s of LU CPU at lde=80 this saves
-/// ~3-4 s CPU, ~0.4 s wall.
+/// misses the canonical-lde solution; 6·log₂(1/ε) bits leaves margin (75% of
+/// `prec_q`, so each MPFR op in the LU is ~1.3× cheaper).
 pub fn compute_lu_prec(eps: Float) -> u32 {
     let log_recip = (1.0 / eps).log2().max(1.0);
     let bits = (6.0 * log_recip).ceil() as u32;
@@ -50,12 +47,10 @@ pub type Mat256 = [[i256; 8]; 8];
 
 // ─── In-place MPFR op macros via gmp-mpfr-sys ────────────────────────────────
 //
-// Each macro calls the corresponding `mpfr::{add,sub,mul,div}` directly on
-// the underlying `mpfr_t` (via `as_raw_mut` / `as_raw`). The naive
-// `$dst.assign(&$a OP &$b)` pattern allocates a `rug::Incomplete` struct per
-// op; this version is zero-allocation. mpfr's API explicitly permits aliasing
-// rop with op1/op2, so dst == a or dst == b is safe. Macros use absolute
-// paths so importers don't need a matching `use`.
+// Call `mpfr::{add,sub,mul,div}` on the raw `mpfr_t` directly: the naive
+// `$dst.assign(&$a OP &$b)` allocates a `rug::Incomplete` per op, this is
+// zero-allocation. mpfr permits aliasing rop with op1/op2, so dst == a or
+// dst == b is safe.
 
 macro_rules! r_mul {
     ($dst:expr, $a:expr, $b:expr) => {
@@ -151,12 +146,11 @@ pub struct IntScratch {
     pub inv_y_norm_sq: RFloat,
     pub cap_mid: RFloat,
 
-    // ── Q_base hoist (stage 4, docs/plan_8d_prefix_rework.md lever C) ──
+    // ── Q_base hoist ──
     /// Prefix-independent part of the Q metric:
     /// `q_base[i][j] = inv_dp_sq·p_u[i][j] + inv_r_sq·p_ub[i][j]`.
     /// Valid for the `(k, eps)` recorded in `q_base_key`; rebuilt by
-    /// `build_q_mpfr` only when the key changes (within one `prefix_split_search`
-    /// level k is fixed, so this runs once per worker per level).
+    /// `build_q_base` (via `build_q_mpfr`) only when the key changes.
     pub q_base: [[RFloat; 8]; 8],
     /// Scalar weight of the prefix-dependent rank-1 term:
     /// `coef_y = inv_dy_sq − inv_dp_sq` (no cancellation — the terms
@@ -168,10 +162,9 @@ pub struct IntScratch {
     pub q_base_key: Option<(u32, u64)>,
     /// LLL-reduced unimodular basis of `q_base` alone, used to warm-seed
     /// every per-prefix LLL at the same `(k, ε)`: the prefix-dependent
-    /// rank-1 term carries ~half the anisotropy bits, so the Q_base
-    /// reduction is most of the shared work (measured warm/cold iters
-    /// ≈ 0.60 on 400-prefix captures, `warm_lll_gate` test). Keyed
-    /// separately from `q_base_key`: computed lazily by `find_aligned_lattice_points` (it
+    /// rank-1 term carries ~half the anisotropy bits, so the q_base
+    /// reduction is most of the shared work. Keyed separately from
+    /// `q_base_key`: computed lazily by `find_aligned_lattice_points` (it
     /// needs an LLL run, which `build_q_mpfr` must not recurse into).
     pub q_base_seed: Option<IMat8>,
     pub q_base_seed_key: Option<(u32, u64)>,
@@ -210,10 +203,7 @@ pub struct IntScratch {
     pub g_post_lll: [[RFloat; 8]; 8],
     pub l: [[RFloat; 8]; 8],
 
-    // ── MPFR LU buffers at lu_prec (scales with ε, ~75% of prec_q) ──
-    /// Decoupled from `prec_q` so each MPFR op in the LU runs at lower
-    /// precision (~1.3× cheaper) without affecting build_q's higher-precision
-    /// requirement.
+    // ── MPFR LU buffers at lu_prec (decoupled from prec_q; see compute_lu_prec) ──
     pub lu_prec: u32,
     pub lu_a: [[RFloat; 8]; 8],
     pub lu_rhs: [RFloat; 8],
