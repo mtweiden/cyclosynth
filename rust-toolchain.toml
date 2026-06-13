@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned for reproducible numerical behavior: correctness depends on f64/MPFR
+# rounding, so a toolchain bump is an explicit, reviewed change. Bump together
+# with a full `cargo test --release` pass.
+channel = "1.93.1"
+components = ["rustfmt", "clippy"]

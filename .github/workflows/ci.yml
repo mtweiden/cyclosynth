@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # gmp-mpfr-sys compiles GMP/MPFR/MPC from source; needs m4 + a C toolchain.
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y m4
+      - uses: Swatinem/rust-cache@v2
+      # Compile every target (lib + bins + tests) so the bins stay
+      # cross-platform-buildable even though they're run on macOS.
+      - name: Build
+        run: cargo build --release --all-targets
+      - name: Test
+        run: cargo test --release --lib
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y m4
+      - uses: Swatinem/rust-cache@v2
+      # TODO: tighten to `-- -D warnings` once the existing lint backlog is cleared.
+      - name: Clippy
+        run: cargo clippy --release --lib
