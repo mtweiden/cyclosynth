@@ -224,7 +224,7 @@ fn main() {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 3 {
-        eprintln!("usage: probe_walk_bench <theta> <eps> <k> [<parity: 0|1>] [<bound_sq>]");
+        eprintln!("usage: probe_walk_bench_16d <theta> <eps> <k> [<parity: 0|1>] [<bound_sq>]");
         std::process::exit(2);
     }
     let theta: f64 = args[0].parse().expect("theta");
@@ -243,7 +243,7 @@ fn main() {
     let target_odd = scale(&target, Complex64::from_polar(1.0, PI / 16.0));
 
     println!(
-        "probe_walk_bench: rz({theta}) eps={eps:e} k={k} threads={}",
+        "probe_walk_bench_16d: rz({theta}) eps={eps:e} k={k} threads={}",
         rayon::current_num_threads()
     );
     let branches: Vec<u32> = match parity {

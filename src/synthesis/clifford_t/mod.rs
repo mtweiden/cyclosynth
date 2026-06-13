@@ -55,7 +55,7 @@ static MA_PREFIX_CACHE: LazyLock<Mutex<HashMap<(u32, bool), Arc<Vec<U2T>>>>> =
 /// to SU(2) by dividing by √det so that e.g. diag(1, i) (det = i) maps to
 /// the same search direction as its SU(2) representative.
 /// Convention: `V ≈ e^{iφ} · [[u1, −ū2],[u2, ū1]]`.
-fn unitary_to_uv(v: &Mat2) -> [Float; 4] {
+pub fn unitary_to_uv(v: &Mat2) -> [Float; 4] {
     let det = v[0][0] * v[1][1] - v[0][1] * v[1][0];
     let phase = det.sqrt();
     if phase.norm() > 1e-12 {
@@ -284,7 +284,7 @@ fn build_l_inner_with(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
 
 /// `U2T` from a lattice solution: `sol = [u1(0..4), u2(4..8)]` in ZOmega,
 /// `U = [[u1, -ū2], [u2, ū1]] / √2^k`.
-fn solution_to_u2t(sol: &[i64; 8], k: u32) -> U2T {
+pub fn solution_to_u2t(sol: &[i64; 8], k: u32) -> U2T {
     let u1 = ZOmega::new(
         Int::from_i64(sol[0]), Int::from_i64(sol[1]),
         Int::from_i64(sol[2]), Int::from_i64(sol[3]),
@@ -356,7 +356,7 @@ fn trace_dump_pass(
 /// the lattice pipeline. `y = compute_align_vec(v) · sqrt(2^k) / 2`,
 /// satisfying `‖y‖² = 2^(k-1)`. Used `powf` (not bit-shift) so `k ≥ 64`
 /// stays well-defined.
-fn uv_to_lattice_y(v: [Float; 4], k: u32) -> [Float; 8] {
+pub fn uv_to_lattice_y(v: [Float; 4], k: u32) -> [Float; 8] {
     let scale = 2.0_f64.powf(k as f64 / 2.0 - 1.0);
     compute_align_vec(v).map(|x| x * scale)
 }
