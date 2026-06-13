@@ -48,6 +48,10 @@ pub struct Synthesizer {
     inner: Backend,
 }
 
+// A `Synthesizer` is created once per session and never held in bulk, so the
+// T-vs-Q size gap is irrelevant; boxing would only fight the consuming
+// `with_*` builder methods.
+#[allow(clippy::large_enum_variant)]
 enum Backend {
     T(SynthesizerT),
     Q(SynthesizerQ),

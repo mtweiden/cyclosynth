@@ -46,10 +46,10 @@ use crate::synthesis::lattice::omega::brute::{
     normalize4,
 };
 
-/// `Arc`-wrapped so cache hits are a refcount bump, not a clone of the
-/// full prefix list (~329 k U2T values at t'=14).
-static MA_PREFIX_CACHE: LazyLock<Mutex<HashMap<(u32, bool), Arc<Vec<U2T>>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// `(t', coset_dedup)` → MA prefix list. `Arc`-wrapped so cache hits are a
+/// refcount bump, not a clone of the full prefix list (~329 k U2T at t'=14).
+type MaPrefixCache = LazyLock<Mutex<HashMap<(u32, bool), Arc<Vec<U2T>>>>>;
+static MA_PREFIX_CACHE: MaPrefixCache = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// `uv = [Re(u1), Im(u1), Re(u2), Im(u2)]` from a 2×2 unitary, normalized
 /// to SU(2) by dividing by √det so that e.g. diag(1, i) (det = i) maps to

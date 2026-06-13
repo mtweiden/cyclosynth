@@ -20,6 +20,10 @@ pub(crate) struct BruteShell {
 
 pub(crate) fn brute_shell_cached(k: u32) -> &'static BruteShell {
     use std::sync::OnceLock;
+    // Array-of-OnceLock init idiom: `CELL` is the repeat element, so each
+    // slot becomes its own fresh cell. The interior-mutability lint is a
+    // false positive for this pattern.
+    #[allow(clippy::declare_interior_mutable_const)]
     const CELL: OnceLock<BruteShell> = OnceLock::new();
     static CACHE: [OnceLock<BruteShell>; (BRUTE_LIMIT + 1) as usize] =
         [CELL; (BRUTE_LIMIT + 1) as usize];

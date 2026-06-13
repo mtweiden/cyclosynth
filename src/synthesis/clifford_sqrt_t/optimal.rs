@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// One `(k, m)` enum-arm task result: `(lde, m, truncated, min-cost find)`.
+type EnumArmOutcome = (u32, u32, bool, Option<(usize, SynthResultQ)>);
+
 impl SynthesizerQ {
     /// Dispatch the (k, m ≥ 1) arms under the deadline. Below 1e-7 they
     /// run as sequential lowest-m-first phases (interleaving lets m=2's
@@ -403,11 +406,14 @@ impl SynthesizerQ {
         // Clifford+T determinants are even ζ₁₆ powers, so an odd-class
         // target would make the baseline sweep its whole lde range
         // rejecting every prefix.
-        let d_even = det_phase_of(&target) % 2 == 0;
+        let d_even = det_phase_of(&target).is_multiple_of(2);
         let baseline: Option<(usize, SynthResultQ)> = if !d_even { None } else {
             crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
                 .synthesize(target)
                 .and_then(|r| {
+                    // NaN-safe reject: `!(d < eps)` also rejects a NaN distance,
+                    // unlike `d >= eps`.
+                    #[allow(clippy::neg_cmp_op_on_partial_ord)]
                     if !(r.distance < self.epsilon) {
                         return None;
                     }
@@ -787,7 +793,7 @@ impl SynthesizerQ {
     ) -> (Option<SynthResultQ>, Vec<u32>, Option<(usize, SynthResultQ)>) {
         // Clifford+T dets are even ζ₁₆ powers — odd-class targets make
         // the baseline burn its whole lde sweep finding nothing.
-        let with_baseline = with_baseline && det_phase_of(&target) % 2 == 0;
+        let with_baseline = with_baseline && det_phase_of(&target).is_multiple_of(2);
         let (first, unclear, t_baseline) = std::thread::scope(|s| {
             let baseline_handle = if with_baseline {
                 Some(
@@ -820,6 +826,8 @@ impl SynthesizerQ {
         // exactly 2·T_count half-units.
         let baseline: Option<(usize, SynthResultQ)> = t_baseline.and_then(|r| {
             let dist = r.distance;
+            // NaN-safe reject (see the screen_and_baseline note).
+            #[allow(clippy::neg_cmp_op_on_partial_ord)]
             if !(dist < self.epsilon) {
                 return None;
             }
@@ -1002,9 +1010,8 @@ impl SynthesizerQ {
         }
 
         let t_w = std::time::Instant::now();
-        let task_results: Vec<(u32, u32, bool, Option<(usize, SynthResultQ)>)> =
+        let task_results: Vec<EnumArmOutcome> =
             std::thread::scope(|s| {
-                let shared_best = shared_best;
                 let handles: Vec<_> = tasks
                     .iter()
                     .map(|&(k, m)| {

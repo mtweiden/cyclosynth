@@ -51,15 +51,6 @@ use crate::synthesis::diag;
 /// headroom past the precision walls in the f64 formula at ε ≲ √(machine_eps).
 const ALIGN_PREC: u32 = 128;
 
-/// Run the full 16D Lenstra Z[ζ_16] pipeline for one prefix's `(y, k, eps)`
-/// setup and collect every solution that passes all four leaf checks.
-///
-/// `y` is the lattice-coord scaled y-vector (output of `uv_to_lattice_y_zeta`).
-/// `max_leaf_checks` caps the SE leaf budget; when reached, `budget_hit` is
-/// set and the walk aborts. Returns the empty vector on:
-///   - LLL Gram-overflow,
-///   - non-unimodular LLL output (algorithm bug, very unlikely),
-///   - Cholesky / LU numerical failure.
 /// Per-(k, ε) Q_base warm seed (CYCLOSYNTH_WARM_LLL16): only the rank-1
 /// ŷŷᵀ term of the metric varies per prefix, so one Q_base reduction
 /// per scratch per (k, ε) hands every prefix's LLL the shared work
@@ -236,6 +227,10 @@ pub(crate) fn find_aligned_lattice_points(
 /// The parallel-LDE dispatcher uses it to observe search progress.
 ///
 /// Callers that don't need the speculation signals pass `None, None`.
+///
+/// Returns the empty vector on a pipeline failure: LLL Gram-overflow,
+/// non-unimodular LLL output (algorithm bug, very unlikely), or Cholesky/LU
+/// numerical failure.
 #[allow(clippy::too_many_arguments)]
 pub fn find_aligned_lattice_points_with_stop<F>(
     scratch: &mut IntScratch16,

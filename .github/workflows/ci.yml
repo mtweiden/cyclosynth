@@ -32,6 +32,5 @@ jobs:
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y m4
       - uses: Swatinem/rust-cache@v2
-      # TODO: tighten to `-- -D warnings` once the existing lint backlog is cleared.
       - name: Clippy
-        run: cargo clippy --release --lib
+        run: cargo clippy --release --lib -- -D warnings

@@ -329,9 +329,8 @@ impl SynthesizerQ {
             // range, so its deadline sits at the low end of that range.
             optimal_deadline_ms: if epsilon >= 1e-5 {
                 Some(600)
-            } else if epsilon >= 1e-6 {
-                Some(1500)
             } else if epsilon >= 1e-7 {
+                // 1e-6 and 1e-7 share this deadline (the flat 1e-7 cost range).
                 Some(1500)
             } else {
                 Some(10_000)

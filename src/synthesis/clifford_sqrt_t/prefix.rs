@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// Per-m memoization cache (m = syllable count): an `Arc`-shared `Vec` so
+/// cache hits are a refcount bump, not a deep clone.
+type CacheByM<V> = LazyLock<Mutex<HashMap<u32, Arc<Vec<V>>>>>;
+
 // ─── FGKM canonical-form prefix generation (syllable-count enumeration) ──
 //
 // Mirrors `clifford_t::build_ma_prefix_set`. Where Clifford+T enumerates
@@ -14,7 +18,7 @@ use super::*;
 // split; Q-count (Σaᵢ ∈ [m, 3m]) does not.
 
 /// Global cache for `build_fgkm_prefix_set` results, keyed by syllable count `m`.
-pub(crate) static FGKM_PREFIX_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<U2Q>>>>> =
+pub(crate) static FGKM_PREFIX_CACHE: CacheByM<U2Q> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Canonical float key for a `U2Q` matrix, invariant under global U(1)
@@ -69,7 +73,7 @@ pub fn build_fgkm_prefix_set(m: u32) -> Arc<Vec<U2Q>> {
 }
 
 /// Cache for prefix `(T, Q)` gate counts (parallel to `FGKM_PREFIX_CACHE`).
-pub(crate) static BUILD_L_Q_TQ_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<(usize, usize)>>>>> =
+pub(crate) static BUILD_L_Q_TQ_CACHE: CacheByM<(usize, usize)> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Pre-computed `(T_count, Q_count)` of the canonical [`BlochDecomposer`]
@@ -130,7 +134,7 @@ pub(crate) fn lde0_cliffords_q() -> [U2Q; 8] {
 
 /// Cache for per-prefix right-coset orbit ids (parallel to
 /// [`FGKM_PREFIX_CACHE`], keyed by syllable count `m`).
-pub(crate) static FGKM_PREFIX_ORBIT_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<usize>>>>> =
+pub(crate) static FGKM_PREFIX_ORBIT_CACHE: CacheByM<usize> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Orbit id per prefix under RIGHT multiplication by the lde-0
@@ -207,7 +211,7 @@ pub(crate) fn coset_keep_mask(cands: &[(usize, usize)], keys: &[(usize, u32)]) -
 }
 
 /// Cached per-m `(orbit id, k)` dedup keys, parallel to `build_fgkm_prefix_set(m)`.
-pub(crate) static BUILD_L_Q_COSET_KEY_CACHE: LazyLock<Mutex<HashMap<u32, Arc<Vec<(usize, u32)>>>>> =
+pub(crate) static BUILD_L_Q_COSET_KEY_CACHE: CacheByM<(usize, u32)> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// The `(orbit id, unreduced k)` dedup class per prefix of
