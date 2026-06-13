@@ -17,7 +17,7 @@
 //!   - `snapshot_gram_to_mpfr_16` — convert `scratch.gram` (i256) to a fresh
 //!     MPFR matrix. Used by the integer-Cholesky oracle below.
 //!   - `cholesky_int_16` — MPFR Cholesky on the natural-scale post-LLL Gram.
-//!     Reference oracle for `cholesky_f64_16`. Returns `false` on a
+//!     Reference oracle for `cholesky_f64_16`. Returns `None` on a
 //!     non-positive-definite pivot.
 
 #![allow(clippy::needless_range_loop)]
@@ -29,7 +29,6 @@ use super::scratch::{rfv, rfz, IntScratch16};
 use crate::synthesis::lattice::cholesky_lu::i256_to_rfloat;
 use crate::synthesis::lattice::lll::i256_to_f64;
 
-// ─── snapshot Gram to MPFR (test-oracle) ─────────────────────────────────────
 
 /// Convert the post-LLL i256 Gram (`scratch.gram`) into a fresh MPFR matrix
 /// at `scratch.prec_q` bits, dividing out `2^scale_bits` so the result is the
@@ -56,15 +55,11 @@ pub fn snapshot_gram_to_mpfr_16(scratch: &mut IntScratch16) -> [[RFloat; 16]; 16
     g_post
 }
 
-// ─── MPFR Cholesky (test-oracle) ─────────────────────────────────────────────
 
-/// MPFR Cholesky on `g_post` (natural-scale post-LLL Gram). Output: lower-
-/// triangular `l_post` at `scratch.prec_q` bits. Returns `false` on a
-/// non-positive-definite pivot (extremely rare for valid LLL-output bases).
-///
-/// Reference oracle for `cholesky_f64_16`; not used in production. Allocates
-/// a fresh `l_post` matrix on the stack — kept out of `IntScratch16` so this
-/// path doesn't pay for a second 16x16 MPFR matrix in production scratch.
+/// MPFR Cholesky on `g_post` (natural-scale post-LLL Gram): lower-triangular
+/// factor at `scratch.prec_q` bits, or `None` on a non-positive-definite
+/// pivot. Test-only oracle for `cholesky_f64_16`; the fresh stack matrix is
+/// kept out of `IntScratch16` so production doesn't carry a second 16x16.
 pub fn cholesky_int_16(
     scratch: &mut IntScratch16,
     g_post: &[[RFloat; 16]; 16],
@@ -98,7 +93,6 @@ pub fn cholesky_int_16(
     Some(l)
 }
 
-// ─── MPFR LU solve (production: cap-center → lattice coords) ────────────────
 
 /// Solve `Bᵀ · z = c` in MPFR at `scratch.lu_prec` bits, where
 /// `B = scratch.basis` (i64) and `c = scratch.c` (MPFR). The matrix and RHS
@@ -176,7 +170,6 @@ pub fn lu_solve_int_inplace_16(scratch: &mut IntScratch16) -> bool {
     true
 }
 
-// ─── f64 Cholesky (production) ───────────────────────────────────────────────
 
 /// Run f64 Cholesky on the natural-scale post-LLL Gram, reading the i256
 /// Gram via `i256_to_f64` with `2^-scale_bits` (an exponent shift, no
@@ -185,11 +178,9 @@ pub fn lu_solve_int_inplace_16(scratch: &mut IntScratch16) -> bool {
 /// (extremely rare for LLL-output bases — would indicate an upstream bug).
 ///
 /// f64 is sufficient because the L³-reduction invariant after L²-LLL bounds
-/// `κ(G) ≤ (4/3)^(d-1) ≤ (4/3)^15 ≈ 240` at d=16 (paper Theorem 3
-/// corollary). That's 4× the conditioning of the d=8 path (κ ≤ 16) but still
-/// log₂(240) ≈ 8 bits of conditioning loss. f64's 53-bit mantissa absorbs it
-/// with ~45 bits of margin and yields ~10⁻¹⁴ absolute error at the SE
-/// unit-scale bound check, five orders below SE's 10⁻⁹ tolerance.
+/// `κ(G) ≤ (4/3)^15 ≈ 75` at d=16 (~6 bits of conditioning loss). f64's
+/// 53-bit mantissa absorbs that with wide margin, yielding ~10⁻¹⁴ error at
+/// the SE bound check — five orders below SE's 10⁻⁹ tolerance.
 pub fn cholesky_f64_16(scratch: &mut IntScratch16) -> bool {
     let scale = 2.0_f64.powi(-scratch.scale_bits);
     let mut g = [[0.0_f64; 16]; 16];
@@ -393,7 +384,6 @@ mod tests {
     }
 }
 
-// ─── Exact 16×16 determinant via Gaussian elimination ────────────────────────
 
 /// Exact integer determinant of a 16×16 i64 matrix via Bareiss
 /// fraction-free elimination, working in i128. Returns `None` if the result
@@ -453,32 +443,20 @@ pub fn det16_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
     }
 }
 
-// ─── Euclidean Cholesky (test-oracle / sanity check) ─────────────────────────
 
 /// Upper-triangular Cholesky factor `R` of the Euclidean Gram, as an f64
 /// snapshot plus a double-double `(hi, lo)` projection of the same factor.
 pub type CholeskyDual16 = ([[f64; 16]; 16], [[(f64, f64); 16]; 16]);
 
-/// MPFR-precision Euclidean Cholesky. Compute `R · Rᵀ = B · Bᵀ` with the
-/// factorization done at 128-bit precision, then snapshot R to f64. Used by
-/// the norm-shell-pruned SE walk so the per-leaf `‖R·z‖²` accumulator drifts
-/// only by f64 round-off (not the much larger error from doing Cholesky
-/// itself in f64). This matters at deep k where post-LLL basis entries can
-/// be up to ~2^15+: the Gram reaches ~2^34+, and f64 Cholesky on those
-/// values drifts by 0.1 % or more, corrupting the prune threshold.
-///
-/// Returns `None` if the Gram is not positive-definite (only happens if the
-/// basis is rank-deficient — a bug upstream).
-/// MPFR-128 Cholesky of `B·Bᵀ` (Euclidean Gram of an LLL-reduced lattice
-/// basis). Returns the upper-triangular factor R (`Rᵀ·R = B·Bᵀ`) as both an
-/// f64 snapshot (consumed by the SE walk's primary f64 prune) AND a
-/// double-double (~106-bit) projection (consumed by the verify path set via
-/// [`set_verify_prune_mpfr`]). The Cholesky itself runs at MPFR-128
-/// internally: 106-bit Cholesky was tried and produced rank-deficient
-/// false alarms at small lde where the intermediate
-/// `s -= l[i][k]*l[j][k]` cancellation is tight; 128-bit is safe. The
-/// dd projection of the final factor is probe-confirmed to match
-/// MPFR-192 oracle on the cliff failure instance.
+/// MPFR-128 Cholesky of the Euclidean Gram `B·Bᵀ`, returning the
+/// upper-triangular factor R (`Rᵀ·R = B·Bᵀ`) as both an f64 snapshot (the SE
+/// walk's primary f64 prune) and a double-double projection (the verify path
+/// gated by [`set_verify_prune_mpfr`]). The factorization runs at MPFR-128 so
+/// the per-leaf `‖R·z‖²` accumulator drifts only by f64 round-off, not by
+/// f64-Cholesky error — which at deep k (Gram ~2^34+) reaches 0.1%+ and
+/// corrupts the prune threshold. 106-bit was tried but gave rank-deficient
+/// false alarms at small lde where `s -= l[i][k]*l[j][k]` cancellation is
+/// tight. `None` if the Gram is not PD (rank-deficient basis = upstream bug).
 pub fn euclidean_cholesky_16_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyDual16> {
     const PREC: u32 = 128;
     let mut gram = [[0_i128; 16]; 16];
@@ -605,19 +583,11 @@ fn i128_to_mpfr(v: i128, prec: u32) -> rug::Float {
     if neg { -f } else { f }
 }
 
-/// Compute the upper-triangular Cholesky factor R of `B·Bᵀ` (Euclidean Gram
-/// of the LLL basis) in f64. Used as a partial-prune lower bound and as a
-/// numerical sanity oracle alongside `cholesky_f64_16` (which factors the
-/// post-LLL **Q-metric** Gram, not the Euclidean one).
-///
-/// Returns `None` if the Gram is not numerically positive-definite in f64
-/// (extremely rare for an LLL-output basis; would indicate a bug upstream).
-///
-/// **Overflow note**: For d=16 with post-LLL basis entries up to ~2^15 at
-/// moderate ε, gram entries reach ~2^34 (well inside f64). At deep ε with
-/// inflated basis (~2^25), gram can hit ~2^54 — at the edge of f64's 53-bit
-/// mantissa. We accumulate in i128 first, then convert to f64 for the
-/// Cholesky factorization itself.
+/// Upper-triangular Cholesky factor R of the Euclidean Gram `B·Bᵀ` in f64,
+/// or `None` if not numerically PD. Test-only oracle (production's
+/// partial-prune lower bound is `euclidean_cholesky_16_mpfr_dual`). The Gram
+/// is accumulated in i128 first — at deep ε an inflated basis (~2^25) pushes
+/// entries to ~2^54, the edge of f64's mantissa — then converted to f64.
 pub fn euclidean_cholesky_16(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]> {
     // Exact integer Gram = B·Bᵀ in i128 to absorb deep-ε basis growth.
     let mut gram = [[0_i128; 16]; 16];
