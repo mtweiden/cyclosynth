@@ -4,11 +4,12 @@
 //! Z[ω] / Clifford+T). The two modules are deliberately kept separate to
 //! isolate the precision and integer-width choices: f64 Gram-Schmidt is
 //! provably sufficient at d=8 (Theorem 2 of Nguyen-Stehlé 2009) but not at
-//! d=16, so the 16D path uses MPFR throughout.
+//! d=16, so the 16D GS runs in f64 at moderate ε with escalation to MPFR
+//! ([`lll_f64`] vs [`lll`]) and MPFR-only below ~1e-8.
 //!
 //! Pipeline and module layout mirror [`super::lattice`]; see
 //! [`integer`] for the per-call stage breakdown. Brute force and
-//! y-helpers live in [`super::search_zeta`]; U2Q reconstruction in
+//! y-helpers live in [`super::brute_search_zeta`]; U2Q reconstruction in
 //! [`super::clifford_sqrt_t`].
 //!
 //! ## Solution layout
