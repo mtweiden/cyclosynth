@@ -23,6 +23,9 @@ pgo/cyclosynth.profdata
 *.csv
 *.png
 *.md
+# …but the top-level docs that belong in git:
+!README.md
+!AGENTS.md
 
 # Local-only: run artifacts, analysis scripts, generated docs (kept on disk, out of git)
 bench_logs/
