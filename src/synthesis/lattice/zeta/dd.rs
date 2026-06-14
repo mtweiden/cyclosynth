@@ -1,10 +1,14 @@
 //! Inline double-double primitives (~106 bits, ~32 decimal digits).
 //!
-//! ~1e-33 relative error on sqrt, recip, div, Cholesky, and dot-product
-//! cases. Used by `se::verify_partial_dd_exceeds` for fast prune
-//! verification — ~10× cheaper than rug-128 in the hot loop because no heap
-//! allocation and no mpfr_t init/clear per op. Values are bare `(f64, f64)`
-//! hi/lo pairs (no wrapper struct) so the compiler keeps them in registers.
+//! add/sub/mul are the exact two-sum/two-prod forms; recip/div/sqrt refine an
+//! f64 seed with one Newton/Heron step, so they reach ~106 bits but not a
+//! correctly-rounded last bit — fine for the prune-verify they back. Used by
+//! `se::verify_partial_dd_exceeds` — ~10× cheaper than rug-128 in the hot loop
+//! (no heap allocation, no mpfr_t init/clear per op). Values are bare
+//! `(f64, f64)` hi/lo pairs (no wrapper struct) so they stay in registers.
+//! `dd_add` of cancelling operands keeps ~106-bit *relative* accuracy but its
+//! absolute floor is set by the larger operand — which is why `se` seeds the
+//! walk center-relative.
 
 #[inline]
 fn dd_quick_two_sum(a: f64, b: f64) -> (f64, f64) {

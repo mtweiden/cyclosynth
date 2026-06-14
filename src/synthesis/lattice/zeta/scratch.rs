@@ -78,8 +78,9 @@ pub struct IntScratch16 {
     //
     // r_bar[i][j] = <b_i*, b_j*>           (Gram-Schmidt inner products)
     // mu_bar[i][j] = r_bar[i][j] / r_bar[j][j]
-    // s_bar[i][j] = r_bar[i][i] - Σ_{k<j} mu_bar[i][k] · r_bar[i][k]
-    //                (Lovász partial sums)
+    // s_bar[i][j] = ‖b_i‖² - Σ_{k<j} mu_bar[i][k] · r_bar[i][k]
+    //                (Lovász partial sums; s_bar[i][0] = ‖b_i‖² = gram[i][i],
+    //                 and r_bar[i][i] is defined as the final s_bar[i][i])
     pub r_bar: [[RFloat; 16]; 16],
     pub mu_bar: [[RFloat; 16]; 16],
     pub s_bar: [[RFloat; 16]; 16],

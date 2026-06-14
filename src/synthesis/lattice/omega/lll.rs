@@ -128,6 +128,7 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
 ///
 /// Caller must call this AFTER updating the i64 basis row k. Idempotent for
 /// r=0.
+#[inline]
 pub(super) fn gram_update_size_reduce(scratch: &mut IntScratch, k: usize, j: usize, r: i64) {
     common::gram_update_size_reduce(&mut scratch.gram, k, j, r);
 }
@@ -137,6 +138,7 @@ pub(super) fn gram_update_size_reduce(scratch: &mut IntScratch, k: usize, j: usi
 /// Gram are rotated, the GS state for row kappa_insert is stale: caller must
 /// invoke `cfa_row(scratch, kappa_insert)`. Rows above kappa_insert are
 /// recomputed naturally as κ advances and lazy_size_reduce calls CFA.
+#[inline]
 fn basis_insert(scratch: &mut IntScratch, kappa_orig: usize, kappa_insert: usize) {
     common::basis_insert(&mut scratch.gram, &mut scratch.basis, kappa_orig, kappa_insert);
 }
@@ -150,6 +152,7 @@ fn basis_insert(scratch: &mut IntScratch, kappa_orig: usize, kappa_insert: usize
 /// Overflow margin: with max |Q_int| = 2^180 and post-LLL max(|B|) ≤ 2^15, G
 /// entries fit ≤ 2^216 (40-bit margin to i256::MAX). Transient B-growth
 /// during deep-ε swaps can breach the 2^GRAM_OVERFLOW_THRESHOLD_BITS guard.
+#[inline]
 pub fn compute_gram_full(scratch: &mut IntScratch) -> bool {
     common::compute_gram_full(
         &mut scratch.gram,
@@ -160,6 +163,7 @@ pub fn compute_gram_full(scratch: &mut IntScratch) -> bool {
 }
 
 /// Check whether any Gram entry exceeds the overflow threshold.
+#[inline]
 fn gram_overflow_check(scratch: &IntScratch) -> bool {
     common::gram_overflow_check(&scratch.gram)
 }

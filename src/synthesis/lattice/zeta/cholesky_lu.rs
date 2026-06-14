@@ -136,15 +136,11 @@ pub fn lu_solve_int_inplace_16(scratch: &mut IntScratch16) -> bool {
                 .lu_tmp
                 .assign(&scratch.lu_a[i][k] / &scratch.lu_a[k][k]);
             let factor = scratch.lu_tmp.clone();
-            // a[i][j] -= factor · a[k][j] for j in k..16.
-            // Avoid simultaneous &mut borrows on rows i and k.
-            let (row_i, row_k) = if i < k {
-                let (head, tail) = scratch.lu_a.split_at_mut(k);
-                (&mut head[i], &mut tail[0])
-            } else {
-                let (head, tail) = scratch.lu_a.split_at_mut(i);
-                (&mut tail[0], &mut head[k])
-            };
+            // a[i][j] -= factor · a[k][j] for j in k..16. The loop runs i > k,
+            // so split at i: row k is in the head, row i at the tail's start —
+            // disjoint &mut borrows.
+            let (head, tail) = scratch.lu_a.split_at_mut(i);
+            let (row_i, row_k) = (&mut tail[0], &mut head[k]);
             for j in k..16 {
                 scratch.lu_tmp.assign(&factor * &row_k[j]);
                 let cur = row_i[j].clone();

@@ -45,9 +45,14 @@ pub fn cost_lb_half_units(k: u32) -> usize {
 /// contribute ζ₁₆ to det(U), T contributes ζ₁₆², Cliffords powers of
 /// ζ₁₆⁴ — but a circuit matches a target only up to a global phase
 /// ζ₁₆ʲ, which shifts the det class by 2j. Only the parity of `d`
-/// survives, so an odd class forces ≥ 1 Q gate (7 half-units); even
-/// classes give nothing. Callers add this to a prefix's own cost as a
-/// sound suffix lower bound. A stronger mod-4 bound is NOT sound.
+/// survives, so an odd class forces ≥ 1 Q gate; even classes give nothing.
+/// Callers add this to a prefix's own cost as a sound suffix lower bound. A
+/// stronger mod-4 bound is NOT sound.
+///
+/// The `7` is one Q gate in half-units, i.e. the default `q_cost_x2` (see
+/// [`crate::synthesis::clifford_sqrt_t`]). It is a sound lower bound only while
+/// `q_cost_x2 ≥ 7`; if the Q weight is ever retuned below 3.5, this must track
+/// `q_cost_x2` instead, or it would over-claim.
 pub fn class_cost_lb_half_units(d: u32) -> usize {
     if d % 2 == 1 { 7 } else { 0 }
 }

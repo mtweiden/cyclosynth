@@ -100,7 +100,9 @@ impl Synthesizer {
     }
 
     /// Clifford+√T only: Q-gate weight in T units for the optimize-cost
-    /// model (default 3.5). Ignored for Clifford+T.
+    /// model (default 3.5). Quantized to the nearest half-unit (the model
+    /// compares `2·T + round(2·weight)·Q`), so e.g. 3.6 → 3.5. Ignored for
+    /// Clifford+T.
     pub fn with_q_cost(mut self, weight: f64) -> Self {
         if let Backend::Q(s) = self.inner {
             self.inner = Backend::Q(s.with_q_cost(weight));

@@ -80,11 +80,15 @@ pub fn i256_to_f64(v: i256) -> f64 {
     const SCALE_192: f64 = SCALE_128 * SCALE_64;
     let neg = v.is_negative();
     let abs = if neg { -v } else { v };
-    let limbs = abs.to_ne_limbs();
-    let r = (limbs[0] as f64)
-        + (limbs[1] as f64) * SCALE_64
-        + (limbs[2] as f64) * SCALE_128
-        + (limbs[3] as f64) * SCALE_192;
+    // Least-significant limb first, via little-endian bytes — matches the
+    // explicit endianness of the i256↔rug helpers below (no native-endian
+    // assumption).
+    let bytes = abs.to_le_bytes();
+    let limb = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
+    let r = (limb(0) as f64)
+        + (limb(1) as f64) * SCALE_64
+        + (limb(2) as f64) * SCALE_128
+        + (limb(3) as f64) * SCALE_192;
     if neg { -r } else { r }
 }
 

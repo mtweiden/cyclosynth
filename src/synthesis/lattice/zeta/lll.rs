@@ -53,6 +53,7 @@ pub fn i256_to_rfloat_inplace(v: i256, dst: &mut RFloat) {
 }
 
 /// Check whether any Gram entry exceeds the overflow threshold.
+#[inline]
 pub(super) fn gram_overflow_check(scratch: &IntScratch16) -> bool {
     common::gram_overflow_check(&scratch.gram)
 }
@@ -106,6 +107,7 @@ pub fn cfa_full(scratch: &mut IntScratch16) {
 
 /// Apply `b_k -= r·b_j` to the i256 Gram in O(d) ops.
 /// Math: `B_new = M·B` where `M = I − r·E_kj`, hence `G_new = M·G·Mᵀ`.
+#[inline]
 pub(super) fn gram_update_size_reduce(
     scratch: &mut IntScratch16,
     k: usize,
@@ -116,11 +118,13 @@ pub(super) fn gram_update_size_reduce(
 }
 
 /// Swap rows a and b in the (symmetric) Gram: swap rows AND columns.
+#[inline]
 pub(super) fn gram_update_swap(scratch: &mut IntScratch16, a: usize, b: usize) {
     common::gram_update_swap(&mut scratch.gram, a, b);
 }
 
 /// L² INSERT operation: move basis row `kappa_orig` to `kappa_insert`.
+#[inline]
 pub(super) fn basis_insert(scratch: &mut IntScratch16, kappa_orig: usize, kappa_insert: usize) {
     common::basis_insert(&mut scratch.gram, &mut scratch.basis, kappa_orig, kappa_insert);
 }
@@ -130,6 +134,7 @@ pub(super) fn basis_insert(scratch: &mut IntScratch16, kappa_orig: usize, kappa_
 /// Compute G = B · Q_int · Bᵀ entirely in i256, into `scratch.gram` (via
 /// `scratch.temp_bq`). Returns `false` if any Gram entry exceeds
 /// `2^GRAM_OVERFLOW_THRESHOLD_BITS`.
+#[inline]
 pub fn compute_gram_full(scratch: &mut IntScratch16) -> bool {
     common::compute_gram_full(
         &mut scratch.gram,
