@@ -38,9 +38,6 @@ PyO3-without-maturin libpython issue, not a code bug; use `cargo check
 
 ## Conventions
 
-- **Commits**: subject ~50 chars; no AI-attribution trailers (no
-  "Co-Authored-By"/"Generated with"). Commit only when asked; branch first if on
-  the default branch for a large change.
 - **Comments explain WHY, not WHAT.** Load-bearing only; no restating the code.
   Spell out an acronym at first use (the glossary is the canonical place).
 - **Naming**: domain terms (`q`=√T gate, `lde`, `lll`, `fgkm`, `cfa`, `dd`,
