@@ -26,11 +26,11 @@ mod probes;
     /// possibly ≫ 2^53) and updates by small deltas; the final values are
     /// ~√T but the INTERMEDIATE partial sums pass through magnitudes
     /// M ~ max_j |z_c[j]·R[i][j]|, so the accumulated f64 error is
-    /// ≈ 16·2^−53·M. The dd verify rescues prune decisions only when the
-    /// f64 overshoot ratio ≤ VERIFY_RATIO_CAP = 5 — an EMPIRICAL cap. If
-    /// e = 16·2^−53·M approaches √T, overshoots can exceed 5× and true
-    /// solutions are pruned silently. This probe computes M and e/√T for
-    /// the production-like post-LLL bases at the jackpot lde levels.
+    /// ≈ 16·2^−53·M. The dd verify now rescues EVERY prune-fire (the old 5×
+    /// overshoot cap was removed — always-verify measured free), so a large
+    /// e/√T is no longer a silent-pruning risk; this probe just characterizes
+    /// how large the f64 overshoot gets on production-like post-LLL bases at
+    /// the jackpot lde levels.
     /// Run: cargo test --release --lib audit_w_cancellation -- \
     ///      --ignored --nocapture
     #[test]

@@ -52,23 +52,6 @@ pub fn qbracket_dd_disabled() -> bool {
     })
 }
 
-/// Prune-fires whose overshoot ratio exceeds this cap skip the dd
-/// verify and prune unconditionally. 5.0 is empirical (0 false
-/// negatives in 1000 cliff samples) though the worst-case
-/// w-cancellation bound admits far larger overshoots;
-/// CYCLOSYNTH_VERIFY_RATIO_CAP overrides for conviction runs.
-static VERIFY_RATIO_CAP_OVERRIDE: OnceLock<f64> = OnceLock::new();
-
-#[inline]
-pub fn verify_ratio_cap() -> f64 {
-    *VERIFY_RATIO_CAP_OVERRIDE.get_or_init(|| {
-        std::env::var("CYCLOSYNTH_VERIFY_RATIO_CAP")
-            .ok()
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(5.0)
-    })
-}
-
 /// Re-check every f64 prune-fire at MPFR-128; MPFR's verdict wins.
 /// Necessary at ε ≤ 1.5e-8 where the f64 dot product suffers
 /// catastrophic cancellation; pure overhead at shallower ε.
@@ -893,12 +876,12 @@ fn expand_se_prefix_node(
             crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         // Same prune-verification ladder as the recursion: integer-exact
-        // short-circuit first, then dd verify (when enabled and near).
+        // short-circuit first, then dd verify (when enabled).
         let actually_prune = if prune_fires {
             let x_norm_sq: i128 = item.x.iter().map(|&v| (v as i128) * (v as i128)).sum();
             if x_norm_sq <= target_norm_sq_i128 {
                 false
-            } else if verify_prune_mpfr() && new_partial_eucl <= threshold * verify_ratio_cap() {
+            } else if verify_prune_mpfr() {
                 let t_v = if trace { Some(std::time::Instant::now()) } else { None };
                 let dd_prune =
                     verify_partial_dd_exceeds(r_eucl_dd, &item.z, z_c, u_eucl_dd, d, threshold);
@@ -1389,16 +1372,17 @@ fn recurse_collect_norm_pruned<F>(
             crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
         }
         // dd verification of the prune decision (needed at ε ≤ 1.5e-8:
-        // catastrophic cancellation in the f64 dot product), guarded by
-        // VERIFY_RATIO_CAP. The integer-exact fast path first: ‖x‖² ≤
-        // T_int proves the prune wrong for ~30 ns vs dd's ~450 ns.
+        // catastrophic cancellation in the f64 dot product). Always runs when
+        // enabled — sound for any overshoot ratio, and measured free. The
+        // integer-exact short-circuit goes first: ‖x‖² ≤ T_int proves the
+        // prune wrong for ~30 ns vs dd's ~450 ns.
         let actually_prune = if prune_fires {
             // Integer-exact short-circuit (no false negatives, may miss some
             // true keeps where prefix_d > ‖x‖² − T).
             let x_norm_sq: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
             if x_norm_sq <= target_norm_sq_i128 {
                 false  // confirmed keep, skip dd verify
-            } else if verify_prune_mpfr() && new_partial_eucl <= threshold * verify_ratio_cap() {
+            } else if verify_prune_mpfr() {
                 let t_v = if trace { Some(std::time::Instant::now()) } else { None };
                 let dd_prune = verify_partial_dd_exceeds(
                     r_eucl_dd, z, z_c, u_eucl_dd, depth as usize, threshold,
