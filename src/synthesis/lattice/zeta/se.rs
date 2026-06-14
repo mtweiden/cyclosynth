@@ -771,7 +771,7 @@ fn expand_se_prefix_node(
     r_eucl_dd: &[[(f64, f64); 16]; 16],
     u_eucl_dd: &[(f64, f64); 16],
     target_norm_sq: f64,
-    target_norm_sq_i64: i64,
+    target_norm_sq_i128: i128,
     basis: &[[i64; 16]; 16],
     budget: &AtomicU64,
     aborted: &AtomicBool,
@@ -895,8 +895,8 @@ fn expand_se_prefix_node(
         // Same prune-verification ladder as the recursion: integer-exact
         // short-circuit first, then dd verify (when enabled and near).
         let actually_prune = if prune_fires {
-            let x_norm_sq: i64 = item.x.iter().map(|&v| v.wrapping_mul(v)).sum();
-            if x_norm_sq <= target_norm_sq_i64 {
+            let x_norm_sq: i128 = item.x.iter().map(|&v| (v as i128) * (v as i128)).sum();
+            if x_norm_sq <= target_norm_sq_i128 {
                 false
             } else if verify_prune_mpfr() && new_partial_eucl <= threshold * verify_ratio_cap() {
                 let t_v = if trace { Some(std::time::Instant::now()) } else { None };
@@ -961,7 +961,11 @@ where
     // projection; u64::MAX marks the walk unbudgeted.
     let initial_budget = budget.load(Ordering::Relaxed);
     let l_15 = l[15][15];
-    let target_norm_sq_i64 = target_norm_sq as i64;
+    // Exact for the shell target 2^k at any k ≤ 126 (power of two → no f64
+    // rounding, fits i128). The i64 form saturated at k ≥ 63 and let large-k
+    // nodes wrap their norm sum, silently disabling the shell prune exactly in
+    // the deep-ε regime this walk exists to serve.
+    let target_norm_sq_i128 = target_norm_sq as i128;
     if l_15.abs() < 1e-30 {
         return (Vec::new(), false);
     }
@@ -1101,7 +1105,7 @@ where
                 }
                 expand_se_prefix_node(
                     d, item, &mut frontier, l, l_q_dd, z_c, bound_sq, r_eucl,
-                    r_eucl_dd, u_eucl_dd, target_norm_sq, target_norm_sq_i64,
+                    r_eucl_dd, u_eucl_dd, target_norm_sq, target_norm_sq_i128,
                     basis, budget, &aborted, consumed, &mut bcache,
                 );
             }
@@ -1168,7 +1172,7 @@ where
             let mut bcache = BudgetCache::new(pred);
             recurse_collect_norm_pruned(
                 start_depth, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
-                u_eucl_dd, target_norm_sq, target_norm_sq_i64, item.partial_q,
+                u_eucl_dd, target_norm_sq, target_norm_sq_i128, item.partial_q,
                 item.partial_q_dd, item.partial_eucl,
                 &mut item.z, &mut item.x, &mut item.w, basis,
                 &leaf_filter, budget, &aborted, external_abort, consumed,
@@ -1223,7 +1227,7 @@ fn recurse_collect_norm_pruned<F>(
     r_eucl_dd: &[[(f64, f64); 16]; 16],
     u_eucl_dd: &[(f64, f64); 16],
     target_norm_sq: f64,
-    target_norm_sq_i64: i64,
+    target_norm_sq_i128: i128,
     partial_q: f64,
     partial_q_dd: (f64, f64),
     partial_eucl: f64,
@@ -1292,7 +1296,7 @@ fn recurse_collect_norm_pruned<F>(
         if new_partial_eucl <= target_norm_sq * (1.0 + 1e-9) {
             recurse_collect_norm_pruned(
                 depth - 1, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
-                u_eucl_dd, target_norm_sq, target_norm_sq_i64,
+                u_eucl_dd, target_norm_sq, target_norm_sq_i128,
                 partial_q, partial_q_dd, new_partial_eucl, z, x, w, basis,
                 leaf_filter, budget, aborted, external_abort, consumed,
                 bcache, results,
@@ -1395,8 +1399,8 @@ fn recurse_collect_norm_pruned<F>(
         let actually_prune = if prune_fires {
             // Integer-exact short-circuit (no false negatives, may miss some
             // true keeps where prefix_d > ‖x‖² − T).
-            let x_norm_sq: i64 = x.iter().map(|&v| v.wrapping_mul(v)).sum();
-            if x_norm_sq <= target_norm_sq_i64 {
+            let x_norm_sq: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
+            if x_norm_sq <= target_norm_sq_i128 {
                 false  // confirmed keep, skip dd verify
             } else if verify_prune_mpfr() && new_partial_eucl <= threshold * verify_ratio_cap() {
                 let t_v = if trace { Some(std::time::Instant::now()) } else { None };
@@ -1431,7 +1435,7 @@ fn recurse_collect_norm_pruned<F>(
         // is pure overhead without budget-model changes.
         recurse_collect_norm_pruned(
             depth - 1, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
-            u_eucl_dd, target_norm_sq, target_norm_sq_i64,
+            u_eucl_dd, target_norm_sq, target_norm_sq_i128,
             new_partial_q, new_partial_q_dd, new_partial_eucl, z, x, w, basis,
             leaf_filter, budget, aborted, external_abort, consumed, bcache,
             results,
