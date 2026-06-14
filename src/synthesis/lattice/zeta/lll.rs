@@ -40,11 +40,6 @@ pub use crate::synthesis::lattice::common::{
     L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
 };
 
-/// Hard cap on outer L²-LLL iterations. **lattice_zeta-specific**: the 8D
-/// path doesn't have an iter cap because empirically the 8D loop always
-/// converges fast; the 16D loop in our regime averages ~230 iterations
-/// and the cap is a safety net.
-pub const MAX_LLL_ITERS: usize = 50_000;
 
 // ─── i256 → MPFR conversion ──────────────────────────────────────────────────
 
@@ -219,7 +214,7 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch16, kappa: usize) -> usize {
 /// holds the integer-scaled Q. The caller (or [`run_lll_16`]) is responsible
 /// for invoking [`compute_gram_full`] before this function.
 pub fn lll_l2_16(scratch: &mut IntScratch16) -> LllResult {
-    let max_iter = MAX_LLL_ITERS;
+    let max_iter = common::MAX_LLL_ITERS_16D;
     let mut iters: usize = 0;
 
     // Step 2: initialize r̄_{0,0} = ‖b_0‖² (CFA on row 0).

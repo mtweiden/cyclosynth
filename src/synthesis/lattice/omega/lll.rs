@@ -202,7 +202,7 @@ pub fn lll_l2_8_seeded(
         Some(b) => scratch.basis = *b,
         None => scratch.reset_basis(),
     }
-    let max_iter: usize = 10_000;
+    let max_iter = common::MAX_LLL_ITERS_8D;
     let mut iters: usize = 0;
 
     // Gram from the current basis (= Q_int when reset to identity, else B·Q_int·Bᵀ).

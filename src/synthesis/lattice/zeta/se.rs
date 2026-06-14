@@ -961,10 +961,8 @@ where
     // projection; u64::MAX marks the walk unbudgeted.
     let initial_budget = budget.load(Ordering::Relaxed);
     let l_15 = l[15][15];
-    // Exact for the shell target 2^k at any k ≤ 126 (power of two → no f64
-    // rounding, fits i128). The i64 form saturated at k ≥ 63 and let large-k
-    // nodes wrap their norm sum, silently disabling the shell prune exactly in
-    // the deep-ε regime this walk exists to serve.
+    // Exact for 2^k at any k ≤ 126. The old i64 form saturated at k ≥ 63,
+    // disabling the shell prune in the deep-ε regime this walk serves.
     let target_norm_sq_i128 = target_norm_sq as i128;
     if l_15.abs() < 1e-30 {
         return (Vec::new(), false);
@@ -1337,11 +1335,9 @@ fn recurse_collect_norm_pruned<F>(
     let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
-    // NOTE: solving the depth-0 shell quadratic for z[d] directly (closed-form
-    // roots of ‖x_new‖² = 2^k instead of the bracket sweep below) was tried
-    // repeatedly and regresses: fewer leaves per depth-0 enter just buys more
-    // full-depth recursions under the same node budget. It would need a budget
-    // recalibration to pay off, so the straight bracket sweep stays.
+    // NOTE: solving the depth-0 shell quadratic for z[d] in closed form (vs
+    // the bracket sweep below) was tried and regresses — fewer depth-0 leaves
+    // just buys more full-depth recursions under the same budget.
 
     for raw in 0..=(2 * max_off + 1) {
         if aborted.load(Ordering::Relaxed) {

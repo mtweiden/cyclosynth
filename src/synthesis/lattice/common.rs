@@ -26,6 +26,11 @@ pub const L2_ETA_BAR: f64 = (L2_ETA + 0.5) / 2.0;
 /// 1-3 passes; the cap is a safety net against pathological inputs.
 pub const MAX_LAZY_PASSES: usize = 32;
 
+/// Outer L²-LLL iteration caps (safety nets, never hit in regime). 16D is 5×
+/// 8D because it runs far more swaps before converging (~230 vs a handful).
+pub const MAX_LLL_ITERS_8D: usize = 10_000;
+pub const MAX_LLL_ITERS_16D: usize = 50_000;
+
 // ─── Numerical limits ────────────────────────────────────────────────────────
 
 /// i256 magnitude target for the integer Gram. We pick a scale factor `B`
@@ -33,18 +38,12 @@ pub const MAX_LAZY_PASSES: usize = 32;
 /// headroom under `GRAM_OVERFLOW_THRESHOLD_BITS`.
 pub const TARGET_BITS: u32 = 180;
 
-/// Threshold for Gram-entry overflow detection: 2^240, leaving 15-bit margin
-/// to i256::MAX (≈2^255). The safe operating range is roughly
-/// `max(|B|)² · max(|Q_int|) · d ≤ 2^240`.
-///
-/// This is a detect-before-wrap guard, not a wrap-proof one: the check reads a
-/// Gram entry *after* it is formed in i256, and a value that already passed
-/// 2^255 would have wrapped to a small magnitude and slipped through. We rely
-/// on that never happening because the basis grows ~1 bit per LLL swap, so an
-/// entry crosses 2^240 (and is caught, aborting to fallback) long before it
-/// could reach 2^255. The 15-bit margin is the slack for that monotone
-/// approach. If a future ring/dimension can jump an entry by >15 bits in one
-/// update, this guard must move before the i256 multiply, not after.
+/// Gram-entry overflow threshold: 2^240, 15 bits under i256::MAX. Detects
+/// before wrap rather than preventing it — the check reads the entry after the
+/// i256 multiply, so it's only sound because the basis grows ~1 bit/swap and
+/// thus crosses 2^240 (caught, abort to fallback) before reaching 2^255. A
+/// ring/dimension that could jump an entry >15 bits per update would need the
+/// guard moved ahead of the multiply.
 pub const GRAM_OVERFLOW_THRESHOLD_BITS: u32 = 240;
 
 /// Compute the bit-shift `B` such that `round(2^B · Q[i][j])` lands in i256

@@ -115,12 +115,10 @@ pub fn find_aligned_lattice_points_outcome(
 ) -> LatticeSearchOutcome {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    // target_norm = 2^k, in i128. The norm sum ‖x‖² is also i128: a
-    // non-solution SE candidate can carry components past 2^31, whose i64
-    // square would wrap and could spuriously equal the i64 target. i128 holds
-    // any k ≤ 126, and benchmarks show no measurable cost over a k≤62 i64 fast
-    // path here (the per-node cost is dominated by reconstruct_x + the MPFR
-    // dot), so the single i128 path replaces it for consistency and safety.
+    // target_norm = 2^k. ‖x‖² is computed in i128 too: a non-solution SE
+    // candidate can carry components past 2^31 whose i64 square would wrap and
+    // spuriously hit the target. i128 costs nothing measurable here (per-node
+    // cost is reconstruct_x + the MPFR dot), so there's no separate i64 path.
     let target_norm: i128 = 1i128 << k;
 
     // Alignment threshold and dot product at MPFR-128. Two precision walls

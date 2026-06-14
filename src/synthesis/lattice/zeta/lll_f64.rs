@@ -83,7 +83,7 @@ pub fn lazy_size_reduce_f64(scratch: &mut IntScratch16, kappa: usize) -> usize {
 
 /// f64 L²-LLL main loop. Mirrors `super::lll::lll_l2_16`.
 pub fn lll_l2_16_f64(scratch: &mut IntScratch16) -> LllResult {
-    let max_iter: usize = super::lll::MAX_LLL_ITERS;
+    let max_iter = crate::synthesis::lattice::common::MAX_LLL_ITERS_16D;
     let mut iters: usize = 0;
 
     cfa_row_f64(scratch, 0);
