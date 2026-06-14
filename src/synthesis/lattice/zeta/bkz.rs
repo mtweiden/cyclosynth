@@ -26,8 +26,8 @@ pub const BKZ_MAX_LOOPS: usize = 16;
 /// trigger).
 pub const BKZ_DELTA: f64 = 0.99;
 
-/// SVP enumeration on the projected β-dim sublattice at frontier κ,
-/// using the f64 GS state already populated on `scratch`.
+/// SVP enumeration on the projected β-dim sublattice at frontier κ, reading
+/// the (MPFR) GS state already populated on `scratch` as f64.
 ///
 /// **Math**: for each integer `x ∈ Z^β`, the projected vector
 /// `v = Σ_i x[i] π(b_{κ+i})` has squared norm (in the Q-metric)
@@ -60,9 +60,9 @@ pub fn svp_enum_block(
     let mut r = [0.0_f64; 8];
     let mut mu = [[0.0_f64; 8]; 8];
     for i in 0..block_size {
-        r[i] = scratch.r_bar_f64[kappa + i][kappa + i];
+        r[i] = scratch.r_bar[kappa + i][kappa + i].to_f64();
         for j in 0..i {
-            mu[i][j] = scratch.mu_bar_f64[kappa + i][kappa + j];
+            mu[i][j] = scratch.mu_bar[kappa + i][kappa + j].to_f64();
         }
     }
 
@@ -411,7 +411,7 @@ fn negate_row(scratch: &mut IntScratch16, i: usize) {
 ///
 /// **Outer loop**: up to `max_loops` tours. Each tour iterates κ from
 /// 0 to `16 - β`. For each κ:
-///   1. Recompute the GS state (cfa_row_f64) for rows 0..κ+β so the
+///   1. Recompute the GS state (lll::cfa_row) for rows 0..κ+β so the
 ///      block's `r̄`, `μ̄` reflect the current basis. (Lazy: we just
 ///      run cfa for rows 0..16 once at the start of each tour.)
 ///   2. SVP-enum on the projected β-block at κ.
@@ -438,12 +438,12 @@ pub fn bkz_tours(
         // start of each tour is cheaper than incremental updates and
         // is what fplll does in its tour loop.
         for i in 0..16 {
-            super::lll_f64::cfa_row_f64(scratch, i);
+            super::lll::cfa_row(scratch, i);
         }
 
         let mut clean = true;
         for kappa in 0..(16 - block_size + 1) {
-            let r_kk = scratch.r_bar_f64[kappa][kappa];
+            let r_kk = scratch.r_bar[kappa][kappa].to_f64();
             // Search radius: δ · r̄_{κ,κ}. fplll uses δ=0.99.
             let radius_sq = BKZ_DELTA * r_kk;
             let svp = svp_enum_block(scratch, kappa, block_size, radius_sq);
@@ -480,7 +480,7 @@ pub fn bkz_tours(
                 // Insertion changed `b_κ`; the GS state for κ and
                 // beyond is stale. Refresh it before the next κ.
                 for i in kappa..16 {
-                    super::lll_f64::cfa_row_f64(scratch, i);
+                    super::lll::cfa_row(scratch, i);
                 }
             }
         }
@@ -502,14 +502,15 @@ mod tests {
     /// state, the projected sublattice is the standard `Z^β` Euclidean
     /// lattice; SVP should return one of the unit vectors `±e_i`.
     fn setup_identity_gso(scratch: &mut IntScratch16, block_size: usize) {
+        use rug::Assign;
         for i in 0..16 {
             for j in 0..16 {
-                scratch.r_bar_f64[i][j] = 0.0;
-                scratch.mu_bar_f64[i][j] = 0.0;
+                scratch.r_bar[i][j].assign(0.0);
+                scratch.mu_bar[i][j].assign(0.0);
             }
         }
         for i in 0..block_size {
-            scratch.r_bar_f64[i][i] = 1.0;
+            scratch.r_bar[i][i].assign(1.0);
         }
     }
 
@@ -533,7 +534,7 @@ mod tests {
     fn svp_stretched_diagonal_avoids_long_axis() {
         let mut s = IntScratch16::new(1e-3);
         setup_identity_gso(&mut s, 4);
-        s.r_bar_f64[0][0] = 4.0;
+        rug::Assign::assign(&mut s.r_bar[0][0], 4.0);
         let result = svp_enum_block(&s, 0, 4, 16.0);
         let (x, norm_sq) = result.unwrap();
         assert!((norm_sq - 1.0).abs() < 1e-9, "norm² = {norm_sq}");
@@ -699,7 +700,7 @@ mod tests {
     fn bkz_4_smoke_on_lll_basis() {
         use crate::synthesis::lattice::zeta::{
             integer::find_aligned_lattice_points_with_stop,
-            lll_f64::cfa_row_f64,
+            lll::cfa_row,
             cholesky_lu::det16_exact,
         };
         use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta;
@@ -712,7 +713,6 @@ mod tests {
         let y = uv_to_lattice_y_zeta(v, k);
 
         let mut s = IntScratch16::new(eps);
-        s.use_f64_gs = true;
 
         // First run regular LLL+SE to get an LLL-reduced basis.
         let budget_hit = AtomicBool::new(false);
@@ -727,9 +727,9 @@ mod tests {
 
         // Refresh GS state and snapshot ||b*_0||² before BKZ.
         for i in 0..16 {
-            cfa_row_f64(&mut s, i);
+            cfa_row(&mut s, i);
         }
-        let r_00_pre = s.r_bar_f64[0][0];
+        let r_00_pre = s.r_bar[0][0].to_f64();
 
         // Run BKZ-4 tours and just observe (non-primitive SVP vectors are
         // skipped, not inserted).
@@ -744,9 +744,9 @@ mod tests {
 
         // Refresh GS and check ||b*_0||² didn't increase.
         for i in 0..16 {
-            cfa_row_f64(&mut s, i);
+            cfa_row(&mut s, i);
         }
-        let r_00_post = s.r_bar_f64[0][0];
+        let r_00_post = s.r_bar[0][0].to_f64();
         assert!(
             r_00_post <= r_00_pre + 1e-9,
             "BKZ should not lengthen b*_0: pre={r_00_pre}, post={r_00_post}"
@@ -769,7 +769,7 @@ mod tests {
     fn svp_with_off_diagonal_mu() {
         let mut s = IntScratch16::new(1e-3);
         setup_identity_gso(&mut s, 2);
-        s.mu_bar_f64[1][0] = 0.5;
+        rug::Assign::assign(&mut s.mu_bar[1][0], 0.5);
         let (x, norm_sq) = svp_enum_block(&s, 0, 2, 4.0).unwrap();
         assert!((norm_sq - 1.0).abs() < 1e-9, "norm² = {norm_sq}");
         assert_eq!(x[1], 0, "expected x[1] = 0 since r[0]=r[1]=1, got {x:?}");

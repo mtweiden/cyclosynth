@@ -367,20 +367,10 @@ mod probes;
         assert_eq!(s3.inner_det_phase_filter, Vec::<u32>::new());
         assert_eq!(s3.max_lde, 30);
 
-        // f64 GS is on at moderate ε but auto-disabled at ε ≤ 1e-8
-        // (where f64's 2-bit precision margin causes ladder thrashing).
-        for &eps in &[1e-3, 1e-4, 1e-5, 1e-6, 1e-7_f64] {
-            assert!(SynthesizerQ::new(eps).use_f64_gs, "f64 default should be on at ε={eps:.0e}");
-        }
-        let eps = 1e-8_f64;
-        assert!(!SynthesizerQ::new(eps).use_f64_gs, "f64 default should be OFF at ε={eps:.0e}");
-
         // Manual override still works.
         let s_override = SynthesizerQ::new(1e-7).with_prefix_split_m(1).with_inner_det_phase_filter(vec![0, 1, 15]);
         assert_eq!(s_override.prefix_split_m, Some(1));
         assert_eq!(s_override.inner_det_phase_filter, vec![0u32, 1, 15]);
-        let s_no_f64 = SynthesizerQ::new(1e-3).with_f64_gs(false);
-        assert!(!s_no_f64.use_f64_gs);
 
         // BKZ-4 default: on at ε ≤ 1e-7, off above.
         for &eps in &[1e-3, 1e-4, 1e-5, 1e-6_f64] {

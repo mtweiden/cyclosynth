@@ -121,7 +121,6 @@ fn run_branch(target: &Mat2, eps: f64, k: u32, parity: u32, dump: bool) -> RunRe
 
     // Scratch config mirrors SynthesizerQ::new defaults.
     let mut scratch = Box::new(IntScratch16::new(eps));
-    scratch.use_f64_gs = eps > 1e-8;
     scratch.bkz_block_size = if eps <= 1e-7 { 4 } else { 0 };
 
     diag::reset_all();

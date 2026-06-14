@@ -529,7 +529,6 @@ impl SynthesizerQ {
         // leaf; optimize_cost returns false unconditionally so every
         // ε-close leaf is enumerated and check_sols picks the cheapest.
         let epsilon = self.epsilon;
-        let use_f64_gs = self.use_f64_gs;
         let bkz_block_size = self.bkz_block_size;
         let optimize_cost = self.optimize_cost;
         let try_lattice_k = |k: u32,
@@ -539,7 +538,6 @@ impl SynthesizerQ {
             let s = scratch
                 .get_or_insert_with(|| {
                     let mut sb = Box::new(IntScratch16::new(epsilon));
-                    sb.use_f64_gs = use_f64_gs;
                     sb.bkz_block_size = bkz_block_size;
                     sb
                 });
@@ -809,7 +807,6 @@ impl SynthesizerQ {
             .collect();
         let d_target = det_phase_of(target);
         let epsilon = self.epsilon;
-        let use_f64_gs = self.use_f64_gs;
         let bkz_block_size = self.bkz_block_size;
 
         // Shared across all prefix workers: any prefix that hits its
@@ -1037,7 +1034,6 @@ impl SynthesizerQ {
         // (possibly small) thread stack.
         let make_scratch = || {
             let mut s = Box::new(IntScratch16::new(epsilon));
-            s.use_f64_gs = use_f64_gs;
             s.bkz_block_size = bkz_block_size;
             s
         };

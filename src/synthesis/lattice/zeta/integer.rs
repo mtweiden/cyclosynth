@@ -85,58 +85,17 @@ fn warm_seed_q_base(scratch: &mut IntScratch16, k: u32, eps: Float) -> bool {
     false
 }
 
-/// L²-LLL on the 2-step precision ladder (fplll's wrapper strategy):
-/// f64 GS first, then MPFR-80 on IterCap (GS-state cycling) or a
-/// non-unimodular det. GramOverflow is NOT escalated (i256 saturation,
-/// precision cannot help); det = None (Bareiss i128 overflow) is
+/// L²-LLL at MPFR-80 Gram-Schmidt precision (the single GS path: an f64-GS
+/// fast path was measured to give no speedup at any reachable ε and removed).
+/// GramOverflow (i256 saturation, unhelped by precision) → None; a
+/// non-unimodular det → None; det = None (Bareiss i128 overflow) is an
 /// inconclusive-success. Returns `None` when the basis is unusable.
 fn run_lll_ladder(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> {
     let trace = diag::trace_enabled();
     let t_lll = if trace { Some(std::time::Instant::now()) } else { None };
-    let initial_use_f64 = scratch.use_f64_gs;
 
-    // Helper: closes over scratch via &mut, returns (LllResult, det).
-    fn run_and_check(s: &mut IntScratch16) -> (LllResult, Option<i64>) {
-        let r = if s.use_f64_gs {
-            super::lll_f64::run_lll_16_f64(s)
-        } else {
-            run_lll_16(s)
-        };
-        let det = super::cholesky_lu::det16_exact(&s.basis);
-        (r, det)
-    }
-
-    let lll_succeeded = |r: LllResult, det: Option<i64>| -> bool {
-        if !matches!(r, LllResult::Converged) {
-            return false;
-        }
-        // None = i128 overflow in Bareiss; treat as inconclusive-success.
-        match det { Some(d) => d == 1 || d == -1, None => true }
-    };
-
-    let (mut lll_result, mut det_check) = run_and_check(scratch);
-
-    // Escalate to MPFR if f64 was used and produced a failure result
-    // (excluding GramOverflow, which won't be helped by higher precision).
-    if initial_use_f64
-        && !matches!(lll_result, LllResult::GramOverflow)
-        && !lll_succeeded(lll_result, det_check)
-    {
-        if trace {
-            diag::N_LLL_F64_ESCALATIONS.fetch_add(1, Ordering::Relaxed);
-        }
-        // The f64 LLL may have left the basis in a partially-reduced or
-        // non-unimodular state. Force a fresh start: cancel warm_lll
-        // (so run_lll_16 calls reset_basis internally) and switch the
-        // precision flag.
-        scratch.warm_lll = false;
-        scratch.use_f64_gs = false;
-        let (r2, d2) = run_and_check(scratch);
-        lll_result = r2;
-        det_check = d2;
-        // Restore the caller's precision preference for the next call.
-        scratch.use_f64_gs = initial_use_f64;
-    }
+    let lll_result = run_lll_16(scratch);
+    let det_check = super::cholesky_lu::det16_exact(&scratch.basis);
 
     if let Some(t) = t_lll {
         diag::T_LLL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -147,8 +106,7 @@ fn run_lll_ladder(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> 
     if let Some(d) = det_check {
         if d != 1 && d != -1 {
             eprintln!(
-                "[lattice_zeta] LLL non-unimodular even after MPFR escalation \
-                (det={}) at eps={:e}, k={}; bailing.",
+                "[lattice_zeta] LLL non-unimodular (det={}) at eps={:e}, k={}; bailing.",
                 d, eps, k
             );
             return None;
@@ -168,10 +126,9 @@ fn run_lll_ladder(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> 
 fn run_bkz_postpass(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> {
     if scratch.bkz_block_size >= 3 {
         let block_size = scratch.bkz_block_size as usize;
-        // BKZ reads the f64 GS state. Populate it from the current
-        // basis (works regardless of which LLL path was taken).
+        // Populate the GS state from the current basis for BKZ to read.
         for i in 0..16 {
-            super::lll_f64::cfa_row_f64(scratch, i);
+            super::lll::cfa_row(scratch, i);
         }
         let _changed = super::bkz::bkz_tours(scratch, block_size, super::bkz::BKZ_MAX_LOOPS);
         // Post-BKZ unimodularity check; bail if the insertion path

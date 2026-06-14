@@ -4,8 +4,8 @@
 //! Z[ω] / Clifford+T). The two modules are deliberately kept separate to
 //! isolate the precision and integer-width choices: f64 Gram-Schmidt is
 //! provably sufficient at d=8 (Theorem 2 of Nguyen-Stehlé 2009) but not at
-//! d=16, so the 16D GS runs in f64 at moderate ε with escalation to MPFR
-//! ([`lll_f64`] vs [`lll`]) and MPFR-only below ~1e-8.
+//! d=16, so the 16D GS runs in MPFR throughout. (An f64-GS fast path with
+//! MPFR escalation existed but was measured to give no speedup and removed.)
 //!
 //! Pipeline and module layout mirror [`super::lattice`]; see
 //! [`integer`] for the per-call stage breakdown. Brute force and
@@ -29,7 +29,6 @@ pub mod cholesky_lu;
 pub mod dd;
 pub mod integer;
 pub mod lll;
-pub mod lll_f64;
 pub mod q_metric;
 pub mod scratch;
 pub mod se;

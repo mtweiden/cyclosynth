@@ -148,11 +148,6 @@ pub static N_LAZY_PASSES_MAX: AtomicU64 = AtomicU64::new(0);
 
 /// Number of `find_aligned_lattice_points` invocations across this synthesize call (one per k).
 pub static N_LATTICE_SEARCH_CALLS: AtomicU64 = AtomicU64::new(0);
-/// Number of times the f64 GS path detected a failure (LLL not converged
-/// or non-unimodular post-LLL basis) and the precision ladder escalated
-/// to MPFR. Should be 0 in our regime (ε ≥ 1e-7); becomes non-zero at
-/// deep ε when f64's 52-bit mantissa runs out of headroom.
-pub static N_LLL_F64_ESCALATIONS: AtomicU64 = AtomicU64::new(0);
 /// SE leaves rejected by the norm-shell check (`‖x‖² == 2^k`).
 pub static N_NORM_REJECTED: AtomicU64 = AtomicU64::new(0);
 /// SE leaves rejected by the bilinear forms check (`B_1=B_2=B_3=0`).
@@ -200,7 +195,7 @@ pub fn profile_line() -> String {
         "screen_ms={:.1} frontier_ms={:.1} baseline_ms={:.1} \
          build_ms={:.1} lll_ms={:.1} chol_ms={:.1} lu_ms={:.1} se_ms={:.1} \
          leaf_ms={:.1} verify_dd_ms={:.1} \
-         lll_iters={} lll_iters_max={} lll_at_cap={} f64_escal={} \
+         lll_iters={} lll_iters_max={} lll_at_cap={} \
          se_nodes={} se_cb={} search_calls={} prefixes={} \
          uv_rej={} norm_rej={} bilin_rej={} align_rej={} dist_rej={} sols={} \
          prune_fires={} verify_fires={} verify_corrected={} \
@@ -208,7 +203,7 @@ pub fn profile_line() -> String {
         ms(&T_STAGE_SCREEN_NS), ms(&T_STAGE_FRONTIER_NS), ms(&T_STAGE_BASELINE_NS),
         ms(&T_BUILD_NS), ms(&T_LLL_NS), ms(&T_CHOLESKY_NS), ms(&T_LU_NS), ms(&T_SE_NS),
         ms(&T_LEAF_CHECK_NS), ms(&T_VERIFY_DD_NS),
-        n(&N_LLL_ITERS_TOTAL), n(&N_LLL_ITERS_MAX), n(&N_LLL_AT_CAP), n(&N_LLL_F64_ESCALATIONS),
+        n(&N_LLL_ITERS_TOTAL), n(&N_LLL_ITERS_MAX), n(&N_LLL_AT_CAP),
         n(&N_SE_NODES), n(&N_SE_CALLBACKS), n(&N_LATTICE_SEARCH_CALLS), n(&N_PREFIXES),
         n(&N_UV_EXTRACT_REJECTED), n(&N_NORM_REJECTED), n(&N_BILINEAR_REJECTED),
         n(&N_ALIGN_REJECTED), n(&N_DIST_REJECTED), n(&N_SOLS_RETURNED),
@@ -318,7 +313,6 @@ pub fn reset_all() {
         &N_LAZY_CALLS_TOTAL,
         &N_LAZY_PASSES_MAX,
         &N_LATTICE_SEARCH_CALLS,
-        &N_LLL_F64_ESCALATIONS,
         &N_NORM_REJECTED,
         &N_BILINEAR_REJECTED,
         &N_ALIGN_REJECTED,

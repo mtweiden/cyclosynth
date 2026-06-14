@@ -120,20 +120,9 @@ pub struct IntScratch16 {
     pub q_base_seed: Option<IMat16>,
     pub q_base_seed_key: Option<(u32, u64)>,
 
-    /// Use the experimental f64 Gram-Schmidt LLL (`lll_f64::run_lll_16_f64`)
-    /// instead of MPFR — outside the NS09 d ≤ 11 proof, but fplll tries f64
-    /// first at every dim. Default false.
-    pub use_f64_gs: bool,
-
     /// BKZ block size (0 = off, 3..=8 = β-block SVP tours after LLL,
     /// strengthening the basis most at deep ε). β=2 is LLL-equivalent.
     pub bkz_block_size: u32,
-
-    // f64 mirrors of r_bar/mu_bar/s_bar for the lll_f64 path (~5× per-iter
-    // faster when it converges).
-    pub r_bar_f64: [[f64; 16]; 16],
-    pub mu_bar_f64: [[f64; 16]; 16],
-    pub s_bar_f64: [[f64; 16]; 16],
 }
 
 impl IntScratch16 {
@@ -172,10 +161,6 @@ impl IntScratch16 {
             warm_lll: false,
             q_base_seed: None,
             q_base_seed_key: None,
-            r_bar_f64: [[0.0; 16]; 16],
-            mu_bar_f64: [[0.0; 16]; 16],
-            s_bar_f64: [[0.0; 16]; 16],
-            use_f64_gs: false,
             bkz_block_size: 0,
         }
     }

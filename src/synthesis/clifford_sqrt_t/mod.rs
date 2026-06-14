@@ -103,8 +103,6 @@ pub struct SynthesizerQ {
     /// Allowed `(d_target − d_L) mod 16` offsets for a prefix to be
     /// processed; empty = no filter. Builder: [`Self::with_inner_det_phase_filter`].
     pub inner_det_phase_filter: Vec<u32>,
-    /// f64 Gram-Schmidt state in LLL (vs MPFR). Builder: [`Self::with_f64_gs`].
-    pub use_f64_gs: bool,
     /// BKZ-β post-pass block size (0 = off). Builder: [`Self::with_bkz`].
     pub bkz_block_size: u32,
     /// Number of lde levels the dc path dispatches concurrently, with a
@@ -253,10 +251,6 @@ impl SynthesizerQ {
             (None, Vec::new())
         };
         let max_lde = if epsilon <= 1e-7 { 35 } else { 30 };
-        // f64 GS needs ~46 bits at 1e-7 (fits the 52-bit mantissa); at
-        // 1e-8 the requirement crosses 50 bits and LLL would mostly run
-        // the f64 → MPFR-80 escalation.
-        let use_f64_gs = epsilon > 1e-8;
 
         // At deep ε, scale [min_lde, max_lde] with log2(1/ε) to skip
         // guaranteed-empty levels and still reach the hard-target tail.
@@ -299,7 +293,6 @@ impl SynthesizerQ {
             max_lde: max_lde_override,
             prefix_split_m,
             inner_det_phase_filter,
-            use_f64_gs,
             bkz_block_size,
             parallel_lde_window,
             parallel_lde_trigger_nodes,
@@ -368,14 +361,6 @@ impl SynthesizerQ {
     /// more cases.
     pub fn with_inner_det_phase_filter(mut self, allowed_offsets: Vec<u32>) -> Self {
         self.inner_det_phase_filter = allowed_offsets;
-        self
-    }
-
-    /// f64 GS state in LLL instead of MPFR. NS09's Theorem 2 doesn't
-    /// cover d=16 in f64, but (per fplll's wrapper strategy) it
-    /// converges and matches MPFR across our ε range, much faster.
-    pub fn with_f64_gs(mut self, on: bool) -> Self {
-        self.use_f64_gs = on;
         self
     }
 

@@ -116,7 +116,6 @@ impl SynthesizerQ {
         let q_cost_x2 = self.q_cost_x2;
         let d_target = det_phase_of(target);
         let epsilon = self.epsilon;
-        let use_f64_gs = self.use_f64_gs;
         let bkz_block_size = self.bkz_block_size;
         let best_cost = shared_best_cost;
         let start = std::time::Instant::now();
@@ -307,7 +306,6 @@ impl SynthesizerQ {
 
         let make_scratch = || {
             let mut s = Box::new(IntScratch16::new(epsilon));
-            s.use_f64_gs = use_f64_gs;
             s.bkz_block_size = bkz_block_size;
             s
         };
@@ -515,7 +513,6 @@ impl SynthesizerQ {
         let epsilon = self.epsilon;
         let s = scratch.get_or_insert_with(|| {
             let mut sb = Box::new(IntScratch16::new(epsilon));
-            sb.use_f64_gs = self.use_f64_gs;
             sb.bkz_block_size = self.bkz_block_size;
             sb
         });
