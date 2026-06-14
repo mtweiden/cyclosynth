@@ -966,11 +966,11 @@ mod tests {
     /// Clifford+T synthesizer reaches (upper bound for Clifford+√T since
     /// `T = QQ` as gates and lde counts √2 denominators identically). Then
     /// verify the Z[ζ_16] / Clifford+√T flow hits it at ≤ that lde.
-    /// Behind `#[ignore]`: `cargo test --release --lib diag_eps_1e_3 --
+    /// Behind `#[ignore]`: `cargo test --release --lib sqrt_t_lde_within_t_baseline_at_eps_1e_3 --
     /// --ignored --nocapture`.
     #[test]
     #[ignore]
-    fn diag_eps_1e_3() {
+    fn sqrt_t_lde_within_t_baseline_at_eps_1e_3() {
         use crate::synthesis::distance::diamond_distance_float;
         use crate::synthesis::clifford_t::SynthesizerT;
         let theta = 0.3_f64;

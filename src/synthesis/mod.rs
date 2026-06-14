@@ -1,3 +1,31 @@
+//! Single-qubit gate synthesis: approximate a target unitary by a Clifford+T
+//! or Clifford+√T circuit (arXiv:2510.05816).
+//!
+//! ## Domain glossary
+//!
+//! Recurring terms in the names and docs below — kept as-is because they're
+//! the field's / this crate's standard vocabulary, defined here once:
+//!
+//! - **T / Q gates** — `T` is the π/8 phase gate; `Q` = √T is the Clifford+√T
+//!   generator. The cost we minimize is `T_count + 3.5·Q_count`.
+//! - **lde** — "least denominator exponent": the power `k` of √2 in a
+//!   circuit's ring denominator, used as the search-depth parameter
+//!   (`min_lde`/`max_lde`).
+//! - **Z[ω] / Z[ζ₁₆]** — the rings the two backends search: Z[ω] (8-dim,
+//!   `zomega`, Clifford+T) and Z[ζ₁₆] (16-dim, `zeta`/`zzeta`, Clifford+√T).
+//! - **u2t / u2q** — a 2×2 unitary over the Clifford+T (`u2t`) or Clifford+√T
+//!   (`u2q`) ring; **uv** is its (u, v) first-column encoding.
+//! - **Matsumoto-Amano (MA) prefix** — the Clifford+T canonical-form left
+//!   prefix `L_{t'}` (`ma_prefix`); **FGKM** — the analogous Clifford+√T
+//!   canonical form (arXiv:1501.04944), enumerated by syllable count `m`.
+//! - **det-phase / d_R** — the determinant's root-of-unity coset class;
+//!   `dr`-filters prune candidate prefixes by it.
+//! - Per-ring lattice search: **CFA** = Cholesky Factorization Algorithm
+//!   (per-row, Fig. 4 of Nguyen-Stehlé 2009); **LLL / L²-LLL** = lattice basis
+//!   reduction; **SE** = Schnorr-Euchner point enumeration; **BKZ** = block
+//!   reduction; **SVP** = shortest-vector problem; **GSO** = Gram-Schmidt
+//!   orthogonalization; **dd** = double-double (~106-bit) arithmetic.
+
 pub mod clifford_sqrt_t;
 pub mod clifford_t;
 pub mod cliffords;
