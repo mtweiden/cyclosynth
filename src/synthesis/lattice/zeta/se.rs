@@ -556,7 +556,7 @@ pub enum LeafAction {
 /// per-thread load for the flat-frontier stage. Diagnostics only —
 /// unreachable in production runs.
 #[cold]
-fn report_w1_skew(
+fn report_parallel_walk_skew(
     item_times: std::sync::Mutex<Vec<(f64, i64)>>,
     stage3_wall_s: f64,
 ) {
@@ -1197,7 +1197,7 @@ where
         })
         .collect();
     if w1_debug_skew {
-        report_w1_skew(
+        report_parallel_walk_skew(
             item_times,
             t_stage3.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0),
         );

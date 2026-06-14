@@ -198,6 +198,9 @@ use std::f64::consts::PI;
         probe_zeta_coset_target(0, 1e-6, "0");
     }
 
+    /// Coset-ON counterpart of [`probe_zeta_coset_t0_off`] (same target 0,
+    /// ε=1e-6): expected to drift from cost 52.5 up to the T baseline 53.
+    /// Run: cargo test --release --lib probe_zeta_coset_t0_on -- --ignored --nocapture
     #[test]
     #[ignore]
     fn probe_zeta_coset_t0_on() {
@@ -213,6 +216,9 @@ use std::f64::consts::PI;
         probe_zeta_coset_target(6, 1e-8, "0");
     }
 
+    /// Coset-ON counterpart of [`probe_zeta_coset_t6_1e8_off`] (same target 6,
+    /// ε=1e-8): expected to drift from the lde=24 hit (cost 73.5) to the
+    /// lde-78 fallback (cost 78).
     #[test]
     #[ignore]
     fn probe_zeta_coset_t6_1e8_on() {

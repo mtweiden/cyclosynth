@@ -163,9 +163,6 @@ sites in `src/synthesis/`.
 cargo test --release
 ```
 
-`verify_correctness_at_1e_X_*` round-trips a synthesized circuit through
-the decomposer and asserts `d_diamond(rebuilt, target) < ε`.
-
 ## Performance
 
 Per-target wall-clock from `time_synthesis_omega --trials 3` on Apple

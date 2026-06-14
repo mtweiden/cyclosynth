@@ -305,7 +305,7 @@ mod probes;
 
     #[test]
     #[ignore = "slow diagnostic; run with --ignored"]
-    fn z1_dc_smoke_rz_eps_1e_3() {
+    fn dc_split_smoke_rz_eps_1e_3() {
         let theta = 0.3_f64;
         let target: Mat2 = [
             [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],

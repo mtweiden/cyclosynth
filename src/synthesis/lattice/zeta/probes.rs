@@ -1,6 +1,6 @@
 //! Research probes (all #[ignore]): backend-level diagnostic harnesses kept
 //! runnable but out of the unit-test file. Run individually, e.g.
-//! `cargo test --release --lib audit_radial_displacement_probe -- --ignored --nocapture`.
+//! `cargo test --release --lib probe_f64_entry_radial_error -- --ignored --nocapture`.
 //!
 //! File-internal probes (LLL/SE/Q-metric telemetry coupled to a specific
 //! module's private helpers) live inline in that module's `#[cfg(test)]`
@@ -11,25 +11,20 @@ use crate::rings::MpFloat;
 use super::*; // the tests module
 use super::super::*; // lattice::zeta internals
 
-    /// Precision-audit probe E1 (ignored): per-target radial cap
-    /// displacement at ε = 1e-8 for the probe_omega_vs_zeta seed-12648430
-    /// targets. Computes, at MPFR-300 (≫ production prec_q = 213, so
-    /// only the f64 entry points under audit survive):
-    ///
-    ///   ν      = |col1(target)| − 1   (target's own f64 quantization
-    ///            defect; prefix_residual_uv_mpfr never normalizes it away)
-    ///   η_tot  = ‖uv_to_lattice_y_zeta_mpfr(v)‖ / ρ − 1, ρ = 2^(k/2)/2
-    ///            (total radial norm error of the production y chain:
-    ///            ν + the f64 cos/sin embedding error)
-    ///
-    /// and reports the cap displacement D = η / (ε²/2) in units of the
-    /// FULL radial window width. |D| ≳ 0.1 (≈ the bound-1.5 tolerance
-    /// 0.21·Δ_y on a half-width offset) loses apex solutions outright.
-    /// Run: cargo test --release --lib audit_radial_displacement -- \
+    /// Measures the radial (norm) error the f64 target→lattice-vector chain
+    /// introduces, to check the f64-input entry path doesn't push the cap
+    /// center far enough to drop exact solutions. At MPFR-300 (far above
+    /// production's 213-bit precision, so only the f64 steps' error survives),
+    /// for 12 random targets at ε=1e-8, it reports two error sources:
+    ///   ν      = |col1(target)| − 1            (the target's own f64 rounding)
+    ///   η_tot  = ‖y‖ / ρ − 1, ρ = 2^(k/2)/2    (ν + the f64 cos/sin embedding)
+    /// as a fraction D = η / (ε²/2) of the full cap window. |D| ≳ 0.1 loses
+    /// the exact (best-distance) solutions outright.
+    /// Run: cargo test --release --lib probe_f64_entry_radial_error -- \
     ///      --ignored --nocapture
     #[test]
     #[ignore]
-    fn audit_radial_displacement_probe() {
+    fn probe_f64_entry_radial_error() {
         use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta_mpfr;
 
         // SplitMix64 + u3, replicated from src/bin/probe_omega_vs_zeta.rs.
@@ -66,7 +61,7 @@ use super::super::*; // lattice::zeta internals
 
         const PREC: u32 = 300;
         let eps = 1e-8_f64;
-        let k = 22_u32; // the jackpot lde; ρ = 2^11
+        let k = 22_u32; // the deepest lde the √T search reaches; ρ = 2^11
         let window_rel = eps * eps / 2.0; // full radial window, relative
 
         let mut rng = Xs(12648430);
@@ -129,118 +124,3 @@ use super::super::*; // lattice::zeta internals
         }
     }
 
-    /// Precision-audit probe E3 (ignored): bound the f64 cancellation
-    /// error of the SE walk's incremental Euclidean accumulator `w = R·z`
-    /// at deep ε. The walk seeds `w[i] = z_15·R[i][15]` (z_15 ~ z_c[15],
-    /// possibly ≫ 2^53) and updates by small deltas; the final values are
-    /// ~√T but the INTERMEDIATE partial sums pass through magnitudes
-    /// M ~ max_j |z_c[j]·R[i][j]|, so the accumulated f64 error is
-    /// ≈ 16·2^−53·M. The dd verify now rescues EVERY prune-fire (the old 5×
-    /// overshoot cap was removed — always-verify measured free), so a large
-    /// e/√T is no longer a silent-pruning risk; this probe just characterizes
-    /// how large the f64 overshoot gets on production-like post-LLL bases at
-    /// the jackpot lde levels.
-    /// Run: cargo test --release --lib audit_w_cancellation -- \
-    ///      --ignored --nocapture
-    #[test]
-    #[ignore]
-    fn audit_w_cancellation_probe() {
-        use super::super::cholesky_lu::{euclidean_cholesky_mpfr_dual, lu_solve_int_inplace};
-        use super::super::lll::{run_lll, LllResult};
-        use super::super::q_metric::build_q_int_zeta;
-        use super::super::se::SeCenter16;
-        use crate::synthesis::clifford_sqrt_t::unitary_to_uv_zeta;
-        use crate::synthesis::distance::Mat2;
-        use num_complex::Complex64;
-        use std::f64::consts::PI;
-
-        // Same target generator as the displacement probe.
-        struct Xs(u64);
-        impl Xs {
-            fn next(&mut self) -> u64 {
-                self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
-                let mut z = self.0;
-                z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-                z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-                z ^ (z >> 31)
-            }
-            fn unit(&mut self) -> f64 {
-                (self.next() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
-            }
-            fn range(&mut self, lo: f64, hi: f64) -> f64 {
-                lo + (hi - lo) * self.unit()
-            }
-        }
-        fn u3(theta: f64, phi: f64, lam: f64) -> Mat2 {
-            let (c, s) = ((theta / 2.0).cos(), (theta / 2.0).sin());
-            let eilam = Complex64::from_polar(1.0, lam);
-            let eiphi = Complex64::from_polar(1.0, phi);
-            let m = [
-                [Complex64::new(c, 0.0), -eilam * s],
-                [eiphi * s, eiphi * eilam * c],
-            ];
-            let g = Complex64::from_polar(1.0, -(phi + lam) / 2.0);
-            [
-                [m[0][0] * g, m[0][1] * g],
-                [m[1][0] * g, m[1][1] * g],
-            ]
-        }
-
-        let eps = 1e-8_f64;
-        let mut rng = Xs(12648430);
-        let (th, ph, la) = (
-            rng.range(0.2, PI - 0.2),
-            rng.range(0.1, 2.0 * PI - 0.1),
-            rng.range(0.1, 2.0 * PI - 0.1),
-        ); // target 0
-        let target = crate::synthesis::clifford_sqrt_t::project_det_to_zeta_coset(
-            &u3(th, ph, la),
-        );
-        let v = unitary_to_uv_zeta(&target);
-
-        eprintln!(
-            "target 0, ε=1e-8: per-k magnitude audit of w = R·z at the center\n\
-             k  | max|z_c|    | M = max|z_c·R| | e=16·2^-53·M | e/√T      | verdict (overshoot magnitude)"
-        );
-        for k in [20u32, 22, 24, 26] {
-            let v_mpfr: [MpFloat; 4] = std::array::from_fn(|i| MpFloat::with_val(213, v[i]));
-            let y = crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, 213);
-            let mut s = IntScratch16::new(eps);
-            // Replicate find_aligned_lattice_points steps 1-4 (no walk).
-            super::super::q_metric::build_q_mpfr_zeta_from_mpfr_v(&mut s, &v_mpfr, k, eps);
-            build_q_int_zeta(&mut s);
-            let prec = s.prec_q;
-            let one = MpFloat::with_val(prec, 1.0);
-            let eps_rf = MpFloat::with_val(prec, eps);
-            let eps_sq = MpFloat::with_val(prec, &eps_rf * &eps_rf);
-            let sqrt_1m = MpFloat::with_val(prec, &one - &eps_sq).sqrt();
-            let cap_mid = MpFloat::with_val(prec, &one + &sqrt_1m) / 2u32;
-            for i in 0..16 {
-                s.c[i] = MpFloat::with_val(prec, &y[i] * &cap_mid);
-            }
-            let r = run_lll(&mut s);
-            assert!(matches!(r, LllResult::Converged | LllResult::IterCap), "{r:?}");
-            assert!(lu_solve_int_inplace(&mut s), "LU failed at k={k}");
-            let z_c = SeCenter16::from_lu_x(&s.lu_x);
-            let (r_eucl, _) = euclidean_cholesky_mpfr_dual(&s.basis)
-                .expect("eucl cholesky");
-            let max_zc = (0..16).map(|j| z_c.int[j].unsigned_abs()).max().unwrap();
-            let mut m_max = 0.0_f64;
-            for i in 0..16 {
-                for j in i..16 {
-                    let t = (z_c.int[j] as f64 * r_eucl[i][j]).abs();
-                    if t > m_max {
-                        m_max = t;
-                    }
-                }
-            }
-            let e = 16.0 * m_max * 2.0_f64.powi(-53);
-            let sqrt_t = 2.0_f64.powi(k as i32 / 2)
-                * if k % 2 == 1 { std::f64::consts::SQRT_2 } else { 1.0 };
-            let ratio = e / sqrt_t;
-            eprintln!(
-                "{k:>2} | {max_zc:>11.3e} | {m_max:>14.3e} | {e:>12.3e} | {ratio:>9.3e} | {}",
-                if ratio > 0.3 { "DANGER" } else if ratio > 1e-3 { "thin margin" } else { "safe" }
-            );
-        }
-    }
