@@ -7,6 +7,7 @@
 //! block instead.
 
 #![allow(unused_imports)]
+use crate::rings::MpFloat;
 use super::*; // the tests module
 use super::super::*; // lattice::zeta internals
 
@@ -30,7 +31,6 @@ use super::super::*; // lattice::zeta internals
     #[ignore]
     fn audit_radial_displacement_probe() {
         use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta_mpfr;
-        use rug::Float as RF;
 
         // SplitMix64 + u3, replicated from src/bin/probe_omega_vs_zeta.rs.
         struct Xs(u64);
@@ -90,38 +90,38 @@ use super::super::*; // lattice::zeta internals
             let t = crate::synthesis::clifford_sqrt_t::project_det_to_zeta_coset(
                 &u3(th, ph, la),
             );
-            let v: [RF; 4] = [
-                RF::with_val(PREC, t[0][0].re),
-                RF::with_val(PREC, t[0][0].im),
-                RF::with_val(PREC, t[1][0].re),
-                RF::with_val(PREC, t[1][0].im),
+            let v: [MpFloat; 4] = [
+                MpFloat::with_val(PREC, t[0][0].re),
+                MpFloat::with_val(PREC, t[0][0].im),
+                MpFloat::with_val(PREC, t[1][0].re),
+                MpFloat::with_val(PREC, t[1][0].im),
             ];
-            let mut v_norm_sq = RF::with_val(PREC, 0.0);
+            let mut v_norm_sq = MpFloat::with_val(PREC, 0.0);
             for c in &v {
-                v_norm_sq += RF::with_val(PREC, c * c);
+                v_norm_sq += MpFloat::with_val(PREC, c * c);
             }
             let v_norm = v_norm_sq.sqrt();
-            let nu = RF::with_val(PREC, &v_norm - 1.0_f64).to_f64();
+            let nu = MpFloat::with_val(PREC, &v_norm - 1.0_f64).to_f64();
 
             let y = uv_to_lattice_y_zeta_mpfr(&v, k, PREC);
-            let mut y_norm_sq = RF::with_val(PREC, 0.0);
+            let mut y_norm_sq = MpFloat::with_val(PREC, 0.0);
             for c in &y {
-                y_norm_sq += RF::with_val(PREC, c * c);
+                y_norm_sq += MpFloat::with_val(PREC, c * c);
             }
             let y_norm = y_norm_sq.sqrt();
             // ρ = 2^(k/2)/2 at PREC.
-            let mut rho = RF::with_val(PREC, 1.0);
+            let mut rho = MpFloat::with_val(PREC, 1.0);
             rho <<= k / 2;
             if k % 2 == 1 {
-                rho *= RF::with_val(PREC, 2.0).sqrt();
+                rho *= MpFloat::with_val(PREC, 2.0).sqrt();
             }
             rho /= 2u32;
-            let ratio_tot = RF::with_val(PREC, &y_norm / &rho);
-            let eta_tot = RF::with_val(PREC, &ratio_tot - 1.0_f64).to_f64();
+            let ratio_tot = MpFloat::with_val(PREC, &y_norm / &rho);
+            let eta_tot = MpFloat::with_val(PREC, &ratio_tot - 1.0_f64).to_f64();
             // Embedding-only part: ‖y‖/(ρ·|v|) − 1.
-            let rho_v = RF::with_val(PREC, &rho * &v_norm);
-            let ratio_emb = RF::with_val(PREC, &y_norm / &rho_v);
-            let eta_emb = RF::with_val(PREC, &ratio_emb - 1.0_f64).to_f64();
+            let rho_v = MpFloat::with_val(PREC, &rho * &v_norm);
+            let ratio_emb = MpFloat::with_val(PREC, &y_norm / &rho_v);
+            let eta_emb = MpFloat::with_val(PREC, &ratio_emb - 1.0_f64).to_f64();
             eprintln!(
                 " {i:>2} | {nu:>+13.3e} | {eta_emb:>+13.3e} | {eta_tot:>+10.3e} | {:>+8.2}",
                 eta_tot / window_rel

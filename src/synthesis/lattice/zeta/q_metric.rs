@@ -6,7 +6,8 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use rug::{Assign, Float as RFloat};
+use rug::Assign;
+use crate::rings::MpFloat;
 use std::f64::consts::PI;
 
 use super::scratch::{
@@ -37,7 +38,7 @@ use crate::rings::Float;
 /// loses the cap localization in this regime.
 pub fn build_q_mpfr_zeta_from_mpfr_v(
     scratch: &mut IntScratch16,
-    v: &[rug::Float; 4],
+    v: &[MpFloat; 4],
     k: u32,
     eps: Float,
 ) {
@@ -50,30 +51,30 @@ pub fn build_q_mpfr_zeta_from_mpfr_v(
     let r = r_sq.clone().sqrt();
     let eps_rf = rfv(prec, eps);
 
-    let eps_sq = RFloat::with_val(prec, &eps_rf * &eps_rf);
-    let one_minus_eps_sq = RFloat::with_val(prec, &one - &eps_sq);
+    let eps_sq = MpFloat::with_val(prec, &eps_rf * &eps_rf);
+    let one_minus_eps_sq = MpFloat::with_val(prec, &one - &eps_sq);
     let sqrt_1m = one_minus_eps_sq.sqrt();
-    let denom_inner = RFloat::with_val(prec, &one + &sqrt_1m);
-    let denom = RFloat::with_val(prec, &denom_inner * &two);
-    let r_eps_sq = RFloat::with_val(prec, &r * &eps_sq);
-    let delta_y = RFloat::with_val(prec, &r_eps_sq / &denom);
-    let delta_perp = RFloat::with_val(prec, &r * &eps_rf);
+    let denom_inner = MpFloat::with_val(prec, &one + &sqrt_1m);
+    let denom = MpFloat::with_val(prec, &denom_inner * &two);
+    let r_eps_sq = MpFloat::with_val(prec, &r * &eps_sq);
+    let delta_y = MpFloat::with_val(prec, &r_eps_sq / &denom);
+    let delta_perp = MpFloat::with_val(prec, &r * &eps_rf);
 
-    let dy_sq = RFloat::with_val(prec, &delta_y * &delta_y);
-    let dp_sq = RFloat::with_val(prec, &delta_perp * &delta_perp);
-    let inv_dy_sq = RFloat::with_val(prec, &one / &dy_sq);
-    let inv_dp_sq = RFloat::with_val(prec, &one / &dp_sq);
-    let inv_r_sq = RFloat::with_val(prec, &one / &r_sq);
+    let dy_sq = MpFloat::with_val(prec, &delta_y * &delta_y);
+    let dp_sq = MpFloat::with_val(prec, &delta_perp * &delta_perp);
+    let inv_dy_sq = MpFloat::with_val(prec, &one / &dy_sq);
+    let inv_dp_sq = MpFloat::with_val(prec, &one / &dp_sq);
+    let inv_r_sq = MpFloat::with_val(prec, &one / &r_sq);
 
-    let coef_yy = RFloat::with_val(prec, &inv_dy_sq - &inv_dp_sq);
-    let coef_p_sigma1 = RFloat::with_val(prec, &inv_dp_sq - &inv_r_sq);
+    let coef_yy = MpFloat::with_val(prec, &inv_dy_sq - &inv_dp_sq);
+    let coef_p_sigma1 = MpFloat::with_val(prec, &inv_dp_sq - &inv_r_sq);
     let coef_id = inv_r_sq;
 
     // Compute y entirely in MPFR. cos(jπ/8), sin(jπ/8) at f64 → MPFR is exact
     // (single-rounding), so the f64 cos/sin are used as the only f64 entry
     // points. The multiplication and sum are MPFR-exact at `prec` bits, so
     // y[j]'s precision matches v's.
-    let mut y: [RFloat; 16] = std::array::from_fn(|_| rfz(prec));
+    let mut y: [MpFloat; 16] = std::array::from_fn(|_| rfz(prec));
     for j in 0..8 {
         let theta = (j as f64) * PI / 8.0;
         let c_f = theta.cos();
@@ -81,40 +82,40 @@ pub fn build_q_mpfr_zeta_from_mpfr_v(
         let c = rfv(prec, c_f);
         let s = rfv(prec, s_f);
         // y[j] = c·v[0] + s·v[1]
-        let cv0 = RFloat::with_val(prec, &c * &v[0]);
-        let sv1 = RFloat::with_val(prec, &s * &v[1]);
-        y[j].assign(RFloat::with_val(prec, &cv0 + &sv1));
+        let cv0 = MpFloat::with_val(prec, &c * &v[0]);
+        let sv1 = MpFloat::with_val(prec, &s * &v[1]);
+        y[j].assign(MpFloat::with_val(prec, &cv0 + &sv1));
         // y[8+j] = c·v[2] + s·v[3]
-        let cv2 = RFloat::with_val(prec, &c * &v[2]);
-        let sv3 = RFloat::with_val(prec, &s * &v[3]);
-        y[8 + j].assign(RFloat::with_val(prec, &cv2 + &sv3));
+        let cv2 = MpFloat::with_val(prec, &c * &v[2]);
+        let sv3 = MpFloat::with_val(prec, &s * &v[3]);
+        y[8 + j].assign(MpFloat::with_val(prec, &cv2 + &sv3));
     }
     let mut y_norm_sq = rfz(prec);
     for i in 0..16 {
-        let yi_sq = RFloat::with_val(prec, &y[i] * &y[i]);
+        let yi_sq = MpFloat::with_val(prec, &y[i] * &y[i]);
         y_norm_sq += yi_sq;
     }
     let y_norm = y_norm_sq.clone().sqrt();
     let y_zero = y_norm_sq.is_zero();
-    let mut yhat: [RFloat; 16] = std::array::from_fn(|_| rfz(prec));
+    let mut yhat: [MpFloat; 16] = std::array::from_fn(|_| rfz(prec));
     if !y_zero {
         for i in 0..16 {
-            yhat[i].assign(RFloat::with_val(prec, &y[i] / &y_norm));
+            yhat[i].assign(MpFloat::with_val(prec, &y[i] / &y_norm));
         }
     }
 
     for i in 0..16 {
         for j in 0..16 {
             let mut qij = rfz(prec);
-            let yyi = RFloat::with_val(prec, &yhat[i] * &yhat[j]);
-            qij += RFloat::with_val(prec, &coef_yy * &yyi);
+            let yyi = MpFloat::with_val(prec, &yhat[i] * &yhat[j]);
+            qij += MpFloat::with_val(prec, &coef_yy * &yyi);
 
             let same_block = (i < 8 && j < 8) || (i >= 8 && j >= 8);
             if same_block {
                 let m = (i % 8) as f64 - (j % 8) as f64;
                 let p_sigma1 = 0.25 * (m * PI / 8.0).cos();
                 let p = rfv(prec, p_sigma1);
-                qij += RFloat::with_val(prec, &coef_p_sigma1 * &p);
+                qij += MpFloat::with_val(prec, &coef_p_sigma1 * &p);
             }
 
             if i == j {
@@ -140,12 +141,12 @@ pub fn build_q_base_mpfr_zeta(scratch: &mut IntScratch16, k: u32, eps: Float) {
     let r = r_sq.clone().sqrt();
     let eps_rf = rfv(prec, eps);
 
-    let delta_perp = RFloat::with_val(prec, &r * &eps_rf);
-    let dp_sq = RFloat::with_val(prec, &delta_perp * &delta_perp);
-    let inv_dp_sq = RFloat::with_val(prec, &one / &dp_sq);
-    let inv_r_sq = RFloat::with_val(prec, &one / &r_sq);
+    let delta_perp = MpFloat::with_val(prec, &r * &eps_rf);
+    let dp_sq = MpFloat::with_val(prec, &delta_perp * &delta_perp);
+    let inv_dp_sq = MpFloat::with_val(prec, &one / &dp_sq);
+    let inv_r_sq = MpFloat::with_val(prec, &one / &r_sq);
 
-    let coef_p_sigma1 = RFloat::with_val(prec, &inv_dp_sq - &inv_r_sq);
+    let coef_p_sigma1 = MpFloat::with_val(prec, &inv_dp_sq - &inv_r_sq);
     let coef_id = inv_r_sq;
 
     for i in 0..16 {
@@ -156,7 +157,7 @@ pub fn build_q_base_mpfr_zeta(scratch: &mut IntScratch16, k: u32, eps: Float) {
                 let m = (i % 8) as f64 - (j % 8) as f64;
                 let p_sigma1 = 0.25 * (m * PI / 8.0).cos();
                 let p = rfv(prec, p_sigma1);
-                qij += RFloat::with_val(prec, &coef_p_sigma1 * &p);
+                qij += MpFloat::with_val(prec, &coef_p_sigma1 * &p);
             }
             if i == j {
                 qij += &coef_id;
@@ -181,29 +182,29 @@ pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: F
     let eps_rf = rfv(prec, eps);
 
     // Δ_y = R · ε² / (2·(1 + √(1−ε²)))
-    let eps_sq = RFloat::with_val(prec, &eps_rf * &eps_rf);
-    let one_minus_eps_sq = RFloat::with_val(prec, &one - &eps_sq);
+    let eps_sq = MpFloat::with_val(prec, &eps_rf * &eps_rf);
+    let one_minus_eps_sq = MpFloat::with_val(prec, &one - &eps_sq);
     let sqrt_1m = one_minus_eps_sq.sqrt();
-    let denom_inner = RFloat::with_val(prec, &one + &sqrt_1m);
-    let denom = RFloat::with_val(prec, &denom_inner * &two);
-    let r_eps_sq = RFloat::with_val(prec, &r * &eps_sq);
-    let delta_y = RFloat::with_val(prec, &r_eps_sq / &denom);
-    let delta_perp = RFloat::with_val(prec, &r * &eps_rf);
+    let denom_inner = MpFloat::with_val(prec, &one + &sqrt_1m);
+    let denom = MpFloat::with_val(prec, &denom_inner * &two);
+    let r_eps_sq = MpFloat::with_val(prec, &r * &eps_sq);
+    let delta_y = MpFloat::with_val(prec, &r_eps_sq / &denom);
+    let delta_perp = MpFloat::with_val(prec, &r * &eps_rf);
 
-    let dy_sq = RFloat::with_val(prec, &delta_y * &delta_y);
-    let dp_sq = RFloat::with_val(prec, &delta_perp * &delta_perp);
-    let inv_dy_sq = RFloat::with_val(prec, &one / &dy_sq);
-    let inv_dp_sq = RFloat::with_val(prec, &one / &dp_sq);
-    let inv_r_sq = RFloat::with_val(prec, &one / &r_sq);
+    let dy_sq = MpFloat::with_val(prec, &delta_y * &delta_y);
+    let dp_sq = MpFloat::with_val(prec, &delta_perp * &delta_perp);
+    let inv_dy_sq = MpFloat::with_val(prec, &one / &dy_sq);
+    let inv_dp_sq = MpFloat::with_val(prec, &one / &dp_sq);
+    let inv_r_sq = MpFloat::with_val(prec, &one / &r_sq);
 
-    let coef_yy = RFloat::with_val(prec, &inv_dy_sq - &inv_dp_sq);
-    let coef_p_sigma1 = RFloat::with_val(prec, &inv_dp_sq - &inv_r_sq);
+    let coef_yy = MpFloat::with_val(prec, &inv_dy_sq - &inv_dp_sq);
+    let coef_p_sigma1 = MpFloat::with_val(prec, &inv_dp_sq - &inv_r_sq);
     let coef_id = inv_r_sq;
 
     // ŷ in lattice coords: y_lattice / |y_lattice|. Compute y in MPFR using
     // f64 cos/sin (the angles are j·π/8 for j=0..7, so the f64 cos/sin
     // values are exact-ish to ~1e-16; that's enough at the prec_q scale).
-    let mut y: [RFloat; 16] = std::array::from_fn(|_| rfz(prec));
+    let mut y: [MpFloat; 16] = std::array::from_fn(|_| rfz(prec));
     for j in 0..8 {
         let theta = (j as f64) * PI / 8.0;
         let c = theta.cos();
@@ -213,15 +214,15 @@ pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: F
     }
     let mut y_norm_sq = rfz(prec);
     for i in 0..16 {
-        let yi_sq = RFloat::with_val(prec, &y[i] * &y[i]);
+        let yi_sq = MpFloat::with_val(prec, &y[i] * &y[i]);
         y_norm_sq += yi_sq;
     }
     let y_norm = y_norm_sq.clone().sqrt();
     let y_zero = y_norm_sq.is_zero();
-    let mut yhat: [RFloat; 16] = std::array::from_fn(|_| rfz(prec));
+    let mut yhat: [MpFloat; 16] = std::array::from_fn(|_| rfz(prec));
     if !y_zero {
         for i in 0..16 {
-            yhat[i].assign(RFloat::with_val(prec, &y[i] / &y_norm));
+            yhat[i].assign(MpFloat::with_val(prec, &y[i] / &y_norm));
         }
     }
 
@@ -229,8 +230,8 @@ pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: F
         for j in 0..16 {
             let mut qij = rfz(prec);
             // Term 1: coef_yy · ŷ[i] · ŷ[j].
-            let yyi = RFloat::with_val(prec, &yhat[i] * &yhat[j]);
-            qij += RFloat::with_val(prec, &coef_yy * &yyi);
+            let yyi = MpFloat::with_val(prec, &yhat[i] * &yhat[j]);
+            qij += MpFloat::with_val(prec, &coef_yy * &yyi);
 
             // Term 2: coef_p_sigma1 · P_σ1[i][j]. Block-diagonal.
             let same_block = (i < 8 && j < 8) || (i >= 8 && j >= 8);
@@ -238,7 +239,7 @@ pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: F
                 let m = (i % 8) as f64 - (j % 8) as f64;
                 let p_sigma1 = 0.25 * (m * PI / 8.0).cos();
                 let p = rfv(prec, p_sigma1);
-                qij += RFloat::with_val(prec, &coef_p_sigma1 * &p);
+                qij += MpFloat::with_val(prec, &coef_p_sigma1 * &p);
             }
 
             // Term 3: coef_id · δ_ij.

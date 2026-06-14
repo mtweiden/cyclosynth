@@ -14,7 +14,7 @@
 //! disappears (the precision requirement
 //! `ℓ ≥ 5 + 2·log d − log ε + d·log ρ` grows roughly as `d·log ρ`,
 //! hitting ~50 bits at d=16 ε=1e-7, leaving f64 with no margin). We use
-//! MPFR `RFloat` at [`super::scratch::GS_PREC`] = 128 bits everywhere f64
+//! MPFR `MpFloat` at [`super::scratch::GS_PREC`] = 128 bits everywhere f64
 //! was used in the 8D path, giving ~78 bits of margin.
 //!
 //! The exact integer Gram (i256) is unchanged structurally; only the
@@ -27,7 +27,8 @@
 #![allow(clippy::needless_range_loop)]
 
 use i256::i256;
-use rug::{Assign, Float as RFloat};
+use rug::Assign;
+use crate::rings::MpFloat;
 
 use super::scratch::IntScratch16;
 use crate::synthesis::lattice::common;
@@ -48,7 +49,7 @@ pub use crate::synthesis::lattice::common::{
 /// bits, which is the same precision as f64 + 75 bits — still well above
 /// the L²-LLL precision requirement at d=16.
 #[inline]
-pub fn i256_to_rfloat_inplace(v: i256, dst: &mut RFloat) {
+pub fn i256_to_rfloat_inplace(v: i256, dst: &mut MpFloat) {
     super::q_metric::i256_to_rfloat(v, dst);
 }
 
@@ -181,7 +182,7 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch16, kappa: usize) -> usize {
             let xi = scratch.mu_bar[kappa][i].to_f64().round() as i64;
             x[i] = xi;
             if xi != 0 {
-                let xi_f = rug::Float::with_val(scratch.gs_prec, xi as f64);
+                let xi_f = MpFloat::with_val(scratch.gs_prec, xi as f64);
                 for j in 0..i {
                     // μ̄_{κ,j} -= xi · μ̄_{i,j}
                     scratch.tmp_a.assign(&xi_f * &scratch.mu_bar[i][j]);
@@ -227,8 +228,8 @@ pub fn lll_l2_16(scratch: &mut IntScratch16) -> LllResult {
     let mut kappa = 1usize;
 
     // Pre-allocate scratch for the Lovász test.
-    let delta_bar = RFloat::with_val(scratch.gs_prec, L2_DELTA_BAR);
-    let mut lhs = RFloat::with_val(scratch.gs_prec, 0.0);
+    let delta_bar = MpFloat::with_val(scratch.gs_prec, L2_DELTA_BAR);
+    let mut lhs = MpFloat::with_val(scratch.gs_prec, 0.0);
 
     while kappa < 16 && iters < max_iter {
         iters += 1;
@@ -440,7 +441,7 @@ mod tests {
         }
         // Convert G[0][0] back to natural Q-scale.
         let scale = 2.0f64.powi(-s.scale_bits);
-        let mut g00_rf = rug::Float::with_val(s.gs_prec, 0.0);
+        let mut g00_rf = MpFloat::with_val(s.gs_prec, 0.0);
         super::super::q_metric::i256_to_rfloat(s.gram[0][0], &mut g00_rf);
         let g00 = g00_rf.to_f64() * scale;
         // The reduced first vector should have Q-norm ≤ min original diag

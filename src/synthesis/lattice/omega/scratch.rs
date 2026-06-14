@@ -8,7 +8,8 @@
 
 use crate::rings::Float;
 use i256::i256;
-use rug::{Assign, Float as RFloat};
+use rug::Assign;
+use crate::rings::MpFloat;
 
 // ─── Adaptive precision constants & helpers — from lattice::common ───────────
 
@@ -97,42 +98,42 @@ pub struct IntScratch {
     pub scale_bits: i32,
 
     // ── MPFR buffers for build_q (constants + per-call working values) ──
-    pub q_mpfr: [[RFloat; 8]; 8],
-    pub c: [RFloat; 8],
-    pub sigma: [[RFloat; 8]; 8],
-    pub one: RFloat,
-    pub two: RFloat,
-    pub half: RFloat,
-    pub tmp: RFloat,
-    pub tmp2: RFloat,
-    pub tmp3: RFloat,
-    pub acc: RFloat,
-    pub p_u: [[RFloat; 8]; 8],
-    pub p_ub: [[RFloat; 8]; 8],
-    pub y_rf: [RFloat; 8],
-    pub eps_rf: RFloat,
-    pub r: RFloat,
-    pub r_sq: RFloat,
-    pub delta_y: RFloat,
-    pub delta_perp: RFloat,
-    pub inv_dy_sq: RFloat,
-    pub inv_dp_sq: RFloat,
-    pub inv_r_sq: RFloat,
-    pub y_norm_sq: RFloat,
-    pub inv_y_norm_sq: RFloat,
-    pub cap_mid: RFloat,
+    pub q_mpfr: [[MpFloat; 8]; 8],
+    pub c: [MpFloat; 8],
+    pub sigma: [[MpFloat; 8]; 8],
+    pub one: MpFloat,
+    pub two: MpFloat,
+    pub half: MpFloat,
+    pub tmp: MpFloat,
+    pub tmp2: MpFloat,
+    pub tmp3: MpFloat,
+    pub acc: MpFloat,
+    pub p_u: [[MpFloat; 8]; 8],
+    pub p_ub: [[MpFloat; 8]; 8],
+    pub y_rf: [MpFloat; 8],
+    pub eps_rf: MpFloat,
+    pub r: MpFloat,
+    pub r_sq: MpFloat,
+    pub delta_y: MpFloat,
+    pub delta_perp: MpFloat,
+    pub inv_dy_sq: MpFloat,
+    pub inv_dp_sq: MpFloat,
+    pub inv_r_sq: MpFloat,
+    pub y_norm_sq: MpFloat,
+    pub inv_y_norm_sq: MpFloat,
+    pub cap_mid: MpFloat,
 
     // ── Q_base hoist ──
     /// Prefix-independent part of the Q metric:
     /// `q_base[i][j] = inv_dp_sq·p_u[i][j] + inv_r_sq·p_ub[i][j]`.
     /// Valid for the `(k, eps)` recorded in `q_base_key`; rebuilt by
     /// `build_q_base` (via `build_q_mpfr`) only when the key changes.
-    pub q_base: [[RFloat; 8]; 8],
+    pub q_base: [[MpFloat; 8]; 8],
     /// Scalar weight of the prefix-dependent rank-1 term:
     /// `coef_y = inv_dy_sq − inv_dp_sq` (no cancellation — the terms
     /// differ by a factor ≈ (4/ε)²), so
     /// `Q = q_base + (coef_y/‖y‖²)·y·yᵀ`.
-    pub coef_y: RFloat,
+    pub coef_y: MpFloat,
     /// `(k, eps.to_bits())` the cached q_base/coef_y/cap_mid were built
     /// for; `None` until the first build_q_mpfr call.
     pub q_base_key: Option<(u32, u64)>,
@@ -176,25 +177,25 @@ pub struct IntScratch {
     // ── MPFR Cholesky buffers (test-suite oracle only) ──
     /// Kept so the test suite can run `cholesky_int_8` as a reference oracle
     /// against `cholesky_f64_8` across ε regimes. Not used in production.
-    pub g_post_lll: [[RFloat; 8]; 8],
-    pub l: [[RFloat; 8]; 8],
+    pub g_post_lll: [[MpFloat; 8]; 8],
+    pub l: [[MpFloat; 8]; 8],
 
     // ── MPFR LU buffers at lu_prec (decoupled from prec_q; see compute_lu_prec) ──
     pub lu_prec: u32,
-    pub lu_a: [[RFloat; 8]; 8],
-    pub lu_rhs: [RFloat; 8],
-    pub lu_x: [RFloat; 8],
-    pub lu_tmp: RFloat,
-    pub lu_acc: RFloat,
+    pub lu_a: [[MpFloat; 8]; 8],
+    pub lu_rhs: [MpFloat; 8],
+    pub lu_x: [MpFloat; 8],
+    pub lu_tmp: MpFloat,
+    pub lu_acc: MpFloat,
 }
 
 // ─── MPFR/i256 zero-fill helpers ─────────────────────────────────────────────
 
-pub fn rmat_zero(prec: u32) -> [[RFloat; 8]; 8] {
+pub fn rmat_zero(prec: u32) -> [[MpFloat; 8]; 8] {
     std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)))
 }
 
-pub fn rvec_zero(prec: u32) -> [RFloat; 8] {
+pub fn rvec_zero(prec: u32) -> [MpFloat; 8] {
     std::array::from_fn(|_| rfz(prec))
 }
 
@@ -216,7 +217,7 @@ pub fn identity_basis() -> IMat8 {
 /// Populate Σ — the 8×8 real embedding of Z[ω,√2]² into ℝ⁸ via two Galois
 /// embeddings (rows 0–3: √2 → +√2; rows 4–7: √2 → −√2). Pattern entries
 /// {0, ±1, ±2} map to {0, ±1, ±1/√2}.
-fn fill_sigma(sigma: &mut [[RFloat; 8]; 8], prec: u32) {
+fn fill_sigma(sigma: &mut [[MpFloat; 8]; 8], prec: u32) {
     let pattern: [[i32; 8]; 8] = [
         [1,  2, 0, -2, 0,  0, 0,  0],
         [0,  2, 1,  2, 0,  0, 0,  0],

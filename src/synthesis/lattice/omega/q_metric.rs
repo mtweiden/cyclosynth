@@ -144,7 +144,7 @@ pub fn build_q_int(scratch: &mut IntScratch) {
             if v.is_zero() {
                 continue;
             }
-            // log2(|v|) — RFloat exposes the binary exponent directly via
+            // log2(|v|) — MpFloat exposes the binary exponent directly via
             // get_exp(): |v| ∈ [2^(e-1), 2^e). Sign does not affect the
             // exponent, so no abs() needed.
             let e = v.get_exp().unwrap_or(0);

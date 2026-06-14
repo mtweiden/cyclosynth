@@ -96,7 +96,8 @@ pub fn i256_to_f64(v: i256) -> f64 {
 
 use crate::rings::Float;
 use gmp_mpfr_sys::{gmp, mpfr};
-use rug::{integer::Order, Float as RFloat};
+use rug::integer::Order;
+use crate::rings::MpFloat;
 use std::ptr::NonNull;
 
 /// MPFR precision in bits used to construct the anisotropic Q metric.
@@ -123,16 +124,16 @@ pub fn compute_lu_prec(eps: Float) -> u32 {
     bits.max(96)
 }
 
-/// A zero `RFloat` at the given precision.
+/// A zero `MpFloat` at the given precision.
 #[inline]
-pub fn rfz(prec: u32) -> RFloat {
-    RFloat::with_val(prec, 0.0_f64)
+pub fn rfz(prec: u32) -> MpFloat {
+    MpFloat::with_val(prec, 0.0_f64)
 }
 
-/// An `RFloat` holding `x` at the given precision.
+/// An `MpFloat` holding `x` at the given precision.
 #[inline]
-pub fn rfv(prec: u32, x: f64) -> RFloat {
-    RFloat::with_val(prec, x)
+pub fn rfv(prec: u32, x: f64) -> MpFloat {
+    MpFloat::with_val(prec, x)
 }
 
 /// `⌈log₂|v|⌉` for a nonzero i256 (returns -1 for v = 0). Used to pick the
@@ -292,7 +293,7 @@ pub fn compute_gram_full<const D: usize>(
 
 /// Round `2^shift_bits · x` to i256 (negative `shift_bits` scales down).
 /// Saturates to i256 bounds — callers pick `shift_bits` to avoid that.
-pub fn rug_to_i256_scaled(x: &RFloat, shift_bits: i32) -> i256 {
+pub fn rug_to_i256_scaled(x: &MpFloat, shift_bits: i32) -> i256 {
     if x.is_zero() {
         return i256::from_i64(0);
     }
@@ -306,8 +307,8 @@ pub fn rug_to_i256_scaled(x: &RFloat, shift_bits: i32) -> i256 {
     rfloat_to_i256(&scaled)
 }
 
-/// Convert an integer-valued `RFloat` to i256. Saturates on overflow.
-fn rfloat_to_i256(x: &RFloat) -> i256 {
+/// Convert an integer-valued `MpFloat` to i256. Saturates on overflow.
+fn rfloat_to_i256(x: &MpFloat) -> i256 {
     let sign_neg = x.is_sign_negative();
     let abs = x.clone().abs();
     let int = match abs.to_integer() {
@@ -327,9 +328,9 @@ fn rfloat_to_i256(x: &RFloat) -> i256 {
     if sign_neg { -val } else { val }
 }
 
-/// Write i256 `v` into a pre-allocated `RFloat` `dst` (zero-allocation:
+/// Write i256 `v` into a pre-allocated `MpFloat` `dst` (zero-allocation:
 /// a non-owned `mpz_t` stack view that `mpfr::set_z` reads from).
-pub fn i256_to_rfloat(v: i256, dst: &mut RFloat) {
+pub fn i256_to_rfloat(v: i256, dst: &mut MpFloat) {
     let zero = i256::from_i64(0);
     if v == zero {
         unsafe { mpfr::set_zero(dst.as_raw_mut(), 0) };

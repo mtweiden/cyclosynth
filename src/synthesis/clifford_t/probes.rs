@@ -3,6 +3,7 @@
 //! `cargo test --release --lib l_coset_census -- --ignored --nocapture`.
 
 #![allow(unused_imports)]
+use crate::rings::MpFloat;
 use super::*; // the tests module: shared helpers (u3, rz, …)
 use super::super::*; // clifford_t internals
 use crate::rings::Float;
@@ -227,15 +228,14 @@ use std::f64::consts::PI;
                 // is garbage: Q eigenvalues reach 1/Δ_y² ~ 1e14 at 1e-5 and
                 // the form only stays O(1) through cancellation).
                 use crate::synthesis::lattice::omega::{q_metric::build_q_mpfr, scratch::IntScratch};
-                use rug::Float as RFloat;
                 let mut qs = IntScratch::new(eps);
                 build_q_mpfr(&mut qs, &y, lde_inner, eps);
                 let prec = qs.q_mpfr[0][0].prec();
-                let mut qn = RFloat::with_val(prec, 0.0);
+                let mut qn = MpFloat::with_val(prec, 0.0);
                 for a in 0..8 {
                     for b in 0..8 {
-                        let da = RFloat::with_val(prec, x_img[a]) - &qs.c[a];
-                        let db = RFloat::with_val(prec, x_img[b]) - &qs.c[b];
+                        let da = MpFloat::with_val(prec, x_img[a]) - &qs.c[a];
+                        let db = MpFloat::with_val(prec, x_img[b]) - &qs.c[b];
                         qn += da * db * &qs.q_mpfr[a][b];
                     }
                 }

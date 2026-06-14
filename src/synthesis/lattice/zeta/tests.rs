@@ -2,6 +2,7 @@
 mod probes;
 
     use super::*;
+    use crate::rings::MpFloat;
     use super::cholesky_lu::lu_solve_int_inplace_16;
     use super::lll::{run_lll_16, LllResult};
     use super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
@@ -38,7 +39,6 @@ mod probes;
     fn audit_w_cancellation_probe() {
         use super::cholesky_lu::euclidean_cholesky_16_mpfr_dual;
         use crate::synthesis::clifford_sqrt_t::unitary_to_uv_zeta;
-        use rug::Float as RF;
 
         // Same target generator as the displacement probe.
         struct Xs(u64);
@@ -86,23 +86,23 @@ mod probes;
 
         eprintln!(
             "target 0, ε=1e-8: per-k magnitude audit of w = R·z at the center\n\
-             k  | max|z_c|    | M = max|z_c·R| | e=16·2^-53·M | e/√T      | verdict (cap-5 escape iff e/√T ≳ 1)"
+             k  | max|z_c|    | M = max|z_c·R| | e=16·2^-53·M | e/√T      | verdict (overshoot magnitude)"
         );
         for k in [20u32, 22, 24, 26] {
-            let v_mpfr: [RF; 4] = std::array::from_fn(|i| RF::with_val(213, v[i]));
+            let v_mpfr: [MpFloat; 4] = std::array::from_fn(|i| MpFloat::with_val(213, v[i]));
             let y = crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, 213);
             let mut s = IntScratch16::new(eps);
             // Replicate find_aligned_lattice_points steps 1-4 (no walk).
             super::q_metric::build_q_mpfr_zeta_from_mpfr_v(&mut s, &v_mpfr, k, eps);
             build_q_int_zeta(&mut s);
             let prec = s.prec_q;
-            let one = RF::with_val(prec, 1.0);
-            let eps_rf = RF::with_val(prec, eps);
-            let eps_sq = RF::with_val(prec, &eps_rf * &eps_rf);
-            let sqrt_1m = RF::with_val(prec, &one - &eps_sq).sqrt();
-            let cap_mid = RF::with_val(prec, &one + &sqrt_1m) / 2u32;
+            let one = MpFloat::with_val(prec, 1.0);
+            let eps_rf = MpFloat::with_val(prec, eps);
+            let eps_sq = MpFloat::with_val(prec, &eps_rf * &eps_rf);
+            let sqrt_1m = MpFloat::with_val(prec, &one - &eps_sq).sqrt();
+            let cap_mid = MpFloat::with_val(prec, &one + &sqrt_1m) / 2u32;
             for i in 0..16 {
-                s.c[i] = RF::with_val(prec, &y[i] * &cap_mid);
+                s.c[i] = MpFloat::with_val(prec, &y[i] * &cap_mid);
             }
             let r = run_lll_16(&mut s);
             assert!(matches!(r, LllResult::Converged | LllResult::IterCap), "{r:?}");
@@ -586,13 +586,12 @@ mod probes;
     #[test]
     fn q_int_zeta_matches_q_mpfr_zeta() {
         // After build_q_int_zeta, q_int / 2^scale_bits ≈ q_mpfr.
-        use rug::Float as RFloat;
         let v = [0.5, 0.3, 0.7, -0.4];
         let mut s = IntScratch16::new(1e-3);
         build_q_mpfr_zeta(&mut s, v, 6, 1e-3);
         build_q_int_zeta(&mut s);
         let mut max_rel = 0.0f64;
-        let mut tmp = RFloat::with_val(s.prec_q, 0.0);
+        let mut tmp = MpFloat::with_val(s.prec_q, 0.0);
         for i in 0..16 {
             for j in 0..16 {
                 q_metric::i256_to_rfloat(s.q_int[i][j], &mut tmp);

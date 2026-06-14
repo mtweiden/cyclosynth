@@ -10,7 +10,7 @@
 
 use crate::rings::Float;
 use i256::i256;
-use rug::Float as RFloat;
+use crate::rings::MpFloat;
 
 // ─── Adaptive precision constants ────────────────────────────────────────────
 
@@ -32,11 +32,11 @@ pub type Mat256_16 = [[i256; 16]; 16];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-pub fn rmat_zero_16(prec: u32) -> [[RFloat; 16]; 16] {
+pub fn rmat_zero_16(prec: u32) -> [[MpFloat; 16]; 16] {
     std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)))
 }
 
-pub fn rvec_zero_16(prec: u32) -> [RFloat; 16] {
+pub fn rvec_zero_16(prec: u32) -> [MpFloat; 16] {
     std::array::from_fn(|_| rfz(prec))
 }
 
@@ -66,7 +66,7 @@ pub struct IntScratch16 {
     pub scale_bits: i32,
 
     // ── MPFR buffers for build_q ──
-    pub q_mpfr: [[RFloat; 16]; 16],
+    pub q_mpfr: [[MpFloat; 16]; 16],
 
     // ── Integer LLL buffers ──
     pub q_int: Mat256_16,
@@ -81,14 +81,14 @@ pub struct IntScratch16 {
     // s_bar[i][j] = ‖b_i‖² - Σ_{k<j} mu_bar[i][k] · r_bar[i][k]
     //                (Lovász partial sums; s_bar[i][0] = ‖b_i‖² = gram[i][i],
     //                 and r_bar[i][i] is defined as the final s_bar[i][i])
-    pub r_bar: [[RFloat; 16]; 16],
-    pub mu_bar: [[RFloat; 16]; 16],
-    pub s_bar: [[RFloat; 16]; 16],
+    pub r_bar: [[MpFloat; 16]; 16],
+    pub mu_bar: [[MpFloat; 16]; 16],
+    pub s_bar: [[MpFloat; 16]; 16],
 
-    // ── Scratch RFloats reused inside LLL ──
-    pub tmp_a: RFloat,
-    pub tmp_b: RFloat,
-    pub tmp_c: RFloat,
+    // ── Scratch MpFloats reused inside LLL ──
+    pub tmp_a: MpFloat,
+    pub tmp_b: MpFloat,
+    pub tmp_c: MpFloat,
 
     // ── post-LLL Cholesky output (f64) ──
     pub l_f64: [[f64; 16]; 16],
@@ -98,15 +98,15 @@ pub struct IntScratch16 {
     /// computed by `build_q_mpfr_zeta`. After LLL this is solved against
     /// `Bᵀ` to recover the cap-center in basis coords (`z_c`), which is the
     /// SE walk's recursion center.
-    pub c: [RFloat; 16],
+    pub c: [MpFloat; 16],
 
     // ── MPFR LU buffers at lu_prec (scales with ε) ──
     pub lu_prec: u32,
-    pub lu_a: [[RFloat; 16]; 16],
-    pub lu_rhs: [RFloat; 16],
-    pub lu_x: [RFloat; 16],
-    pub lu_tmp: RFloat,
-    pub lu_acc: RFloat,
+    pub lu_a: [[MpFloat; 16]; 16],
+    pub lu_rhs: [MpFloat; 16],
+    pub lu_x: [MpFloat; 16],
+    pub lu_tmp: MpFloat,
+    pub lu_acc: MpFloat,
 
     /// When true, the LLL warm-starts from the previous call's reduced
     /// basis instead of resetting to identity. The caller sets it after

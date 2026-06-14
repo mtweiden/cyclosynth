@@ -10,6 +10,11 @@ pub type Int = i256;
 /// Note that for precision epsilon <= 1e-7, mpfr is used (see lattice files).
 pub type Float = f64;
 
+/// Arbitrary-precision (MPFR) float, used wherever f64 runs out of headroom
+/// (the lattice Q-metric, Gram-Schmidt, deep-ε verification). Precision is set
+/// per use site (see `GS_PREC`, `compute_prec_q`), not fixed.
+pub type MpFloat = rug::Float;
+
 
 // Int constants — use these instead of Int::from(n) at call sites
 pub const INT_ZERO:    Int = Int::from_i8(0);

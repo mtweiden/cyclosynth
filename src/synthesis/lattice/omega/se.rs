@@ -4,7 +4,7 @@
 //! Inputs (produced by the L²-LLL pipeline):
 //!   - The LLL-reduced basis B (`[[i64; 8]; 8]`).
 //!   - The Cholesky factor R of the Q-metric Gram matrix on the LLL basis,
-//!     in MPFR `RFloat` at [`SE_PREC`] = 128 bits.
+//!     in MPFR `MpFloat` at [`SE_PREC`] = 128 bits.
 //!   - The target's projection onto the lattice basis (cap center) at the
 //!     same MPFR precision.
 //!   - The Euclidean Cholesky of B·Bᵀ used for an additional norm-shell
@@ -22,7 +22,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use rug::{Assign, Float as RFloat};
+use rug::Assign;
+use crate::rings::MpFloat;
 
 
 type IMat8 = [[i64; 8]; 8];
@@ -32,11 +33,11 @@ type IMat8 = [[i64; 8]; 8];
 /// ε ≤ 1e-5 from squared-norm cancellation noise.
 pub const SE_PREC: u32 = 128;
 
-/// Convert an arbitrary-precision `RFloat` (built at scratch.prec_q for
+/// Convert an arbitrary-precision `MpFloat` (built at scratch.prec_q for
 /// post-LLL Cholesky) to the SE working precision (128 bits). Single
 /// allocation, single MPFR conversion.
-pub fn rfloat_to_se(r: &RFloat) -> RFloat {
-    RFloat::with_val(SE_PREC, r)
+pub fn rfloat_to_se(r: &MpFloat) -> MpFloat {
+    MpFloat::with_val(SE_PREC, r)
 }
 
 // ─── 8D Schnorr-Euchner enumeration ──────────────────────────────────────────
@@ -45,7 +46,7 @@ pub fn rfloat_to_se(r: &RFloat) -> RFloat {
 /// distance-from-center order, invoking `callback(&z)` at each leaf. Returns
 /// the first non-`None` callback result, or `None` if the search exhausts.
 ///
-/// All distance arithmetic uses MPFR `RFloat` at 128-bit precision — the
+/// All distance arithmetic uses MPFR `MpFloat` at 128-bit precision — the
 /// f64-only version was insufficient at extreme ε (Cholesky-diagonal
 /// ratios > 10¹⁰ caused "ghost-node" SE blowup from squared-norm noise).
 ///
@@ -71,9 +72,9 @@ pub fn rfloat_to_se(r: &RFloat) -> RFloat {
 /// path) to abort the walk without reporting a solution.
 #[allow(clippy::too_many_arguments)]
 pub fn schnorr_euchner_8d<F>(
-    r_chol: &[[RFloat; 8]; 8],
-    z_c: &[RFloat; 8],
-    bound: &RFloat,
+    r_chol: &[[MpFloat; 8]; 8],
+    z_c: &[MpFloat; 8],
+    bound: &MpFloat,
     r_chol_eucl: Option<&[[f64; 8]; 8]>,
     target_norm_eucl: f64,
     abort: &AtomicBool,
@@ -86,7 +87,7 @@ where
 {
     let mut z = [0i64; 8];
     let result = std::cell::RefCell::new(None);
-    let zero = RFloat::with_val(SE_PREC, 0.0_f64);
+    let zero = MpFloat::with_val(SE_PREC, 0.0_f64);
 
     recurse_8(
         7,
@@ -110,14 +111,14 @@ where
 #[allow(clippy::too_many_arguments)]
 fn recurse_8<F>(
     depth: i32,
-    r_chol: &[[RFloat; 8]; 8],
-    z_c: &[RFloat; 8],
-    bound: &RFloat,
+    r_chol: &[[MpFloat; 8]; 8],
+    z_c: &[MpFloat; 8],
+    bound: &MpFloat,
     r_chol_eucl: Option<&[[f64; 8]; 8]>,
     target_norm_eucl: f64,
     partial_eucl: f64,
     z: &mut [i64; 8],
-    partial: &RFloat,
+    partial: &MpFloat,
     abort: &AtomicBool,
     node_budget: &AtomicU64,
     budget_exhausted: &AtomicBool,
@@ -151,14 +152,14 @@ fn recurse_8<F>(
     // Per-call scratch pre-allocated once, reused inside the inner loop via
     // assign() patterns. ~10 allocations per recurse call instead of per
     // inner iteration.
-    let mut tail = RFloat::with_val(SE_PREC, 0.0_f64);
-    let mut tmp = RFloat::with_val(SE_PREC, 0.0_f64);
-    let mut diff = RFloat::with_val(SE_PREC, 0.0_f64);
-    let mut prod = RFloat::with_val(SE_PREC, 0.0_f64);
-    let mut zd_rf = RFloat::with_val(SE_PREC, 0.0_f64);
-    let mut level = RFloat::with_val(SE_PREC, 0.0_f64);
-    let mut level_sq = RFloat::with_val(SE_PREC, 0.0_f64);
-    let mut new_partial = RFloat::with_val(SE_PREC, 0.0_f64);
+    let mut tail = MpFloat::with_val(SE_PREC, 0.0_f64);
+    let mut tmp = MpFloat::with_val(SE_PREC, 0.0_f64);
+    let mut diff = MpFloat::with_val(SE_PREC, 0.0_f64);
+    let mut prod = MpFloat::with_val(SE_PREC, 0.0_f64);
+    let mut zd_rf = MpFloat::with_val(SE_PREC, 0.0_f64);
+    let mut level = MpFloat::with_val(SE_PREC, 0.0_f64);
+    let mut level_sq = MpFloat::with_val(SE_PREC, 0.0_f64);
+    let mut new_partial = MpFloat::with_val(SE_PREC, 0.0_f64);
 
     // Structural guard against a degenerate diagonal (r_chol PD-ness should
     // exclude this, but tolerate it gracefully).
@@ -208,14 +209,14 @@ fn recurse_8<F>(
     let r_dd_f = r_dd.to_f64();
     let span = rem_sqrt_f / r_dd_f.abs();
     let center = {
-        let mut c = RFloat::with_val(SE_PREC, &tail / r_dd);
-        c = RFloat::with_val(SE_PREC, &z_c[d] - &c);
+        let mut c = MpFloat::with_val(SE_PREC, &tail / r_dd);
+        c = MpFloat::with_val(SE_PREC, &z_c[d] - &c);
         c
     };
-    let to_i64 = |v: RFloat| -> Option<i64> { v.to_integer().and_then(|n| n.to_i64()) };
+    let to_i64 = |v: MpFloat| -> Option<i64> { v.to_integer().and_then(|n| n.to_i64()) };
     let (Some(z_low), Some(z_high), Some(z_mid)) = (
-        to_i64(RFloat::with_val(SE_PREC, &center - span).ceil()),
-        to_i64(RFloat::with_val(SE_PREC, &center + span).floor()),
+        to_i64(MpFloat::with_val(SE_PREC, &center - span).ceil()),
+        to_i64(MpFloat::with_val(SE_PREC, &center + span).floor()),
         to_i64(center.clone().round()),
     ) else {
         return;

@@ -1,6 +1,7 @@
 //! First-hit pipeline: lde sweep, prefix-split search, parallel-LDE
 //! speculation, and the deep-ε precision routing.
 
+use crate::rings::MpFloat;
 use super::*;
 
 /// MPFR-precision column-1 of `U_L† · target` as the alignment vector
@@ -10,44 +11,43 @@ use super::*;
 /// and displaces the constructed cap, and no enumeration bound recovers
 /// a solution the cap no longer contains. `U_L` is exact ring data and
 /// `target` exact f64 data, so the product carries full `prec` bits.
-pub(crate) fn prefix_residual_uv_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [rug::Float; 4] {
+pub(crate) fn prefix_residual_uv_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [MpFloat; 4] {
     use rug::ops::Pow;
-    use rug::Float as RF;
     // ζ^i = e^{iπ/8}: cos/sin tables at prec.
-    let pi = RF::with_val(prec, rug::float::Constant::Pi);
-    let cosv: [RF; 8] = std::array::from_fn(|i| {
-        (RF::with_val(prec, &pi * (i as u32)) / 8u32).cos()
+    let pi = MpFloat::with_val(prec, rug::float::Constant::Pi);
+    let cosv: [MpFloat; 8] = std::array::from_fn(|i| {
+        (MpFloat::with_val(prec, &pi * (i as u32)) / 8u32).cos()
     });
-    let sinv: [RF; 8] = std::array::from_fn(|i| {
-        (RF::with_val(prec, &pi * (i as u32)) / 8u32).sin()
+    let sinv: [MpFloat; 8] = std::array::from_fn(|i| {
+        (MpFloat::with_val(prec, &pi * (i as u32)) / 8u32).sin()
     });
     // (re, im) of a ZZeta numerator at prec. Prefix coefficients are
     // far inside i64 at any production lde; debug-guarded.
-    let zz = |z: &crate::rings::ZZeta| -> (RF, RF) {
-        let mut re = RF::with_val(prec, 0.0);
-        let mut im = RF::with_val(prec, 0.0);
+    let zz = |z: &crate::rings::ZZeta| -> (MpFloat, MpFloat) {
+        let mut re = MpFloat::with_val(prec, 0.0);
+        let mut im = MpFloat::with_val(prec, 0.0);
         for i in 0..8 {
             let c = crate::synthesis::lattice::common::i256_to_f64(z.coeff(i));
             if c != 0.0 {
-                re += RF::with_val(prec, &cosv[i] * c);
-                im += RF::with_val(prec, &sinv[i] * c);
+                re += MpFloat::with_val(prec, &cosv[i] * c);
+                im += MpFloat::with_val(prec, &sinv[i] * c);
             }
         }
         (re, im)
     };
     // 1/√2^k at prec.
-    let scale = RF::with_val(prec, RF::with_val(prec, 2.0).sqrt().pow(u_l.k)).recip();
+    let scale = MpFloat::with_val(prec, MpFloat::with_val(prec, 2.0).sqrt().pow(u_l.k)).recip();
     // U†'s row i is [conj(U[0][i]), conj(U[1][i])]; m_inner column 1:
     // mᵢ = Σⱼ conj(U[j][i])·t[j][0]. (a − bi)(c + di) = (ac+bd) + (ad−bc)i.
-    let col = |z1: (RF, RF), z2: (RF, RF)| -> (RF, RF) {
+    let col = |z1: (MpFloat, MpFloat), z2: (MpFloat, MpFloat)| -> (MpFloat, MpFloat) {
         let (a1, b1) = z1;
         let (a2, b2) = z2;
         let (c1, d1) = (target[0][0].re, target[0][0].im);
         let (c2, d2) = (target[1][0].re, target[1][0].im);
-        let re = RF::with_val(prec, &a1 * c1) + RF::with_val(prec, &b1 * d1)
-            + RF::with_val(prec, &a2 * c2) + RF::with_val(prec, &b2 * d2);
-        let im = RF::with_val(prec, &a1 * d1) - RF::with_val(prec, &b1 * c1)
-            + RF::with_val(prec, &a2 * d2) - RF::with_val(prec, &b2 * c2);
+        let re = MpFloat::with_val(prec, &a1 * c1) + MpFloat::with_val(prec, &b1 * d1)
+            + MpFloat::with_val(prec, &a2 * c2) + MpFloat::with_val(prec, &b2 * d2);
+        let im = MpFloat::with_val(prec, &a1 * d1) - MpFloat::with_val(prec, &b1 * c1)
+            + MpFloat::with_val(prec, &a2 * d2) - MpFloat::with_val(prec, &b2 * c2);
         (re, im)
     };
     let (m00_re, m00_im) = col(zz(&u_l.u11), zz(&u_l.u21));
@@ -64,20 +64,19 @@ pub(crate) fn prefix_residual_uv_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [r
 /// in MPFR — the parity-branch rotation, applied AFTER exact v
 /// derivation so the odd branch's cap is built from uncorrupted
 /// geometry (the scalar rotation commutes with the prefix product).
-pub(crate) fn rotate_uv_by_zeta32_mpfr(v: [rug::Float; 4], j: u32, prec: u32) -> [rug::Float; 4] {
-    use rug::Float as RF;
+pub(crate) fn rotate_uv_by_zeta32_mpfr(v: [MpFloat; 4], j: u32, prec: u32) -> [MpFloat; 4] {
     if j == 0 {
         return v;
     }
-    let ang = RF::with_val(prec, rug::float::Constant::Pi) * j / 16u32;
+    let ang = MpFloat::with_val(prec, rug::float::Constant::Pi) * j / 16u32;
     let c = ang.clone().cos();
     let s = ang.sin();
     let [a, b, x, y] = v;
     [
-        RF::with_val(prec, &a * &c) - RF::with_val(prec, &b * &s),
-        RF::with_val(prec, &a * &s) + RF::with_val(prec, &b * &c),
-        RF::with_val(prec, &x * &c) - RF::with_val(prec, &y * &s),
-        RF::with_val(prec, &x * &s) + RF::with_val(prec, &y * &c),
+        MpFloat::with_val(prec, &a * &c) - MpFloat::with_val(prec, &b * &s),
+        MpFloat::with_val(prec, &a * &s) + MpFloat::with_val(prec, &b * &c),
+        MpFloat::with_val(prec, &x * &c) - MpFloat::with_val(prec, &y * &s),
+        MpFloat::with_val(prec, &x * &s) + MpFloat::with_val(prec, &y * &c),
     ]
 }
 
@@ -110,21 +109,21 @@ where
         // rot_src present, the caller's f64 `v` and `target` are the
         // ROTATED (f64-corrupted) forms — rebuild from the unrotated
         // original and rotate exactly in MPFR.
-        let v_mpfr: [rug::Float; 4] = match (deep_v_src, rot_src) {
+        let v_mpfr: [MpFloat; 4] = match (deep_v_src, rot_src) {
             (Some((u_l, _rotated)), Some((orig, j))) => {
                 rotate_uv_by_zeta32_mpfr(prefix_residual_uv_mpfr(u_l, orig, prec), *j, prec)
             }
             (Some((u_l, target)), None) => prefix_residual_uv_mpfr(u_l, target, prec),
             (None, Some((orig, j))) => {
-                let base: [rug::Float; 4] = [
-                    rug::Float::with_val(prec, orig[0][0].re),
-                    rug::Float::with_val(prec, orig[0][0].im),
-                    rug::Float::with_val(prec, orig[1][0].re),
-                    rug::Float::with_val(prec, orig[1][0].im),
+                let base: [MpFloat; 4] = [
+                    MpFloat::with_val(prec, orig[0][0].re),
+                    MpFloat::with_val(prec, orig[0][0].im),
+                    MpFloat::with_val(prec, orig[1][0].re),
+                    MpFloat::with_val(prec, orig[1][0].im),
                 ];
                 rotate_uv_by_zeta32_mpfr(base, *j, prec)
             }
-            (None, None) => std::array::from_fn(|i| rug::Float::with_val(prec, v[i])),
+            (None, None) => std::array::from_fn(|i| MpFloat::with_val(prec, v[i])),
         };
         let y_mpfr = uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, prec);
         find_aligned_lattice_points_mpfr(

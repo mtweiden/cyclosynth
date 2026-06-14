@@ -11,6 +11,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
+use crate::rings::MpFloat;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
@@ -308,7 +309,7 @@ impl SeCenter16 {
     /// computed in MPFR then extracted to f64 (|frac| ≤ 0.5, always
     /// f64-precise). NaN/∞ coordinates map to (0, 0.0) — the SE walk will
     /// return empty, matching the legacy convention.
-    pub fn from_lu_x(lu_x: &[rug::Float; 16]) -> Self {
+    pub fn from_lu_x(lu_x: &[MpFloat; 16]) -> Self {
         let mut int = [0i64; 16];
         let mut frac = [0.0f64; 16];
         for i in 0..16 {
@@ -316,7 +317,7 @@ impl SeCenter16 {
             rounded.round_mut();
             if let Some(r_int) = rounded.to_integer() {
                 int[i] = r_int.to_i64_wrapping();
-                let diff = rug::Float::with_val(lu_x[i].prec(), &lu_x[i] - &rounded);
+                let diff = MpFloat::with_val(lu_x[i].prec(), &lu_x[i] - &rounded);
                 frac[i] = diff.to_f64();
             }
         }
@@ -1521,10 +1522,10 @@ mod tests {
         assert!(!brute.is_empty());
         let target = brute[0];
 
-        use rug::{Assign, Float as RFloat};
+        use rug::Assign;
         let prec = 256_u32;
-        let mut a: [[RFloat; 17]; 16] = std::array::from_fn(|_| {
-            std::array::from_fn(|_| RFloat::with_val(prec, 0.0))
+        let mut a: [[MpFloat; 17]; 16] = std::array::from_fn(|_| {
+            std::array::from_fn(|_| MpFloat::with_val(prec, 0.0))
         });
         for i in 0..16 {
             for j in 0..16 {
@@ -1548,9 +1549,9 @@ mod tests {
             assert!(a[k][k].to_f64().abs() > 1e-30,
                 "B is singular at column {} — not unimodular?", k);
             for i in (k + 1)..16 {
-                let factor = RFloat::with_val(prec, &a[i][k] / &a[k][k]);
+                let factor = MpFloat::with_val(prec, &a[i][k] / &a[k][k]);
                 for j in k..17 {
-                    let new_val = RFloat::with_val(prec, &a[i][j] - &factor * &a[k][j]);
+                    let new_val = MpFloat::with_val(prec, &a[i][j] - &factor * &a[k][j]);
                     a[i][j].assign(&new_val);
                 }
             }
@@ -1559,10 +1560,10 @@ mod tests {
         for i in (0..16).rev() {
             let mut s_acc = a[i][16].clone();
             for j in (i + 1)..16 {
-                let term = RFloat::with_val(prec, &a[i][j] * z[j]);
+                let term = MpFloat::with_val(prec, &a[i][j] * z[j]);
                 s_acc -= term;
             }
-            let zi = RFloat::with_val(prec, &s_acc / &a[i][i]);
+            let zi = MpFloat::with_val(prec, &s_acc / &a[i][i]);
             let zi_round = zi.to_f64().round() as i64;
             let residual = (zi.to_f64() - zi_round as f64).abs();
             assert!(residual < 1e-6,

@@ -24,7 +24,8 @@
 //!    of the U2T side is bypassed entirely.
 
 use num_complex::Complex;
-use rug::{Assign, Float as RFloat};
+use rug::Assign;
+use crate::rings::MpFloat;
 
 use crate::matrix::{U2T, U2Q};
 use crate::rings::types::{int_to_f64, Float};
@@ -77,19 +78,19 @@ pub fn diamond_distance_float(a: &Mat2, b: &Mat2) -> Float {
 /// bits (128 recommended — there the trace formula's cancellation is well
 /// below the noise floor for any ε we care about).
 pub fn diamond_distance_float_mpfr(a: &Mat2, b: &Mat2, prec: u32) -> Float {
-    let mut tr_re = RFloat::with_val(prec, 0.0);
-    let mut tr_im = RFloat::with_val(prec, 0.0);
-    let mut tmp = RFloat::with_val(prec, 0.0);
-    let mut tmp2 = RFloat::with_val(prec, 0.0);
+    let mut tr_re = MpFloat::with_val(prec, 0.0);
+    let mut tr_im = MpFloat::with_val(prec, 0.0);
+    let mut tmp = MpFloat::with_val(prec, 0.0);
+    let mut tmp2 = MpFloat::with_val(prec, 0.0);
     // tr = Σ A_ij · conj(B_ij)
     //    = Σ (a_re + i·a_im)·(b_re − i·b_im)
     //    = Σ (a_re·b_re + a_im·b_im) + i·(a_im·b_re − a_re·b_im)
     for i in 0..2 {
         for j in 0..2 {
-            let a_re = RFloat::with_val(prec, a[i][j].re);
-            let a_im = RFloat::with_val(prec, a[i][j].im);
-            let b_re = RFloat::with_val(prec, b[i][j].re);
-            let b_im = RFloat::with_val(prec, b[i][j].im);
+            let a_re = MpFloat::with_val(prec, a[i][j].re);
+            let a_im = MpFloat::with_val(prec, a[i][j].im);
+            let b_re = MpFloat::with_val(prec, b[i][j].re);
+            let b_im = MpFloat::with_val(prec, b[i][j].im);
             tmp.assign(&a_re * &b_re);
             tr_re += &tmp;
             tmp.assign(&a_im * &b_im);
@@ -105,8 +106,8 @@ pub fn diamond_distance_float_mpfr(a: &Mat2, b: &Mat2, prec: u32) -> Float {
     tmp2.assign(&tr_im * &tr_im);
     tmp += &tmp2;
     // d² = 1 − |tr|²/4
-    let one = RFloat::with_val(prec, 1.0);
-    let four = RFloat::with_val(prec, 4.0);
+    let one = MpFloat::with_val(prec, 1.0);
+    let four = MpFloat::with_val(prec, 4.0);
     let d_sq = one - tmp / four;
     if d_sq.is_sign_negative() {
         return 0.0;
@@ -138,14 +139,14 @@ pub fn diamond_distance_float_mpfr(a: &Mat2, b: &Mat2, prec: u32) -> Float {
 /// Cost: ~2 μs/call. Fires only on SE hits, ~100× per `synthesize` call.
 pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
     let prec: u32 = 128;
-    let two = RFloat::with_val(prec, 2.0);
-    let inv_sqrt2 = RFloat::with_val(prec, 1.0) / two.clone().sqrt();
+    let two = MpFloat::with_val(prec, 2.0);
+    let inv_sqrt2 = MpFloat::with_val(prec, 1.0) / two.clone().sqrt();
 
     // Build inv_scale = 1/√2^k exactly in MPFR. For even k this is just
     // 2^(-k/2) (a binary shift, no precision cost). For odd k it's
     // 2^(-(k-1)/2) · (1/√2).
     let half_k = u.k / 2;
-    let mut inv_scale = RFloat::with_val(prec, 1.0);
+    let mut inv_scale = MpFloat::with_val(prec, 1.0);
     inv_scale >>= half_k;
     if u.k % 2 == 1 {
         inv_scale *= &inv_sqrt2;
@@ -153,13 +154,13 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
 
     // Convert one ZOmega to a (re, im) pair at *unit* scale (already divided
     // by √2^k). For random U(2) targets the entries are O(1).
-    let zomega_to_mpfr_unit = |z: &ZOmega| -> (RFloat, RFloat) {
-        let a = RFloat::with_val(prec, int_to_f64(z.a));
-        let b = RFloat::with_val(prec, int_to_f64(z.b));
-        let c = RFloat::with_val(prec, int_to_f64(z.c));
-        let d = RFloat::with_val(prec, int_to_f64(z.d));
-        let bd_diff = RFloat::with_val(prec, &b - &d);
-        let bd_sum = RFloat::with_val(prec, &b + &d);
+    let zomega_to_mpfr_unit = |z: &ZOmega| -> (MpFloat, MpFloat) {
+        let a = MpFloat::with_val(prec, int_to_f64(z.a));
+        let b = MpFloat::with_val(prec, int_to_f64(z.b));
+        let c = MpFloat::with_val(prec, int_to_f64(z.c));
+        let d = MpFloat::with_val(prec, int_to_f64(z.d));
+        let bd_diff = MpFloat::with_val(prec, &b - &d);
+        let bd_sum = MpFloat::with_val(prec, &b + &d);
         let re_unscaled = a + bd_diff * &inv_sqrt2;
         let im_unscaled = c + bd_sum * &inv_sqrt2;
         (re_unscaled * &inv_scale, im_unscaled * &inv_scale)
@@ -171,18 +172,18 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
         zomega_to_mpfr_unit(&u.u21),
         zomega_to_mpfr_unit(&u.u22),
     ];
-    let t_entries: [(RFloat, RFloat); 4] = [
-        (RFloat::with_val(prec, target[0][0].re), RFloat::with_val(prec, target[0][0].im)),
-        (RFloat::with_val(prec, target[0][1].re), RFloat::with_val(prec, target[0][1].im)),
-        (RFloat::with_val(prec, target[1][0].re), RFloat::with_val(prec, target[1][0].im)),
-        (RFloat::with_val(prec, target[1][1].re), RFloat::with_val(prec, target[1][1].im)),
+    let t_entries: [(MpFloat, MpFloat); 4] = [
+        (MpFloat::with_val(prec, target[0][0].re), MpFloat::with_val(prec, target[0][0].im)),
+        (MpFloat::with_val(prec, target[0][1].re), MpFloat::with_val(prec, target[0][1].im)),
+        (MpFloat::with_val(prec, target[1][0].re), MpFloat::with_val(prec, target[1][0].im)),
+        (MpFloat::with_val(prec, target[1][1].re), MpFloat::with_val(prec, target[1][1].im)),
     ];
 
     // tr = Σ u · conj(t) at unit scale, then optimal phase φ = tr/|tr|.
-    let mut tr_re = RFloat::with_val(prec, 0.0);
-    let mut tr_im = RFloat::with_val(prec, 0.0);
-    let mut tmp = RFloat::with_val(prec, 0.0);
-    let mut tmp2 = RFloat::with_val(prec, 0.0);
+    let mut tr_re = MpFloat::with_val(prec, 0.0);
+    let mut tr_im = MpFloat::with_val(prec, 0.0);
+    let mut tmp = MpFloat::with_val(prec, 0.0);
+    let mut tmp2 = MpFloat::with_val(prec, 0.0);
     for ((u_re, u_im), (t_re, t_im)) in u_entries.iter().zip(t_entries.iter()) {
         // u · conj(t) = (u_re + i u_im)(t_re − i t_im)
         //             = (u_re·t_re + u_im·t_im) + i·(u_im·t_re − u_re·t_im)
@@ -193,32 +194,32 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
     }
     tmp.assign(&tr_re * &tr_re);
     tmp2.assign(&tr_im * &tr_im);
-    let tr_abs_sq = RFloat::with_val(prec, &tmp + &tmp2);
+    let tr_abs_sq = MpFloat::with_val(prec, &tmp + &tmp2);
     let tr_abs = tr_abs_sq.sqrt();
     // φ = tr / |tr|. If |tr| is degenerate (≈ 0), φ = 1 (resulting fro_sq is
     // large; no cancellation).
     let (phi_re, phi_im) = if tr_abs > 1e-30 {
         (
-            RFloat::with_val(prec, &tr_re / &tr_abs),
-            RFloat::with_val(prec, &tr_im / &tr_abs),
+            MpFloat::with_val(prec, &tr_re / &tr_abs),
+            MpFloat::with_val(prec, &tr_im / &tr_abs),
         )
     } else {
-        (RFloat::with_val(prec, 1.0), RFloat::with_val(prec, 0.0))
+        (MpFloat::with_val(prec, 1.0), MpFloat::with_val(prec, 0.0))
     };
 
     // fro_sq = Σ |u − φ·t|²
     //        = Σ ((u_re − (φ_re·t_re − φ_im·t_im))² + (u_im − (φ_re·t_im + φ_im·t_re))²)
-    let mut fro_sq = RFloat::with_val(prec, 0.0);
+    let mut fro_sq = MpFloat::with_val(prec, 0.0);
     for ((u_re, u_im), (t_re, t_im)) in u_entries.iter().zip(t_entries.iter()) {
         // φ·t = (φ_re·t_re − φ_im·t_im) + i·(φ_re·t_im + φ_im·t_re)
         tmp.assign(&phi_re * t_re);
         tmp2.assign(&phi_im * t_im);
-        let phi_t_re = RFloat::with_val(prec, &tmp - &tmp2);
+        let phi_t_re = MpFloat::with_val(prec, &tmp - &tmp2);
         tmp.assign(&phi_re * t_im);
         tmp2.assign(&phi_im * t_re);
-        let phi_t_im = RFloat::with_val(prec, &tmp + &tmp2);
-        let diff_re = RFloat::with_val(prec, u_re - &phi_t_re);
-        let diff_im = RFloat::with_val(prec, u_im - &phi_t_im);
+        let phi_t_im = MpFloat::with_val(prec, &tmp + &tmp2);
+        let diff_re = MpFloat::with_val(prec, u_re - &phi_t_re);
+        let diff_im = MpFloat::with_val(prec, u_im - &phi_t_im);
         tmp.assign(&diff_re * &diff_re);
         tmp2.assign(&diff_im * &diff_im);
         fro_sq += &tmp;
@@ -227,10 +228,10 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
 
     // D² = fro_sq · (8 − fro_sq) / 16. Always ≥ 0 for fro_sq ≤ 8 (the
     // Frobenius distance of two near-unitary 2×2 matrices is ≤ 2√2).
-    let eight = RFloat::with_val(prec, 8.0);
-    let sixteen = RFloat::with_val(prec, 16.0);
-    let factor = RFloat::with_val(prec, &eight - &fro_sq);
-    let d_sq = RFloat::with_val(prec, &fro_sq * &factor) / sixteen;
+    let eight = MpFloat::with_val(prec, 8.0);
+    let sixteen = MpFloat::with_val(prec, 16.0);
+    let factor = MpFloat::with_val(prec, &eight - &fro_sq);
+    let d_sq = MpFloat::with_val(prec, &fro_sq * &factor) / sixteen;
     if d_sq.is_sign_negative() {
         return 0.0;
     }
@@ -245,13 +246,13 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
 pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
     use std::f64::consts::PI;
     let prec: u32 = 128;
-    let two = RFloat::with_val(prec, 2.0);
-    let inv_sqrt2 = RFloat::with_val(prec, 1.0) / two.clone().sqrt();
+    let two = MpFloat::with_val(prec, 2.0);
+    let inv_sqrt2 = MpFloat::with_val(prec, 1.0) / two.clone().sqrt();
 
     // inv_scale = 1/√2^k. Same construction as U2T: half-k binary shift,
     // odd-k extra factor of 1/√2.
     let half_k = u.k / 2;
-    let mut inv_scale = RFloat::with_val(prec, 1.0);
+    let mut inv_scale = MpFloat::with_val(prec, 1.0);
     inv_scale >>= half_k;
     if u.k % 2 == 1 {
         inv_scale *= &inv_sqrt2;
@@ -261,26 +262,26 @@ pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
     // are accurate to ~1 ulp at these arguments; lifting to MPFR at 128
     // bits is fine since the absolute error in the basis vector is what
     // bounds the distance error.
-    let basis: [(RFloat, RFloat); 8] = std::array::from_fn(|k| {
+    let basis: [(MpFloat, MpFloat); 8] = std::array::from_fn(|k| {
         let theta = (k as f64) * PI / 8.0;
         (
-            RFloat::with_val(prec, theta.cos()),
-            RFloat::with_val(prec, theta.sin()),
+            MpFloat::with_val(prec, theta.cos()),
+            MpFloat::with_val(prec, theta.sin()),
         )
     });
 
     // Convert one ZZeta to a (re, im) pair at *unit* scale (already
     // divided by √2^k). For random U(2) targets the entries are O(1).
-    let zzeta_to_mpfr_unit = |z: &ZZeta| -> (RFloat, RFloat) {
+    let zzeta_to_mpfr_unit = |z: &ZZeta| -> (MpFloat, MpFloat) {
         let coeffs: [Float; 8] = [
             int_to_f64(z.a), int_to_f64(z.b), int_to_f64(z.c), int_to_f64(z.d),
             int_to_f64(z.e), int_to_f64(z.f), int_to_f64(z.g), int_to_f64(z.h),
         ];
-        let mut re = RFloat::with_val(prec, 0.0);
-        let mut im = RFloat::with_val(prec, 0.0);
-        let mut tmp = RFloat::with_val(prec, 0.0);
+        let mut re = MpFloat::with_val(prec, 0.0);
+        let mut im = MpFloat::with_val(prec, 0.0);
+        let mut tmp = MpFloat::with_val(prec, 0.0);
         for k in 0..8 {
-            let c = RFloat::with_val(prec, coeffs[k]);
+            let c = MpFloat::with_val(prec, coeffs[k]);
             tmp.assign(&c * &basis[k].0);
             re += &tmp;
             tmp.assign(&c * &basis[k].1);
@@ -295,18 +296,18 @@ pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
         zzeta_to_mpfr_unit(&u.u21),
         zzeta_to_mpfr_unit(&u.u22),
     ];
-    let t_entries: [(RFloat, RFloat); 4] = [
-        (RFloat::with_val(prec, target[0][0].re), RFloat::with_val(prec, target[0][0].im)),
-        (RFloat::with_val(prec, target[0][1].re), RFloat::with_val(prec, target[0][1].im)),
-        (RFloat::with_val(prec, target[1][0].re), RFloat::with_val(prec, target[1][0].im)),
-        (RFloat::with_val(prec, target[1][1].re), RFloat::with_val(prec, target[1][1].im)),
+    let t_entries: [(MpFloat, MpFloat); 4] = [
+        (MpFloat::with_val(prec, target[0][0].re), MpFloat::with_val(prec, target[0][0].im)),
+        (MpFloat::with_val(prec, target[0][1].re), MpFloat::with_val(prec, target[0][1].im)),
+        (MpFloat::with_val(prec, target[1][0].re), MpFloat::with_val(prec, target[1][0].im)),
+        (MpFloat::with_val(prec, target[1][1].re), MpFloat::with_val(prec, target[1][1].im)),
     ];
 
     // tr = Σ u · conj(t), optimal phase φ = tr/|tr|.
-    let mut tr_re = RFloat::with_val(prec, 0.0);
-    let mut tr_im = RFloat::with_val(prec, 0.0);
-    let mut tmp = RFloat::with_val(prec, 0.0);
-    let mut tmp2 = RFloat::with_val(prec, 0.0);
+    let mut tr_re = MpFloat::with_val(prec, 0.0);
+    let mut tr_im = MpFloat::with_val(prec, 0.0);
+    let mut tmp = MpFloat::with_val(prec, 0.0);
+    let mut tmp2 = MpFloat::with_val(prec, 0.0);
     for ((u_re, u_im), (t_re, t_im)) in u_entries.iter().zip(t_entries.iter()) {
         tmp.assign(u_re * t_re); tr_re += &tmp;
         tmp.assign(u_im * t_im); tr_re += &tmp;
@@ -315,28 +316,28 @@ pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
     }
     tmp.assign(&tr_re * &tr_re);
     tmp2.assign(&tr_im * &tr_im);
-    let tr_abs_sq = RFloat::with_val(prec, &tmp + &tmp2);
+    let tr_abs_sq = MpFloat::with_val(prec, &tmp + &tmp2);
     let tr_abs = tr_abs_sq.sqrt();
     let (phi_re, phi_im) = if tr_abs > 1e-30 {
         (
-            RFloat::with_val(prec, &tr_re / &tr_abs),
-            RFloat::with_val(prec, &tr_im / &tr_abs),
+            MpFloat::with_val(prec, &tr_re / &tr_abs),
+            MpFloat::with_val(prec, &tr_im / &tr_abs),
         )
     } else {
-        (RFloat::with_val(prec, 1.0), RFloat::with_val(prec, 0.0))
+        (MpFloat::with_val(prec, 1.0), MpFloat::with_val(prec, 0.0))
     };
 
     // fro_sq = Σ |u − φ·t|²
-    let mut fro_sq = RFloat::with_val(prec, 0.0);
+    let mut fro_sq = MpFloat::with_val(prec, 0.0);
     for ((u_re, u_im), (t_re, t_im)) in u_entries.iter().zip(t_entries.iter()) {
         tmp.assign(&phi_re * t_re);
         tmp2.assign(&phi_im * t_im);
-        let phi_t_re = RFloat::with_val(prec, &tmp - &tmp2);
+        let phi_t_re = MpFloat::with_val(prec, &tmp - &tmp2);
         tmp.assign(&phi_re * t_im);
         tmp2.assign(&phi_im * t_re);
-        let phi_t_im = RFloat::with_val(prec, &tmp + &tmp2);
-        let diff_re = RFloat::with_val(prec, u_re - &phi_t_re);
-        let diff_im = RFloat::with_val(prec, u_im - &phi_t_im);
+        let phi_t_im = MpFloat::with_val(prec, &tmp + &tmp2);
+        let diff_re = MpFloat::with_val(prec, u_re - &phi_t_re);
+        let diff_im = MpFloat::with_val(prec, u_im - &phi_t_im);
         tmp.assign(&diff_re * &diff_re);
         tmp2.assign(&diff_im * &diff_im);
         fro_sq += &tmp;
@@ -344,10 +345,10 @@ pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
     }
 
     // D² = fro_sq · (8 − fro_sq) / 16.
-    let eight = RFloat::with_val(prec, 8.0);
-    let sixteen = RFloat::with_val(prec, 16.0);
-    let factor = RFloat::with_val(prec, &eight - &fro_sq);
-    let d_sq = RFloat::with_val(prec, &fro_sq * &factor) / sixteen;
+    let eight = MpFloat::with_val(prec, 8.0);
+    let sixteen = MpFloat::with_val(prec, 16.0);
+    let factor = MpFloat::with_val(prec, &eight - &fro_sq);
+    let d_sq = MpFloat::with_val(prec, &fro_sq * &factor) / sixteen;
     if d_sq.is_sign_negative() {
         return 0.0;
     }

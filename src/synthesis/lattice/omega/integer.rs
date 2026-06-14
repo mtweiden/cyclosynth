@@ -9,7 +9,8 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use rug::{Assign, Float as RFloat};
+use rug::Assign;
+use crate::rings::MpFloat;
 use std::sync::atomic::AtomicBool;
 
 use super::cholesky_lu::{cholesky_f64_8, lu_solve_int_inplace};
@@ -131,13 +132,13 @@ pub fn find_aligned_lattice_points_outcome(
     //      get classified essentially randomly.
     // SE_PREC = 128 bits gives ~38 digits of headroom past these walls.
     let prec = super::se::SE_PREC;
-    let two_to_2k = RFloat::with_val(prec, 1.0) << (2 * k);
-    let eps_rf = RFloat::with_val(prec, eps);
+    let two_to_2k = MpFloat::with_val(prec, 1.0) << (2 * k);
+    let eps_rf = MpFloat::with_val(prec, eps);
     let one_minus_eps_sq =
-        RFloat::with_val(prec, 1.0) - eps_rf.clone() * &eps_rf;
+        MpFloat::with_val(prec, 1.0) - eps_rf.clone() * &eps_rf;
     let threshold_xy_mpfr =
-        RFloat::with_val(prec, &two_to_2k * &one_minus_eps_sq) / 4u32;
-    let y_mpfr: [RFloat; 8] = std::array::from_fn(|i| RFloat::with_val(prec, y[i]));
+        MpFloat::with_val(prec, &two_to_2k * &one_minus_eps_sq) / 4u32;
+    let y_mpfr: [MpFloat; 8] = std::array::from_fn(|i| MpFloat::with_val(prec, y[i]));
 
     let trace = crate::synthesis::diag::trace_enabled();
 
@@ -202,8 +203,8 @@ pub fn find_aligned_lattice_points_outcome(
     }
 
     // Build R = Lᵀ at SE working precision (128-bit MPFR).
-    let r_chol_se: [[RFloat; 8]; 8] = std::array::from_fn(|i| {
-        std::array::from_fn(|j| RFloat::with_val(super::se::SE_PREC, scratch.l_f64[j][i]))
+    let r_chol_se: [[MpFloat; 8]; 8] = std::array::from_fn(|i| {
+        std::array::from_fn(|j| MpFloat::with_val(super::se::SE_PREC, scratch.l_f64[j][i]))
     });
 
     // Step 5: solve B_LLLᵀ · z_c = c for the cap-center in lattice coords,
@@ -224,7 +225,7 @@ pub fn find_aligned_lattice_points_outcome(
         eprintln!("[lattice] LU solve failed at eps={:e}, k={}; bailing.", eps, k);
         return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false };
     }
-    let z_c_se: [RFloat; 8] = std::array::from_fn(|i| {
+    let z_c_se: [MpFloat; 8] = std::array::from_fn(|i| {
         super::se::rfloat_to_se(&scratch.lu_x[i])
     });
 
@@ -250,7 +251,7 @@ pub fn find_aligned_lattice_points_outcome(
     let node_budget = AtomicU64::new(max_nodes);
     // Set when either budget (node or leaf) binds; aborts the walk.
     let truncated = AtomicBool::new(false);
-    let bound_se = RFloat::with_val(super::se::SE_PREC, se_bound_8d());
+    let bound_se = MpFloat::with_val(super::se::SE_PREC, se_bound_8d());
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
 
     let mut solutions: Vec<[i64; 8]> = Vec::new();
@@ -285,11 +286,11 @@ pub fn find_aligned_lattice_points_outcome(
             }
             // dot = Σ x_i · y_i at MPFR-128. x_i is i64 (exact lift), y_i is
             // f64 (exact lift). dot² compared to threshold_xy_mpfr. Two
-            // RFloat allocations per call, ~1 μs cost; only fires after norm
+            // MpFloat allocations per call, ~1 μs cost; only fires after norm
             // and bilinear filters reject most leaves so amortized impact is
             // negligible.
-            let mut tmp = RFloat::with_val(prec, 0.0);
-            let mut dot_acc = RFloat::with_val(prec, 0.0);
+            let mut tmp = MpFloat::with_val(prec, 0.0);
+            let mut dot_acc = MpFloat::with_val(prec, 0.0);
             for (xv, yv) in x.iter().zip(y_mpfr.iter()) {
                 tmp.assign(*xv);
                 tmp *= yv;
@@ -400,7 +401,7 @@ mod tests {
         // f64 range after scaling.
         let bytes = v.to_le_bytes();
         // Reconstruct as integer string for robustness, then route through
-        // RFloat for precise division.
+        // MpFloat for precise division.
         let neg = (bytes[31] & 0x80) != 0;
         let mag = if neg { -*v } else { *v };
         let mag_bytes = mag.to_le_bytes();
@@ -411,7 +412,7 @@ mod tests {
             hex.push_str(&format!("{:02x}", b));
         }
         int.assign(rug::Integer::parse_radix(&hex, 16).unwrap());
-        let mut f = rug::Float::with_val(256, &int);
+        let mut f = MpFloat::with_val(256, &int);
         if shift_bits >= 0 {
             f >>= shift_bits as u32;
         } else {

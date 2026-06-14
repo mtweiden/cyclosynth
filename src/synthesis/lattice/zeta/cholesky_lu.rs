@@ -23,7 +23,8 @@
 #![allow(clippy::needless_range_loop)]
 
 use i256::i256;
-use rug::{Assign, Float as RFloat};
+use rug::Assign;
+use crate::rings::MpFloat;
 
 use super::scratch::{rfv, rfz, IntScratch16};
 use crate::synthesis::lattice::omega::cholesky_lu::i256_to_rfloat;
@@ -34,11 +35,11 @@ use crate::synthesis::lattice::common::i256_to_f64;
 /// at `scratch.prec_q` bits, dividing out `2^scale_bits` so the result is the
 /// natural-scale `G`. Returned matrix lives on the stack; the caller passes
 /// it to `cholesky_int_16`.
-pub fn snapshot_gram_to_mpfr_16(scratch: &mut IntScratch16) -> [[RFloat; 16]; 16] {
+pub fn snapshot_gram_to_mpfr_16(scratch: &mut IntScratch16) -> [[MpFloat; 16]; 16] {
     let prec = scratch.prec_q;
     let shift = scratch.scale_bits;
     let mut tmp = rfz(prec);
-    let mut g_post: [[RFloat; 16]; 16] =
+    let mut g_post: [[MpFloat; 16]; 16] =
         std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)));
     for i in 0..16 {
         for j in 0..16 {
@@ -62,10 +63,10 @@ pub fn snapshot_gram_to_mpfr_16(scratch: &mut IntScratch16) -> [[RFloat; 16]; 16
 /// kept out of `IntScratch16` so production doesn't carry a second 16x16.
 pub fn cholesky_int_16(
     scratch: &mut IntScratch16,
-    g_post: &[[RFloat; 16]; 16],
-) -> Option<[[RFloat; 16]; 16]> {
+    g_post: &[[MpFloat; 16]; 16],
+) -> Option<[[MpFloat; 16]; 16]> {
     let prec = scratch.prec_q;
-    let mut l: [[RFloat; 16]; 16] =
+    let mut l: [[MpFloat; 16]; 16] =
         std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)));
     let zero = rfz(prec);
     let mut acc = rfz(prec);
@@ -465,8 +466,8 @@ pub fn euclidean_cholesky_16_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<Choles
             gram[i][j] = s;
         }
     }
-    let mut g: [[rug::Float; 16]; 16] = std::array::from_fn(|_| {
-        std::array::from_fn(|_| rug::Float::with_val(PREC, 0.0))
+    let mut g: [[MpFloat; 16]; 16] = std::array::from_fn(|_| {
+        std::array::from_fn(|_| MpFloat::with_val(PREC, 0.0))
     });
     for i in 0..16 {
         for j in 0..16 {
@@ -497,9 +498,9 @@ pub fn q_cholesky_16_mpfr_dual(
     scale_bits: i32,
 ) -> Option<CholeskyDual16> {
     const PREC: u32 = 128;
-    let mut tmp = rug::Float::with_val(PREC, 0.0);
-    let mut g: [[rug::Float; 16]; 16] = std::array::from_fn(|_| {
-        std::array::from_fn(|_| rug::Float::with_val(PREC, 0.0))
+    let mut tmp = MpFloat::with_val(PREC, 0.0);
+    let mut g: [[MpFloat; 16]; 16] = std::array::from_fn(|_| {
+        std::array::from_fn(|_| MpFloat::with_val(PREC, 0.0))
     });
     for i in 0..16 {
         for j in 0..16 {
@@ -522,17 +523,16 @@ pub fn q_cholesky_16_mpfr_dual(
 /// upper-triangular R, and emit (f64 snapshot, dd projection). Op order
 /// and precision are identical for the Euclidean and Q-metric callers so
 /// the two dd factors carry the same (validated) error model.
-fn mpfr_cholesky_dual_16(g: &[[rug::Float; 16]; 16]) -> Option<CholeskyDual16> {
-    use rug::Float;
+fn mpfr_cholesky_dual_16(g: &[[MpFloat; 16]; 16]) -> Option<CholeskyDual16> {
     const PREC: u32 = 128;
-    let mut l: [[Float; 16]; 16] = std::array::from_fn(|_| {
-        std::array::from_fn(|_| Float::with_val(PREC, 0.0))
+    let mut l: [[MpFloat; 16]; 16] = std::array::from_fn(|_| {
+        std::array::from_fn(|_| MpFloat::with_val(PREC, 0.0))
     });
     for i in 0..16 {
         for j in 0..=i {
             let mut s = g[i][j].clone();
             for k in 0..j {
-                let prod = Float::with_val(PREC, &l[i][k] * &l[j][k]);
+                let prod = MpFloat::with_val(PREC, &l[i][k] * &l[j][k]);
                 s -= &prod;
             }
             if i == j {
@@ -541,7 +541,7 @@ fn mpfr_cholesky_dual_16(g: &[[rug::Float; 16]; 16]) -> Option<CholeskyDual16> {
                 }
                 l[i][i] = s.sqrt();
             } else {
-                let q = Float::with_val(PREC, &s / &l[j][j]);
+                let q = MpFloat::with_val(PREC, &s / &l[j][j]);
                 l[i][j] = q;
             }
         }
@@ -556,7 +556,7 @@ fn mpfr_cholesky_dual_16(g: &[[rug::Float; 16]; 16]) -> Option<CholeskyDual16> {
         for j in 0..16 {
             let rij = &l[j][i];
             let hi = rij.to_f64();
-            let mut lo_f = Float::with_val(PREC, rij);
+            let mut lo_f = MpFloat::with_val(PREC, rij);
             lo_f -= hi;
             let lo = lo_f.to_f64();
             r_f64[i][j] = hi;
@@ -567,15 +567,14 @@ fn mpfr_cholesky_dual_16(g: &[[rug::Float; 16]; 16]) -> Option<CholeskyDual16> {
 }
 
 /// Convert i128 → MPFR Float, lossless. rug doesn't accept i128 directly.
-fn i128_to_mpfr(v: i128, prec: u32) -> rug::Float {
-    use rug::Float;
+fn i128_to_mpfr(v: i128, prec: u32) -> MpFloat {
     let neg = v < 0;
     let abs = if neg { -v } else { v } as u128;
     let hi = (abs >> 64) as u64;
     let lo = abs as u64;
-    let mut f = Float::with_val(prec, hi);
+    let mut f = MpFloat::with_val(prec, hi);
     f <<= 64u32;
-    f += Float::with_val(prec, lo);
+    f += MpFloat::with_val(prec, lo);
     if neg { -f } else { f }
 }
 

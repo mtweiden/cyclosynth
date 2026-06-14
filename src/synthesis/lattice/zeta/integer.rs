@@ -28,7 +28,8 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use rug::{Assign, Float as RFloat};
+use rug::Assign;
+use crate::rings::MpFloat;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::cholesky_lu::{
@@ -208,13 +209,13 @@ where
     // directly to bypass the f64 ULP floor in v.
     let prec = scratch.prec_q;
     let scale = 2.0_f64.powf(k as f64 / 2.0) / 4.0;
-    let v_mpfr: [RFloat; 4] = [
+    let v_mpfr: [MpFloat; 4] = [
         rfv(prec, y[0] / scale),
         rfv(prec, y[4] / scale),
         rfv(prec, y[8] / scale),
         rfv(prec, y[12] / scale),
     ];
-    let y_mpfr: [RFloat; 16] = std::array::from_fn(|i| rfv(prec, y[i]));
+    let y_mpfr: [MpFloat; 16] = std::array::from_fn(|i| rfv(prec, y[i]));
     find_aligned_lattice_points_mpfr(
         scratch, &y_mpfr, &v_mpfr, k, eps, max_leaf_checks, budget_hit, should_stop,
         external_abort, consumed,
@@ -230,8 +231,8 @@ where
 #[allow(clippy::too_many_arguments)]
 pub fn find_aligned_lattice_points_mpfr<F>(
     scratch: &mut IntScratch16,
-    y: &[RFloat; 16],
-    v: &[RFloat; 4],
+    y: &[MpFloat; 16],
+    v: &[MpFloat; 4],
     k: u32,
     eps: Float,
     max_leaf_checks: u64,
@@ -265,13 +266,13 @@ where
     let one = rfv(prec, 1.0);
     let two = rfv(prec, 2.0);
     let eps_rf = rfv(prec, eps);
-    let eps_sq = RFloat::with_val(prec, &eps_rf * &eps_rf);
-    let one_minus_eps_sq = RFloat::with_val(prec, &one - &eps_sq);
+    let eps_sq = MpFloat::with_val(prec, &eps_rf * &eps_rf);
+    let one_minus_eps_sq = MpFloat::with_val(prec, &one - &eps_sq);
     let sqrt_1m = one_minus_eps_sq.sqrt();
-    let cap_mid_num = RFloat::with_val(prec, &one + &sqrt_1m);
-    let cap_mid = RFloat::with_val(prec, &cap_mid_num / &two);
+    let cap_mid_num = MpFloat::with_val(prec, &one + &sqrt_1m);
+    let cap_mid = MpFloat::with_val(prec, &cap_mid_num / &two);
     for i in 0..16 {
-        scratch.c[i].assign(RFloat::with_val(prec, &y[i] * &cap_mid));
+        scratch.c[i].assign(MpFloat::with_val(prec, &y[i] * &cap_mid));
     }
     if let Some(t) = t_build {
         diag::T_BUILD_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -409,14 +410,14 @@ where
     // has mass only on σ_1 indices, and the lattice solution satisfies
     // σ_1-image(Σ x) = y_real after the bilinear `B_1 = B_2 = B_3 = 0`
     // checks zero out the σ_5/σ_9/σ_13 components.)
-    let two_to_2k = RFloat::with_val(ALIGN_PREC, 1.0) << (2 * k);
-    let eps_align = RFloat::with_val(ALIGN_PREC, eps);
-    let one_minus_eps_sq_align = RFloat::with_val(ALIGN_PREC, 1.0)
+    let two_to_2k = MpFloat::with_val(ALIGN_PREC, 1.0) << (2 * k);
+    let eps_align = MpFloat::with_val(ALIGN_PREC, eps);
+    let one_minus_eps_sq_align = MpFloat::with_val(ALIGN_PREC, 1.0)
         - eps_align.clone() * &eps_align;
-    let threshold_xy = RFloat::with_val(ALIGN_PREC, &two_to_2k * &one_minus_eps_sq_align)
+    let threshold_xy = MpFloat::with_val(ALIGN_PREC, &two_to_2k * &one_minus_eps_sq_align)
         / 32u32;
-    let y_mpfr: [RFloat; 16] =
-        std::array::from_fn(|i| RFloat::with_val(ALIGN_PREC, &y[i]));
+    let y_mpfr: [MpFloat; 16] =
+        std::array::from_fn(|i| MpFloat::with_val(ALIGN_PREC, &y[i]));
 
     // Norm-shell target. Use i128 so k ≤ 126 stays exact (the moderate-ε
     // regime targets k ≲ 30 but the deep-ε regime can reach k > 60).
@@ -493,8 +494,8 @@ where
         }
         // Alignment: (y · x)² ≥ threshold_xy. MPFR alloc here is fine —
         // very few leaves reach this far in practice (post-pruning).
-        let mut tmp = RFloat::with_val(ALIGN_PREC, 0.0);
-        let mut dot_acc = RFloat::with_val(ALIGN_PREC, 0.0);
+        let mut tmp = MpFloat::with_val(ALIGN_PREC, 0.0);
+        let mut dot_acc = MpFloat::with_val(ALIGN_PREC, 0.0);
         for (xv, yv) in x.iter().zip(y_mpfr.iter()) {
             tmp.assign(*xv);
             tmp *= yv;
