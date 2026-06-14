@@ -78,7 +78,6 @@ shows the Python bindings in use:
 | [`synth.py`](examples/synth.py) / [`synth_sqrtt.py`](examples/synth_sqrtt.py) | Synthesize a `U3(α, β, γ)` target with Clifford+T / Clifford+√T. |
 | [`verify.py`](examples/verify.py) | Independently re-evaluate a synthesized gate string and confirm it approximates the target. |
 | [`compare_t_vs_sqrtt.py`](examples/compare_t_vs_sqrtt.py) | Clifford+T vs Clifford+√T cost (`T + 3.5·Q`) on the same targets. |
-| [`comparison_zeta.py`](examples/comparison_zeta.py) / [`lifted_baseline.py`](examples/lifted_baseline.py) | Native Clifford+√T vs the Z[ω]-lifted baseline. |
 
 ## Usage (Rust)
 
