@@ -131,7 +131,9 @@ fn run_bkz_postpass(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()
         for i in 0..16 {
             super::lll::cfa_row(scratch, i);
         }
-        let _changed = super::bkz::bkz_tours(scratch, block_size, super::bkz::BKZ_MAX_LOOPS);
+        // Best-effort basis tightening; whether it changed anything is moot —
+        // the post-pass either improves the basis or leaves it valid.
+        let _ = super::bkz::bkz_tours(scratch, block_size, super::bkz::BKZ_MAX_LOOPS);
         // Post-BKZ unimodularity check; bail if the insertion path
         // somehow produced a degenerate basis.
         match super::cholesky_lu::det_exact(&scratch.basis) {

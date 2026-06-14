@@ -333,6 +333,8 @@ fn rfloat_to_i256(x: &MpFloat) -> i256 {
 pub fn i256_to_rfloat(v: i256, dst: &mut MpFloat) {
     let zero = i256::from_i64(0);
     if v == zero {
+        // SAFETY: `dst.as_raw_mut()` is a valid initialized `mpfr_t`; set_zero
+        // only writes through it.
         unsafe { mpfr::set_zero(dst.as_raw_mut(), 0) };
         return;
     }
@@ -353,8 +355,11 @@ pub fn i256_to_rfloat(v: i256, dst: &mut MpFloat) {
     let mpz = gmp::mpz_t {
         alloc: 0,
         size: signed_size,
+        // SAFETY: `limbs` is a live stack array, so its pointer is non-null.
         d: unsafe { NonNull::new_unchecked(limbs.as_mut_ptr()) },
     };
+    // SAFETY: `mpz` is a well-formed read-only mpz view over `limbs` (which
+    // outlives this call); set_z copies the bits out before we return.
     unsafe {
         mpfr::set_z(dst.as_raw_mut(), &mpz as *const _, mpfr::rnd_t::RNDN);
     }

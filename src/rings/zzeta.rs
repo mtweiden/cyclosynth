@@ -57,6 +57,9 @@ impl ZZeta {
     }
 
     /// Coefficient of ζ^k, k = 0..7.
+    ///
+    /// # Panics
+    /// Panics if `k >= 8` (programmer error, like an out-of-bounds index).
     #[inline]
     pub fn coeff(self, k: usize) -> Int {
         match k {

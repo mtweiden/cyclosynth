@@ -36,7 +36,11 @@ pub struct CapturedFind {
 pub static CAPTURED_FIND: Mutex<Option<CapturedFind>> = Mutex::new(None);
 
 pub fn capture_enabled() -> bool {
-    std::env::var("CYCLOSYNTH_CAPTURE").ok().as_deref() == Some("1")
+    // Cached: read once, not per-prefix (the env can't change mid-process).
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("CYCLOSYNTH_CAPTURE").ok().as_deref() == Some("1")
+    })
 }
 
 pub fn try_capture(c: CapturedFind) {
