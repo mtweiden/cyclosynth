@@ -13,7 +13,7 @@ use rug::Assign;
 use crate::rings::MpFloat;
 use std::sync::atomic::AtomicBool;
 
-use super::cholesky_lu::{cholesky_f64_8, lu_solve_int_inplace};
+use super::cholesky_lu::{cholesky_f64, lu_solve_int_inplace};
 use super::lll::LllResult;
 use super::q_metric::{build_q_int, build_q_mpfr};
 use super::scratch::{rfv, IntScratch};
@@ -35,7 +35,7 @@ pub struct LatticeSearchOutcome {
 /// there is no f64-drift slack to budget for (unlike the 16D walk's 20%).
 /// Env override `CYCLOSYNTH_SE_BOUND_8D` is for telemetry/retention
 /// experiments only.
-fn se_bound_8d() -> f64 {
+fn se_bound() -> f64 {
     static BOUND: std::sync::LazyLock<f64> = std::sync::LazyLock::new(|| {
         std::env::var("CYCLOSYNTH_SE_BOUND_8D")
             .ok()
@@ -81,7 +81,7 @@ fn warm_seed_q_base(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
             }
         }
         build_q_int(scratch);
-        let (res, _) = super::lll::lll_l2_8_seeded(scratch, None);
+        let (res, _) = super::lll::lll_l2_seeded(scratch, None);
         scratch.q_base_seed = match res {
             LllResult::Converged => Some(scratch.basis),
             _ => None, // overflow/cap: fall back to cold starts at this key
@@ -157,7 +157,7 @@ pub fn find_aligned_lattice_points_outcome(
     // warm-seeded when the Q_base reduction converged.
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
     let seed = scratch.q_base_seed;
-    let (lll_result, _) = super::lll::lll_l2_8_seeded(scratch, seed.as_ref());
+    let (lll_result, _) = super::lll::lll_l2_seeded(scratch, seed.as_ref());
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_LLL_NS
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -168,7 +168,7 @@ pub fn find_aligned_lattice_points_outcome(
 
     // Step 3: assert det(B) = ±1 (unimodular basis output).
     let basis = scratch.basis;
-    match crate::synthesis::lattice::omega::cholesky_lu::det8_exact(&basis) {
+    match crate::synthesis::lattice::omega::cholesky_lu::det_exact(&basis) {
         Some(1) | Some(-1) => {}
         Some(d) => {
             eprintln!(
@@ -179,7 +179,7 @@ pub fn find_aligned_lattice_points_outcome(
         }
         None => {
             eprintln!(
-                "[lattice] det8_exact overflow at eps={:e}, k={}; bailing.",
+                "[lattice] det_exact overflow at eps={:e}, k={}; bailing.",
                 eps, k
             );
             return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false };
@@ -189,7 +189,7 @@ pub fn find_aligned_lattice_points_outcome(
     // Step 4: f64 Cholesky on the i256 Gram (natural-scale via 2^-scale_bits
     // exponent shift). Justified by the post-LLL κ ≤ 16 LLL invariant.
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
-    let chol_ok = cholesky_f64_8(scratch);
+    let chol_ok = cholesky_f64(scratch);
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_CHOLESKY_NS
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -251,11 +251,11 @@ pub fn find_aligned_lattice_points_outcome(
     let node_budget = AtomicU64::new(max_nodes);
     // Set when either budget (node or leaf) binds; aborts the walk.
     let truncated = AtomicBool::new(false);
-    let bound_se = MpFloat::with_val(super::se::SE_PREC, se_bound_8d());
+    let bound_se = MpFloat::with_val(super::se::SE_PREC, se_bound());
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
 
     let mut solutions: Vec<[i64; 8]> = Vec::new();
-    let result = super::se::schnorr_euchner_8d(
+    let result = super::se::schnorr_euchner(
         &r_chol_se,
         &z_c_se,
         &bound_se,
@@ -336,11 +336,11 @@ pub fn find_aligned_lattice_points_outcome(
 mod tests {
     use super::*;
     use super::super::cholesky_lu::{
-        cholesky_f64_8, cholesky_int_8, snapshot_gram_to_mpfr,
+        cholesky_f64, cholesky_int, snapshot_gram_to_mpfr,
     };
     use super::super::lll::{
         cfa_full, compute_gram_full, gram_update_size_reduce, i256_to_f64,
-        lll_l2_8, LllResult, L2_DELTA, L2_ETA,
+        lll_l2, LllResult, L2_DELTA, L2_ETA,
     };
     use crate::synthesis::lattice::common::gram_update_swap;
     use super::super::q_metric::{build_q_int, build_q_mpfr};
@@ -527,13 +527,13 @@ mod tests {
         let mut s = IntScratch::new(eps);
         build_q_mpfr(&mut s, &y, k, eps);
         build_q_int(&mut s);
-        let result = lll_l2_8(&mut s);
+        let result = lll_l2(&mut s);
         if let LllResult::GramOverflow = result {
             return result;
         }
         // Unimodular check
-        let det = crate::synthesis::lattice::omega::cholesky_lu::det8_exact(&s.basis)
-            .expect("det8_exact overflow");
+        let det = crate::synthesis::lattice::omega::cholesky_lu::det_exact(&s.basis)
+            .expect("det_exact overflow");
         assert!(
             det == 1 || det == -1,
             "L²-LLL output non-unimodular: det={}, eps={:e}, k={}, result={:?}",
@@ -592,21 +592,21 @@ mod tests {
     }
 
     /// Run the integer LLL for given (eps, k) and assert det = ±1
-    /// (unimodular basis output). Uses `crate::synthesis::lattice::omega::cholesky_lu::det8_exact` for the
+    /// (unimodular basis output). Uses `crate::synthesis::lattice::omega::cholesky_lu::det_exact` for the
     /// integer determinant check.
     fn check_lll_unimodular(eps: Float, k: u32) -> LllResult {
         let y = realistic_y(k);
         let mut s = IntScratch::new(eps);
         build_q_mpfr(&mut s, &y, k, eps);
         build_q_int(&mut s);
-        let result = lll_l2_8(&mut s);
+        let result = lll_l2(&mut s);
         // Allow IterCap as a soft outcome (LLL is "noisy" at deep ε); the
         // unimodular check is a hard invariant either way.
         if let LllResult::GramOverflow = result {
             return result;
         }
-        let det = crate::synthesis::lattice::omega::cholesky_lu::det8_exact(&s.basis)
-            .expect("det8_exact overflow");
+        let det = crate::synthesis::lattice::omega::cholesky_lu::det_exact(&s.basis)
+            .expect("det_exact overflow");
         assert!(
             det == 1 || det == -1,
             "lll output non-unimodular: det={}, eps={:e}, k={}, result={:?}",
@@ -736,7 +736,7 @@ mod tests {
     }
 
     /// Verify that the f64 Cholesky output matches the legacy MPFR Cholesky
-    /// (snapshot_gram_to_mpfr + cholesky_int_8) within a tight relative
+    /// (snapshot_gram_to_mpfr + cholesky_int) within a tight relative
     /// tolerance, across the ε range used in production. This is the
     /// guardrail that catches any precision-budget regression in the f64
     /// Cholesky path: if the LLL invariant κ ≤ 16 ever stops holding (e.g.
@@ -746,11 +746,11 @@ mod tests {
         let mut s = IntScratch::new(eps);
         build_q_mpfr(&mut s, &y, k, eps);
         build_q_int(&mut s);
-        let _ = lll_l2_8(&mut s);
+        let _ = lll_l2(&mut s);
         // MPFR reference path
         snapshot_gram_to_mpfr(&mut s);
         assert!(
-            cholesky_int_8(&mut s),
+            cholesky_int(&mut s),
             "MPFR Cholesky failed at eps={:e}, k={}", eps, k
         );
         let l_mpfr: [[f64; 8]; 8] = std::array::from_fn(|i|
@@ -758,7 +758,7 @@ mod tests {
         );
         // f64 production path
         assert!(
-            cholesky_f64_8(&mut s),
+            cholesky_f64(&mut s),
             "f64 Cholesky failed at eps={:e}, k={}", eps, k
         );
         // Compare lower triangles in relative error.

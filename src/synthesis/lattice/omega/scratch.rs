@@ -175,8 +175,8 @@ pub struct IntScratch {
     pub l_f64: [[f64; 8]; 8],
 
     // ── MPFR Cholesky buffers (test-suite oracle only) ──
-    /// Kept so the test suite can run `cholesky_int_8` as a reference oracle
-    /// against `cholesky_f64_8` across ε regimes. Not used in production.
+    /// Kept so the test suite can run `cholesky_int` as a reference oracle
+    /// against `cholesky_f64` across ε regimes. Not used in production.
     pub g_post_lll: [[MpFloat; 8]; 8],
     pub l: [[MpFloat; 8]; 8],
 

@@ -71,7 +71,7 @@ pub fn rfloat_to_se(r: &MpFloat) -> MpFloat {
 /// `budget_exhausted` may also be set from inside `callback` (the leaf-cap
 /// path) to abort the walk without reporting a solution.
 #[allow(clippy::too_many_arguments)]
-pub fn schnorr_euchner_8d<F>(
+pub fn schnorr_euchner<F>(
     r_chol: &[[MpFloat; 8]; 8],
     z_c: &[MpFloat; 8],
     bound: &MpFloat,
@@ -89,7 +89,7 @@ where
     let result = std::cell::RefCell::new(None);
     let zero = MpFloat::with_val(SE_PREC, 0.0_f64);
 
-    recurse_8(
+    recurse(
         7,
         r_chol,
         z_c,
@@ -109,7 +109,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn recurse_8<F>(
+fn recurse<F>(
     depth: i32,
     r_chol: &[[MpFloat; 8]; 8],
     z_c: &[MpFloat; 8],
@@ -171,7 +171,7 @@ fn recurse_8<F>(
             .to_integer()
             .and_then(|n| n.to_i64())
             .unwrap_or(0);
-        recurse_8(
+        recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             partial_eucl, z, partial, abort, node_budget, budget_exhausted,
             callback, result,
@@ -282,7 +282,7 @@ fn recurse_8<F>(
         };
 
         z[d] = zd;
-        recurse_8(
+        recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             new_partial_eucl, z, &new_partial, abort, node_budget,
             budget_exhausted, callback, result,

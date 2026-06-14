@@ -1,13 +1,13 @@
 //! Post-LLL linear algebra: Cholesky and LU on the reduced Gram + basis.
 //!
-//! `cholesky_f64_8` is the production path — f64 Cholesky on the natural-
+//! `cholesky_f64` is the production path — f64 Cholesky on the natural-
 //! scale post-LLL Gram. Justified by the LLL invariant κ(G) ≤ 16 at d=8
 //! (one bit of conditioning loss per κ doubling, four bits total) — f64's
 //! 53-bit mantissa yields ~10⁻¹⁵ absolute error at the SE unit-scale bound
 //! check, six orders below SE's 10⁻⁹ tolerance.
 //!
-//! `cholesky_int_8` and `snapshot_gram_to_mpfr` are the MPFR oracle path,
-//! kept so the test suite can validate `cholesky_f64_8` across ε regimes.
+//! `cholesky_int` and `snapshot_gram_to_mpfr` are the MPFR oracle path,
+//! kept so the test suite can validate `cholesky_f64` across ε regimes.
 //!
 //! `lu_solve_int_inplace` solves `Bᵀ · z_c = c` for the cap-center in
 //! lattice coordinates, in MPFR at `lu_prec` (≈ 6·log₂(1/ε) bits) — enough
@@ -47,9 +47,9 @@ pub fn snapshot_gram_to_mpfr(scratch: &mut IntScratch) {
 // ─── MPFR Cholesky (oracle) ──────────────────────────────────────────────────
 
 /// MPFR Cholesky on the natural-scale post-LLL Gram. Reference oracle for
-/// `cholesky_f64_8`; not used in production. Returns `false` on a
+/// `cholesky_f64`; not used in production. Returns `false` on a
 /// non-positive-definite pivot (extremely rare for LLL-output bases).
-pub fn cholesky_int_8(scratch: &mut IntScratch) -> bool {
+pub fn cholesky_int(scratch: &mut IntScratch) -> bool {
     let prec = scratch.prec_q;
     for i in 0..8 {
         for j in 0..8 {
@@ -156,7 +156,7 @@ pub fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
 /// reduced Gram is well-conditioned even when the input Q has κ ≈ 2^137 at
 /// ε=1e-10, and the SE walk's MPFR-128 bound check tolerance (~10⁻⁹) is six
 /// orders above the f64 Cholesky's ~10⁻¹⁵ absolute error at unit scale.
-pub fn cholesky_f64_8(scratch: &mut IntScratch) -> bool {
+pub fn cholesky_f64(scratch: &mut IntScratch) -> bool {
     let scale = 2.0_f64.powi(-scratch.scale_bits);
     let mut g = [[0.0_f64; 8]; 8];
     for i in 0..8 {
@@ -199,7 +199,7 @@ pub fn cholesky_f64_8(scratch: &mut IntScratch) -> bool {
 /// A non-unimodular result indicates the GS lost orthogonalization — for the
 /// L² pipeline this should never happen at our dimension (d=8), but the check
 /// is cheap and catches algorithm bugs early.
-pub fn det8_exact(m: &IMat8) -> Option<i64> {
+pub fn det_exact(m: &IMat8) -> Option<i64> {
     let mut a: [[i256; 8]; 8] =
         std::array::from_fn(|i| std::array::from_fn(|j| i256::from_i64(m[i][j])));
     let mut sign: i64 = 1;

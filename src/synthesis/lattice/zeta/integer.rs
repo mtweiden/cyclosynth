@@ -33,15 +33,15 @@ use crate::rings::MpFloat;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::cholesky_lu::{
-    cholesky_f64_16, euclidean_cholesky_16_mpfr_dual, lu_solve_int_inplace_16,
-    q_cholesky_16_mpfr_dual,
+    cholesky_f64, euclidean_cholesky_mpfr_dual, lu_solve_int_inplace,
+    q_cholesky_mpfr_dual,
 };
-use super::lll::{run_lll_16, LllResult};
+use super::lll::{run_lll, LllResult};
 use super::q_metric::build_q_int_zeta;
 use super::scratch::{rfv, IntScratch16};
 use super::se::{
     bilinear_forms,
-    qbracket_dd_disabled, schnorr_euchner_16d,
+    qbracket_dd_disabled, schnorr_euchner,
     verify_prune_mpfr, LeafAction, SeCenter16,
 };
 use crate::rings::Float;
@@ -66,9 +66,9 @@ fn warm_seed_q_base(scratch: &mut IntScratch16, k: u32, eps: Float) -> bool {
     if scratch.q_base_seed_key != Some(seed_key) {
         super::q_metric::build_q_base_mpfr_zeta(scratch, k, eps);
         build_q_int_zeta(scratch);
-        let r = run_lll_16(scratch);
+        let r = run_lll(scratch);
         let det_ok = matches!(
-            super::cholesky_lu::det16_exact(&scratch.basis),
+            super::cholesky_lu::det_exact(&scratch.basis),
             Some(1) | Some(-1) | None
         );
         scratch.q_base_seed = if matches!(r, LllResult::Converged) && det_ok {
@@ -95,8 +95,8 @@ fn run_lll_ladder(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> 
     let trace = diag::trace_enabled();
     let t_lll = if trace { Some(std::time::Instant::now()) } else { None };
 
-    let lll_result = run_lll_16(scratch);
-    let det_check = super::cholesky_lu::det16_exact(&scratch.basis);
+    let lll_result = run_lll(scratch);
+    let det_check = super::cholesky_lu::det_exact(&scratch.basis);
 
     if let Some(t) = t_lll {
         diag::T_LLL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -134,7 +134,7 @@ fn run_bkz_postpass(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()
         let _changed = super::bkz::bkz_tours(scratch, block_size, super::bkz::BKZ_MAX_LOOPS);
         // Post-BKZ unimodularity check; bail if the insertion path
         // somehow produced a degenerate basis.
-        match super::cholesky_lu::det16_exact(&scratch.basis) {
+        match super::cholesky_lu::det_exact(&scratch.basis) {
             Some(1) | Some(-1) | None => {}
             Some(d) => {
                 eprintln!(
@@ -301,7 +301,7 @@ where
     // the f64 Cholesky so an f64 Cholesky failure can't bail a search
     // whose MPFR factorization is healthy.
     let q_chol_dual = if (eps <= 2e-8 || verify_prune_mpfr()) && !qbracket_dd_disabled() {
-        let dual = q_cholesky_16_mpfr_dual(&scratch.gram, scratch.scale_bits);
+        let dual = q_cholesky_mpfr_dual(&scratch.gram, scratch.scale_bits);
         if dual.is_none() {
             eprintln!(
                 "[lattice_zeta] MPFR Q-Cholesky failed (non-PD Gram) at \
@@ -319,7 +319,7 @@ where
     // it); required only when it is the factor the SE walk will consume.
     if q_chol_dual.is_none() {
         let t_chol = if trace { Some(std::time::Instant::now()) } else { None };
-        let chol_ok = cholesky_f64_16(scratch);
+        let chol_ok = cholesky_f64(scratch);
         if let Some(t) = t_chol {
             diag::T_CHOLESKY_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
@@ -334,7 +334,7 @@ where
 
     // Step 4: solve Bᵀ · z_c = c in MPFR. Result lands in `scratch.lu_x`.
     let t_lu = if trace { Some(std::time::Instant::now()) } else { None };
-    let lu_ok = lu_solve_int_inplace_16(scratch);
+    let lu_ok = lu_solve_int_inplace(scratch);
     if let Some(t) = t_lu {
         diag::T_LU_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
@@ -431,7 +431,7 @@ where
 
     // Norm-shell pruning: precompute the upper-triangular Euclidean
     // Cholesky of the post-LLL basis at MPFR-128 (then f64 snapshot).
-    let (r_eucl, r_eucl_dd) = match euclidean_cholesky_16_mpfr_dual(&basis) {
+    let (r_eucl, r_eucl_dd) = match euclidean_cholesky_mpfr_dual(&basis) {
         Some(pair) => pair,
         None => {
             eprintln!(
@@ -528,7 +528,7 @@ where
         }
     };
 
-    let (solutions, budget_was_hit) = schnorr_euchner_16d(
+    let (solutions, budget_was_hit) = schnorr_euchner(
         &l_upper, q_chol_dual.as_ref().map(|(_, dd)| dd), &z_c, bound_sq,
         &r_eucl, &r_eucl_dd, target_norm_sq_f64, &basis,
         leaf_filter, &budget,

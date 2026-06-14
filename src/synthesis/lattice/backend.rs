@@ -44,7 +44,7 @@ impl LatticeBackend for Omega {
     }
 
     fn run_lll(scratch: &mut Self::Scratch) -> LllResult {
-        super::omega::lll::lll_l2_8(scratch)
+        super::omega::lll::lll_l2(scratch)
     }
 }
 
@@ -60,7 +60,7 @@ impl LatticeBackend for Zeta {
     }
 
     fn run_lll(scratch: &mut Self::Scratch) -> LllResult {
-        super::zeta::lll::run_lll_16(scratch)
+        super::zeta::lll::run_lll(scratch)
     }
 }
 

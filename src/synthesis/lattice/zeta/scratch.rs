@@ -32,20 +32,20 @@ pub type Mat256_16 = [[i256; 16]; 16];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-pub fn rmat_zero_16(prec: u32) -> [[MpFloat; 16]; 16] {
+pub fn rmat_zero(prec: u32) -> [[MpFloat; 16]; 16] {
     std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)))
 }
 
-pub fn rvec_zero_16(prec: u32) -> [MpFloat; 16] {
+pub fn rvec_zero(prec: u32) -> [MpFloat; 16] {
     std::array::from_fn(|_| rfz(prec))
 }
 
-pub fn imat_zero_16() -> Mat256_16 {
+pub fn imat_zero() -> Mat256_16 {
     let z = i256::from_i64(0);
     std::array::from_fn(|_| std::array::from_fn(|_| z))
 }
 
-pub fn identity_basis_16() -> IMat16 {
+pub fn identity_basis() -> IMat16 {
     std::array::from_fn(|i| {
         let mut row = [0i64; 16];
         row[i] = 1;
@@ -139,19 +139,19 @@ impl IntScratch16 {
             prec_q,
             gs_prec,
             scale_bits: 0,
-            q_mpfr: rmat_zero_16(prec_q),
-            q_int: imat_zero_16(),
-            basis: identity_basis_16(),
-            gram: imat_zero_16(),
-            temp_bq: imat_zero_16(),
-            r_bar: rmat_zero_16(gs_prec),
-            mu_bar: rmat_zero_16(gs_prec),
-            s_bar: rmat_zero_16(gs_prec),
+            q_mpfr: rmat_zero(prec_q),
+            q_int: imat_zero(),
+            basis: identity_basis(),
+            gram: imat_zero(),
+            temp_bq: imat_zero(),
+            r_bar: rmat_zero(gs_prec),
+            mu_bar: rmat_zero(gs_prec),
+            s_bar: rmat_zero(gs_prec),
             tmp_a: rfz(gs_prec),
             tmp_b: rfz(gs_prec),
             tmp_c: rfz(gs_prec),
             l_f64: [[0.0_f64; 16]; 16],
-            c: rvec_zero_16(prec_q),
+            c: rvec_zero(prec_q),
             lu_prec,
             lu_a: std::array::from_fn(|_| std::array::from_fn(|_| rfz(lu_prec))),
             lu_rhs: std::array::from_fn(|_| rfz(lu_prec)),
@@ -166,6 +166,6 @@ impl IntScratch16 {
     }
 
     pub fn reset_basis(&mut self) {
-        self.basis = identity_basis_16();
+        self.basis = identity_basis();
     }
 }

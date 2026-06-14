@@ -19,7 +19,7 @@ use super::dd::{dd_add, dd_from_i64, dd_mul, dd_sub};
 
 
 /// W1 kill-switch: `CYCLOSYNTH_FLAT_WALK=0` disables the multi-level
-/// frontier flattening in [`schnorr_euchner_16d`],
+/// frontier flattening in [`schnorr_euchner`],
 /// restoring the legacy per-z[15]-only parallel sharding. Default ON.
 /// Read once (A/B benchmarking aid; not a hot-path read).
 static FLAT_WALK_DISABLED: OnceLock<bool> = OnceLock::new();
@@ -195,7 +195,7 @@ fn center_relative_seed(
 //
 // Double-double companion of the SE walk's incremental f64 partial-Q,
 // active only when an `l_q_dd` factor is supplied (deep-ε regime — see
-// `q_cholesky_16_mpfr_dual` and integer.rs's gating). The f64 partial-Q
+// `q_cholesky_mpfr_dual` and integer.rs's gating). The f64 partial-Q
 // historically overshot truth by up to ~1.8× at the ε=1.5e-8 cliff, which
 // forced the deep-ε `bound_sq` default to 3.0 against a geometric solution
 // band of [0.875, 1.25] (docs/bound_sq_soundness.md). With the dd
@@ -401,7 +401,7 @@ where
     let mut z = [0i64; 16];
     let mut leaves: usize = 0;
     let mut aborted = false;
-    recurse_16(
+    recurse(
         15,
         l,
         z_c,
@@ -417,7 +417,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn recurse_16<F>(
+fn recurse<F>(
     depth: i32,
     l: &[[f64; 16]; 16],
     z_c: &SeCenter16,
@@ -452,7 +452,7 @@ fn recurse_16<F>(
     // but tolerate gracefully).
     if l_dd.abs() < 1e-30 {
         z[d] = z_c.int[d];
-        recurse_16(
+        recurse(
             depth - 1, l, z_c, bound_sq, partial, z, callback, budget, leaves,
             aborted,
         );
@@ -516,7 +516,7 @@ fn recurse_16<F>(
             continue;
         }
         z[d] = zd;
-        recurse_16(
+        recurse(
             depth - 1, l, z_c, bound_sq, new_partial, z, callback, budget,
             leaves, aborted,
         );
@@ -941,7 +941,7 @@ fn expand_se_prefix_node(
 /// triggered LDE-stagger dispatcher to observe search progress. Pass
 /// `None, None` if you don't need either.
 #[allow(clippy::too_many_arguments)]
-pub fn schnorr_euchner_16d<F>(
+pub fn schnorr_euchner<F>(
     l: &[[f64; 16]; 16],
     l_q_dd: Option<&[[(f64, f64); 16]; 16]>,
     z_c: &SeCenter16,
@@ -983,7 +983,7 @@ where
     let u_eucl_dd = &u_eucl_dd;
 
     // z[15] range from the Q-bound. Keep the integer part as i64 to avoid
-    // the deep-ε f64 quantization issue (same fix as recurse_16); the
+    // the deep-ε f64 quantization issue (same fix as recurse); the
     // fractional part shifts the bracket onto the true center.
     let span_q = bound_sq.sqrt() / l_15.abs();
     let z_low = z_c.int[15].saturating_add((z_c.frac[15] - span_q).ceil() as i64);
@@ -1435,7 +1435,7 @@ mod par_tests {
             }
             b[i][i] += 7; // boost diagonal for PSD
         }
-        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky_16(&b).expect("PSD");
+        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky(&b).expect("PSD");
 
         // Pick a z, compute ‖B·z‖² directly.
         let z: [i64; 16] = [1, -2, 3, 0, -1, 2, 1, -3, 4, 0, -1, 2, 1, -2, 3, -1];
@@ -1464,8 +1464,8 @@ mod par_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::cholesky_lu::{cholesky_f64_16, lu_solve_int_inplace_16};
-    use super::super::lll::run_lll_16;
+    use super::super::cholesky_lu::{cholesky_f64, lu_solve_int_inplace};
+    use super::super::lll::run_lll;
     use super::super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
     use super::super::scratch::IntScratch16;
     use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
@@ -1487,7 +1487,7 @@ mod tests {
         let mut s = IntScratch16::new(1e-3);
         build_q_mpfr_zeta(&mut s, v, 6, 1e-3);
         build_q_int_zeta(&mut s);
-        let r = run_lll_16(&mut s);
+        let r = run_lll(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
         let nz_count = s.basis.iter().filter(|row| row.iter().any(|&v| v != 0)).count();
         assert_eq!(nz_count, 16, "basis should have 16 non-zero rows");
@@ -1506,7 +1506,7 @@ mod tests {
         let mut s = IntScratch16::new(1e-3);
         build_q_mpfr_zeta(&mut s, v, 6, 1e-3);
         build_q_int_zeta(&mut s);
-        let r = run_lll_16(&mut s);
+        let r = run_lll(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
 
         let brute = enumerate_unitary_norm_shell(1);
@@ -1568,7 +1568,7 @@ mod tests {
             z, recovered, target);
     }
 
-    // ── det16_exact tests ────────────────────────────────────────────────────
+    // ── det_exact tests ────────────────────────────────────────────────────
 
     #[test]
     fn det16_exact_on_identity() {
@@ -1576,7 +1576,7 @@ mod tests {
         for i in 0..16 {
             id[i][i] = 1;
         }
-        assert_eq!(crate::synthesis::lattice::zeta::cholesky_lu::det16_exact(&id), Some(1));
+        assert_eq!(crate::synthesis::lattice::zeta::cholesky_lu::det_exact(&id), Some(1));
     }
 
     #[test]
@@ -1590,7 +1590,7 @@ mod tests {
         m[1][1] = 0;
         m[0][1] = 1;
         m[1][0] = 1;
-        assert_eq!(crate::synthesis::lattice::zeta::cholesky_lu::det16_exact(&m), Some(-1));
+        assert_eq!(crate::synthesis::lattice::zeta::cholesky_lu::det_exact(&m), Some(-1));
     }
 
     #[test]
@@ -1600,14 +1600,14 @@ mod tests {
         let mut s = IntScratch16::new(1e-3);
         build_q_mpfr_zeta(&mut s, v, 6, 1e-3);
         build_q_int_zeta(&mut s);
-        let r = run_lll_16(&mut s);
+        let r = run_lll(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
-        let det = crate::synthesis::lattice::zeta::cholesky_lu::det16_exact(&s.basis).expect("LLL basis det must fit in i64");
+        let det = crate::synthesis::lattice::zeta::cholesky_lu::det_exact(&s.basis).expect("LLL basis det must fit in i64");
         assert!(det == 1 || det == -1,
             "LLL output basis must be unimodular; got det = {}", det);
     }
 
-    // ── euclidean_cholesky_16 tests ──────────────────────────────────────────
+    // ── euclidean_cholesky tests ──────────────────────────────────────────
 
     #[test]
     fn euclidean_cholesky_16_round_trip() {
@@ -1616,7 +1616,7 @@ mod tests {
         for i in 0..16 {
             id[i][i] = 1;
         }
-        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky_16(&id).expect("identity should be PD");
+        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky(&id).expect("identity should be PD");
         for i in 0..16 {
             for j in 0..16 {
                 let expected = if i == j { 1.0 } else { 0.0 };
@@ -1629,7 +1629,7 @@ mod tests {
         for i in 0..16 {
             diag2[i][i] = 2;
         }
-        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky_16(&diag2).expect("2·I should be PD");
+        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky(&diag2).expect("2·I should be PD");
         for i in 0..16 {
             for j in 0..16 {
                 let expected = if i == j { 2.0 } else { 0.0 };
@@ -1644,7 +1644,7 @@ mod tests {
                 tri[i][j] = if i == j { 3 } else { 1 };
             }
         }
-        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky_16(&tri).expect("lower-triangular full-rank should be PD");
+        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky(&tri).expect("lower-triangular full-rank should be PD");
         // Check Rᵀ·R = B·Bᵀ.
         let mut bbt = [[0.0_f64; 16]; 16];
         for i in 0..16 {
@@ -1723,11 +1723,11 @@ mod tests {
         let mut s = IntScratch16::new(1e-3);
         build_q_mpfr_zeta(&mut s, v, 6, 1e-3);
         build_q_int_zeta(&mut s);
-        let r = run_lll_16(&mut s);
+        let r = run_lll(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
 
         // f64 Cholesky on the post-LLL Gram (lower-triangular L).
-        assert!(cholesky_f64_16(&mut s));
+        assert!(cholesky_f64(&mut s));
         // Transpose to upper-triangular for SE.
         let mut l_upper = [[0.0_f64; 16]; 16];
         for i in 0..16 {
@@ -1736,7 +1736,7 @@ mod tests {
             }
         }
         // LU solve: cap-center in basis coords → fractional SE center.
-        assert!(lu_solve_int_inplace_16(&mut s));
+        assert!(lu_solve_int_inplace(&mut s));
         let z_c = SeCenter16::from_lu_x(&s.lu_x);
 
         // Brute solutions at k=2.
@@ -1781,10 +1781,10 @@ mod tests {
         let mut s = IntScratch16::new(1e-3);
         build_q_mpfr_zeta(&mut s, v, 6, 1e-3);
         build_q_int_zeta(&mut s);
-        let r = run_lll_16(&mut s);
+        let r = run_lll(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
 
-        let (snap, dd) = crate::synthesis::lattice::zeta::cholesky_lu::q_cholesky_16_mpfr_dual(&s.gram, s.scale_bits)
+        let (snap, dd) = crate::synthesis::lattice::zeta::cholesky_lu::q_cholesky_mpfr_dual(&s.gram, s.scale_bits)
             .expect("post-LLL Q Gram must be PD");
         // dd hi part ≡ f64 snapshot, lo bounded by hi's ULP.
         for i in 0..16 {
@@ -1816,7 +1816,7 @@ mod tests {
         // Agreement with the f64 Cholesky path (upper-tri transpose of
         // l_f64) — the deep-ε l_upper swap must be a refinement, not a
         // different factor.
-        assert!(cholesky_f64_16(&mut s));
+        assert!(cholesky_f64(&mut s));
         for i in 0..16 {
             for j in 0..16 {
                 let f64_fac = s.l_f64[j][i];
@@ -1854,17 +1854,17 @@ mod tests {
         for i in 0..16 {
             s.c[i] = rfv(s.prec_q, y[i] * cap_mid);
         }
-        let r = run_lll_16(&mut s);
+        let r = run_lll(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
-        assert!(cholesky_f64_16(&mut s));
+        assert!(cholesky_f64(&mut s));
         let l_upper_f64: [[f64; 16]; 16] =
             std::array::from_fn(|i| std::array::from_fn(|j| s.l_f64[j][i]));
-        let (l_upper_mpfr, l_q_dd) = crate::synthesis::lattice::zeta::cholesky_lu::q_cholesky_16_mpfr_dual(&s.gram, s.scale_bits)
+        let (l_upper_mpfr, l_q_dd) = crate::synthesis::lattice::zeta::cholesky_lu::q_cholesky_mpfr_dual(&s.gram, s.scale_bits)
             .expect("post-LLL Q Gram must be PD");
-        assert!(lu_solve_int_inplace_16(&mut s));
+        assert!(lu_solve_int_inplace(&mut s));
         let z_c = SeCenter16::from_lu_x(&s.lu_x);
         let (r_eucl, r_eucl_dd) =
-            crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky_16_mpfr_dual(&s.basis).expect("basis full-rank");
+            crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky_mpfr_dual(&s.basis).expect("basis full-rank");
         let basis = s.basis;
         let target_norm_sq = 2.0_f64.powi(k as i32);
         let target_i64 = 1_i64 << k;
@@ -1883,13 +1883,13 @@ mod tests {
         let bound_sq = 2.5_f64;
 
         let budget_a = AtomicU64::new(u64::MAX);
-        let (sols_f64, hit_a) = schnorr_euchner_16d(
+        let (sols_f64, hit_a) = schnorr_euchner(
             &l_upper_f64, None, &z_c, bound_sq, &r_eucl, &r_eucl_dd,
             target_norm_sq, &basis, leaf_filter, &budget_a, None, None,
         );
         assert!(!hit_a);
         let budget_b = AtomicU64::new(u64::MAX);
-        let (sols_dd, hit_b) = schnorr_euchner_16d(
+        let (sols_dd, hit_b) = schnorr_euchner(
             &l_upper_mpfr, Some(&l_q_dd), &z_c, bound_sq, &r_eucl, &r_eucl_dd,
             target_norm_sq, &basis, leaf_filter, &budget_b, None, None,
         );
@@ -1914,17 +1914,17 @@ mod tests {
         let mut s = IntScratch16::new(1e-3);
         build_q_mpfr_zeta(&mut s, v, 6, 1e-3);
         build_q_int_zeta(&mut s);
-        let r = run_lll_16(&mut s);
+        let r = run_lll(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
 
-        assert!(cholesky_f64_16(&mut s));
+        assert!(cholesky_f64(&mut s));
         let mut l_upper = [[0.0_f64; 16]; 16];
         for i in 0..16 {
             for j in 0..16 {
                 l_upper[i][j] = s.l_f64[j][i];
             }
         }
-        assert!(lu_solve_int_inplace_16(&mut s));
+        assert!(lu_solve_int_inplace(&mut s));
         let z_c = SeCenter16::from_lu_x(&s.lu_x);
 
         // Pick a bound a few times the smallest diagonal² of the upper

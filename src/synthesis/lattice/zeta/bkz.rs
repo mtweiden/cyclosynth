@@ -701,7 +701,7 @@ mod tests {
         use crate::synthesis::lattice::zeta::{
             integer::find_aligned_lattice_points_with_stop,
             lll::cfa_row,
-            cholesky_lu::det16_exact,
+            cholesky_lu::det_exact,
         };
         use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta;
         use std::sync::atomic::AtomicBool;
@@ -719,7 +719,7 @@ mod tests {
         let _sols = find_aligned_lattice_points_with_stop(&mut s, &y, k, eps, 100_000, &budget_hit, |_| false, None, None);
 
         // Verify basis is unimodular pre-BKZ.
-        let det_pre = det16_exact(&s.basis);
+        let det_pre = det_exact(&s.basis);
         assert!(
             matches!(det_pre, Some(1) | Some(-1) | None),
             "pre-BKZ basis should be unimodular (or det-overflow), got det = {det_pre:?}"
@@ -736,7 +736,7 @@ mod tests {
         let _changed = bkz_tours(&mut s, 4, 4);
 
         // Post-BKZ: still unimodular?
-        let det_post = det16_exact(&s.basis);
+        let det_post = det_exact(&s.basis);
         assert!(
             matches!(det_post, Some(1) | Some(-1) | None),
             "post-BKZ basis should be unimodular, got det = {det_post:?}"

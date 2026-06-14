@@ -195,16 +195,16 @@ fn gram_overflow_check(scratch: &IntScratch) -> bool {
 /// invariant on the prefix is what makes the f64 GS coefficients accurate
 /// enough; running CFA on an unreduced basis would suffer catastrophic
 /// cancellation at deep ε.
-pub fn lll_l2_8(scratch: &mut IntScratch) -> LllResult {
-    lll_l2_8_seeded(scratch, None).0
+pub fn lll_l2(scratch: &mut IntScratch) -> LllResult {
+    lll_l2_seeded(scratch, None).0
 }
 
-/// `lll_l2_8` with an optional warm-start `seed` basis, which must be
+/// `lll_l2` with an optional warm-start `seed` basis, which must be
 /// unimodular (e.g. the reduced basis of the prefix-independent `Q_base`
 /// metric at the same `(k, ε)`): any unimodular basis of ℤ⁸ reduces to the
 /// SAME lattice, so downstream (det ±1, Cholesky, LU, SE) is unaffected.
 /// Returns the LLL iteration count.
-pub fn lll_l2_8_seeded(
+pub fn lll_l2_seeded(
     scratch: &mut IntScratch,
     seed: Option<&super::scratch::IMat8>,
 ) -> (LllResult, usize) {

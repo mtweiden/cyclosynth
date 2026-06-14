@@ -11,7 +11,7 @@ use crate::rings::MpFloat;
 use std::f64::consts::PI;
 
 use super::scratch::{
-    compute_scale_bits, imat_zero_16, rfv, rfz, IntScratch16, TARGET_BITS,
+    compute_scale_bits, imat_zero, rfv, rfz, IntScratch16, TARGET_BITS,
 };
 use crate::rings::Float;
 
@@ -272,7 +272,7 @@ pub fn build_q_int_zeta(scratch: &mut IntScratch16) {
     }
     if max_log2 == i32::MIN {
         scratch.scale_bits = TARGET_BITS as i32;
-        scratch.q_int = imat_zero_16();
+        scratch.q_int = imat_zero();
         return;
     }
     let b = compute_scale_bits(max_log2);

@@ -217,9 +217,9 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch16, kappa: usize) -> usize {
 /// the i256 `gram`.
 ///
 /// **Precondition:** `scratch.basis` is the identity, and `scratch.q_int`
-/// holds the integer-scaled Q. The caller (or [`run_lll_16`]) is responsible
+/// holds the integer-scaled Q. The caller (or [`run_lll`]) is responsible
 /// for invoking [`compute_gram_full`] before this function.
-pub fn lll_l2_16(scratch: &mut IntScratch16) -> LllResult {
+pub fn lll_l2(scratch: &mut IntScratch16) -> LllResult {
     let max_iter = common::MAX_LLL_ITERS_16D;
     let mut iters: usize = 0;
 
@@ -289,14 +289,14 @@ pub fn lll_l2_16(scratch: &mut IntScratch16) -> LllResult {
 /// Honours `scratch.warm_lll` — when true, the caller-supplied basis is
 /// reused as the LLL starting point (Z1 D&C amortisation); otherwise we
 /// reset to identity (default single-search behaviour).
-pub fn run_lll_16(scratch: &mut IntScratch16) -> LllResult {
+pub fn run_lll(scratch: &mut IntScratch16) -> LllResult {
     if !scratch.warm_lll {
         scratch.reset_basis();
     }
     if !compute_gram_full(scratch) {
         return LllResult::GramOverflow;
     }
-    lll_l2_16(scratch)
+    lll_l2(scratch)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -310,7 +310,7 @@ mod tests {
     /// Compute the determinant of a 16×16 i64 matrix exactly via Bareiss
     /// in i256. Returns `None` on i64 overflow at the end (shouldn't happen
     /// for a unimodular post-LLL basis).
-    fn det16_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
+    fn det_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
         let mut a: [[i256; 16]; 16] =
             std::array::from_fn(|i| std::array::from_fn(|j| i256::from_i64(m[i][j])));
         let mut sign: i64 = 1;
@@ -365,7 +365,7 @@ mod tests {
         let mut s = IntScratch16::new(eps);
         build_q_mpfr_zeta(&mut s, v, k, eps);
         build_q_int_zeta(&mut s);
-        let r = run_lll_16(&mut s);
+        let r = run_lll(&mut s);
         (r, s)
     }
 
@@ -373,7 +373,7 @@ mod tests {
     fn lll16_unimodular_eps_1e_3() {
         let (r, s) = run_for(1e-3, 6);
         assert_eq!(r, LllResult::Converged, "LLL did not converge at ε=1e-3");
-        let det = det16_exact(&s.basis).expect("det16 overflow");
+        let det = det_exact(&s.basis).expect("det16 overflow");
         assert!(det == 1 || det == -1, "non-unimodular: det={}", det);
     }
 
@@ -383,7 +383,7 @@ mod tests {
         assert!(matches!(r, LllResult::Converged | LllResult::IterCap),
             "unexpected result: {:?}", r);
         if !matches!(r, LllResult::GramOverflow) {
-            let det = det16_exact(&s.basis).expect("det16 overflow");
+            let det = det_exact(&s.basis).expect("det16 overflow");
             assert!(det == 1 || det == -1, "non-unimodular: det={}", det);
         }
     }
@@ -486,7 +486,7 @@ mod tests {
         let mut s = IntScratch16::new(1e-3);
         build_q_mpfr_zeta(&mut s, v, 8, 1e-3);
         build_q_int_zeta(&mut s);
-        let r = run_lll_16(&mut s);
+        let r = run_lll(&mut s);
         let elapsed = start.elapsed();
         eprintln!("lll16_perf_at_k_8: {:?}, elapsed={:?}", r, elapsed);
         assert!(matches!(r, LllResult::Converged | LllResult::IterCap),
@@ -507,7 +507,7 @@ mod tests {
         let mut s = IntScratch16::new(1e-5);
         build_q_mpfr_zeta(&mut s, v, 14, 1e-5);
         build_q_int_zeta(&mut s);
-        let r = run_lll_16(&mut s);
+        let r = run_lll(&mut s);
         let elapsed = start.elapsed();
         eprintln!("lll16_perf_at_eps_1e_5: {:?}, elapsed={:?}", r, elapsed);
         assert!(matches!(r, LllResult::Converged | LllResult::IterCap),
@@ -535,11 +535,11 @@ mod tests {
             let mut s = IntScratch16::new(1e-3);
             build_q_mpfr_zeta(&mut s, v, 6, 1e-3);
             build_q_int_zeta(&mut s);
-            let r = run_lll_16(&mut s);
+            let r = run_lll(&mut s);
             assert!(matches!(r, LllResult::Converged | LllResult::IterCap),
                 "unexpected at v={:?}: {:?}", v, r);
             if !matches!(r, LllResult::GramOverflow) {
-                let det = det16_exact(&s.basis).expect("det16 overflow");
+                let det = det_exact(&s.basis).expect("det16 overflow");
                 assert!(det == 1 || det == -1,
                     "non-unimodular at v={:?}: det={}", v, det);
             }

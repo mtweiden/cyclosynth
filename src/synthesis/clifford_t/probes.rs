@@ -266,8 +266,8 @@ use std::f64::consts::PI;
                 // find which level excludes it.
                 {
                     use crate::synthesis::lattice::omega::{
-                        cholesky_lu::{cholesky_f64_8, lu_solve_int_inplace},
-                        lll::lll_l2_8,
+                        cholesky_lu::{cholesky_f64, lu_solve_int_inplace},
+                        lll::lll_l2,
                         q_metric::build_q_int,
                         cholesky_lu::euclidean_cholesky,
                         se::{bilinear_b, reconstruct_x},
@@ -277,10 +277,10 @@ use std::f64::consts::PI;
                     s3.reset_basis();
                     build_q_mpfr(&mut s3, &y, lde_inner, eps);
                     build_q_int(&mut s3);
-                    let lll_res = lll_l2_8(&mut s3);
+                    let lll_res = lll_l2(&mut s3);
                     eprintln!("  replay: lll={lll_res:?} scale_bits={}", s3.scale_bits);
                     let basis = s3.basis;
-                    let chol_ok = cholesky_f64_8(&mut s3);
+                    let chol_ok = cholesky_f64(&mut s3);
                     for i in 0..8 {
                         for j in 0..8 {
                             let v = basis[j][i] as f64;
@@ -438,12 +438,12 @@ use std::f64::consts::PI;
     /// walk unbudgeted for tens of minutes). Optionally widen the walk
     /// region via CYCLOSYNTH_SE_BOUND_8D (e.g. 2.5) to check for
     /// solutions ABOVE the production bound.
-    /// Run: `cargo test --release --lib q_telemetry_sweep_8d -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib q_telemetry_sweep -- --ignored --nocapture`
     /// Env: T8_EPS (default sweeps 3e-2 and 1e-3), T8_BUDGET (default 20M),
     /// T8_NODES (default 50M).
     #[test]
     #[ignore]
-    fn q_telemetry_sweep_8d() {
+    fn q_telemetry_sweep() {
         use crate::synthesis::lattice::omega::{integer::find_aligned_lattice_points_outcome as find_aligned_lattice_points, q_metric::build_q_mpfr};
         use crate::synthesis::lattice::omega::scratch::IntScratch;
         use std::sync::atomic::AtomicBool;
@@ -605,7 +605,7 @@ use std::f64::consts::PI;
     /// Stage-4 warm-LLL gate experiment (docs/plan_8d_prefix_rework.md
     /// lever C): on a captured set of production prefixes (bench
     /// target_00, found/empty levels at 1e-7 and 1e-8), compare
-    /// `lll_l2_8` iteration counts between the identity start and a seed
+    /// `lll_l2` iteration counts between the identity start and a seed
     /// = the LLL-reduced basis of the prefix-independent Q_base(k, ε).
     /// Adoption gate: ≥25% total iteration reduction, else kill (16D
     /// precedent).
@@ -614,7 +614,7 @@ use std::f64::consts::PI;
     #[test]
     #[ignore]
     fn warm_lll_gate() {
-        use crate::synthesis::lattice::omega::lll::{lll_l2_8_seeded, LllResult};
+        use crate::synthesis::lattice::omega::lll::{lll_l2_seeded, LllResult};
         use crate::synthesis::lattice::omega::q_metric::{build_q_int, build_q_mpfr};
         use crate::synthesis::lattice::omega::scratch::IntScratch;
         use rug::Assign;
@@ -684,7 +684,7 @@ use std::f64::consts::PI;
                 }
             }
             build_q_int(&mut s);
-            let (res_base, it_base) = lll_l2_8_seeded(&mut s, None);
+            let (res_base, it_base) = lll_l2_seeded(&mut s, None);
             let warm = s.basis;
             eprintln!(
                 "eps={eps:e} t={t} t'={t_prime} lde_inner={lde_inner} captured={} \
@@ -697,8 +697,8 @@ use std::f64::consts::PI;
             for y in &ys {
                 build_q_mpfr(&mut s, y, lde_inner, eps);
                 build_q_int(&mut s);
-                let (rc, ic) = lll_l2_8_seeded(&mut s, None);
-                let (rw, iw) = lll_l2_8_seeded(&mut s, Some(&warm));
+                let (rc, ic) = lll_l2_seeded(&mut s, None);
+                let (rw, iw) = lll_l2_seeded(&mut s, Some(&warm));
                 if !matches!(rc, LllResult::Converged)
                     || !matches!(rw, LllResult::Converged)
                 {

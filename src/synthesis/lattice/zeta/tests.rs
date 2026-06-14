@@ -3,8 +3,8 @@ mod probes;
 
     use super::*;
     use crate::rings::MpFloat;
-    use super::cholesky_lu::lu_solve_int_inplace_16;
-    use super::lll::{run_lll_16, LllResult};
+    use super::cholesky_lu::lu_solve_int_inplace;
+    use super::lll::{run_lll, LllResult};
     use super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
     use super::se::{bilinear_forms, SeCenter16};
     use crate::synthesis::decomposer::BlochDecomposer;
@@ -37,7 +37,7 @@ mod probes;
     #[test]
     #[ignore]
     fn audit_w_cancellation_probe() {
-        use super::cholesky_lu::euclidean_cholesky_16_mpfr_dual;
+        use super::cholesky_lu::euclidean_cholesky_mpfr_dual;
         use crate::synthesis::clifford_sqrt_t::unitary_to_uv_zeta;
 
         // Same target generator as the displacement probe.
@@ -104,11 +104,11 @@ mod probes;
             for i in 0..16 {
                 s.c[i] = MpFloat::with_val(prec, &y[i] * &cap_mid);
             }
-            let r = run_lll_16(&mut s);
+            let r = run_lll(&mut s);
             assert!(matches!(r, LllResult::Converged | LllResult::IterCap), "{r:?}");
-            assert!(lu_solve_int_inplace_16(&mut s), "LU failed at k={k}");
+            assert!(lu_solve_int_inplace(&mut s), "LU failed at k={k}");
             let z_c = SeCenter16::from_lu_x(&s.lu_x);
-            let (r_eucl, _) = euclidean_cholesky_16_mpfr_dual(&s.basis)
+            let (r_eucl, _) = euclidean_cholesky_mpfr_dual(&s.basis)
                 .expect("eucl cholesky");
             let max_zc = (0..16).map(|j| z_c.int[j].unsigned_abs()).max().unwrap();
             let mut m_max = 0.0_f64;
@@ -343,7 +343,7 @@ mod probes;
         // reps and the Σ_8 Minkowski embedding, kept ONLY to pin the
         // production y convention against an independent construction.
         const COSET_REPS: [u32; 4] = [1, 5, 9, 13];
-        fn sigma_8() -> [[f64; 8]; 8] {
+        fn sigma() -> [[f64; 8]; 8] {
             let mut m = [[0.0f64; 8]; 8];
             for (k, &a) in COSET_REPS.iter().enumerate() {
                 for j in 0..8 {
@@ -371,7 +371,7 @@ mod probes;
         let k = 6;
         let y_real = build_y_vector(&target, k);
         let y_lattice = uv_to_lattice_y_zeta(v, k);
-        let s8 = sigma_8();
+        let s8 = sigma();
         let mut y_real_from_lattice = [0.0f64; 16];
         for i in 0..8 {
             for j in 0..8 {
@@ -485,7 +485,7 @@ mod probes;
 
     // ── M1 (lattice-coord Q-metric) tests ─────────────────────────────────────
 
-    fn matvec_16(m: &[[f64; 16]; 16], v: &[f64; 16]) -> [f64; 16] {
+    fn matvec(m: &[[f64; 16]; 16], v: &[f64; 16]) -> [f64; 16] {
         let mut out = [0.0; 16];
         for i in 0..16 {
             for j in 0..16 {
@@ -519,7 +519,7 @@ mod probes;
         let y = compute_align_vec_zeta(v);
         let y_norm: f64 = y.iter().map(|x| x * x).sum::<f64>().sqrt();
         let yhat: [f64; 16] = std::array::from_fn(|i| y[i] / y_norm);
-        let qy = matvec_16(&q, &yhat);
+        let qy = matvec(&q, &yhat);
         let r = (k as f64).exp2().sqrt();
         let delta_y = r * eps * eps / (2.0 * (1.0 + (1.0 - eps * eps).sqrt()));
         let lambda_y = 1.0 / (delta_y * delta_y);
@@ -561,7 +561,7 @@ mod probes;
             [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
         ];
         for w in &test_vecs {
-            let qw = matvec_16(&q, w);
+            let qw = matvec(&q, w);
             let wqw: f64 = w.iter().zip(qw.iter()).map(|(a, b)| a * b).sum();
             assert!(wqw > 0.0, "vᵀ Q_lat v = {wqw} should be > 0");
         }
