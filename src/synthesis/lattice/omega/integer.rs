@@ -115,14 +115,13 @@ pub fn find_aligned_lattice_points_outcome(
 ) -> LatticeSearchOutcome {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    // target_norm = 2^k. Use i128 so target_norm stays correct for k ≥ 63
-    // (where i64 would overflow). At k=82 (ε=1e-8), target_norm = 2^82.
+    // target_norm = 2^k, in i128. The norm sum ‖x‖² is also i128: a
+    // non-solution SE candidate can carry components past 2^31, whose i64
+    // square would wrap and could spuriously equal the i64 target. i128 holds
+    // any k ≤ 126, and benchmarks show no measurable cost over a k≤62 i64 fast
+    // path here (the per-node cost is dominated by reconstruct_x + the MPFR
+    // dot), so the single i128 path replaces it for consistency and safety.
     let target_norm: i128 = 1i128 << k;
-    // Fast path: when k ≤ 62, both ‖x‖² and target_norm fit in i64. The SE
-    // callback is the hot loop (millions of invocations); the i128 path is
-    // ~3-5× slower per op on aarch64. Hoist the branch outside the closure.
-    let use_i64_path = k <= 62;
-    let target_norm_i64: i64 = if use_i64_path { 1i64 << k } else { 0 };
 
     // Alignment threshold and dot product at MPFR-128. Two precision walls
     // fire in the f64 formula at ε ≲ √(machine_eps) ≈ 1.5e-8:
@@ -276,19 +275,12 @@ pub fn find_aligned_lattice_points_outcome(
             }
             count.fetch_add(1, Ordering::Relaxed);
             let x = super::se::reconstruct_x(&basis, z);
-            // Norm check: i64 fast path for k ≤ 62, i128 path otherwise.
-            // Most SE candidates fail this check, so it's the hottest test;
-            // keeping it in i64 when safe is worth the branch.
-            if use_i64_path {
-                let n: i64 = x.iter().map(|&v| v * v).sum();
-                if n != target_norm_i64 {
-                    return None;
-                }
-            } else {
-                let n: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
-                if n != target_norm {
-                    return None;
-                }
+            // Norm check: most SE candidates fail here, so it's the hottest
+            // test. i128 squares can't wrap, so a non-solution never spuriously
+            // matches the shell target.
+            let n: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
+            if n != target_norm {
+                return None;
             }
             if super::se::bilinear_b(&x) != 0 {
                 return None;
