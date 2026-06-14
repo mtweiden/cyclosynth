@@ -26,6 +26,7 @@
 pub mod brute;
 pub mod bkz;
 pub mod cholesky_lu;
+pub mod dd;
 pub mod integer;
 pub mod lll;
 pub mod lll_f64;
