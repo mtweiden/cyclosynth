@@ -1,8 +1,8 @@
 # AGENTS.md
 
-Guidance for AI coding agents working in `cyclosynth`. (Human-facing intro is in
-[README.md](README.md); this file holds the build/test/convention details and
-the non-obvious gotchas an agent needs.)
+Orientation for AI agents working in `cyclosynth`. (Human-facing intro is in
+[README.md](README.md); this file holds the build/test details and the
+non-obvious facts needed to navigate the codebase.)
 
 ## What this is
 
@@ -36,18 +36,6 @@ Python: `pip install maturin && maturin develop --release`. (Plain
 PyO3-without-maturin libpython issue, not a code bug; use `cargo check
 --features python` to validate compilation.)
 
-## Conventions
-
-- **Comments explain WHY, not WHAT.** Load-bearing only; no restating the code.
-  Spell out an acronym at first use (the glossary is the canonical place).
-- **Naming**: domain terms (`q`=√T gate, `lde`, `lll`, `fgkm`, `cfa`, `dd`,
-  `zeta`/`zomega`) are kept deliberately and defined in the glossary — do **not**
-  "clarify" them by renaming. But tests/probes/specific internal fns should be
-  named for what they *do*, not by an investigation code.
-- **Float types**: `Float` = `f64` (hardware), `MpFloat` = `rug::Float` (MPFR,
-  arbitrary precision — NOT a fixed-width "f128"). These are the only two; use
-  them consistently.
-
 ## Architecture
 
 Two backends under `src/synthesis/lattice/`, deliberately kept **parallel but
@@ -68,33 +56,21 @@ strategies), `synthesizer.rs` (the unified `Backend{T,Q}` enum wrapper + PyO3),
 `decomposer.rs`/`cliffords.rs`/`cost_bound.rs`/`distance.rs`, and `rings/` +
 `matrix/` (exact ring/matrix types).
 
-## Gotchas (the things that will bite you)
+## Things to know
 
-- **Telemetry is `trace`-feature-gated and zero-cost when off.**
-  `diag::trace_enabled()` is a compile-time `const false` without `--features
-  trace`. NEVER add an unconditional `diag::*` counter write — always behind
-  `if trace_enabled()`. The default build must carry no telemetry cost (LLL is
-  ~99% of CPU at deep ε).
-- **The hot path is the Schnorr-Euchner walk (`*/se.rs`) and the LLL.** Any
-  change there needs an A/B wall-time measurement, not a guess. "Cold per-prefix
-  f64 → MPFR is free" is NOT universal: the f64 GS *did* turn out free (removed),
-  but the per-prefix f64 Cholesky pays ~6-8% — measure before collapsing a fast
-  path.
-- **Bound-invariant policy**: the derived Q-band (e.g. `bound_sq`) is
-  theorem-grade. If something looks like it needs the bound *widened* to pass,
-  the bug is elsewhere — never widen a sound bound to absorb a symptom.
-- **Test discipline**: iterate at coarse ε (1e-2/1e-3, k≤8); deep ε (≤1e-7) is
-  slow (seconds-to-minutes per target) — reserve for milestones and **background
-  long runs**, never block on a >30s foreground run. `#[ignore]` tests are
-  diagnostic *probes* (in `*/probes.rs` or inline); they're not part of the
-  default suite. "OK to miss a solution at lde = k if it's found at k+1."
-- **Env vars** (`CYCLOSYNTH_*`) exist as A/B kill-switches; several (e.g.
-  `CYCLOSYNTH_BOUND_SQ`) affect search *results* and are read per-call by tests —
-  don't "optimize" them into one-time caches without checking the tests.
+- **Float types**: `Float` = `f64` (hardware), `MpFloat` = `rug::Float` (MPFR,
+  arbitrary precision — not a fixed-width "f128"). Those are the only two.
+- **Telemetry is `trace`-feature-gated and compile-time-zero-cost when off**
+  (`diag::trace_enabled()` is `const false` without `--features trace`), so the
+  default build carries none. LLL is ~99% of CPU at deep ε.
+- **The hot path is the Schnorr-Euchner walk (`*/se.rs`) and the LLL.** The f64
+  Gram-Schmidt path was measured to give no speedup (removed), but the
+  per-prefix f64 Cholesky is ~6-8% faster than MPFR (kept).
+- The derived Q-band (e.g. `bound_sq`) is a proven invariant, not a tunable.
+- **Deep ε is slow** (≤1e-7 is seconds-to-minutes per target); iterate at coarse
+  ε (1e-2/1e-3). `#[ignore]` tests are diagnostic *probes* (`*/probes.rs` or
+  inline), not part of the default suite.
+- `CYCLOSYNTH_*` env vars are A/B kill-switches; some (e.g. `CYCLOSYNTH_BOUND_SQ`)
+  affect search *results*.
 - `docs/`, `scripts/`, `bench_logs/`, `target/` are gitignored (planning notes /
   internal bench tooling). User-facing examples live in `examples/`.
-
-## When unsure
-
-Prefer measuring over asserting; prefer the existing parallel-backend symmetry;
-keep the public Python surface small (`Synthesizer` + `SynthResult` only).
