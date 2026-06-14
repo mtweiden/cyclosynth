@@ -106,6 +106,53 @@ pub fn verify_partial_dd_exceeds(
     total.0 + total.1 > threshold
 }
 
+/// Resolve a fired Euclidean shell prune. Returns true iff the node should
+/// actually be pruned. Shared verbatim by the recursion and the W1 frontier
+/// expander (the prune ladder lives here so the two can't drift). `prune_fires`
+/// is the site-specific f64 test. When set: the integer-exact ‖x‖² ≤ T
+/// short-circuit runs first (~30 ns, proves a keep, no false negatives), then
+/// dd-verify when MPFR-verify is enabled (sound for any f64 overshoot ratio,
+/// needed at ε ≤ 1.5e-8 where the f64 dot product cancels catastrophically).
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn resolve_prune(
+    prune_fires: bool,
+    x: &[i64; 16],
+    z: &[i64; 16],
+    target_norm_sq_i128: i128,
+    r_eucl_dd: &[[(f64, f64); 16]; 16],
+    z_c: &SeCenter16,
+    u_eucl_dd: &[(f64, f64); 16],
+    depth: usize,
+    threshold: f64,
+    trace: bool,
+) -> bool {
+    if !prune_fires {
+        return false;
+    }
+    if trace {
+        crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
+    }
+    let x_norm_sq: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
+    if x_norm_sq <= target_norm_sq_i128 {
+        return false;
+    }
+    if !verify_prune_mpfr() {
+        return true;
+    }
+    let t_v = if trace { Some(std::time::Instant::now()) } else { None };
+    let dd_prune = verify_partial_dd_exceeds(r_eucl_dd, z, z_c, u_eucl_dd, depth, threshold);
+    if let Some(t) = t_v {
+        crate::synthesis::diag::T_VERIFY_DD_NS
+            .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if !dd_prune {
+            crate::synthesis::diag::N_VERIFY_PRUNE_CORRECTED.fetch_add(1, Ordering::Relaxed);
+        }
+        crate::synthesis::diag::N_VERIFY_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
+    }
+    dd_prune
+}
+
 /// Center-relative seeding: walkers start at `z = z_c.int, x = x_base,
 /// w = u` so every subsequent f64 rounding happens at bound-scale
 /// magnitude (~√T·O(1)) instead of the ±30·√T·2^53 intermediates the
@@ -161,10 +208,10 @@ fn center_relative_seed(
 // f64 tail loop) + ~4 dd ops per bracket candidate. Zero cost when
 // `l_q_dd` is `None` (moderate ε): the f64 path is untouched.
 //
-// These two helpers are shared verbatim by `recurse_collect_norm_pruned`
-// and the W1 frontier `expand_se_prefix_node` (the known duplicate-ladder
-// trap) plus the stage-1 z[15] seeding, keeping all three Q-prune sites
-// in lockstep.
+// These two helpers are shared verbatim by `recurse_collect_norm_pruned`,
+// the W1 frontier `expand_se_prefix_node`, and the stage-1 z[15] seeding,
+// keeping all three Q-prune sites in lockstep. The Euclidean shell prune they
+// pair with is likewise shared, via `resolve_prune`.
 
 /// Node-level dd tail: `Σ_{j > d} l_q_dd[d][j] · ((z[j] − int[j]) − frac[j])`.
 /// `z[j] − int[j]` is an exact small i64 (bracket-sized); `frac[j]` is an
@@ -873,35 +920,10 @@ fn expand_se_prefix_node(
         let new_partial_eucl = item.partial_eucl + level_eucl * level_eucl;
         let threshold = target_norm_sq * (1.0 + 1e-9);
         let prune_fires = new_partial_eucl > threshold; // d ≥ 4 > 0 here
-        if trace && prune_fires {
-            crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
-        }
-        // Same prune-verification ladder as the recursion: integer-exact
-        // short-circuit first, then dd verify (when enabled).
-        let actually_prune = if prune_fires {
-            let x_norm_sq: i128 = item.x.iter().map(|&v| (v as i128) * (v as i128)).sum();
-            if x_norm_sq <= target_norm_sq_i128 {
-                false
-            } else if verify_prune_mpfr() {
-                let t_v = if trace { Some(std::time::Instant::now()) } else { None };
-                let dd_prune =
-                    verify_partial_dd_exceeds(r_eucl_dd, &item.z, z_c, u_eucl_dd, d, threshold);
-                if let Some(t) = t_v {
-                    crate::synthesis::diag::T_VERIFY_DD_NS
-                        .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                    if !dd_prune {
-                        crate::synthesis::diag::N_VERIFY_PRUNE_CORRECTED.fetch_add(1, Ordering::Relaxed);
-                    }
-                    crate::synthesis::diag::N_VERIFY_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
-                }
-                dd_prune
-            } else {
-                true
-            }
-        } else {
-            false
-        };
-        if actually_prune {
+        if resolve_prune(
+            prune_fires, &item.x, &item.z, target_norm_sq_i128,
+            r_eucl_dd, z_c, u_eucl_dd, d, threshold, trace,
+        ) {
             continue;
         }
         let mut child = item.clone();
@@ -1369,41 +1391,10 @@ fn recurse_collect_norm_pruned<F>(
         let new_partial_eucl = partial_eucl + level_eucl * level_eucl;
         let threshold = target_norm_sq * (1.0 + 1e-9);
         let prune_fires = depth > 0 && new_partial_eucl > threshold;
-        if trace && prune_fires {
-            crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
-        }
-        // dd verification of the prune decision (needed at ε ≤ 1.5e-8:
-        // catastrophic cancellation in the f64 dot product). Always runs when
-        // enabled — sound for any overshoot ratio, and measured free. The
-        // integer-exact short-circuit goes first: ‖x‖² ≤ T_int proves the
-        // prune wrong for ~30 ns vs dd's ~450 ns.
-        let actually_prune = if prune_fires {
-            // Integer-exact short-circuit (no false negatives, may miss some
-            // true keeps where prefix_d > ‖x‖² − T).
-            let x_norm_sq: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
-            if x_norm_sq <= target_norm_sq_i128 {
-                false  // confirmed keep, skip dd verify
-            } else if verify_prune_mpfr() {
-                let t_v = if trace { Some(std::time::Instant::now()) } else { None };
-                let dd_prune = verify_partial_dd_exceeds(
-                    r_eucl_dd, z, z_c, u_eucl_dd, depth as usize, threshold,
-                );
-                if let Some(t) = t_v {
-                    crate::synthesis::diag::T_VERIFY_DD_NS
-                        .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                    if !dd_prune {
-                        crate::synthesis::diag::N_VERIFY_PRUNE_CORRECTED.fetch_add(1, Ordering::Relaxed);
-                    }
-                    crate::synthesis::diag::N_VERIFY_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
-                }
-                dd_prune
-            } else {
-                true
-            }
-        } else {
-            false
-        };
-        if actually_prune {
+        if resolve_prune(
+            prune_fires, x, z, target_norm_sq_i128,
+            r_eucl_dd, z_c, u_eucl_dd, depth as usize, threshold, trace,
+        ) {
             continue;
         }
         // NOTE: a depth-0 integer-exact early-out (`if d==0 && Σx[i]² ≠ 2^k:
