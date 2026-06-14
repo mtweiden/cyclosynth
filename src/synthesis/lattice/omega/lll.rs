@@ -233,25 +233,7 @@ pub fn compute_gram_full(scratch: &mut IntScratch) -> bool {
     max_abs_log2 <= GRAM_OVERFLOW_THRESHOLD_BITS as i32
 }
 
-/// Bit count of |v| (≈ ⌈log₂(|v|)⌉, returns -1 for v=0).
-fn i256_log2_ceil(v: &i256) -> i32 {
-    let zero = i256::from_i64(0);
-    if *v == zero {
-        return -1;
-    }
-    let abs = if *v < zero { -*v } else { *v };
-    let bytes = abs.to_le_bytes();
-    let mut leading_zeros: u32 = 0;
-    for byte in bytes.iter().rev() {
-        if *byte == 0 {
-            leading_zeros += 8;
-        } else {
-            leading_zeros += byte.leading_zeros();
-            break;
-        }
-    }
-    (256 - leading_zeros as i32) - 1
-}
+pub use crate::synthesis::lattice::common::i256_log2_ceil;
 
 /// Check whether any Gram entry exceeds the overflow threshold.
 fn gram_overflow_check(scratch: &IntScratch) -> bool {

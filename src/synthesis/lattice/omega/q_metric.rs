@@ -3,8 +3,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use i256::i256;
-use rug::{Assign, Float as RFloat};
+use rug::Assign;
 
 use super::scratch::{
     compute_scale_bits, imat_zero, rfv, IntScratch, TARGET_BITS,
@@ -175,47 +174,4 @@ pub fn build_q_int(scratch: &mut IntScratch) {
 
 // ─── rug → i256 conversion (used by build_q_int) ─────────────────────────────
 
-/// Round `2^shift_bits · x` to `i256`. `shift_bits` may be positive (scale
-/// up) or negative (scale down). Saturates to i256 bounds (callers should
-/// choose shift_bits to avoid this).
-pub fn rug_to_i256_scaled(x: &RFloat, shift_bits: i32) -> i256 {
-    if x.is_zero() {
-        return i256::from_i64(0);
-    }
-    let mut scaled = x.clone();
-    if shift_bits >= 0 {
-        scaled <<= shift_bits as u32;
-    } else {
-        scaled >>= (-shift_bits) as u32;
-    }
-    scaled.round_mut();
-    rfloat_to_i256(&scaled)
-}
-
-/// Convert an integer-valued RFloat to i256. Saturates on overflow.
-fn rfloat_to_i256(x: &RFloat) -> i256 {
-    use rug::integer::Order;
-    let sign_neg = x.is_sign_negative();
-    let abs = x.clone().abs();
-    // Fast path: fits in i64.
-    if abs <= rug::Float::with_val(64, i64::MAX as f64) {
-        let v = abs.to_f64() as i64;
-        let res = i256::from_i64(v);
-        return if sign_neg { -res } else { res };
-    }
-    let int = match abs.to_integer() {
-        Some(i) => i,
-        None => return i256::from_i64(0),
-    };
-    if int.significant_bits() > 254 {
-        return if sign_neg { i256::MIN } else { i256::MAX };
-    }
-    let mut limbs = [0u64; 4];
-    int.write_digits(&mut limbs, Order::Lsf);
-    let mut bytes = [0u8; 32];
-    for (idx, limb) in limbs.iter().enumerate() {
-        bytes[idx * 8..(idx + 1) * 8].copy_from_slice(&limb.to_le_bytes());
-    }
-    let val = i256::from_le_bytes(bytes);
-    if sign_neg { -val } else { val }
-}
+pub use crate::synthesis::lattice::common::rug_to_i256_scaled;

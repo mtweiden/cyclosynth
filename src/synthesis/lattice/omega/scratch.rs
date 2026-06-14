@@ -10,35 +10,12 @@ use crate::rings::Float;
 use i256::i256;
 use rug::{Assign, Float as RFloat};
 
-// ─── Adaptive precision constants — re-exported from lattice::common ─────────
+// ─── Adaptive precision constants & helpers — from lattice::common ───────────
 
 pub use crate::synthesis::lattice::common::{
-    compute_scale_bits, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
+    compute_lu_prec, compute_prec_q, compute_scale_bits, rfv, rfz,
+    GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
 };
-
-/// MPFR precision in bits used to construct the anisotropic Q metric.
-/// `8·log₂(1/ε)` covers κ(Q) ≈ 16/ε⁴ with safety margin; floor at 100 bits
-/// for moderate ε where the formula otherwise underflows.
-pub fn compute_prec_q(eps: Float) -> u32 {
-    let log_recip = (1.0 / eps).log2().max(1.0);
-    let bits = (8.0 * log_recip).ceil() as u32;
-    bits.max(100)
-}
-
-/// MPFR precision used by the cap-center LU solve, scaled with ε.
-///
-/// The basis `B` has det=±1 but its entries grow with ε (up to ~2¹⁵ at
-/// ε=1e-5, ~2⁴¹ at ε=1e-8). Partial-pivoting LU on this basis can develop
-/// pivot ratios up to ~max(|B|)^(d-1) in pathological cases — usually
-/// much tighter, but enough to consume meaningful precision at deep ε.
-/// Empirically at ε=1e-8 a 96-bit LU loses enough precision in z_c that SE
-/// misses the canonical-lde solution; 6·log₂(1/ε) bits leaves margin (75% of
-/// `prec_q`, so each MPFR op in the LU is ~1.3× cheaper).
-pub fn compute_lu_prec(eps: Float) -> u32 {
-    let log_recip = (1.0 / eps).log2().max(1.0);
-    let bits = (6.0 * log_recip).ceil() as u32;
-    bits.max(96)
-}
 
 // ─── Type aliases ────────────────────────────────────────────────────────────
 
@@ -213,14 +190,6 @@ pub struct IntScratch {
 }
 
 // ─── MPFR/i256 zero-fill helpers ─────────────────────────────────────────────
-
-pub fn rfz(prec: u32) -> RFloat {
-    RFloat::with_val(prec, 0.0_f64)
-}
-
-pub fn rfv(prec: u32, x: f64) -> RFloat {
-    RFloat::with_val(prec, x)
-}
 
 pub fn rmat_zero(prec: u32) -> [[RFloat; 8]; 8] {
     std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)))

@@ -16,56 +16,12 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use gmp_mpfr_sys::{gmp, mpfr};
 use i256::i256;
-use rug::Float as RFloat;
-use std::ptr::NonNull;
 
 use super::lll::i256_to_f64;
 use super::scratch::IMat8;
 use super::scratch::{rfv, rfz, IntScratch};
-
-// ─── i256 → MPFR conversion ──────────────────────────────────────────────────
-
-/// Set `dst` (an MPFR variable) to the value of i256 `v`. Zero allocation.
-/// Constructs a stack-allocated read-only mpz_t view of the i256 limbs and
-/// passes it to `mpfr::set_z`. Safe for all i256 values including 0 and
-/// negatives (caller's `dst` must be initialized with a precision adequate
-/// to represent the value exactly — 256 bits suffices for any i256). All
-/// unsafe code uses only the documented public mpfr/gmp API.
-#[inline]
-pub fn i256_to_rfloat(v: i256, dst: &mut RFloat) {
-    let zero = i256::from_i64(0);
-    if v == zero {
-        unsafe { mpfr::set_zero(dst.as_raw_mut(), 0) };
-        return;
-    }
-    let neg = v < zero;
-    let abs = if neg { -v } else { v };
-    let bytes = abs.to_le_bytes();
-    let mut limbs: [gmp::limb_t; 4] = std::array::from_fn(|i| {
-        let mut buf = [0u8; 8];
-        buf.copy_from_slice(&bytes[i * 8..(i + 1) * 8]);
-        u64::from_le_bytes(buf) as gmp::limb_t
-    });
-    // Trim trailing-zero limbs to determine `_mp_size`.
-    let mut size: i32 = 4;
-    while size > 0 && limbs[(size - 1) as usize] == 0 {
-        size -= 1;
-    }
-    let signed_size = if neg { -size } else { size };
-    // Stack mpz_t view: `alloc=0` means "non-owned"; mpfr::set_z only reads
-    // from it.
-    let mpz = gmp::mpz_t {
-        alloc: 0,
-        size: signed_size,
-        d: unsafe { NonNull::new_unchecked(limbs.as_mut_ptr()) },
-    };
-    unsafe {
-        mpfr::set_z(dst.as_raw_mut(), &mpz as *const _, mpfr::rnd_t::RNDN);
-    }
-    // limbs goes out of scope; mpfr::set_z has already copied the bits into dst.
-}
+pub use crate::synthesis::lattice::common::i256_to_rfloat;
 
 /// Convert the post-LLL i256 Gram into MPFR `g_post_lll` so the MPFR
 /// Cholesky oracle can run on it. The integer Gram is divided by

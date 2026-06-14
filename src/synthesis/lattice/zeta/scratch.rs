@@ -15,7 +15,8 @@ use rug::Float as RFloat;
 // ─── Adaptive precision constants ────────────────────────────────────────────
 
 pub use crate::synthesis::lattice::common::{
-    compute_scale_bits, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
+    compute_lu_prec, compute_prec_q, compute_scale_bits, rfv, rfz,
+    GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
 };
 
 /// MPFR Gram-Schmidt precision. d=16 is outside the NS09 f64 proof (d ≤ 11),
@@ -24,37 +25,12 @@ pub use crate::synthesis::lattice::common::{
 /// [`IntScratch16::with_gs_prec`].
 pub const GS_PREC: u32 = 80;
 
-/// MPFR precision in bits used to construct the anisotropic Q metric.
-pub fn compute_prec_q(eps: Float) -> u32 {
-    let log_recip = (1.0 / eps).log2().max(1.0);
-    let bits = (8.0 * log_recip).ceil() as u32;
-    bits.max(100)
-}
-
-/// MPFR precision used by the cap-center LU solve. The 16x16 partial-pivoting
-/// LU on the post-LLL basis B (det = ±1, entries up to ~2^15-2^41) develops
-/// pivot ratios that grow with ε; 6·log₂(1/ε) bits leaves headroom past SE's
-/// 10⁻⁹ tolerance.
-pub fn compute_lu_prec(eps: Float) -> u32 {
-    let log_recip = (1.0 / eps).log2().max(1.0);
-    let bits = (6.0 * log_recip).ceil() as u32;
-    bits.max(96)
-}
-
 // ─── Type aliases ────────────────────────────────────────────────────────────
 
 pub type IMat16 = [[i64; 16]; 16];
 pub type Mat256_16 = [[i256; 16]; 16];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-pub fn rfz(prec: u32) -> RFloat {
-    RFloat::with_val(prec, 0.0_f64)
-}
-
-pub fn rfv(prec: u32, x: f64) -> RFloat {
-    RFloat::with_val(prec, x)
-}
 
 pub fn rmat_zero_16(prec: u32) -> [[RFloat; 16]; 16] {
     std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)))
