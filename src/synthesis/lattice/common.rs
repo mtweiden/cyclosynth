@@ -306,12 +306,6 @@ pub fn rug_to_i256_scaled(x: &RFloat, shift_bits: i32) -> i256 {
 fn rfloat_to_i256(x: &RFloat) -> i256 {
     let sign_neg = x.is_sign_negative();
     let abs = x.clone().abs();
-    // Fast path: fits in i64.
-    if abs <= rug::Float::with_val(64, i64::MAX as f64) {
-        let v = abs.to_f64() as i64;
-        let res = i256::from_i64(v);
-        return if sign_neg { -res } else { res };
-    }
     let int = match abs.to_integer() {
         Some(i) => i,
         None => return i256::from_i64(0),
