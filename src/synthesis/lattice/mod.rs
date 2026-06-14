@@ -3,6 +3,9 @@
 //! [`common`] holds the dimension-independent L²-LLL parameters and helpers
 //! shared by both.
 
+pub mod backend;
 pub mod common;
 pub mod omega;
 pub mod zeta;
+
+pub use backend::{LatticeBackend, Omega, Zeta};
