@@ -375,6 +375,27 @@ pub fn synthesize_first(target: &[[Complex64; 2]; 2], k: u32, eps: f64) -> Optio
         return None;
     }
 
+    // Deep-ε path: MITM (8D LLL+BKZ+SE half-enumerator + key-join). The
+    // joint 16D SE that follows below is intractable at ε ≤ ~1e-4 (the
+    // anisotropic 16D shell has exponentially few valid leaves per
+    // searchable region). MITM splits the search into two 8D problems
+    // and joins on the additive invariants — see
+    // `lattice_upsilon::mitm_half_se` and PROMPT_lattice_upsilon_mitm.md.
+    //
+    // Env opt-out for A/B: `CYCLOSYNTH_MITM_N12=0` reverts to joint SE.
+    let mitm_disabled = std::env::var("CYCLOSYNTH_MITM_N12")
+        .ok()
+        .map(|s| s == "0")
+        .unwrap_or(false);
+    if !mitm_disabled && eps <= 1e-4 {
+        if let Some(result) = synthesize_first_via_mitm(target, k, eps) {
+            return Some(result);
+        }
+        // MITM region empty (or no candidate met joint ε); fall through
+        // to joint SE so callers still get a chance, but at this regime
+        // joint SE will almost certainly time out or return None.
+    }
+
     let v = [
         target[0][0].re,
         target[0][0].im,
@@ -403,6 +424,46 @@ pub fn synthesize_first(target: &[[Complex64; 2]; 2], k: u32, eps: f64) -> Optio
         }
     });
     hit
+}
+
+/// MITM-fast-path for [`synthesize_first`]. Builds the 8D LLL+BKZ+SE
+/// per-half pools (`mitm_half_se::lll_se_enumerate_half`), joins on the
+/// exact integer norm+bullet key, then phase-tests each pair against the
+/// target. Returns `Some(SynthResult)` on the first within-ε hit.
+fn synthesize_first_via_mitm(
+    target: &[[Complex64; 2]; 2],
+    k: u32,
+    eps: f64,
+) -> Option<SynthResult> {
+    use super::mitm_half_se::lll_se_mitm_norm_bullet_set;
+    let trace = std::env::var_os("CYCLOSYNTH_TRACE_MITM_DISPATCH").is_some();
+    let t0 = std::time::Instant::now();
+    let cands = lll_se_mitm_norm_bullet_set(target, k, eps);
+    if trace {
+        eprintln!(
+            "[trace mitm dispatch] k={k} eps={eps:e} |cands|={} pool_build_ms={}",
+            cands.len(),
+            t0.elapsed().as_millis()
+        );
+    }
+    for sol in &cands {
+        let (u, phase, d) = best_phase(sol, k, target);
+        if d <= eps {
+            if trace {
+                eprintln!(
+                    "[trace mitm dispatch] HIT k={k} eps={eps:e} d={d:e} wall_ms={}",
+                    t0.elapsed().as_millis()
+                );
+            }
+            return Some(SynthResult {
+                u,
+                solution: *sol,
+                phase,
+                distance: d,
+            });
+        }
+    }
+    None
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

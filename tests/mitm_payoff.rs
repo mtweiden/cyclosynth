@@ -90,21 +90,36 @@ fn run_mitm_at_k(target: &Mat2, eps: f64, k: u32) -> PayoffRow {
     }
 }
 
-fn try_seed(eps: f64, seed: u64, k_min: u32, k_max: u32) -> PayoffRow {
+/// Lever-2 frontier-k: the smallest exhaustible k whose per-half region
+/// is expected to be non-empty for `ε`. The pool size estimate is
+/// `~2^{4k}·ε²`; we pick `k` so this is ~ε⁻¹·8 (modest but ≥ 1). For
+/// ε=1e-5 → k ≈ 12; for ε=1e-6 → k ≈ 14. We then step up by one if k_start
+/// has an empty region (only the unlucky-target case).
+fn frontier_k(eps: f64) -> u32 {
+    // Solve 2^(4k)·ε² ≥ 8 → 4k ≥ log2(8/ε²) → k ≥ ⌈(log2(8) − 2·log2(ε))/4⌉.
+    let target_pool_log2 = 3.0_f64; // log2(8)
+    let k_est = (target_pool_log2 - 2.0 * eps.log2()) / 4.0;
+    k_est.ceil() as u32
+}
+
+fn try_seed(eps: f64, seed: u64, _k_min: u32, k_max: u32) -> PayoffRow {
     let target = haar_target(seed);
-    let mut best_row: Option<PayoffRow> = None;
     let mut total_wall = 0.0_f64;
-    for k in k_min..=k_max {
+    let mut last_row: Option<PayoffRow> = None;
+    let k_start = frontier_k(eps);
+    // From the frontier k upward; in practice the first hit is at
+    // k_start or k_start+1 with the BKZ-reduced 8D walker.
+    for k in k_start..=k_max {
         let mut row = run_mitm_at_k(&target, eps, k);
         row.seed = seed;
         total_wall += row.wall_s;
         if row.found {
-            row.wall_s = total_wall; // cumulative wall up to the first success
+            row.wall_s = total_wall;
             return row;
         }
-        best_row = Some(row);
+        last_row = Some(row);
     }
-    let mut last = best_row.unwrap();
+    let mut last = last_row.unwrap();
     last.seed = seed;
     last.wall_s = total_wall;
     last

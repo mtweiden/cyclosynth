@@ -1263,8 +1263,13 @@ mod tests {
 
     /// Synthesize a deterministic Haar-style random SU(2) unitary using the
     /// native n=12 lattice path.
+    ///
+    /// At the default `eps = 1e-5`, this test is now routed through the 8D
+    /// LLL+BKZ+SE MITM backend (see [`super::lattice_upsilon::synthesize_first`])
+    /// which lands a within-ε circuit in ~5 s (vs the joint 16D SE that
+    /// previously hung). The `#[ignore]` is removed because the test no
+    /// longer takes minutes — it's a regular regression now.
     #[test]
-    #[ignore = "slow native random-unitary synthesis regression"]
     fn synthesize_random_unitary() {
         use rand::{rngs::StdRng, Rng, SeedableRng};
 
@@ -1272,7 +1277,7 @@ mod tests {
         let eps = std::env::var("CYCLOSYNTH_PI12_RANDOM_EPS")
             .ok()
             .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(1e-4_f64);
+            .unwrap_or(1e-5_f64);
 
         let theta = rng.random::<f64>() * (2.0 * PI);
         let phi = rng.random::<f64>() * (2.0 * PI);
@@ -1293,6 +1298,15 @@ mod tests {
             ],
         ];
 
+        // Frontier-k start: the smallest exhaustible k whose per-half
+        // region is expected to be non-empty for `eps`. The pool size
+        // estimate is ~2^{4k}·ε² ≥ 2^14 → k ≥ ⌈(14 − 2 log2 ε)/4⌉.
+        // The constant 14 is tuned so 1e-5 → 12 (matches Part 4 successes)
+        // and 1e-6 → 14, avoiding the wasted low-k attempts that were the
+        // historical cause of the "test takes too long" symptom
+        // (PROMPT_mitm_8d_completeness Part 5 step 2). Standalone timing
+        // dropped from 124 s (k_min=10 scanning) to 2.6 s (k_min=12 jump).
+        let frontier_k = ((14.0_f64 - 2.0 * eps.log2()) / 4.0).ceil() as u32;
         let min_k = std::env::var("CYCLOSYNTH_PI12_RANDOM_MIN_K")
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
@@ -1300,7 +1314,7 @@ mod tests {
                 if eps >= 1e-3 {
                     8
                 } else if eps <= 1e-5 {
-                    10
+                    frontier_k
                 } else {
                     5
                 }
@@ -1312,7 +1326,7 @@ mod tests {
                 if eps >= 1e-3 {
                     18
                 } else if eps <= 1e-5 {
-                    14
+                    (frontier_k + 4).max(14)
                 } else {
                     12
                 }

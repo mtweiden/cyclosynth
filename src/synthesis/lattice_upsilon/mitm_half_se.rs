@@ -584,6 +584,309 @@ pub fn lll_l2_8(scratch: &mut HalfScratch8) -> LllResult {
     }
 }
 
+// ─── BKZ-β (clean _8 copy of lattice_zeta::bkz, halved) ─────────────────────
+
+/// BKZ block size. β=4 is the d=8 analog of the 16D BKZ-4 — per-tour cost
+/// `(d-β+1)=5` SVP-enum calls each over a tiny tree, while quality gain
+/// vs LLL alone is substantial (root-Hermite factor 1.022 → 1.019). The
+/// 8D path needs BKZ because Gate-3 exposed that LLL-only mis-orients the
+/// basis for the σ₁-disc × 3-conjugate-balls region: SE then scatters its
+/// leaf budget over outer Q-shells before reaching the small fraction of
+/// integer points sitting in the in-region pocket.
+pub const BKZ8_BLOCK_SIZE: usize = 4;
+
+/// Maximum BKZ tours before bailing.
+pub const BKZ8_MAX_LOOPS: usize = 16;
+
+/// Lovász-equivalent δ for BKZ's "shortened?" check (fplll's 0.99).
+pub const BKZ8_DELTA: f64 = 0.99;
+
+/// SVP enumeration on the projected β-dim sublattice at frontier κ, using
+/// the post-LLL f64 GS state in `scratch.r_bar` / `scratch.mu_bar`.
+/// Returns `Some((x, norm_sq))` for the shortest non-zero `x` with
+/// `‖v‖²_Q ≤ radius_sq`, or `None`.
+fn svp_enum_block_8(
+    scratch: &HalfScratch8,
+    kappa: usize,
+    block_size: usize,
+    radius_sq: f64,
+) -> Option<(Vec<i64>, f64)> {
+    debug_assert!((2..=8).contains(&block_size));
+    debug_assert!(kappa + block_size <= 8);
+
+    let mut r = [0.0_f64; 8];
+    let mut mu = [[0.0_f64; 8]; 8];
+    for i in 0..block_size {
+        r[i] = scratch.r_bar[kappa + i][kappa + i];
+        for j in 0..i {
+            mu[i][j] = scratch.mu_bar[kappa + i][kappa + j];
+        }
+    }
+
+    let mut best_x: Option<Vec<i64>> = None;
+    let mut best_norm_sq = radius_sq;
+    let mut x = vec![0i64; block_size];
+    svp_enum_recurse_8(
+        block_size as i32 - 1,
+        block_size,
+        &r,
+        &mu,
+        0.0,
+        &mut x,
+        &mut best_x,
+        &mut best_norm_sq,
+    );
+    best_x.map(|x| (x, best_norm_sq))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn svp_enum_recurse_8(
+    depth: i32,
+    block_size: usize,
+    r: &[f64; 8],
+    mu: &[[f64; 8]; 8],
+    partial_dist: f64,
+    x: &mut [i64],
+    best_x: &mut Option<Vec<i64>>,
+    best_norm_sq: &mut f64,
+) {
+    if depth < 0 {
+        if x.iter().any(|&v| v != 0) && partial_dist < *best_norm_sq {
+            *best_norm_sq = partial_dist;
+            *best_x = Some(x.to_vec());
+        }
+        return;
+    }
+    let i = depth as usize;
+    let mut c = 0.0_f64;
+    for j in (i + 1)..block_size {
+        c -= mu[j][i] * (x[j] as f64);
+    }
+    let c_round = c.round() as i64;
+    let mut step = 0i64;
+    loop {
+        let offset = if step == 0 {
+            0
+        } else if step % 2 == 1 {
+            (step + 1) / 2
+        } else {
+            -(step / 2)
+        };
+        let candidate = c_round + offset;
+        let delta = candidate as f64 - c;
+        let inc = delta * delta * r[i];
+        let new_partial = partial_dist + inc;
+        if new_partial >= *best_norm_sq {
+            if step >= 1 {
+                break;
+            }
+            step += 1;
+            continue;
+        }
+        x[i] = candidate;
+        svp_enum_recurse_8(
+            depth - 1,
+            block_size,
+            r,
+            mu,
+            new_partial,
+            x,
+            best_x,
+            best_norm_sq,
+        );
+        step += 1;
+    }
+}
+
+/// Negate row `i` of the basis (and the corresponding rows/columns of the
+/// i256 Gram). Unimodular and lattice-preserving.
+fn negate_row_8(scratch: &mut HalfScratch8, i: usize) {
+    for c in 0..8 {
+        scratch.basis[i][c] = -scratch.basis[i][c];
+    }
+    for j in 0..8 {
+        if j != i {
+            scratch.gram[i][j] = -scratch.gram[i][j];
+            scratch.gram[j][i] = -scratch.gram[j][i];
+        }
+    }
+}
+
+/// Apply basis update `b_κ ← Σ x[i] · b_{κ+i}` via unimodular row ops
+/// (and lockstep Gram updates). Three branches mirroring fplll's
+/// svp_postprocessing. Returns `Err(())` if the SVP vector is
+/// non-primitive (gcd(x) > 1) so the caller skips this κ without
+/// mutating the basis.
+fn bkz_insert_8(
+    scratch: &mut HalfScratch8,
+    kappa: usize,
+    block_size: usize,
+    x: &[i64],
+) -> Result<(), ()> {
+    debug_assert_eq!(x.len(), block_size);
+    debug_assert!(kappa + block_size <= 8);
+
+    // Branch 1: all-zero except one ±1.
+    let nonzero: Vec<usize> = (0..block_size).filter(|&i| x[i] != 0).collect();
+    if nonzero.len() == 1 {
+        let i = nonzero[0];
+        let sign = x[i];
+        if i != 0 {
+            for k in (0..i).rev() {
+                let from = kappa + k + 1;
+                let to = kappa + k;
+                scratch.basis.swap(from, to);
+                gram_update_swap(scratch, from, to);
+            }
+        }
+        if sign < 0 {
+            negate_row_8(scratch, kappa);
+        }
+        return Ok(());
+    }
+
+    // Branch 2: some |x[i]| = 1 — use it as a pivot.
+    if let Some(piv_idx) = (0..block_size).find(|&i| x[i].abs() == 1) {
+        let piv_sign = x[piv_idx];
+        for j in 0..block_size {
+            if j == piv_idx || x[j] == 0 {
+                continue;
+            }
+            let r = -piv_sign * x[j];
+            for c in 0..8 {
+                scratch.basis[kappa + piv_idx][c] -= r * scratch.basis[kappa + j][c];
+            }
+            gram_update_size_reduce(scratch, kappa + piv_idx, kappa + j, r);
+        }
+        if piv_sign < 0 {
+            negate_row_8(scratch, kappa + piv_idx);
+        }
+        if piv_idx != 0 {
+            for k in (0..piv_idx).rev() {
+                let from = kappa + k + 1;
+                let to = kappa + k;
+                scratch.basis.swap(from, to);
+                gram_update_swap(scratch, from, to);
+            }
+        }
+        return Ok(());
+    }
+
+    // Branch 3: general case — binary-GCD tree on |x|.
+    fn gcd_i64(a: i64, b: i64) -> i64 {
+        let (mut a, mut b) = (a.unsigned_abs(), b.unsigned_abs());
+        while b != 0 {
+            let t = a % b;
+            a = b;
+            b = t;
+        }
+        a as i64
+    }
+    let mut g: i64 = 0;
+    for &xi in x {
+        g = gcd_i64(g, xi);
+        if g == 1 {
+            break;
+        }
+    }
+    if g != 1 {
+        return Err(());
+    }
+    let mut x: Vec<i64> = x.to_vec();
+
+    for i in 0..block_size {
+        if x[i] < 0 {
+            x[i] = -x[i];
+            negate_row_8(scratch, kappa + i);
+        }
+    }
+
+    let mut off = 1usize;
+    while off < block_size {
+        let step = 2 * off;
+        let mut k = block_size - 1;
+        loop {
+            if k < off {
+                break;
+            }
+            let k_off = k - off;
+            if x[k] < x[k_off] {
+                x.swap(k, k_off);
+                scratch.basis.swap(kappa + k, kappa + k_off);
+                gram_update_swap(scratch, kappa + k, kappa + k_off);
+            }
+            while x[k_off] != 0 {
+                let q = x[k] / x[k_off];
+                x[k] -= q * x[k_off];
+                for c in 0..8 {
+                    scratch.basis[kappa + k_off][c] += q * scratch.basis[kappa + k][c];
+                }
+                gram_update_size_reduce(scratch, kappa + k_off, kappa + k, -q);
+                x.swap(k, k_off);
+                scratch.basis.swap(kappa + k, kappa + k_off);
+                gram_update_swap(scratch, kappa + k, kappa + k_off);
+            }
+            if k < step {
+                break;
+            }
+            k -= step;
+        }
+        off *= 2;
+    }
+    let final_idx = block_size - 1;
+    debug_assert_eq!(x[final_idx], 1);
+    if final_idx != 0 {
+        for k in (0..final_idx).rev() {
+            let from = kappa + k + 1;
+            let to = kappa + k;
+            scratch.basis.swap(from, to);
+            gram_update_swap(scratch, from, to);
+        }
+    }
+    Ok(())
+}
+
+/// Run BKZ-β tours on the basis already in `scratch.basis` (assumed
+/// LLL-reduced). Returns `true` if anything changed. After this call the
+/// f64 GS state may be stale — caller should refresh via `cfa_full_8`.
+pub fn bkz_tours_8(scratch: &mut HalfScratch8, block_size: usize, max_loops: usize) -> bool {
+    debug_assert!((3..=8).contains(&block_size));
+    let mut any_change = false;
+    for _tour in 0..max_loops {
+        // Refresh GS state for the whole basis at the start of each tour.
+        for i in 0..8 {
+            cfa_row(scratch, i);
+        }
+        let mut clean = true;
+        for kappa in 0..(8 - block_size + 1) {
+            let r_kk = scratch.r_bar[kappa][kappa];
+            let radius_sq = BKZ8_DELTA * r_kk;
+            let svp = svp_enum_block_8(scratch, kappa, block_size, radius_sq);
+            let Some((x, found_norm_sq)) = svp else {
+                continue;
+            };
+            let nonzero = x.iter().filter(|&&v| v != 0).count();
+            if nonzero == 1 && x[0] == 1 {
+                continue;
+            }
+            if found_norm_sq < r_kk {
+                if bkz_insert_8(scratch, kappa, block_size, &x).is_err() {
+                    continue;
+                }
+                clean = false;
+                any_change = true;
+                for i in kappa..8 {
+                    cfa_row(scratch, i);
+                }
+            }
+        }
+        if clean {
+            break;
+        }
+    }
+    any_change
+}
+
 // ─── Cholesky + LU (clean copies of lattice_omicron::cholesky_lu) ────────────
 
 pub fn cholesky_f64_8(scratch: &mut HalfScratch8) -> bool {
@@ -734,18 +1037,28 @@ pub fn lu_solve_zc(scratch: &mut HalfScratch8) -> bool {
 /// invoking `emit(x)` at each leaf where `x = B·z` is the reconstructed
 /// lattice point. `z_c` is kept as f64 throughout to preserve the per-half
 /// Q-metric's σ₁-row weight scale (`1/(2R²ε²)` ≈ 1e10 at deep ε).
+///
+/// `max_outer_leaves` caps **out-of-region** leaves (those for which the
+/// caller's `emit` increments [`HalfEmitStats::outer_rejected`]) — it
+/// bounds wasted Q-shell exploration without ever truncating the in-region
+/// pool. The caller signals "this leaf was in-region" by incrementing
+/// `stats.in_region_emitted` from within `emit`; the walker reads back the
+/// same `stats.outer_rejected` to enforce the cap. This is the Lever-2
+/// frontier-exhaustion semantics from PROMPT_mitm_8d_completeness.md:
+/// "no leaf-budget cutoff inside the region — only the region bound limits
+/// it."
 pub fn schnorr_euchner_8d_emit<F>(
     l_chol: &[[f64; 8]; 8],
     basis: &[[i64; 8]; 8],
     z_c: &[f64; 8],
     bound_sq: f64,
+    stats: &mut HalfEmitStats,
     mut emit: F,
-    max_leaves: u64,
+    max_outer_leaves: u64,
 ) where
-    F: FnMut(&[i64; 8]),
+    F: FnMut(&mut HalfEmitStats, &[i64; 8]),
 {
     let mut z = [0i64; 8];
-    let mut leaves: u64 = 0;
     let mut aborted = false;
     recurse_8(
         7,
@@ -755,11 +1068,22 @@ pub fn schnorr_euchner_8d_emit<F>(
         bound_sq,
         0.0,
         &mut z,
+        stats,
         &mut emit,
-        &mut leaves,
-        max_leaves,
+        max_outer_leaves,
         &mut aborted,
     );
+}
+
+/// Counters for [`schnorr_euchner_8d_emit`]. `in_region_emitted` is
+/// incremented by the caller's emit closure when a leaf passes the
+/// region check; `outer_rejected` counts the rest. The walker aborts
+/// only when `outer_rejected ≥ max_outer_leaves` — never on
+/// `in_region_emitted`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct HalfEmitStats {
+    pub in_region_emitted: u64,
+    pub outer_rejected: u64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -771,12 +1095,12 @@ fn recurse_8<F>(
     bound_sq: f64,
     partial: f64,
     z: &mut [i64; 8],
+    stats: &mut HalfEmitStats,
     emit: &mut F,
-    leaves: &mut u64,
-    max_leaves: u64,
+    max_outer_leaves: u64,
     aborted: &mut bool,
 ) where
-    F: FnMut(&[i64; 8]),
+    F: FnMut(&mut HalfEmitStats, &[i64; 8]),
 {
     if *aborted {
         return;
@@ -789,9 +1113,11 @@ fn recurse_8<F>(
                 x[j] += z[i] * basis[i][j];
             }
         }
-        emit(&x);
-        *leaves += 1;
-        if *leaves >= max_leaves {
+        // Caller's emit() updates `stats` (in_region vs outer) based on
+        // its own region check, so the walker can enforce the outer cap
+        // without truncating in-region emits (Lever-2 semantics).
+        emit(stats, &x);
+        if stats.outer_rejected >= max_outer_leaves {
             *aborted = true;
         }
         return;
@@ -808,9 +1134,9 @@ fn recurse_8<F>(
             bound_sq,
             partial,
             z,
+            stats,
             emit,
-            leaves,
-            max_leaves,
+            max_outer_leaves,
             aborted,
         );
         return;
@@ -866,9 +1192,9 @@ fn recurse_8<F>(
             bound_sq,
             new_partial,
             z,
+            stats,
             emit,
-            leaves,
-            max_leaves,
+            max_outer_leaves,
             aborted,
         );
     }
@@ -888,50 +1214,77 @@ fn recurse_8<F>(
 /// [`super::mitm::PerHalfRegion::contains`] decides the final emit.
 const SE_BOUND_SQ: f64 = 8.0;
 
-/// Hard upper bound on leaves emitted by SE before aborting. The expected
-/// pool size at the operating point (deep ε, k ~ R⁸ε² ≈ 1-100 valid halves)
-/// is well below this; the cap protects against runaway enumeration if the
-/// region or LLL output degenerates.
-const MAX_SE_LEAVES: u64 = 5_000_000;
+/// Hard upper bound on **out-of-region** leaves SE may explore before
+/// aborting (Lever-2 frontier-exhaustion semantics: this bounds wasted
+/// outer-shell exploration; the in-region pool is NEVER truncated by this
+/// cap — only the `SE_BOUND_SQ` Q-norm bound limits it). At deep ε the
+/// in-region pool itself is the load-bearing output. Setting this to
+/// `u64::MAX` means: let SE exhaust the whole Q-ball (bound=8) before
+/// stopping. The Q-ball volume is what bound-times-d-anisotropy decides;
+/// at d=8, bound=8 it's small enough that exhaustion is feasible
+/// (empirically ≤ 50M leaves on a BKZ-reduced basis at ε≤1e-5). The
+/// "5M outer cap → SE aborted before reaching the canonical u1" failure
+/// in the second Gate-3 miss is exactly what frontier-exhaustion forbids.
+const MAX_OUTER_LEAVES: u64 = u64::MAX;
 
-/// 8D LLL+SE enumeration of the per-half region. Returns all integer
+/// 8D LLL+BKZ+SE enumeration of the per-half region. Returns all integer
 /// 8-tuples in the region (filtered exactly via [`PerHalfRegion::contains`]
 /// at the leaf — the SE bound is a Q-metric outer cover).
 pub fn lll_se_enumerate_half(region: &PerHalfRegion) -> Vec<[i64; 8]> {
+    lll_se_enumerate_half_with_stats(region).0
+}
+
+/// As [`lll_se_enumerate_half`] but also returns the (in_region, outer)
+/// leaf counts for diagnostics (used by Part-4 / completeness tests).
+pub fn lll_se_enumerate_half_with_stats(
+    region: &PerHalfRegion,
+) -> (Vec<[i64; 8]>, HalfEmitStats) {
     let eps = region.eps;
     let mut scratch = HalfScratch8::new(eps);
     build_q_half(&mut scratch, region);
     build_q_int(&mut scratch);
     let lll_res = lll_l2_8(&mut scratch);
     if matches!(lll_res, LllResult::GramOverflow) {
-        return Vec::new();
+        return (Vec::new(), HalfEmitStats::default());
+    }
+    // Lever-1: BKZ-β tours on top of the LLL-reduced basis. The 16D path
+    // uses this exact pattern (`lattice_zeta::bkz::bkz_tours`); halved
+    // here. Refresh f64 GS state for the post-BKZ basis before Cholesky.
+    let _changed = bkz_tours_8(&mut scratch, BKZ8_BLOCK_SIZE, BKZ8_MAX_LOOPS);
+    for i in 0..8 {
+        cfa_row(&mut scratch, i);
     }
     if !cholesky_f64_8(&mut scratch) && !cholesky_mpfr_to_f64_8(&mut scratch) {
-        return Vec::new();
+        return (Vec::new(), HalfEmitStats::default());
     }
     if !lu_solve_zc(&mut scratch) {
-        return Vec::new();
+        return (Vec::new(), HalfEmitStats::default());
     }
     let mut z_c = [0.0_f64; 8];
     for i in 0..8 {
         z_c[i] = scratch.lu_x[i].to_f64();
     }
     let mut out: Vec<[i64; 8]> = Vec::new();
+    let mut stats = HalfEmitStats::default();
     schnorr_euchner_8d_emit(
         &scratch.l_f64,
         &scratch.basis,
         &z_c,
         SE_BOUND_SQ,
-        |x| {
+        &mut stats,
+        |st, x| {
             if region.contains(x) {
                 out.push(*x);
+                st.in_region_emitted += 1;
+            } else {
+                st.outer_rejected += 1;
             }
         },
-        MAX_SE_LEAVES,
+        MAX_OUTER_LEAVES,
     );
     out.sort();
     out.dedup();
-    out
+    (out, stats)
 }
 
 /// MITM with 8D LLL+SE half-pools — the deep-ε backend.
