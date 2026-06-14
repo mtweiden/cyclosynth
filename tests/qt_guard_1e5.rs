@@ -69,21 +69,21 @@ fn qt_guard_8_targets_optimal_w2() {
             .with_optimize_cost(true)
             .with_optimal_lde_window(2)
             .synthesize(target);
-        let (t, q, lde) = r
-            .as_ref()
-            .map(|r| {
-                let g = r.gates.as_deref().unwrap_or("");
-                (
-                    g.chars().filter(|&c| c == 'T').count(),
-                    g.chars().filter(|&c| c == 'Q').count(),
-                    r.lde,
-                )
-            })
-            .unwrap_or((0, 0, 0));
+        // Real guard: every target must synthesize within ε (the cost columns
+        // below are for diffing against the 308.5 reference by eye).
+        let r = r.unwrap_or_else(|| panic!("target {i}: no circuit within ε"));
+        assert!(r.distance < eps, "target {i}: distance {:.3e} ≥ ε", r.distance);
+        let g = r.gates.as_deref().unwrap_or("");
+        let (t, q, lde) = (
+            g.chars().filter(|&c| c == 'T').count(),
+            g.chars().filter(|&c| c == 'Q').count(),
+            r.lde,
+        );
         let cost = t as f64 + 3.5 * q as f64;
         total_cost += cost;
         println!("QT {i} lde={lde:>2} T={t:>2} Q={q:>2} cost={cost:>5.1}");
     }
     let wall = t0.elapsed().as_secs_f64();
     println!("QT TOTAL cost={total_cost:.1} wall={wall:.2}s (reference: 308.5, ~5.3s clean)");
+    assert!(total_cost > 0.0);
 }

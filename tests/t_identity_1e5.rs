@@ -66,20 +66,20 @@ fn t_identity_12_targets_1e5() {
 
     for (i, &(th, ph, la)) in targets.iter().enumerate() {
         let target = u3(th, ph, la);
-        let r = SynthesizerT::new(eps).synthesize(target);
-        match r {
-            Some(r) => {
-                let t_count = r
-                    .gates
-                    .as_deref()
-                    .map(|g| g.chars().filter(|&c| c == 'T').count())
-                    .unwrap_or(0);
-                println!(
-                    "IDENT {i:>2} lde={:>2} T={t_count:>3} dist={:.6e}",
-                    r.lde, r.distance
-                );
-            }
-            None => println!("IDENT {i:>2} FAILED"),
-        }
+        // Real guard: every target must synthesize within ε. The columns are
+        // for diffing T-side determinism against a baseline build.
+        let r = SynthesizerT::new(eps)
+            .synthesize(target)
+            .unwrap_or_else(|| panic!("IDENT {i}: no circuit within ε"));
+        assert!(r.distance < eps, "IDENT {i}: distance {:.3e} ≥ ε", r.distance);
+        let t_count = r
+            .gates
+            .as_deref()
+            .map(|g| g.chars().filter(|&c| c == 'T').count())
+            .unwrap_or(0);
+        println!(
+            "IDENT {i:>2} lde={:>2} T={t_count:>3} dist={:.6e}",
+            r.lde, r.distance
+        );
     }
 }
