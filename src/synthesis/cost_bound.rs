@@ -126,7 +126,7 @@ mod tests {
     /// the submultiplicative premise lde ≤ 2s + c₀ must hold, and the
     /// reduced ladder is pinned so a change in reduction is caught.
     #[test]
-    fn staircase_sound_on_alternating_chain() {
+    fn cost_bound_sound_on_alternating_chain() {
         let mut u = U2Q::eye();
         for s in 1..=20usize {
             u = (u * if s % 2 == 1 { rx(2) } else { ry(2) }).reduced();
@@ -149,7 +149,7 @@ mod tests {
     /// Monotonicity — required by the certified sweep cutoff
     /// (`stop at k once C* ≤ L(k+1)` assumes L never decreases).
     #[test]
-    fn staircase_is_monotone() {
+    fn cost_bound_is_monotone() {
         for k in 0..200u32 {
             assert!(cost_lb_half_units(k) <= cost_lb_half_units(k + 1));
         }
@@ -194,7 +194,7 @@ mod tests {
     /// The brute minimum is an upper bound on the true L(k) (completions
     /// fix a convention), so this validates soundness, not exactness.
     #[test]
-    fn staircase_below_brute_minimum_small_k() {
+    fn cost_bound_below_brute_minimum_small_k() {
         use crate::synthesis::clifford_sqrt_t::solution_to_u2q;
         use crate::synthesis::decomposer::BlochDecomposer;
         use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;

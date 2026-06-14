@@ -17,10 +17,10 @@ use std::f64::consts::PI;
     /// kept coset representative, reruns the rep's two branches, and checks
     /// whether the image solution c·U_R appears — pinpointing where the
     /// Q-isometric-bijection argument breaks in practice.
-    /// Run: `cargo test --release --lib probe_coset_flip_t47 -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib probe_coset_flip_target_47 -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn probe_coset_flip_t47() {
+    fn probe_coset_flip_target_47() {
         // SplitMix64(0xC0FFEE) — t_identity_1e5's generator; target idx 2.
         struct Xs(u64);
         impl Xs {
@@ -72,10 +72,10 @@ use std::f64::consts::PI;
     /// target_00 (xorshift64, seed 0xC0FFEEBAADD0E|1), lde 78 (t'=12),
     /// which still drifts to 80 under coset dedup after the
     /// euclidean_cholesky trust guards.
-    /// Run: `cargo test --release --lib probe_coset_flip_t78 -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib probe_coset_flip_target_78 -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn probe_coset_flip_t78() {
+    fn probe_coset_flip_target_78() {
         std::env::set_var("CYCLOSYNTH_SE_BOUND_8D", "4.0");
         fn xorshift64(s: &mut u64) -> u64 {
             *s ^= *s << 13;
