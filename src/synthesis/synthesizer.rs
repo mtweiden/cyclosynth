@@ -21,6 +21,7 @@
 //! be replaced with monomorphised generic instantiations and `sqrt_t`
 //! will keep working as a public-API parameter.
 
+use crate::synthesis::clifford_pi12::SynthesizerPi12;
 use crate::synthesis::clifford_pi6::SynthesizerPi6;
 use crate::synthesis::clifford_sqrt_t::SynthesizerQ;
 use crate::synthesis::clifford_t::SynthesizerT;
@@ -59,6 +60,7 @@ pub struct Synthesizer {
 enum Backend {
     T(SynthesizerT),
     Pi6(SynthesizerPi6),
+    Pi12(SynthesizerPi12),
     Q(SynthesizerQ),
 }
 
@@ -82,11 +84,19 @@ impl Synthesizer {
         }
     }
 
+    /// Create a Clifford+R_z(π/12) synthesizer over Z[ζ₂₄].
+    pub fn new_pi12(epsilon: f64) -> Self {
+        Self {
+            inner: Backend::Pi12(SynthesizerPi12::new(epsilon)),
+        }
+    }
+
     /// Override the maximum lde the search will probe.
     pub fn with_max_lde(mut self, max_lde: u32) -> Self {
         match &mut self.inner {
             Backend::T(s) => s.max_lde = max_lde,
             Backend::Pi6(s) => s.max_lde = max_lde,
+            Backend::Pi12(s) => s.max_lde = max_lde,
             Backend::Q(s) => s.max_lde = max_lde,
         }
         self
@@ -97,6 +107,7 @@ impl Synthesizer {
         match &mut self.inner {
             Backend::T(s) => s.min_lde = min_lde,
             Backend::Pi6(s) => s.min_lde = min_lde,
+            Backend::Pi12(s) => s.min_lde = min_lde,
             Backend::Q(s) => s.min_lde = min_lde,
         }
         self
@@ -117,6 +128,11 @@ impl Synthesizer {
                 lde: r.lde,
                 distance: r.distance,
             }),
+            Backend::Pi12(s) => s.synthesize(target).map(|r| SynthResult {
+                gates: r.gates,
+                lde: r.lde,
+                distance: r.distance,
+            }),
             Backend::Q(s) => s.synthesize(target).map(|r| SynthResult {
                 gates: r.gates,
                 lde: r.lde,
@@ -129,6 +145,7 @@ impl Synthesizer {
         match &self.inner {
             Backend::T(s) => s.epsilon,
             Backend::Pi6(s) => s.epsilon,
+            Backend::Pi12(s) => s.epsilon,
             Backend::Q(s) => s.epsilon,
         }
     }
@@ -137,6 +154,7 @@ impl Synthesizer {
         match &self.inner {
             Backend::T(s) => s.max_lde,
             Backend::Pi6(s) => s.max_lde,
+            Backend::Pi12(s) => s.max_lde,
             Backend::Q(s) => s.max_lde,
         }
     }
@@ -145,6 +163,7 @@ impl Synthesizer {
         match &self.inner {
             Backend::T(s) => s.min_lde,
             Backend::Pi6(s) => s.min_lde,
+            Backend::Pi12(s) => s.min_lde,
             Backend::Q(s) => s.min_lde,
         }
     }
@@ -155,6 +174,10 @@ impl Synthesizer {
 
     pub fn is_pi6(&self) -> bool {
         matches!(&self.inner, Backend::Pi6(_))
+    }
+
+    pub fn is_pi12(&self) -> bool {
+        matches!(&self.inner, Backend::Pi12(_))
     }
 }
 
@@ -330,5 +353,33 @@ impl PySynthesizer {
             self.inner.min_lde(),
             self.inner.max_lde(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::matrix::U2;
+    use crate::rings::ZUpsilon;
+
+    #[test]
+    fn unified_pi12_backend_synthesizes_exact_p() {
+        let target = U2::<ZUpsilon>::p().to_float();
+        let synth = Synthesizer::new_pi12(1e-9).with_min_lde(0).with_max_lde(0);
+
+        assert!(synth.is_pi12());
+        assert!(!synth.is_pi6());
+        assert!(!synth.sqrt_t());
+
+        let result = synth
+            .synthesize(target)
+            .expect("P should synthesize at k=0");
+        assert!(result.distance < 1e-9);
+        assert_eq!(result.lde, 0);
+        assert!(
+            result.gates.as_deref().is_some_and(|g| g.contains('P')),
+            "expected a Pi12 gate string containing P, got {:?}",
+            result.gates
+        );
     }
 }

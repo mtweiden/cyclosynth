@@ -653,6 +653,20 @@ pub struct CircuitSynthResult {
     pub t12_count: usize,
 }
 
+/// Result of a successful n=12 synthesis.
+pub struct SynthResultPi12 {
+    /// Clifford+R_z(π/12) gate string (leftmost = leftmost matrix factor).
+    pub gates: Option<String>,
+    /// Denominator exponent of the synthesized unitary.
+    pub lde: u32,
+    /// Diamond distance from the synthesized unitary to the target.
+    pub distance: f64,
+    /// Selected `Z[ζ24]` phase branch.
+    pub phase: u32,
+    /// Minimal R_z(π/12) count for the exact synthesized unitary.
+    pub t12_count: usize,
+}
+
 /// Decompose `U ∈ G₁₂` into an optimal Clifford + R_z(π/12) circuit.
 ///
 /// Uses trial-peel (Forest §3 canonical form): at each step, pick the
@@ -994,6 +1008,76 @@ pub fn synthesize_circuit_in_range(
     None
 }
 
+// ─── Synthesizer ─────────────────────────────────────────────────────────────
+
+/// Clifford + R_z(π/12) synthesis backend over ℤ[ζ₂₄].
+pub struct SynthesizerPi12 {
+    /// Approximation precision in diamond distance.
+    pub epsilon: f64,
+    /// Maximum denominator exponent to search before giving up.
+    pub max_lde: u32,
+    /// Minimum denominator exponent to start searching from.
+    pub min_lde: u32,
+}
+
+impl SynthesizerPi12 {
+    /// Create a synthesizer with defaults tuned for the native n=12 lattice path.
+    pub fn new(epsilon: f64) -> Self {
+        let (min_lde, max_lde) = default_pi12_lde_window(epsilon);
+        Self {
+            epsilon,
+            max_lde,
+            min_lde,
+        }
+    }
+
+    pub fn with_max_lde(mut self, max_lde: u32) -> Self {
+        self.max_lde = max_lde;
+        self
+    }
+
+    pub fn with_min_lde(mut self, min_lde: u32) -> Self {
+        self.min_lde = min_lde;
+        self
+    }
+
+    /// Synthesize a Clifford+R_z(π/12) circuit approximating `target`.
+    pub fn synthesize(&self, target: Mat2) -> Option<SynthResultPi12> {
+        synthesize_circuit_in_range(&target, self.epsilon, self.min_lde, self.max_lde).map(|r| {
+            SynthResultPi12 {
+                gates: Some(gate_string(&r.circuit)),
+                lde: r.lde,
+                distance: r.distance,
+                phase: r.phase,
+                t12_count: r.t12_count,
+            }
+        })
+    }
+}
+
+fn default_pi12_lde_window(eps: f64) -> (u32, u32) {
+    if !(eps > 0.0 && eps < 1.0) {
+        return (0, 20);
+    }
+
+    if eps >= 1e-3 {
+        return (8, 18);
+    }
+
+    if eps <= 1e-5 {
+        // Same frontier heuristic used by the native random-unitary regression:
+        // 2^(4k) * eps^2 >= 2^14.
+        let frontier_k = ((14.0_f64 - 2.0 * eps.log2()) / 4.0).ceil() as u32;
+        return (frontier_k, (frontier_k + 4).max(14));
+    }
+
+    (5, 12)
+}
+
+fn gate_string(circuit: &[Gate]) -> String {
+    circuit.iter().map(ToString::to_string).collect()
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1277,7 +1361,7 @@ mod tests {
         let eps = std::env::var("CYCLOSYNTH_PI12_RANDOM_EPS")
             .ok()
             .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(1e-5_f64);
+            .unwrap_or(1e-6_f64);
 
         let theta = rng.random::<f64>() * (2.0 * PI);
         let phi = rng.random::<f64>() * (2.0 * PI);
