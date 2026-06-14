@@ -610,10 +610,10 @@ use std::f64::consts::PI;
     /// Adoption gate: ≥25% total iteration reduction, else kill (16D
     /// precedent).
     /// Env: WARM_N (prefix cap per level, default 400).
-    /// Run: `cargo test --release --lib warm_lll_gate -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib warm_lll_seed_iteration_reduction -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn warm_lll_gate() {
+    fn warm_lll_seed_iteration_reduction() {
         use crate::synthesis::lattice::omega::lll::{lll_l2_seeded, LllResult};
         use crate::synthesis::lattice::omega::q_metric::{build_q_int, build_q_mpfr};
         use crate::synthesis::lattice::omega::scratch::IntScratch;

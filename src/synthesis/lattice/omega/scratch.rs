@@ -254,7 +254,7 @@ fn fill_sigma(sigma: &mut [[MpFloat; 8]; 8], prec: u32) {
 /// constant Σ matrix, so it runs once at scratch construction; the values
 /// persist across every build_q_mpfr call. Eliminates ~512 MPFR mul + 512
 /// MPFR add ops per find_aligned_lattice_points invocation.
-fn fill_p_u_p_ub(scratch: &mut IntScratch) {
+fn precompute_sigma_projections(scratch: &mut IntScratch) {
     for i in 0..8 {
         for j in 0..8 {
             scratch.acc.assign(0.0_f64);
@@ -331,7 +331,7 @@ impl IntScratch {
             lu_acc: rfz(lu_prec),
         };
         fill_sigma(&mut s.sigma, prec_q);
-        fill_p_u_p_ub(&mut s);
+        precompute_sigma_projections(&mut s);
         s
     }
 

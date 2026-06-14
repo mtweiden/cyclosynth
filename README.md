@@ -134,6 +134,30 @@ full derivation. The lattice code lives in `src/synthesis/lattice/`, with
 one variant per gate set — `omega/` for Clifford+T and `zeta/` for
 Clifford+√T. Set `CYCLOSYNTH_TRACE=1` to print per-step timings to stderr.
 
+## Glossary
+
+Terms used throughout the code and docs:
+
+- **T gate / Q gate** — `T` is the π/8 phase gate (the Clifford+T generator);
+  `Q` is √T (the Clifford+√T generator). The circuit cost we minimize is
+  `T_count + 3.5·Q_count`.
+- **lde** ("least denominator exponent") — the power of √2 in a circuit's ring
+  denominator; the synthesizer uses it as the search depth (`max_lde`). Deeper
+  lde = more candidate circuits = tighter achievable `ε`.
+- **Z[ω] / Z[ζ₁₆]** — the two number rings the lattice search runs in: `omega/`
+  (8-dimensional, Clifford+T) and `zeta/` (16-dimensional, Clifford+√T).
+- **Matsumoto-Amano (MA) prefix / FGKM** — the canonical "normal forms" the
+  fixed circuit prefixes are enumerated from: Matsumoto-Amano for Clifford+T,
+  and the FGKM form ([arXiv:1501.04944](https://arxiv.org/abs/1501.04944)) for
+  Clifford+√T.
+- **det-phase** — the determinant's root-of-unity class; used to prune prefixes
+  that can't match the target up to global phase.
+- **Lattice search internals** — **LLL** / **L²-LLL** (basis reduction),
+  **Schnorr-Euchner** / SE (lattice-point enumeration), **BKZ** (block
+  reduction), **SVP** (shortest-vector problem), **Cholesky** / CFA
+  (factorization), **dd** (double-double, ~106-bit float). A fuller version of
+  this list is in the `src/synthesis/` module docs.
+
 ## Repository layout
 
 ```
