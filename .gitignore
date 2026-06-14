@@ -23,3 +23,8 @@ pgo/cyclosynth.profdata
 *.csv
 *.png
 *.md
+
+# Local-only: run artifacts, analysis scripts, generated docs (kept on disk, out of git)
+bench_logs/
+scripts/
+docs/

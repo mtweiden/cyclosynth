@@ -68,29 +68,17 @@ Synthesizer(epsilon, *, sqrt_t=False, max_lde=None, min_lde=None,
 The `optimize_cost`, `q_cost`, `lde_window`, `deadline_ms`, and
 `seq_parity` knobs apply to the Clifford+√T backend only.
 
-## Benchmarking & comparison (Python)
+## Examples (Python)
 
-The `scripts/` drivers sweep random `U3(α, β, γ)` targets across a range
-of `ε`, time the synthesizer, and plot the results. Run them from the
-repository root (they read/write under `scripts/data/`) after
-`maturin develop --release`.
+After `maturin develop --release`, the [`examples/`](examples/) directory
+shows the Python bindings in use:
 
-| script | what it does |
+| example | what it does |
 |---|---|
-| [`comparison.py`](scripts/comparison.py) | Clifford+T sweep over `ε ∈ {1e-3 … 1e-8}`: T-count, mpmath-verified distance, wall time → `scripts/data/comparison_data.csv`. Optional [`trasyn`](https://pypi.org/project/trasyn/) cross-comparison (commented out). |
-| [`comparison_sqrtt.py`](scripts/comparison_sqrtt.py) | Same targets, both backends, on a common cost scale `T + 3.5·Q` → `comparison_sqrtt_data.csv`. |
-| [`plot_comparison.py`](scripts/plot_comparison.py) | Grouped-violin plot of the Clifford+T sweep. |
-| [`plot_comparison_sqrtt.py`](scripts/plot_comparison_sqrtt.py) / [`plot_comparison_sqrtt_slope.py`](scripts/plot_comparison_sqrtt_slope.py) | Cost violin / paired per-target slope plots for the √T comparison. |
-
-```sh
-python scripts/comparison.py && python scripts/plot_comparison.py
-python scripts/comparison_sqrtt.py && python scripts/plot_comparison_sqrtt.py
-```
-
-Edit the `EPSILONS` / `N_TRIALS` / `SEED` constants at the top of each
-driver to change the sweep. Helpers `recompute_csv_cost.py` (re-derive
-the cost column) and `profile_summary.py` (aggregate `CYCLOSYNTH_TRACE=1`
-logs) round out the directory.
+| [`synth.py`](examples/synth.py) / [`synth_sqrtt.py`](examples/synth_sqrtt.py) | Synthesize a `U3(α, β, γ)` target with Clifford+T / Clifford+√T. |
+| [`verify.py`](examples/verify.py) | Independently re-evaluate a synthesized gate string and confirm it approximates the target. |
+| [`compare_t_vs_sqrtt.py`](examples/compare_t_vs_sqrtt.py) | Clifford+T vs Clifford+√T cost (`T + 3.5·Q`) on the same targets. |
+| [`comparison_zeta.py`](examples/comparison_zeta.py) / [`lifted_baseline.py`](examples/lifted_baseline.py) | Native Clifford+√T vs the Z[ω]-lifted baseline. |
 
 ## Usage (Rust)
 
@@ -163,8 +151,7 @@ src/
         ├── omega/              8-D pipeline (Clifford+T)
         ├── zeta/               16-D pipeline (Clifford+√T)
         └── common.rs           shared L²-LLL helpers
-scripts/                Python benchmark drivers + plotting
-examples/               Python usage + verification helpers
+examples/               Python usage, verification, and comparison
 ```
 
 Advanced/internal tuning is exposed through `CYCLOSYNTH_*` environment
