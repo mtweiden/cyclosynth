@@ -33,9 +33,18 @@ pub const MAX_LAZY_PASSES: usize = 32;
 /// headroom under `GRAM_OVERFLOW_THRESHOLD_BITS`.
 pub const TARGET_BITS: u32 = 180;
 
-/// Threshold for Gram-entry overflow detection: 2^240, leaving 16-bit
-/// margin to i256::MAX. The safe operating range is roughly
+/// Threshold for Gram-entry overflow detection: 2^240, leaving 15-bit margin
+/// to i256::MAX (≈2^255). The safe operating range is roughly
 /// `max(|B|)² · max(|Q_int|) · d ≤ 2^240`.
+///
+/// This is a detect-before-wrap guard, not a wrap-proof one: the check reads a
+/// Gram entry *after* it is formed in i256, and a value that already passed
+/// 2^255 would have wrapped to a small magnitude and slipped through. We rely
+/// on that never happening because the basis grows ~1 bit per LLL swap, so an
+/// entry crosses 2^240 (and is caught, aborting to fallback) long before it
+/// could reach 2^255. The 15-bit margin is the slack for that monotone
+/// approach. If a future ring/dimension can jump an entry by >15 bits in one
+/// update, this guard must move before the i256 multiply, not after.
 pub const GRAM_OVERFLOW_THRESHOLD_BITS: u32 = 240;
 
 /// Compute the bit-shift `B` such that `round(2^B · Q[i][j])` lands in i256
