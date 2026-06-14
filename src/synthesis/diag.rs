@@ -12,8 +12,11 @@
 //! went.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
+#[cfg(feature = "trace")]
+use std::sync::OnceLock;
 
+#[cfg(feature = "trace")]
 static TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 /// Diagnostic-only: capture the raw integer x at the moment a should_stop
@@ -44,6 +47,11 @@ pub fn try_capture(c: CapturedFind) {
 }
 
 
+/// Whether telemetry collection is active. Compiles to a constant `false`
+/// unless the `trace` feature is enabled, so every `if trace_enabled()`
+/// block — the per-leaf hot path, the phase timers, the per-prefix
+/// counters — is dead-code-eliminated in the default (no-telemetry) build.
+#[cfg(feature = "trace")]
 pub fn trace_enabled() -> bool {
     *TRACE_ENABLED.get_or_init(|| {
         std::env::var("CYCLOSYNTH_TRACE")
@@ -51,6 +59,12 @@ pub fn trace_enabled() -> bool {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
     })
+}
+
+#[cfg(not(feature = "trace"))]
+#[inline(always)]
+pub const fn trace_enabled() -> bool {
+    false
 }
 
 // ─── Per-lde counters (reset at the start of each prefix_split_search) ─────────────────
@@ -80,13 +94,15 @@ pub static N_SE_NODES_MAX: AtomicU64 = AtomicU64::new(0);
 /// Record a per-walk node count into [`N_SE_NODES_MAX`] (relaxed cmpxchg
 /// max loop; called once per find_aligned_lattice_points, not per node).
 pub fn record_se_nodes_max(nodes: u64) {
-    let mut cur = N_SE_NODES_MAX.load(Ordering::Relaxed);
-    while nodes > cur {
-        match N_SE_NODES_MAX.compare_exchange_weak(
-            cur, nodes, Ordering::Relaxed, Ordering::Relaxed,
-        ) {
-            Ok(_) => break,
-            Err(c) => cur = c,
+    if trace_enabled() {
+        let mut cur = N_SE_NODES_MAX.load(Ordering::Relaxed);
+        while nodes > cur {
+            match N_SE_NODES_MAX.compare_exchange_weak(
+                cur, nodes, Ordering::Relaxed, Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(c) => cur = c,
+            }
         }
     }
 }
@@ -239,6 +255,9 @@ pub static N_RECURSE_ENTER_AT_DEPTH: [AtomicU64; 16] = [
 
 /// Record one lazy_size_reduce invocation's pass count.
 pub fn record_lazy_passes(passes: u64) {
+    if !trace_enabled() {
+        return;
+    }
     N_LAZY_PASSES_TOTAL.fetch_add(passes, Ordering::Relaxed);
     N_LAZY_CALLS_TOTAL.fetch_add(1, Ordering::Relaxed);
     let mut current = N_LAZY_PASSES_MAX.load(Ordering::Relaxed);
@@ -258,6 +277,9 @@ pub fn record_lazy_passes(passes: u64) {
 /// Record an LLL call's iteration count + atomically update
 /// `N_LLL_ITERS_MAX` via a compare-exchange loop.
 pub fn record_lll_iters(iters: u64, cap: u64) {
+    if !trace_enabled() {
+        return;
+    }
     N_LLL_ITERS_TOTAL.fetch_add(iters, Ordering::Relaxed);
     if iters >= cap {
         N_LLL_AT_CAP.fetch_add(1, Ordering::Relaxed);
@@ -403,6 +425,9 @@ pub static N_WIN_PREFIX_LEN_SUM: AtomicU64 = AtomicU64::new(0);
 /// Record one prefix_split_search find. `idx` is the prefix's position in
 /// the sweep order actually used, `len` the sweep length.
 pub fn record_branch_win(odd: bool, idx: usize, len: usize, lde: u32) {
+    if !trace_enabled() {
+        return;
+    }
     if odd {
         N_BRANCH_WIN_ODD.fetch_add(1, Ordering::Relaxed);
     } else {
@@ -410,12 +435,10 @@ pub fn record_branch_win(odd: bool, idx: usize, len: usize, lde: u32) {
     }
     N_WIN_PREFIX_IDX_SUM.fetch_add(idx as u64, Ordering::Relaxed);
     N_WIN_PREFIX_LEN_SUM.fetch_add(len as u64, Ordering::Relaxed);
-    if trace_enabled() {
-        eprintln!(
-            "[m2] lde={lde} branch={} prefix_idx={idx}/{len}",
-            if odd { "odd" } else { "even" }
-        );
-    }
+    eprintln!(
+        "[m2] lde={lde} branch={} prefix_idx={idx}/{len}",
+        if odd { "odd" } else { "even" }
+    );
 }
 
 /// Pretty-print 16D synthesis profile to stderr. Call after a full

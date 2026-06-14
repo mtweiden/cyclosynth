@@ -138,10 +138,10 @@ fn main() {
         seed
     );
 
-    // Header. Columns: target name | ε | lde | dist | min_ms | avg_ms.
+    // Header. Columns: target name | ε | T-count | lde | dist | min_ms | avg_ms.
     println!(
-        "{:<12}  {:>6}  {:>4}  {:>11}  {:>10}  {:>10}",
-        "target", "eps", "lde", "dist", "min_ms", "avg_ms"
+        "{:<12}  {:>6}  {:>4}  {:>4}  {:>11}  {:>10}  {:>10}",
+        "target", "eps", "tcnt", "lde", "dist", "min_ms", "avg_ms"
     );
     println!("{}", "─".repeat(64));
 
@@ -183,15 +183,20 @@ fn main() {
 
             match &last_result {
                 Some(r) => {
+                    let tcnt = r
+                        .gates
+                        .as_deref()
+                        .map(|g| g.matches('T').count())
+                        .unwrap_or(0);
                     println!(
-                        "{:<12}  {:>6.0e}  {:>4}  {:>11.3e}  {:>10.1}  {:>10.1}",
-                        name, eps, r.lde, r.distance, min_ms, avg_ms
+                        "{:<12}  {:>6.0e}  {:>4}  {:>4}  {:>11.3e}  {:>10.1}  {:>10.1}",
+                        name, eps, tcnt, r.lde, r.distance, min_ms, avg_ms
                     );
                     eps_total_min += min_ms;
                 }
                 None => {
                     println!(
-                        "{:<12}  {:>6.0e}    --      --   FAILED (no solution within max_lde={})",
+                        "{:<12}  {:>6.0e}    --    --      --   FAILED (no solution within max_lde={})",
                         name, eps, synth.max_lde()
                     );
                     eps_failures += 1;

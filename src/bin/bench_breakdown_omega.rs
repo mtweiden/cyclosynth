@@ -62,6 +62,10 @@ fn parse_seed(s: &str) -> u64 {
 
 fn main() {
     std::env::set_var("CYCLOSYNTH_TRACE", "1");
+    assert!(
+        cyclosynth::synthesis::diag::trace_enabled(),
+        "build with `--features trace` for the per-phase breakdown"
+    );
 
     let args: Vec<String> = std::env::args().collect();
     let mut n_threads: usize = 8;

@@ -324,15 +324,17 @@ pub fn find_aligned_lattice_points_outcome(
         budget_hit.store(true, Ordering::Relaxed);
     }
 
-    if let Some(t0) = t_phase {
-        crate::synthesis::diag::T_SE_NS
-            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    if trace {
+        if let Some(t0) = t_phase {
+            crate::synthesis::diag::T_SE_NS
+                .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+        crate::synthesis::diag::N_SE_CALLBACKS
+            .fetch_add(count.load(Ordering::Relaxed), Ordering::Relaxed);
+        let nodes_used = max_nodes.saturating_sub(node_budget.load(Ordering::Relaxed));
+        crate::synthesis::diag::N_SE_NODES.fetch_add(nodes_used, Ordering::Relaxed);
+        crate::synthesis::diag::record_se_nodes_max(nodes_used);
     }
-    crate::synthesis::diag::N_SE_CALLBACKS
-        .fetch_add(count.load(Ordering::Relaxed), Ordering::Relaxed);
-    let nodes_used = max_nodes.saturating_sub(node_budget.load(Ordering::Relaxed));
-    crate::synthesis::diag::N_SE_NODES.fetch_add(nodes_used, Ordering::Relaxed);
-    crate::synthesis::diag::record_se_nodes_max(nodes_used);
 
     LatticeSearchOutcome { solutions, should_escalate: false }
 }

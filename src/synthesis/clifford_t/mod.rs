@@ -837,8 +837,10 @@ impl SynthesizerT {
                         let u_l = &prefixes[pi as usize];
                         if let Some(tp) = target_parity {
                             if det_zeta_parity(&u_l.to_float()) != Some(tp) {
-                                crate::synthesis::diag::N_UV_EXTRACT_REJECTED
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if crate::synthesis::diag::trace_enabled() {
+                                    crate::synthesis::diag::N_UV_EXTRACT_REJECTED
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
                                 return None;
                             }
                         }
@@ -846,8 +848,10 @@ impl SynthesizerT {
                         let v_inner = match try_unitary_to_uv(&m_inner) {
                             Some(v) => v,
                             None => {
-                                crate::synthesis::diag::N_UV_EXTRACT_REJECTED
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if crate::synthesis::diag::trace_enabled() {
+                                    crate::synthesis::diag::N_UV_EXTRACT_REJECTED
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
                                 return None;
                             }
                         };
@@ -883,8 +887,10 @@ impl SynthesizerT {
                                         distance: dist,
                                     });
                                 }
-                                crate::synthesis::diag::N_DIST_REJECTED
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if crate::synthesis::diag::trace_enabled() {
+                                    crate::synthesis::diag::N_DIST_REJECTED
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
                             }
                         }
 

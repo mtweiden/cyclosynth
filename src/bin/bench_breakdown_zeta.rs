@@ -46,6 +46,10 @@ fn main() {
         .unwrap_or(0xC0FFEEBAADD0E);
 
     unsafe { std::env::set_var("CYCLOSYNTH_TRACE", "1") };
+    assert!(
+        diag::trace_enabled(),
+        "build with `--features trace` for the per-phase breakdown"
+    );
     let targets: Vec<Mat2> = (0..n).map(|_| {
         u3(rand_angle(&mut state), rand_angle(&mut state), rand_angle(&mut state))
     }).collect();

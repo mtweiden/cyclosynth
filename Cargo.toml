@@ -32,3 +32,9 @@ debug = 1
 [features]
 default = []
 python = ["dep:pyo3", "dep:numpy"]
+# Diagnostic telemetry (trace counters, per-phase timers). OFF by default:
+# without it, `diag::trace_enabled()` is a compile-time `false` and every
+# `if trace_enabled()` block (including the per-leaf hot path) is eliminated,
+# so the default build carries zero telemetry overhead. Enable for the probe
+# bins and the `#[ignore]` telemetry tests.
+trace = []

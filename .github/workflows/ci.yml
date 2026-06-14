@@ -21,6 +21,10 @@ jobs:
       # cross-platform-buildable even though they're run on macOS.
       - name: Build
         run: cargo build --release --all-targets
+      # The telemetry path (probe bins, diag counters) only compiles
+      # meaningfully under `trace`; build it so it can't bit-rot.
+      - name: Build (trace feature)
+        run: cargo build --release --all-targets --features trace
       - name: Test
         run: cargo test --release --lib
 

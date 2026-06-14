@@ -836,7 +836,9 @@ impl<'a> BudgetCache<'a> {
             // `aborted` flag is what stops all workers, exactly as in the
             // legacy per-node scheme. Count the walk's plain budget-burn
             // once (the worker that flips `aborted` wins).
-            if !aborted.swap(true, Ordering::Relaxed) {
+            if !aborted.swap(true, Ordering::Relaxed)
+                && crate::synthesis::diag::trace_enabled()
+            {
                 crate::synthesis::diag::N_BUDGET_EXHAUST_FIRES.fetch_add(1, Ordering::Relaxed);
             }
             self.flush_consumed(consumed);
@@ -925,7 +927,9 @@ impl PredictiveTrunc {
         let fraction_done = done as f64 / self.items_total as f64;
         let projected_total = consumed as f64 / fraction_done;
         if projected_total > self.initial_budget as f64 * PREDICTIVE_TRUNC_MARGIN {
-            if !self.fired.swap(true, Ordering::Relaxed) {
+            if !self.fired.swap(true, Ordering::Relaxed)
+                && crate::synthesis::diag::trace_enabled()
+            {
                 crate::synthesis::diag::N_PREDICTIVE_TRUNC_FIRES
                     .fetch_add(1, Ordering::Relaxed);
             }

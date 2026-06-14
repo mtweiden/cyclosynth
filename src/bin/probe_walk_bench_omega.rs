@@ -68,7 +68,7 @@ fn main() {
     if std::env::var("CYCLOSYNTH_TRACE").is_err() {
         std::env::set_var("CYCLOSYNTH_TRACE", "1");
     }
-    assert!(diag::trace_enabled(), "run with CYCLOSYNTH_TRACE=1");
+    assert!(diag::trace_enabled(), "build with `--features trace` and run with CYCLOSYNTH_TRACE=1");
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 3 {
