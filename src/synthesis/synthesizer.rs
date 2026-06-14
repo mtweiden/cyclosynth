@@ -188,6 +188,15 @@ impl Synthesizer {
     pub fn sqrt_t(&self) -> bool {
         matches!(&self.inner, Backend::Q(_))
     }
+
+    /// Weight of a Q (√T) gate in the cost model `T_count + q_weight·Q_count`.
+    /// Canonical 3.5; reflects a custom `with_q_cost` on the √T backend.
+    pub fn q_weight(&self) -> f64 {
+        match &self.inner {
+            Backend::T(_) => 3.5,
+            Backend::Q(s) => s.q_cost_x2 as f64 / 2.0,
+        }
+    }
 }
 
 // ─── PyO3 bindings ────────────────────────────────────────────────────────────
@@ -208,17 +217,42 @@ pub struct PySynthResult {
     /// `{H, S, T, Q, X, Y, Z}` for Clifford+√T.
     #[pyo3(get)]
     pub gates: Option<String>,
-    /// Denominator exponent of the synthesized unitary.
+    /// Denominator exponent (lde, the search depth) of the synthesized unitary.
     #[pyo3(get)]
     pub lde: u32,
-    /// Diamond distance from the synthesized unitary to the target.
+    /// Diamond distance from the synthesized unitary to the target (< epsilon).
     #[pyo3(get)]
     pub distance: f64,
+    /// Q-gate weight used for `cost` (3.5 unless overridden on the √T backend).
+    q_weight: f64,
 }
 
 #[cfg(feature = "python")]
 #[pymethods]
 impl PySynthResult {
+    /// Number of T gates in the circuit (0 if synthesis failed).
+    #[getter]
+    fn t_count(&self) -> usize {
+        self.gates.as_deref().map_or(0, |g| g.matches('T').count())
+    }
+
+    /// Number of Q (√T) gates in the circuit (0 for Clifford+T, or on failure).
+    #[getter]
+    fn q_count(&self) -> usize {
+        self.gates.as_deref().map_or(0, |g| g.matches('Q').count())
+    }
+
+    /// The minimized cost: `t_count + q_weight·q_count` (q_weight 3.5 default).
+    #[getter]
+    fn cost(&self) -> f64 {
+        self.t_count() as f64 + self.q_weight * self.q_count() as f64
+    }
+
+    /// `True` if synthesis produced a circuit, so `if result:` works.
+    fn __bool__(&self) -> bool {
+        self.gates.is_some()
+    }
+
     fn __repr__(&self) -> String {
         let gates_repr = self
             .gates
@@ -257,10 +291,19 @@ pub struct PySynthesizer {
 #[cfg(feature = "python")]
 #[pymethods]
 impl PySynthesizer {
+    /// Build a synthesizer for target diamond distance `epsilon`.
+    ///
+    /// `sqrt_t=False` gives Clifford+T; `sqrt_t=True` gives Clifford+√T
+    /// (a denser gate set, usually fewer gates). `max_lde`/`min_lde` bound the
+    /// search depth. The remaining kwargs (`optimize_cost`, `q_cost`,
+    /// `lde_window`, `deadline_ms`, `seq_parity`) are **Clifford+√T-only**
+    /// cost-optimizer tuning and raise `ValueError` if passed with
+    /// `sqrt_t=False`.
     #[new]
     #[pyo3(signature = (epsilon, *, sqrt_t=false, max_lde=None, min_lde=None,
                         optimize_cost=None, q_cost=None, lde_window=None,
                         deadline_ms=None, seq_parity=None))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         epsilon: f64,
         sqrt_t: bool,
@@ -271,7 +314,18 @@ impl PySynthesizer {
         lde_window: Option<u32>,
         deadline_ms: Option<u64>,
         seq_parity: Option<bool>,
-    ) -> Self {
+    ) -> PyResult<Self> {
+        // The cost-optimizer kwargs only affect the √T backend; silently
+        // ignoring them for Clifford+T is a footgun, so reject up front.
+        if !sqrt_t
+            && (optimize_cost.is_some() || q_cost.is_some() || lde_window.is_some()
+                || deadline_ms.is_some() || seq_parity.is_some())
+        {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "optimize_cost / q_cost / lde_window / deadline_ms / seq_parity \
+                 are Clifford+√T-only; pass sqrt_t=True to use them",
+            ));
+        }
         let mut s = Synthesizer::new(epsilon, sqrt_t);
         if let Some(v) = max_lde {
             s = s.with_max_lde(v);
@@ -298,10 +352,12 @@ impl PySynthesizer {
         if seq_parity.is_some() {
             s = s.with_seq_parity(seq_parity);
         }
-        Self { inner: s }
+        Ok(Self { inner: s })
     }
 
-    /// Synthesize `target` (a 2×2 `np.complex128` array).
+    /// Synthesize `target` (a 2×2 `np.complex128` unitary). Returns a
+    /// `SynthResult`, or `None` if no circuit within `epsilon` was found at the
+    /// allowed lde range. Raises `ValueError` if `target` isn't a 2×2 unitary.
     fn synthesize(
         &self,
         target: PyReadonlyArray2<PyComplex64>,
@@ -323,10 +379,29 @@ impl PySynthesizer {
                 Complex::new(view[[1, 1]].re, view[[1, 1]].im),
             ],
         ];
+        // Reject non-unitary input up front: ‖U†U − I‖_F must be ~0. Loose
+        // tolerance so f64-quantized unitaries pass; a clear error beats a
+        // meaningless distance downstream.
+        let mut off = 0.0_f64;
+        for i in 0..2 {
+            for j in 0..2 {
+                let dot = mat[0][i].conj() * mat[0][j] + mat[1][i].conj() * mat[1][j];
+                let want = if i == j { 1.0 } else { 0.0 };
+                off += (dot.re - want).powi(2) + dot.im.powi(2);
+            }
+        }
+        if off.sqrt() > 1e-6 {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "target is not unitary (‖U†U − I‖_F = {:.2e})",
+                off.sqrt()
+            )));
+        }
+        let q_weight = self.inner.q_weight();
         Ok(self.inner.synthesize(mat).map(|r| PySynthResult {
             gates: r.gates,
             lde: r.lde,
             distance: r.distance,
+            q_weight,
         }))
     }
 

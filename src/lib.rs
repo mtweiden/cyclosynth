@@ -15,10 +15,9 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 #[pymodule]
 fn cyclosynth(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<rings::zomega::PyZOmega>()?;
-    m.add_class::<rings::zzeta::PyZZeta>()?;
-    m.add_class::<matrix::u2::PyU2>()?;
-    m.add_class::<synthesis::decomposer::PyBlochDecomposer>()?;
+    // The public surface is exactly the synthesizer and its result. The ring /
+    // U2 / decomposer types are internal plumbing and are intentionally not
+    // exported (they have no standalone Python use).
     m.add_class::<synthesis::synthesizer::PySynthesizer>()?;
     m.add_class::<synthesis::synthesizer::PySynthResult>()?;
     Ok(())
