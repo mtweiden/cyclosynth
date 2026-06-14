@@ -1,35 +1,35 @@
+"""Basic synthesis: approximate a unitary with Clifford+T and Clifford+√T.
+
+Run: python examples/synth.py
+"""
 import numpy as np
 import cyclosynth
-from random import random
 
-# Build a single-qubit unitary as U3(α, β, γ) = Rz(α) · Ry(β) · Rz(γ).
-# Angles fixed for reproducibility (originally drawn from uniform(0, 2π)).
-def rz(t):
-    return np.array([[np.exp(-1j * t / 2), 0],
-                     [0,                    np.exp(1j * t / 2)]],
-                    dtype=np.complex128)
+rng = np.random.default_rng(0)  # seeded for reproducibility
 
-def ry(t):
-    c, s = np.cos(t / 2), np.sin(t / 2)
-    return np.array([[c, -s],
-                     [s,  c]], dtype=np.complex128)
 
-epsilon = 1e-7
-synth = cyclosynth.Synthesizer(epsilon=epsilon)
+def u3(alpha, beta, gamma):
+    """U3(α, β, γ) = Rz(α)·Ry(β)·Rz(γ)."""
+    rz = lambda t: np.array([[np.exp(-1j * t / 2), 0],
+                             [0, np.exp(1j * t / 2)]], dtype=np.complex128)
+    c, s = np.cos(beta / 2), np.sin(beta / 2)
+    ry = np.array([[c, -s], [s, c]], dtype=np.complex128)
+    return rz(alpha) @ ry @ rz(gamma)
 
-for _ in range(10):
-    alpha, beta, gamma = [2 * np.pi * random() for _ in range(3)]
-    target = rz(alpha) @ ry(beta) @ rz(gamma)
 
-    # Approximate to within ε = 1e-5 in diamond distance.
+epsilon = 1e-5
+target = u3(*(2 * np.pi * rng.random(3)))
+
+for label, synth in [
+    ("Clifford+T ", cyclosynth.Synthesizer(epsilon)),
+    ("Clifford+√T", cyclosynth.Synthesizer(epsilon, sqrt_t=True)),
+]:
     result = synth.synthesize(target)
-    t_count = result.gates.count("T") if result.gates else 0
-
-    print("=" * 60)
-    print(f"U3({alpha:.3f}, {beta:.3f}, {gamma:.3f})") # target unitary
-    print(f"  gates    = {result.gates}")      # Clifford+T sequence over {H, S, T, X, Y, Z}
-    print(f"  T-count  = {t_count}")
-    print(f"  distance = {result.distance:e}") # < epsilon
-    print("=" * 60)
-
+    if not result:                       # None, or no gates extracted
+        print(f"{label}: no circuit within ε={epsilon:.0e}")
+        continue
+    print(f"{label}: T={result.t_count} Q={result.q_count} "
+          f"cost={result.cost:.1f} lde={result.lde} "
+          f"distance={result.distance:.2e}")
+    print(f"            gates = {result.gates}")
     assert result.distance < epsilon

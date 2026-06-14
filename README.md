@@ -31,6 +31,9 @@ pip install maturin
 maturin develop --release
 ```
 
+(`examples/verify.py` additionally needs `pip install mpmath` for its
+high-precision cross-check.)
+
 ## Usage (Python)
 
 ```python
@@ -48,9 +51,10 @@ target = rz(4.863069) @ ry(2.757718) @ rz(5.394728)
 synth = cyclosynth.Synthesizer(epsilon=1e-5)
 result = synth.synthesize(target)
 
-print(result.gates)               # gate string over {H, S, T, X, Y, Z}, or None
-print(result.gates.count("T"))    # T-count
-print(result.distance)            # diamond distance, < epsilon
+if result:                        # None if no circuit was found within epsilon
+    print(result.gates)           # gate string over {H, S, T, X, Y, Z}
+    print(result.t_count)         # T-count (also .q_count, .cost, .lde)
+    print(result.distance)        # diamond distance, < epsilon
 ```
 
 The composition convention is *leftmost gate is the leftmost matrix
@@ -75,9 +79,11 @@ shows the Python bindings in use:
 
 | example | what it does |
 |---|---|
-| [`synth.py`](examples/synth.py) / [`synth_sqrtt.py`](examples/synth_sqrtt.py) | Synthesize a `U3(α, β, γ)` target with Clifford+T / Clifford+√T. |
-| [`verify.py`](examples/verify.py) | Independently re-evaluate a synthesized gate string and confirm it approximates the target. |
+| [`synth.py`](examples/synth.py) | Synthesize a `U3(α, β, γ)` target with both Clifford+T and Clifford+√T; read the result. |
+| [`choosing_epsilon.py`](examples/choosing_epsilon.py) | Sweep ε to see the accuracy/T-count trade-off. |
+| [`optimize_cost.py`](examples/optimize_cost.py) | The Clifford+√T `optimize_cost` knob: minimize `T + 3.5·Q`. |
 | [`compare_t_vs_sqrtt.py`](examples/compare_t_vs_sqrtt.py) | Clifford+T vs Clifford+√T cost (`T + 3.5·Q`) on the same targets. |
+| [`verify.py`](examples/verify.py) | Verification harness: independently re-check synthesized circuits at high precision (needs `mpmath`; runs 100 trials, slow). |
 
 ## Usage (Rust)
 
