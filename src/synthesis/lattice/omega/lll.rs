@@ -113,6 +113,12 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
             }
         }
     }
+    // Non-convergence: the last pass applied a transform without a trailing
+    // cfa_row, so row κ's GS state (s_bar/r_bar/mu_bar) is stale w.r.t. the
+    // final Gram. Refresh it before returning — the main loop's Lovász test
+    // reads s_bar[κ] immediately after this. (The cap is never hit in the
+    // operating regime; this is insurance for pathological inputs.)
+    cfa_row(scratch, kappa);
     if crate::synthesis::diag::trace_enabled() {
         crate::synthesis::diag::record_lazy_passes(MAX_LAZY_PASSES as u64);
     }

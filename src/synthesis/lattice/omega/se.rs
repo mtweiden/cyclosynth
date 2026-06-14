@@ -267,7 +267,12 @@ fn recurse_8<F>(
         let new_partial_eucl = if let Some(re) = r_chol_eucl {
             let level_eucl = re[d][d] * (zd as f64) + tail_eucl;
             let p = partial_eucl + level_eucl * level_eucl;
-            if p > target_norm_eucl + 1.0 {
+            // Relative slack: target_norm_eucl = 2^k, so the bare `+ 1.0`
+            // vanishes once k ≥ 53 and would cut a true solution whose
+            // f64-accumulated `p` sits a few ULP above 2^k. 1e-9 relative
+            // dwarfs the ~2^-49 accumulation error; the exact leaf filter
+            // arbitrates the over-retained nodes.
+            if p > target_norm_eucl * (1.0 + 1e-9) + 1.0 {
                 continue;
             }
             p
