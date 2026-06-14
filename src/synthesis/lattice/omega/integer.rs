@@ -348,9 +348,10 @@ mod tests {
         cholesky_f64_8, cholesky_int_8, snapshot_gram_to_mpfr,
     };
     use super::super::lll::{
-        cfa_full, compute_gram_full, gram_update_size_reduce, gram_update_swap,
-        i256_to_f64, lll_l2_8, LllResult, L2_DELTA, L2_ETA,
+        cfa_full, compute_gram_full, gram_update_size_reduce, i256_to_f64,
+        lll_l2_8, LllResult, L2_DELTA, L2_ETA,
     };
+    use crate::synthesis::lattice::common::gram_update_swap;
     use super::super::q_metric::{build_q_int, build_q_mpfr};
     use super::super::scratch::IntScratch;
     use i256::i256;
@@ -732,7 +733,7 @@ mod tests {
         ];
         compute_gram_full(&mut s);
         s.basis.swap(2, 3);
-        gram_update_swap(&mut s, 2, 3);
+        gram_update_swap(&mut s.gram, 2, 3);
         let g_inc = s.gram;
         compute_gram_full(&mut s);
         let g_full = s.gram;

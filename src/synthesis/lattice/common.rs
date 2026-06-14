@@ -144,6 +144,140 @@ pub fn i256_log2_ceil(v: &i256) -> i32 {
     (256 - leading_zeros as i32) - 1
 }
 
+// ─── Dimension-generic integer-Gram kernels ─────────────────────────────────
+//
+// These operate only on the exact i256 Gram / i64 basis (no Gram-Schmidt
+// floats), so they are identical for d=8 (Z[ω]) and d=16 (Z[ζ_16]) modulo
+// the dimension. Each backend's `lll` module keeps a thin wrapper that pulls
+// the relevant scratch fields and calls these; `const D` monomorphizes to
+// the same code the hand-written per-dimension versions emitted. The
+// Cholesky/size-reduce routines are NOT here — they diverge (f64 GS at d=8,
+// MPFR GS at d=16).
+
+/// `true` if any Gram entry exceeds `2^GRAM_OVERFLOW_THRESHOLD_BITS`.
+#[inline]
+pub fn gram_overflow_check<const D: usize>(gram: &[[i256; D]; D]) -> bool {
+    let thresh = GRAM_OVERFLOW_THRESHOLD_BITS as i32;
+    for i in 0..D {
+        for j in 0..D {
+            if i256_log2_ceil(&gram[i][j]) > thresh {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Apply the basis transform `b_k -= r·b_j` to the i256 Gram in O(D) ops.
+/// Math: `B_new = M·B` with `M = I − r·E_kj`, hence `G_new = M·G·Mᵀ`.
+/// Two-step recurrence (row-k update, then column-k update); idempotent for
+/// r=0. Caller must update the i64 basis row k separately.
+#[inline]
+pub fn gram_update_size_reduce<const D: usize>(
+    gram: &mut [[i256; D]; D],
+    k: usize,
+    j: usize,
+    r: i64,
+) {
+    if r == 0 {
+        return;
+    }
+    let r256 = i256::from_i64(r);
+    // Step 1: row k. Snapshot row j BEFORE mutating row k (new G[k][k]
+    // depends on G[j][k]).
+    let row_j_snapshot: [i256; D] = gram[j];
+    for m in 0..D {
+        gram[k][m] -= r256 * row_j_snapshot[m];
+    }
+    // Step 2: column k. For i = k we use the post-step-1 value of G[k][j],
+    // which yields the correct G_new[k][k].
+    let mut col_j_snapshot = [i256::from_i64(0); D];
+    for i in 0..D {
+        col_j_snapshot[i] = gram[i][j];
+    }
+    for i in 0..D {
+        gram[i][k] -= r256 * col_j_snapshot[i];
+    }
+}
+
+/// Apply the basis swap of rows a and b to the symmetric Gram: swap rows AND
+/// columns. O(D) work.
+#[inline]
+pub fn gram_update_swap<const D: usize>(gram: &mut [[i256; D]; D], a: usize, b: usize) {
+    if a == b {
+        return;
+    }
+    gram.swap(a, b);
+    for i in 0..D {
+        gram[i].swap(a, b);
+    }
+}
+
+/// L² INSERT (Figure 6 step 6 of Nguyen-Stehlé 2009): move basis row
+/// `kappa_orig` to position `kappa_insert ≤ kappa_orig`, shifting the
+/// intervening rows down. A chain of adjacent swaps keeps the i256 Gram
+/// consistent. After this the GS state for rows kappa_insert..kappa_orig is
+/// stale; the caller must refresh row kappa_insert via its CFA.
+#[inline]
+pub fn basis_insert<const D: usize>(
+    gram: &mut [[i256; D]; D],
+    basis: &mut [[i64; D]; D],
+    kappa_orig: usize,
+    kappa_insert: usize,
+) {
+    debug_assert!(kappa_insert <= kappa_orig);
+    let mut current = kappa_orig;
+    while current > kappa_insert {
+        basis.swap(current, current - 1);
+        gram_update_swap(gram, current, current - 1);
+        current -= 1;
+    }
+}
+
+/// Compute `G = B · Q_int · Bᵀ` entirely in i256, into `gram`, using
+/// `temp_bq` (= B · Q_int) as intermediate. Returns `false` if any Gram
+/// entry exceeds `2^GRAM_OVERFLOW_THRESHOLD_BITS` (caller aborts to
+/// fallback).
+#[inline]
+pub fn compute_gram_full<const D: usize>(
+    gram: &mut [[i256; D]; D],
+    basis: &[[i64; D]; D],
+    q_int: &[[i256; D]; D],
+    temp_bq: &mut [[i256; D]; D],
+) -> bool {
+    let zero = i256::from_i64(0);
+
+    // temp_bq[i][b] = Σ_a B[i][a] · Q_int[a][b]
+    for i in 0..D {
+        for b in 0..D {
+            let mut acc = zero;
+            for a in 0..D {
+                let bi_a = i256::from_i64(basis[i][a]);
+                acc += bi_a * q_int[a][b];
+            }
+            temp_bq[i][b] = acc;
+        }
+    }
+
+    // gram[i][j] = Σ_b temp_bq[i][b] · B[j][b]
+    let mut max_abs_log2: i32 = -1;
+    for i in 0..D {
+        for j in 0..D {
+            let mut acc = zero;
+            for b in 0..D {
+                let bj_b = i256::from_i64(basis[j][b]);
+                acc += temp_bq[i][b] * bj_b;
+            }
+            gram[i][j] = acc;
+            let bits = i256_log2_ceil(&acc);
+            if bits > max_abs_log2 {
+                max_abs_log2 = bits;
+            }
+        }
+    }
+    max_abs_log2 <= GRAM_OVERFLOW_THRESHOLD_BITS as i32
+}
+
 /// Round `2^shift_bits · x` to i256 (negative `shift_bits` scales down).
 /// Saturates to i256 bounds — callers pick `shift_bits` to avoid that.
 pub fn rug_to_i256_scaled(x: &RFloat, shift_bits: i32) -> i256 {

@@ -29,7 +29,8 @@
 use i256::i256;
 use rug::{Assign, Float as RFloat};
 
-use super::scratch::{IntScratch16, GRAM_OVERFLOW_THRESHOLD_BITS};
+use super::scratch::IntScratch16;
+use crate::synthesis::lattice::common;
 
 // ─── L²-LLL parameters ───────────────────────────────────────────────────────
 
@@ -56,19 +57,9 @@ pub fn i256_to_rfloat_inplace(v: i256, dst: &mut RFloat) {
     super::q_metric::i256_to_rfloat(v, dst);
 }
 
-pub(super) use crate::synthesis::lattice::common::i256_log2_ceil;
-
 /// Check whether any Gram entry exceeds the overflow threshold.
 pub(super) fn gram_overflow_check(scratch: &IntScratch16) -> bool {
-    let thresh = GRAM_OVERFLOW_THRESHOLD_BITS as i32;
-    for i in 0..16 {
-        for j in 0..16 {
-            if i256_log2_ceil(&scratch.gram[i][j]) > thresh {
-                return true;
-            }
-        }
-    }
-    false
+    common::gram_overflow_check(&scratch.gram)
 }
 
 // ─── Cholesky Factorization Algorithm (Figure 4) — MPFR ─────────────────────
@@ -129,84 +120,31 @@ pub(super) fn gram_update_size_reduce(
     j: usize,
     r: i64,
 ) {
-    if r == 0 {
-        return;
-    }
-    let r256 = i256::from_i64(r);
-    // Step 1: row k.
-    let row_j_snapshot: [i256; 16] = scratch.gram[j];
-    for m in 0..16 {
-        scratch.gram[k][m] -= r256 * row_j_snapshot[m];
-    }
-    // Step 2: column k.
-    let mut col_j_snapshot = [i256::from_i64(0); 16];
-    for i in 0..16 {
-        col_j_snapshot[i] = scratch.gram[i][j];
-    }
-    for i in 0..16 {
-        scratch.gram[i][k] -= r256 * col_j_snapshot[i];
-    }
+    common::gram_update_size_reduce(&mut scratch.gram, k, j, r);
 }
 
 /// Swap rows a and b in the (symmetric) Gram: swap rows AND columns.
 pub(super) fn gram_update_swap(scratch: &mut IntScratch16, a: usize, b: usize) {
-    if a == b {
-        return;
-    }
-    scratch.gram.swap(a, b);
-    for i in 0..16 {
-        scratch.gram[i].swap(a, b);
-    }
+    common::gram_update_swap(&mut scratch.gram, a, b);
 }
 
 /// L² INSERT operation: move basis row `kappa_orig` to `kappa_insert`.
 pub(super) fn basis_insert(scratch: &mut IntScratch16, kappa_orig: usize, kappa_insert: usize) {
-    debug_assert!(kappa_insert <= kappa_orig);
-    let mut current = kappa_orig;
-    while current > kappa_insert {
-        scratch.basis.swap(current, current - 1);
-        gram_update_swap(scratch, current, current - 1);
-        current -= 1;
-    }
+    common::basis_insert(&mut scratch.gram, &mut scratch.basis, kappa_orig, kappa_insert);
 }
 
 // ─── Full Gram computation: G = B · Q_int · Bᵀ ───────────────────────────────
 
-/// Compute G = B · Q_int · Bᵀ entirely in i256, into `scratch.gram`. Uses
-/// `scratch.temp_bq` as intermediate (= B · Q_int). Returns `false` if any
-/// Gram entry exceeds `2^GRAM_OVERFLOW_THRESHOLD_BITS`.
+/// Compute G = B · Q_int · Bᵀ entirely in i256, into `scratch.gram` (via
+/// `scratch.temp_bq`). Returns `false` if any Gram entry exceeds
+/// `2^GRAM_OVERFLOW_THRESHOLD_BITS`.
 pub fn compute_gram_full(scratch: &mut IntScratch16) -> bool {
-    let zero = i256::from_i64(0);
-
-    // temp_bq[i][b] = sum_a B[i][a] · Q_int[a][b]
-    for i in 0..16 {
-        for b in 0..16 {
-            let mut acc = zero;
-            for a in 0..16 {
-                let bi_a = i256::from_i64(scratch.basis[i][a]);
-                acc += bi_a * scratch.q_int[a][b];
-            }
-            scratch.temp_bq[i][b] = acc;
-        }
-    }
-
-    // gram[i][j] = sum_b temp_bq[i][b] · B[j][b]
-    let mut max_abs_log2: i32 = -1;
-    for i in 0..16 {
-        for j in 0..16 {
-            let mut acc = zero;
-            for b in 0..16 {
-                let bj_b = i256::from_i64(scratch.basis[j][b]);
-                acc += scratch.temp_bq[i][b] * bj_b;
-            }
-            scratch.gram[i][j] = acc;
-            let bits = i256_log2_ceil(&acc);
-            if bits > max_abs_log2 {
-                max_abs_log2 = bits;
-            }
-        }
-    }
-    max_abs_log2 <= GRAM_OVERFLOW_THRESHOLD_BITS as i32
+    common::compute_gram_full(
+        &mut scratch.gram,
+        &scratch.basis,
+        &scratch.q_int,
+        &mut scratch.temp_bq,
+    )
 }
 
 // ─── Lazy size-reduce (Figure 5) — MPFR ──────────────────────────────────────

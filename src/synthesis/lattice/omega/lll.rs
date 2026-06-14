@@ -8,9 +8,8 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use i256::i256;
-
-use super::scratch::{IntScratch, GRAM_OVERFLOW_THRESHOLD_BITS};
+use super::scratch::IntScratch;
+use crate::synthesis::lattice::common;
 
 // ─── L²-LLL parameters & result type — moved to lattice::common ───────────────
 
@@ -130,122 +129,39 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
 /// Caller must call this AFTER updating the i64 basis row k. Idempotent for
 /// r=0.
 pub(super) fn gram_update_size_reduce(scratch: &mut IntScratch, k: usize, j: usize, r: i64) {
-    if r == 0 {
-        return;
-    }
-    let r256 = i256::from_i64(r);
-    // Step 1: row k. G[k][m] := G[k][m] - r·G[j][m] for m = 0..8.
-    // Snapshot row j BEFORE mutating row k (the new G[k][k] depends on G[j][k]).
-    let row_j_snapshot: [i256; 8] = scratch.gram[j];
-    for m in 0..8 {
-        scratch.gram[k][m] -= r256 * row_j_snapshot[m];
-    }
-    // Step 2: column k. G[i][k] := G[i][k] - r·G[i][j] for i = 0..8.
-    // For i ≠ k: G[i][j] is unchanged from before (step 1 only touched row k).
-    // For i = k: G[k][j] was updated in step 1 — we use the post-update value
-    // here, which gives the correct G_new[k][k] derivation.
-    let mut col_j_snapshot = [i256::from_i64(0); 8];
-    for i in 0..8 {
-        col_j_snapshot[i] = scratch.gram[i][j];
-    }
-    for i in 0..8 {
-        scratch.gram[i][k] -= r256 * col_j_snapshot[i];
-    }
+    common::gram_update_size_reduce(&mut scratch.gram, k, j, r);
 }
 
-/// Apply the basis swap of rows a and b to the (symmetric) Gram: swap rows
-/// AND columns. O(8) work.
-pub(super) fn gram_update_swap(scratch: &mut IntScratch, a: usize, b: usize) {
-    if a == b {
-        return;
-    }
-    scratch.gram.swap(a, b);
-    for i in 0..8 {
-        scratch.gram[i].swap(a, b);
-    }
-}
-
-/// L² INSERT operation (Figure 6 step 6 of Nguyen-Stehlé 2009).
-///
-/// Move basis row `kappa_orig` to position `kappa_insert` (≤ kappa_orig).
-/// Rows kappa_insert..kappa_orig-1 shift down by one. Implemented as a chain
-/// of adjacent swaps so the i256 Gram is kept consistent via
-/// `gram_update_swap`. After basis + Gram are rotated, the GS state for row
-/// kappa_insert is stale: caller must invoke `cfa_row(scratch, kappa_insert)`.
-///
-/// Cost: O(kappa_orig - kappa_insert) adjacent swaps, each O(d) for the
-/// gram column swap.
+/// L² INSERT operation (Figure 6 step 6 of Nguyen-Stehlé 2009): move basis
+/// row `kappa_orig` to position `kappa_insert` (≤ kappa_orig). After basis +
+/// Gram are rotated, the GS state for row kappa_insert is stale: caller must
+/// invoke `cfa_row(scratch, kappa_insert)`. Rows above kappa_insert are
+/// recomputed naturally as κ advances and lazy_size_reduce calls CFA.
 fn basis_insert(scratch: &mut IntScratch, kappa_orig: usize, kappa_insert: usize) {
-    debug_assert!(kappa_insert <= kappa_orig);
-    let mut current = kappa_orig;
-    while current > kappa_insert {
-        scratch.basis.swap(current, current - 1);
-        gram_update_swap(scratch, current, current - 1);
-        current -= 1;
-    }
-    // Note: GS state (r_bar, mu_bar, s_bar) for rows kappa_insert..kappa_orig
-    // is now stale. The L² main loop must refresh row kappa_insert via
-    // cfa_row before the next iteration uses it. Rows above kappa_insert
-    // are recomputed naturally as κ advances and lazy_size_reduce calls CFA.
+    common::basis_insert(&mut scratch.gram, &mut scratch.basis, kappa_orig, kappa_insert);
 }
 
 // ─── Full Gram computation: G = B · Q_int · Bᵀ ───────────────────────────────
 
-/// Compute G = B · Q_int · Bᵀ entirely in i256, into `scratch.gram`. Uses
-/// `scratch.temp_bq` as intermediate (= B · Q_int).
+/// Compute G = B · Q_int · Bᵀ entirely in i256, into `scratch.gram` (via
+/// `scratch.temp_bq`). Returns `false` on Gram overflow so the caller aborts
+/// to fallback.
 ///
-/// Overflow: with max |Q_int| = 2^180 and post-LLL max(|B|) ≤ 2^15, G
+/// Overflow margin: with max |Q_int| = 2^180 and post-LLL max(|B|) ≤ 2^15, G
 /// entries fit ≤ 2^216 (40-bit margin to i256::MAX). Transient B-growth
-/// during deep-ε swaps can push them past the 2^GRAM_OVERFLOW_THRESHOLD_BITS
-/// guard, on which this returns `false` so the caller aborts to fallback.
+/// during deep-ε swaps can breach the 2^GRAM_OVERFLOW_THRESHOLD_BITS guard.
 pub fn compute_gram_full(scratch: &mut IntScratch) -> bool {
-    let zero = i256::from_i64(0);
-
-    // temp_bq[i][b] = sum_a B[i][a] · Q_int[a][b]
-    for i in 0..8 {
-        for b in 0..8 {
-            let mut acc = zero;
-            for a in 0..8 {
-                let bi_a = i256::from_i64(scratch.basis[i][a]);
-                acc += bi_a * scratch.q_int[a][b];
-            }
-            scratch.temp_bq[i][b] = acc;
-        }
-    }
-
-    // gram[i][j] = sum_b temp_bq[i][b] · B[j][b]
-    let mut max_abs_log2: i32 = -1;
-    for i in 0..8 {
-        for j in 0..8 {
-            let mut acc = zero;
-            for b in 0..8 {
-                let bj_b = i256::from_i64(scratch.basis[j][b]);
-                acc += scratch.temp_bq[i][b] * bj_b;
-            }
-            scratch.gram[i][j] = acc;
-            // Magnitude check (cheap: leading-zero count on the |i256|).
-            let bits = i256_log2_ceil(&acc);
-            if bits > max_abs_log2 {
-                max_abs_log2 = bits;
-            }
-        }
-    }
-    max_abs_log2 <= GRAM_OVERFLOW_THRESHOLD_BITS as i32
+    common::compute_gram_full(
+        &mut scratch.gram,
+        &scratch.basis,
+        &scratch.q_int,
+        &mut scratch.temp_bq,
+    )
 }
-
-pub use crate::synthesis::lattice::common::i256_log2_ceil;
 
 /// Check whether any Gram entry exceeds the overflow threshold.
 fn gram_overflow_check(scratch: &IntScratch) -> bool {
-    let thresh = GRAM_OVERFLOW_THRESHOLD_BITS as i32;
-    for i in 0..8 {
-        for j in 0..8 {
-            if i256_log2_ceil(&scratch.gram[i][j]) > thresh {
-                return true;
-            }
-        }
-    }
-    false
+    common::gram_overflow_check(&scratch.gram)
 }
 
 // ─── L²-LLL main loop (Figure 6) ─────────────────────────────────────────────
