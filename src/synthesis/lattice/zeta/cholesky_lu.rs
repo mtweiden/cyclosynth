@@ -1,5 +1,5 @@
 //! Post-LLL linear algebra at d=16: Cholesky and LU on the reduced Gram +
-//! basis. Mirrors `super::super::lattice::cholesky_lu` (the d=8 path) with
+//! basis. Mirrors `super::super::omega::cholesky_lu` (the d=8 path) with
 //! buffers and loops dimension-bumped to 16.
 //!
 //! Production path:
@@ -448,7 +448,7 @@ pub type CholeskyDual16 = ([[f64; 16]; 16], [[(f64, f64); 16]; 16]);
 /// MPFR-128 Cholesky of the Euclidean Gram `B·Bᵀ`, returning the
 /// upper-triangular factor R (`Rᵀ·R = B·Bᵀ`) as both an f64 snapshot (the SE
 /// walk's primary f64 prune) and a double-double projection (the verify path
-/// gated by [`set_verify_prune_mpfr`]). The factorization runs at MPFR-128 so
+/// gated by [`super::se::set_verify_prune_mpfr`]). The factorization runs at MPFR-128 so
 /// the per-leaf `‖R·z‖²` accumulator drifts only by f64 round-off, not by
 /// f64-Cholesky error — which at deep k (Gram ~2^34+) reaches 0.1%+ and
 /// corrupts the prune threshold. 106-bit was tried but gave rank-deficient

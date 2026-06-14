@@ -8,23 +8,23 @@
 //! The [`SynthesizerT::synthesize`] entry point drives a search over T-count
 //! `t = 0, 1, 2, …`, trying two backends depending on `t`:
 //!
-//! - [`direct_search`] (`t ≤ direct_limit`; 8 at ε ≥ 1e-4, else 6):
+//! - `direct_search` (`t ≤ direct_limit`; 8 at ε ≥ 1e-4, else 6):
 //!   brute-force enumeration over the norm shell `‖x‖² = 2^t` via
 //!   [`crate::synthesis::lattice::omega::brute::brute_aligned_search`]. Tries even, T, and T†
 //!   right-side branches, each combined with all 24 Clifford left
 //!   prefixes. Fast for small `t`; exponential beyond that.
 //!
-//! - [`prefix_split_search`] (`t > direct_limit`, Algorithm 3.11): divide-and-
+//! - `prefix_split_search` (`t > direct_limit`, Algorithm 3.11): divide-and-
 //!   conquer using Matsumoto–Amano left prefixes `L_{t'}`. Splits at
 //!   `t' = max(0, ⌈t − 5/2·log₂(1/ε)⌉)` (returning `None` when that is 0).
 //!   For each prefix
 //!   `U_L ∈ L_{t'}`, searches for the right factor via
-//!   [`lll_aligned_search`] at inner lde `lde_inner` (see below).
+//!   `lll_aligned_search` at inner lde `lde_inner` (see below).
 //!   Tries even (U_L·U_R) and odd (U_L·U_R·T) inner branches.
 //!
 //! # Inner-lde convention
 //!
-//! [`lll_aligned_search`] uses `lde_inner = T_inner/2 + 1` (norm shell
+//! `lll_aligned_search` uses `lde_inner = T_inner/2 + 1` (norm shell
 //! `2^lde_inner`), not the T-count itself:
 //!
 //!   lde_inner = t_inner / 2 + 1            (even t_inner)

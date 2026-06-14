@@ -1,3 +1,7 @@
+//! Exact matrix types over the synthesis rings: 2×2 unitaries ([`U2`]) and
+//! SO(3) rotations ([`SO3`]), with their Clifford+T (`*T`) and Clifford+√T
+//! (`*Q`) ring instantiations.
+
 pub mod so3;
 pub mod u2;
 

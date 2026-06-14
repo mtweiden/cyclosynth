@@ -255,7 +255,7 @@ fn q_candidate_dd(
 /// Per-element β_1: see `clifford_sqrt_t_research.md` for derivation.
 /// Returns i128 to avoid silent overflow on pairwise products at deep k.
 ///
-/// Mirror of [`super::super::lattice::se::bilinear_b`] for the Z[ζ_16] /
+/// Mirror of [`super::super::omega::se::bilinear_b`] for the Z[ζ_16] /
 /// Clifford+√T flow. Three forms here vs one in 8D because the
 /// totally-real-subring decomposition of unitarity over Z[ζ_16] yields
 /// three independent constraints (one per non-σ_1 Galois embedding).
@@ -585,7 +585,7 @@ fn report_parallel_walk_skew(
 }
 
 /// Parallel + norm-shell-pruned + incremental-x SE walker. This is the
-/// production workhorse used by [`super::find_aligned_lattice_points`].
+/// production workhorse used by [`super::find_aligned_lattice_points_with_stop`].
 ///
 /// Combines all three accelerations:
 ///   1. **Norm-shell pruning** via the upper-triangular Euclidean Cholesky

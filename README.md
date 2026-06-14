@@ -132,7 +132,9 @@ This is the algorithm of
 [Morisaki et al.](https://arxiv.org/abs/2510.05816); see the paper for the
 full derivation. The lattice code lives in `src/synthesis/lattice/`, with
 one variant per gate set — `omega/` for Clifford+T and `zeta/` for
-Clifford+√T. Set `CYCLOSYNTH_TRACE=1` to print per-step timings to stderr.
+Clifford+√T. Build with `--features trace` and set `CYCLOSYNTH_TRACE=1` to print
+per-step timings to stderr (see the Telemetry section above — the env var is
+inert without the feature).
 
 ## Glossary
 

@@ -159,6 +159,7 @@ impl Synthesizer {
         }
     }
 
+    /// Target diamond distance the synthesized circuit must come within.
     pub fn epsilon(&self) -> f64 {
         match &self.inner {
             Backend::T(s) => s.epsilon,
@@ -166,6 +167,7 @@ impl Synthesizer {
         }
     }
 
+    /// Largest lde (search depth) the synthesizer will try before giving up.
     pub fn max_lde(&self) -> u32 {
         match &self.inner {
             Backend::T(s) => s.max_lde,
@@ -173,6 +175,8 @@ impl Synthesizer {
         }
     }
 
+    /// Smallest lde the synthesizer starts from (skips guaranteed-empty
+    /// shallow depths at deep ε).
     pub fn min_lde(&self) -> u32 {
         match &self.inner {
             Backend::T(s) => s.min_lde,
@@ -180,6 +184,7 @@ impl Synthesizer {
         }
     }
 
+    /// `true` if this is a Clifford+√T synthesizer, `false` for Clifford+T.
     pub fn sqrt_t(&self) -> bool {
         matches!(&self.inner, Backend::Q(_))
     }

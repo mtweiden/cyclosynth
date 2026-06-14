@@ -1,9 +1,10 @@
-//! Optional per-search diagnostic counters. Most are gated by
-//! `CYCLOSYNTH_TRACE=1`; the budget-truncation outcome counters and the
-//! prefix branch-win telemetry are always-on (at most once per
-//! find_aligned_lattice_points call, so the hot path never sees them).
+//! Optional per-search diagnostic counters. They require the `trace` cargo
+//! feature: without it, `trace_enabled()` is a compile-time `const false` and
+//! every counter write compiles out (zero cost). Built with `--features trace`,
+//! the writes are then runtime-gated by `CYCLOSYNTH_TRACE=1`.
 //!
 //! Usage:
+//!   cargo run --features trace --bin time_synthesis_omega   # then:
 //!   CYCLOSYNTH_TRACE=1 ./time_synthesis_omega ...
 //!
 //! Output is printed to stderr (so it doesn't pollute timing tables on stdout).

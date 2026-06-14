@@ -1,5 +1,5 @@
 //! Per-thread scratch buffers for the 16D Z[ζ_16] L²-LLL pipeline, the
-//! dimension-16 analog of `super::super::lattice::scratch`. All MPFR/i256
+//! dimension-16 analog of `super::super::omega::scratch`. All MPFR/i256
 //! storage is allocated up front so the inner LLL loop never allocates.
 //! MPFR Gram-Schmidt is mandatory at d=16 (Theorem 2 of Nguyen-Stehlé 2009
 //! covers only d ≤ 11 in f64). Gram entries reach ~2^214 (= 16·2^30·2^180

@@ -48,7 +48,7 @@ use crate::rings::Float;
 use crate::synthesis::diag;
 
 /// MPFR precision used by the alignment-threshold dot product. Same as 8D
-/// `super::super::lattice::se::SE_PREC` — 128 bits gives ~38 digits of
+/// `super::super::omega::se::SE_PREC` — 128 bits gives ~38 digits of
 /// headroom past the precision walls in the f64 formula at ε ≲ √(machine_eps).
 const ALIGN_PREC: u32 = 128;
 

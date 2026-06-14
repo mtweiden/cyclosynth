@@ -9,10 +9,10 @@
 
 /// Maximum reduced lde over the single-qubit Clifford group in the
 /// `U2Q` representation (⟨H, S⟩ closure, incl. phases): 1 under full
-/// denominator reduction (H itself). [`tests::clifford_lde_max_is_1`].
+/// denominator reduction (H itself). `tests::clifford_lde_max_is_1`.
 pub const CLIFFORD_LDE_MAX: u32 = 1;
 
-/// Per-x/y-syllable lde contribution. [`tests::syllable_lde_constants`].
+/// Per-x/y-syllable lde contribution. `tests::syllable_lde_constants`.
 pub const XY_SYLLABLE_LDE: u32 = 2;
 
 /// Minimum half-unit cost over the 9 syllables (the T syllable costs 2;

@@ -14,7 +14,7 @@
 //! for small Clifford+√T targets (also the lattice pipeline's oracle).
 //!
 //! For larger `k`: single-shot 16D L²-LLL + Schnorr-Euchner via
-//! [`crate::synthesis::lattice::zeta::find_aligned_lattice_points`] (with an optional BKZ-β
+//! [`crate::synthesis::lattice::zeta::find_aligned_lattice_points_with_stop`] (with an optional BKZ-β
 //! post-pass), plus an FGKM-prefix divide-and-conquer mode (`prefix_split_search_q`)
 //! for deep `k`. Adaptive leaf budget scales exponentially in `k`.
 //!
@@ -43,8 +43,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Result of a synthesis call: the gate string, its lde, and the diamond
 /// distance achieved.
 ///
-/// Field shape matches `crate::synthesis::clifford_t::SynthResultT` so
-/// callers can swap implementations transparently after the merge.
+/// Field shape matches `crate::synthesis::clifford_t::SynthResultT`, so the
+/// unified [`crate::synthesis::Synthesizer`] wrapper can return either
+/// backend's result through one type.
 #[derive(Debug, Clone)]
 pub struct SynthResultQ {
     /// Clifford+√T gate string in the alphabet `{H, S, T, Q, X, Y, Z}`

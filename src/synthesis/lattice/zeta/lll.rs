@@ -14,8 +14,9 @@
 //! disappears (the precision requirement
 //! `ℓ ≥ 5 + 2·log d − log ε + d·log ρ` grows roughly as `d·log ρ`,
 //! hitting ~50 bits at d=16 ε=1e-7, leaving f64 with no margin). We use
-//! MPFR `MpFloat` at [`super::scratch::GS_PREC`] = 128 bits everywhere f64
-//! was used in the 8D path, giving ~78 bits of margin.
+//! MPFR `MpFloat` at [`super::scratch::GS_PREC`] = 80 bits everywhere f64
+//! was used in the 8D path — ~38 bits over fplll's ~42-bit `l2_min_prec`
+//! (see `super::scratch` for why 80 was chosen).
 //!
 //! The exact integer Gram (i256) is unchanged structurally; only the
 //! analysis of dimension-16 growth differs (see `super::scratch` overflow
@@ -45,9 +46,9 @@ pub use crate::synthesis::lattice::common::{
 // ─── i256 → MPFR conversion ──────────────────────────────────────────────────
 
 /// Set `dst` to the value of i256 `v` (lossless). i256 is at most 256 bits,
-/// so any GS_PREC ≥ 256 is exact; at GS_PREC=128 we get the leading 128
-/// bits, which is the same precision as f64 + 75 bits — still well above
-/// the L²-LLL precision requirement at d=16.
+/// so any GS_PREC ≥ 256 is exact; at GS_PREC=80 we keep the leading 80 bits
+/// (f64 + ~28 bits) — still well above the L²-LLL precision requirement at
+/// d=16.
 #[inline]
 pub fn i256_to_rfloat_inplace(v: i256, dst: &mut MpFloat) {
     super::q_metric::i256_to_rfloat(v, dst);

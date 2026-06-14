@@ -110,7 +110,7 @@ pub(crate) static ZETA_COSET_DEDUP: LazyLock<bool> = LazyLock::new(|| {
 });
 
 /// The 8-element lde-0 Clifford subgroup ⟨S, X⟩ as U2Q, rebuilt from
-/// [`CLIFFORD_TABLE_T`] entry names via [`CLIFFORD_LDE0_IDX`] — the same
+/// [`crate::synthesis::cliffords::CLIFFORD_TABLE_T`] entry names via [`crate::synthesis::cliffords::CLIFFORD_LDE0_IDX`] — the same
 /// name-folding route `build_fgkm_prefix_set_inner` uses for its Clifford suffixes
 /// (NOT the det-1 U2T table matrices, which differ by ζ-power phases;
 /// orbit keys must match the list's own construction including float
