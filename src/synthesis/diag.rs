@@ -222,10 +222,12 @@ pub fn profile_line() -> String {
 
 // ─── Budget-truncation outcome counters (predictive trunc, se.rs) ────────────
 //
-// Both count once per WALK (first-flipper dedupe inside se.rs) and are
-// always-on (not trace-gated): they fire at most once per find_aligned_lattice_points call, so
-// the hot path never sees them, and tests assert on them without needing
-// CYCLOSYNTH_TRACE.
+// Both count once per WALK (first-flipper dedupe inside se.rs) and, like every
+// other counter here, are written only behind `trace_enabled()` — so the
+// default build never touches them. Tests that assert on them therefore need
+// the `trace` feature (CYCLOSYNTH_TRACE). They are cheap enough to leave
+// always-on (once per find_aligned_lattice_points call, never on the hot path),
+// but gating them keeps the zero-telemetry build uniform.
 
 /// Walks aborted by predictive budget truncation: the projected total node
 /// spend (consumed / fraction_of_frontier_items_done, checked at BudgetCache

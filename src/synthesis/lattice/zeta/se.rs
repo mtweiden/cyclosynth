@@ -1,7 +1,7 @@
 //! Schnorr-Euchner enumeration over the 16D integer lattice (Z[ζ_16]).
 //!
 //! The inner walk runs in f64 (vs the 8D path's MPFR): post-L²-LLL,
-//! κ(G) ≤ (4/3)^15 ≈ 240 costs ~8 bits of conditioning — well inside
+//! κ(G) ≤ (4/3)^15 ≈ 75 costs ~6 bits of conditioning — well inside
 //! the 53-bit mantissa and far below SE's 10⁻⁹ tolerance. Deep-ε
 //! corrections (dd accumulators, MPFR verify) layer on top where f64
 //! runs out.
@@ -83,120 +83,7 @@ pub fn set_verify_prune_mpfr(value: bool) {
     VERIFY_PRUNE_MPFR.store(value, Ordering::Release);
 }
 
-// ─── Analytical depth-0 z[0] selection ───────────────────────────────────────
-//
-// At depth 0 with z[1..16] fixed and x = B·z computed (with the current z[0]
-// = z0_curr), the future ‖x_new‖² for any candidate z[0]_new = z0_curr + δ is
-//   ‖x_new‖² = A + 2·δ·B + δ²·C
-// where:
-//   A = ‖x − z0_curr·basis[0]‖²   (≡ ‖x‖² with z[0] set to 0)
-//   B = (x − z0_curr·basis[0]) · basis[0]
-//   C = ‖basis[0]‖²
-// All three are exact integers in i128. To hit the shell ‖x_new‖² = T = 2^k:
-//   C·δ² + 2B·δ + (A − T) = 0
-//   δ = (−B ± √(B² − C·(A − T))) / C
-//
-// We return up to 6 integer z[0] candidates: floor/ceil of each of the 2 roots
-// plus ±1 nudges, filtered to the SE bracket [z_low, z_high]. Conservative
-// (over-covers) so the leaf-filter's exact `‖x‖² == T` check arbitrates final
-// correctness — we cannot miss a shell hit.
-//
-// Replaces the full depth-0 bracket enumeration (up to ~10 z[0] values per
-// node), addressing the survivorship-data finding that ~75% of leaves come
-// from depth-1-near-threshold nodes where the brute z[0] sweep produces ~99%
-// far-above-shell candidates.
-
-#[inline]
-fn isqrt_i128(n: i128) -> i128 {
-    if n < 0 { return -1; }
-    if n < 2 { return n; }
-    let mut x = n;
-    let mut y = (n + 1) / 2;
-    while y < x {
-        x = y;
-        y = (x + n / x) / 2;
-    }
-    x
-}
-
-#[inline]
-fn floor_div_i128(a: i128, b: i128) -> i128 {
-    // b > 0 in our use; assert here keeps the codegen tight.
-    debug_assert!(b > 0);
-    let q = a / b;
-    let r = a % b;
-    if r < 0 { q - 1 } else { q }
-}
-
-/// Find integer z[0] candidates that could yield `‖x_new‖² == target_norm`,
-/// where `x_new = x − z0_curr·basis_0 + z0_new·basis_0`. Returns the count
-/// of candidates written into `out` (at most 6); each is unique and inside
-/// `[z_low, z_high]`. Returns 0 if no integer solution exists (discriminant
-/// < 0 or all candidates fall outside the bracket).
-#[inline]
-pub fn analytical_depth0_z0_candidates(
-    x: &[i64; 16],
-    z0_curr: i64,
-    basis_0: &[i64; 16],
-    target_norm: i128,
-    z_low: i64,
-    z_high: i64,
-    out: &mut [i64; 6],
-) -> usize {
-    let mut a: i128 = 0;
-    let mut b: i128 = 0;
-    let mut c: i128 = 0;
-    for i in 0..16 {
-        let b0 = basis_0[i] as i128;
-        let xz = (x[i] as i128) - (z0_curr as i128) * b0;
-        a += xz * xz;
-        b += xz * b0;
-        c += b0 * b0;
-    }
-    if c == 0 {
-        // basis[0] = 0: degenerate row. Bail (let caller use enumeration).
-        // In practice this doesn't happen with LLL-reduced bases.
-        return 0;
-    }
-    let d = a - target_norm;
-    // disc = B² − C·(A − T)
-    let disc = b * b - c * d;
-    if disc < 0 {
-        return 0;
-    }
-    let sqrt_disc = isqrt_i128(disc);
-    let mut n: usize = 0;
-    // Two roots: (−B ± sqrt_disc) / C. Compute floor; nudge by {−1, 0, +1}
-    // to cover rounding both for non-perfect-square disc and for integer-div
-    // rounding directionality.
-    for &sign in &[1_i128, -1_i128] {
-        let numerator = sign * sqrt_disc - b;
-        let q = floor_div_i128(numerator, c);
-        for nudge in -1_i64..=1 {
-            let cand_i128 = q + nudge as i128;
-            // Range check: must fit in i64 and within [z_low, z_high].
-            if cand_i128 < i64::MIN as i128 || cand_i128 > i64::MAX as i128 {
-                continue;
-            }
-            let cand = cand_i128 as i64;
-            if cand < z_low || cand > z_high {
-                continue;
-            }
-            let mut already = false;
-            for k in 0..n {
-                if out[k] == cand {
-                    already = true;
-                    break;
-                }
-            }
-            if !already && n < 6 {
-                out[n] = cand;
-                n += 1;
-            }
-        }
-    }
-    n
-}
+// ─── Center-relative dd partial-norm verification ────────────────────────────
 
 /// Compute `Σ_{i ≥ depth} (R · z)[i]²` in inline double-double (~106 bits)
 /// and return true iff the result exceeds `threshold`. No heap allocation,
@@ -1446,10 +1333,11 @@ fn recurse_collect_norm_pruned<F>(
     let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
-    // NOTE: plugging [`analytical_depth0_z0_candidates`] in here was
-    // tried repeatedly and regresses (fewer leaves per depth-0 enter
-    // just buys more full-depth recursions under the budget); it needs
-    // a budget recalibration first. The helper is preserved for that.
+    // NOTE: solving the depth-0 shell quadratic for z[d] directly (closed-form
+    // roots of ‖x_new‖² = 2^k instead of the bracket sweep below) was tried
+    // repeatedly and regresses: fewer leaves per depth-0 enter just buys more
+    // full-depth recursions under the same node budget. It would need a budget
+    // recalibration to pay off, so the straight bracket sweep stays.
 
     for raw in 0..=(2 * max_off + 1) {
         if aborted.load(Ordering::Relaxed) {

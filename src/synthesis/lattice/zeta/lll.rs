@@ -68,8 +68,6 @@ pub(super) fn gram_overflow_check(scratch: &IntScratch16) -> bool {
 /// Computes `r_bar[i][*]`, `mu_bar[i][*]`, `s_bar[i][*]` given rows 0..i are
 /// already populated. Reads gram entries via `i256_to_rfloat`.
 pub fn cfa_row(scratch: &mut IntScratch16, i: usize) {
-    let prec = scratch.gs_prec;
-
     // Off-diagonal entries: j = 0..i-1
     for j in 0..i {
         // r̄_{i,j} = <b_i, b_j> from i256 Gram.
@@ -99,7 +97,6 @@ pub fn cfa_row(scratch: &mut IntScratch16, i: usize) {
         scratch.tmp_b.assign(&scratch.s_bar[i][j - 1] - &scratch.tmp_a);
         scratch.s_bar[i][j].assign(&scratch.tmp_b);
     }
-    let _ = prec;
     scratch.r_bar[i][i].assign(&scratch.s_bar[i][i]);
 }
 
