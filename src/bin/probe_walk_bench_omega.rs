@@ -122,7 +122,7 @@ fn main() {
         if diamond_distance_float(&cand.to_float(), &target) < eps {
             sols_eps += 1;
             let c = cost_half_units(&BlochDecomposer.decompose(&cand));
-            if min_cost.map_or(true, |m| c < m) {
+            if min_cost.is_none_or(|m| c < m) {
                 min_cost = Some(c);
             }
         }

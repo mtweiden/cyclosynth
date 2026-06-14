@@ -27,6 +27,9 @@ jobs:
         run: cargo build --release --all-targets --features trace
       - name: Test
         run: cargo test --release --lib
+      # Several diag-counter tests only do anything under `trace`.
+      - name: Test (trace feature)
+        run: cargo test --release --lib --features trace
 
   clippy:
     name: clippy
@@ -36,5 +39,9 @@ jobs:
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y m4
       - uses: Swatinem/rust-cache@v2
+      # Lint every target (lib + 10 bins + integration tests), default and
+      # trace, so warnings can't accrue off the library path.
       - name: Clippy
-        run: cargo clippy --release --lib -- -D warnings
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: Clippy (trace feature)
+        run: cargo clippy --release --all-targets --features trace -- -D warnings

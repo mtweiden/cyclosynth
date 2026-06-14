@@ -210,177 +210,6 @@ pub fn cholesky_f64(scratch: &mut IntScratch16) -> bool {
     true
 }
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Helper: install a rational integer Gram on the scratch from an f64
-    /// matrix `g_nat` at `scale_bits = B`, i.e. `gram[i][j] = round(2^B · g_nat[i][j])`.
-    fn install_gram_from_f64(
-        scratch: &mut IntScratch16,
-        g_nat: &[[f64; 16]; 16],
-        scale_bits: i32,
-    ) {
-        let scale = 2.0_f64.powi(scale_bits);
-        for i in 0..16 {
-            for j in 0..16 {
-                let scaled = (g_nat[i][j] * scale).round();
-                // Use i64 → i256 (suffices for our small test matrices).
-                scratch.gram[i][j] = i256::from_i64(scaled as i64);
-            }
-        }
-        scratch.scale_bits = scale_bits;
-    }
-
-    fn identity() -> [[f64; 16]; 16] {
-        let mut m = [[0.0_f64; 16]; 16];
-        for i in 0..16 {
-            m[i][i] = 1.0;
-        }
-        m
-    }
-
-    #[test]
-    fn cholesky_f64_16_round_trip() {
-        // Construct a known PSD 16x16 matrix: G = 4·I_16. (Matches the
-        // structure of Σᵀ·Σ for the Z[ζ_16] embedding.) Cholesky factor
-        // should be 2·I_16.
-        let mut g = [[0.0_f64; 16]; 16];
-        for i in 0..16 {
-            g[i][i] = 4.0;
-        }
-        let mut s = IntScratch16::new(1e-3);
-        install_gram_from_f64(&mut s, &g, 8);
-        assert!(cholesky_f64(&mut s));
-        // Verify Lᵀ L = G to f64 precision.
-        for i in 0..16 {
-            for j in 0..16 {
-                let mut sum = 0.0_f64;
-                for k in 0..16 {
-                    sum += s.l_f64[i][k] * s.l_f64[j][k];
-                }
-                let diff = (sum - g[i][j]).abs();
-                assert!(
-                    diff < 1e-12,
-                    "L Lᵀ mismatch at ({i},{j}): got {sum}, expected {}",
-                    g[i][j]
-                );
-            }
-        }
-        // Sanity: L should be 2·I.
-        for i in 0..16 {
-            assert!((s.l_f64[i][i] - 2.0).abs() < 1e-12);
-        }
-    }
-
-    #[test]
-    fn cholesky_int_16_on_identity() {
-        // Identity Gram → identity Cholesky factor.
-        let g = identity();
-        let mut s = IntScratch16::new(1e-3);
-        install_gram_from_f64(&mut s, &g, 8);
-        let g_post = snapshot_gram_to_mpfr(&mut s);
-        let l = cholesky_int(&mut s, &g_post).expect("identity should be PSD");
-        for i in 0..16 {
-            for j in 0..16 {
-                let v = l[i][j].to_f64();
-                let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (v - expected).abs() < 1e-12,
-                    "L[{i}][{j}] = {v}, expected {expected}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn cholesky_int_16_rejects_non_psd() {
-        // Diagonal with one negative entry: clearly non-PSD.
-        let mut g = identity();
-        g[3][3] = -1.0;
-        let mut s = IntScratch16::new(1e-3);
-        install_gram_from_f64(&mut s, &g, 8);
-        let g_post = snapshot_gram_to_mpfr(&mut s);
-        let res = cholesky_int(&mut s, &g_post);
-        assert!(res.is_none(), "non-PSD Gram should reject");
-    }
-
-    #[test]
-    fn lu_solve_int_inplace_16_identity_basis() {
-        // B = I_16, c chosen, expect z = c (as an f64 vector).
-        let mut s = IntScratch16::new(1e-3);
-        s.basis = super::super::scratch::identity_basis();
-        let c_vals: [f64; 16] = std::array::from_fn(|i| (i as f64) - 7.5);
-        for i in 0..16 {
-            s.c[i] = rfv(s.prec_q, c_vals[i]);
-        }
-        assert!(lu_solve_int_inplace(&mut s));
-        for i in 0..16 {
-            let z = s.lu_x[i].to_f64();
-            assert!(
-                (z - c_vals[i]).abs() < 1e-12,
-                "z[{i}] = {z}, expected {}",
-                c_vals[i]
-            );
-        }
-    }
-
-    #[test]
-    fn lu_solve_int_inplace_16_against_known_basis() {
-        // B is a permutation matrix (cyclic shift): row i has a single 1 at
-        // column (i + 1) mod 16. Then Bᵀ has row i with a single 1 at
-        // column (i - 1) mod 16. Solving Bᵀ · z = c gives z[i] = c[(i+1) % 16]
-        // (since Bᵀ z[i] = z[(i-1) % 16] = c[i] ⇒ z[i] = c[(i+1) % 16]).
-        let mut s = IntScratch16::new(1e-3);
-        let mut b = [[0i64; 16]; 16];
-        for i in 0..16 {
-            b[i][(i + 1) % 16] = 1;
-        }
-        s.basis = b;
-        let c_vals: [f64; 16] = std::array::from_fn(|i| (i as f64 + 1.0) * 0.25);
-        for i in 0..16 {
-            s.c[i] = rfv(s.prec_q, c_vals[i]);
-        }
-        assert!(lu_solve_int_inplace(&mut s));
-        for i in 0..16 {
-            let expected = c_vals[(i + 1) % 16];
-            let z = s.lu_x[i].to_f64();
-            assert!(
-                (z - expected).abs() < 1e-12,
-                "z[{i}] = {z}, expected {expected}"
-            );
-        }
-    }
-
-    #[test]
-    fn snapshot_gram_to_mpfr_16_round_trip() {
-        // i256 → MPFR → f64 round-trip preserves values to f64 precision for
-        // moderate-sized inputs. Build a Gram with values in [-2^20, 2^20]
-        // and `scale_bits = 0` so MPFR ÷ 1 is a no-op; check round-trip.
-        let mut s = IntScratch16::new(1e-3);
-        for i in 0..16 {
-            for j in 0..16 {
-                let val: i64 = ((i as i64) * 31 + (j as i64) * 17 - 200) << 10;
-                s.gram[i][j] = i256::from_i64(val);
-            }
-        }
-        s.scale_bits = 0;
-        let g_post = snapshot_gram_to_mpfr(&mut s);
-        for i in 0..16 {
-            for j in 0..16 {
-                let expected = (((i as i64) * 31 + (j as i64) * 17 - 200) << 10) as f64;
-                let got = g_post[i][j].to_f64();
-                assert!(
-                    (got - expected).abs() < 1e-9,
-                    "snapshot[{i}][{j}] = {got}, expected {expected}"
-                );
-            }
-        }
-    }
-}
-
 
 /// Exact integer determinant of a 16×16 i64 matrix via Bareiss
 /// fraction-free elimination, working in i128. Returns `None` if the result
@@ -623,3 +452,174 @@ pub fn euclidean_cholesky(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]> {
     Some(r)
 }
 
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: install a rational integer Gram on the scratch from an f64
+    /// matrix `g_nat` at `scale_bits = B`, i.e. `gram[i][j] = round(2^B · g_nat[i][j])`.
+    fn install_gram_from_f64(
+        scratch: &mut IntScratch16,
+        g_nat: &[[f64; 16]; 16],
+        scale_bits: i32,
+    ) {
+        let scale = 2.0_f64.powi(scale_bits);
+        for i in 0..16 {
+            for j in 0..16 {
+                let scaled = (g_nat[i][j] * scale).round();
+                // Use i64 → i256 (suffices for our small test matrices).
+                scratch.gram[i][j] = i256::from_i64(scaled as i64);
+            }
+        }
+        scratch.scale_bits = scale_bits;
+    }
+
+    fn identity() -> [[f64; 16]; 16] {
+        let mut m = [[0.0_f64; 16]; 16];
+        for i in 0..16 {
+            m[i][i] = 1.0;
+        }
+        m
+    }
+
+    #[test]
+    fn cholesky_f64_16_round_trip() {
+        // Construct a known PSD 16x16 matrix: G = 4·I_16. (Matches the
+        // structure of Σᵀ·Σ for the Z[ζ_16] embedding.) Cholesky factor
+        // should be 2·I_16.
+        let mut g = [[0.0_f64; 16]; 16];
+        for i in 0..16 {
+            g[i][i] = 4.0;
+        }
+        let mut s = IntScratch16::new(1e-3);
+        install_gram_from_f64(&mut s, &g, 8);
+        assert!(cholesky_f64(&mut s));
+        // Verify Lᵀ L = G to f64 precision.
+        for i in 0..16 {
+            for j in 0..16 {
+                let mut sum = 0.0_f64;
+                for k in 0..16 {
+                    sum += s.l_f64[i][k] * s.l_f64[j][k];
+                }
+                let diff = (sum - g[i][j]).abs();
+                assert!(
+                    diff < 1e-12,
+                    "L Lᵀ mismatch at ({i},{j}): got {sum}, expected {}",
+                    g[i][j]
+                );
+            }
+        }
+        // Sanity: L should be 2·I.
+        for i in 0..16 {
+            assert!((s.l_f64[i][i] - 2.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn cholesky_int_16_on_identity() {
+        // Identity Gram → identity Cholesky factor.
+        let g = identity();
+        let mut s = IntScratch16::new(1e-3);
+        install_gram_from_f64(&mut s, &g, 8);
+        let g_post = snapshot_gram_to_mpfr(&mut s);
+        let l = cholesky_int(&mut s, &g_post).expect("identity should be PSD");
+        for i in 0..16 {
+            for j in 0..16 {
+                let v = l[i][j].to_f64();
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!(
+                    (v - expected).abs() < 1e-12,
+                    "L[{i}][{j}] = {v}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cholesky_int_16_rejects_non_psd() {
+        // Diagonal with one negative entry: clearly non-PSD.
+        let mut g = identity();
+        g[3][3] = -1.0;
+        let mut s = IntScratch16::new(1e-3);
+        install_gram_from_f64(&mut s, &g, 8);
+        let g_post = snapshot_gram_to_mpfr(&mut s);
+        let res = cholesky_int(&mut s, &g_post);
+        assert!(res.is_none(), "non-PSD Gram should reject");
+    }
+
+    #[test]
+    fn lu_solve_int_inplace_16_identity_basis() {
+        // B = I_16, c chosen, expect z = c (as an f64 vector).
+        let mut s = IntScratch16::new(1e-3);
+        s.basis = super::super::scratch::identity_basis();
+        let c_vals: [f64; 16] = std::array::from_fn(|i| (i as f64) - 7.5);
+        for i in 0..16 {
+            s.c[i] = rfv(s.prec_q, c_vals[i]);
+        }
+        assert!(lu_solve_int_inplace(&mut s));
+        for i in 0..16 {
+            let z = s.lu_x[i].to_f64();
+            assert!(
+                (z - c_vals[i]).abs() < 1e-12,
+                "z[{i}] = {z}, expected {}",
+                c_vals[i]
+            );
+        }
+    }
+
+    #[test]
+    fn lu_solve_int_inplace_16_against_known_basis() {
+        // B is a permutation matrix (cyclic shift): row i has a single 1 at
+        // column (i + 1) mod 16. Then Bᵀ has row i with a single 1 at
+        // column (i - 1) mod 16. Solving Bᵀ · z = c gives z[i] = c[(i+1) % 16]
+        // (since Bᵀ z[i] = z[(i-1) % 16] = c[i] ⇒ z[i] = c[(i+1) % 16]).
+        let mut s = IntScratch16::new(1e-3);
+        let mut b = [[0i64; 16]; 16];
+        for i in 0..16 {
+            b[i][(i + 1) % 16] = 1;
+        }
+        s.basis = b;
+        let c_vals: [f64; 16] = std::array::from_fn(|i| (i as f64 + 1.0) * 0.25);
+        for i in 0..16 {
+            s.c[i] = rfv(s.prec_q, c_vals[i]);
+        }
+        assert!(lu_solve_int_inplace(&mut s));
+        for i in 0..16 {
+            let expected = c_vals[(i + 1) % 16];
+            let z = s.lu_x[i].to_f64();
+            assert!(
+                (z - expected).abs() < 1e-12,
+                "z[{i}] = {z}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_gram_to_mpfr_16_round_trip() {
+        // i256 → MPFR → f64 round-trip preserves values to f64 precision for
+        // moderate-sized inputs. Build a Gram with values in [-2^20, 2^20]
+        // and `scale_bits = 0` so MPFR ÷ 1 is a no-op; check round-trip.
+        let mut s = IntScratch16::new(1e-3);
+        for i in 0..16 {
+            for j in 0..16 {
+                let val: i64 = ((i as i64) * 31 + (j as i64) * 17 - 200) << 10;
+                s.gram[i][j] = i256::from_i64(val);
+            }
+        }
+        s.scale_bits = 0;
+        let g_post = snapshot_gram_to_mpfr(&mut s);
+        for i in 0..16 {
+            for j in 0..16 {
+                let expected = (((i as i64) * 31 + (j as i64) * 17 - 200) << 10) as f64;
+                let got = g_post[i][j].to_f64();
+                assert!(
+                    (got - expected).abs() < 1e-9,
+                    "snapshot[{i}][{j}] = {got}, expected {expected}"
+                );
+            }
+        }
+    }
+}

@@ -159,7 +159,7 @@ fn run_branch(target: &Mat2, eps: f64, k: u32, parity: u32, dump: bool) -> RunRe
             sols_eps += 1;
             let gates = BlochDecomposer.decompose(&cand);
             let c = cost_half_units(&gates);
-            if min_cost.map_or(true, |m| c < m) {
+            if min_cost.is_none_or(|m| c < m) {
                 min_cost = Some(c);
             }
         }
