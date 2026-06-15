@@ -191,19 +191,19 @@ use std::f64::consts::PI;
     /// coset-off finds cost 52.5, coset-on falls to the T baseline 53.
     /// Runs ONE mode per process (env LazyLock): set the mode via the
     /// test name. Prints the enum trace for diffing.
-    /// Run: cargo test --release --lib probe_zeta_coset_t0_off -- --ignored --nocapture
+    /// Run: cargo test --release --lib coset_mode_off_target0 -- --ignored --nocapture
     #[test]
     #[ignore]
-    fn probe_zeta_coset_t0_off() {
+    fn coset_mode_off_target0() {
         probe_zeta_coset_target(0, 1e-6, "0");
     }
 
-    /// Coset-ON counterpart of [`probe_zeta_coset_t0_off`] (same target 0,
+    /// Coset-ON counterpart of [`coset_mode_off_target0`] (same target 0,
     /// ε=1e-6): expected to drift from cost 52.5 up to the T baseline 53.
-    /// Run: cargo test --release --lib probe_zeta_coset_t0_on -- --ignored --nocapture
+    /// Run: cargo test --release --lib coset_mode_on_target0 -- --ignored --nocapture
     #[test]
     #[ignore]
-    fn probe_zeta_coset_t0_on() {
+    fn coset_mode_on_target0() {
         probe_zeta_coset_target(0, 1e-6, "1");
     }
 
@@ -212,16 +212,16 @@ use std::f64::consts::PI;
     /// the lde-78 fallback (cost 78).
     #[test]
     #[ignore]
-    fn probe_zeta_coset_t6_1e8_off() {
+    fn coset_mode_off_1e8_target6() {
         probe_zeta_coset_target(6, 1e-8, "0");
     }
 
-    /// Coset-ON counterpart of [`probe_zeta_coset_t6_1e8_off`] (same target 6,
+    /// Coset-ON counterpart of [`coset_mode_off_1e8_target6`] (same target 6,
     /// ε=1e-8): expected to drift from the lde=24 hit (cost 73.5) to the
     /// lde-78 fallback (cost 78).
     #[test]
     #[ignore]
-    fn probe_zeta_coset_t6_1e8_on() {
+    fn coset_mode_on_1e8_target6() {
         probe_zeta_coset_target(6, 1e-8, "1");
     }
 
@@ -289,10 +289,10 @@ use std::f64::consts::PI;
     /// Is the strict-filter ([0]) deep-ε screen blind to non-class-0
     /// solutions? Re-running tie targets with the relaxed filter should
     /// collapse first-hit lde if so.
-    /// Run: cargo test --release --lib h1_dr_filter_blindness -- --ignored --nocapture
+    /// Run: cargo test --release --lib strict_filter_misses_other_det_classes -- --ignored --nocapture
     #[test]
     #[ignore]
-    fn h1_dr_filter_blindness() {
+    fn strict_filter_misses_other_det_classes() {
         fn xorshift64(s: &mut u64) -> u64 { *s ^= *s << 13; *s ^= *s >> 7; *s ^= *s << 17; *s }
         fn rand_angle(s: &mut u64) -> f64 {
             let b = xorshift64(s) >> 11;
@@ -338,5 +338,134 @@ use std::f64::consts::PI;
                     None => eprintln!("target {i} {label}: NONE t={:.1}s", t0.elapsed().as_secs_f64()),
                 }
             }
+        }
+    }
+
+    // ---- relocated from tests.rs (timing-comparison probes, not unit tests) ----
+
+    #[test]
+    #[ignore]
+    fn times_prefix_split_strategies() {
+        use rand::{Rng, SeedableRng};
+        use rand::rngs::StdRng;
+
+        fn rz(t: f64) -> Mat2 {
+            [
+                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
+                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
+            ]
+        }
+        fn ry(t: f64) -> Mat2 {
+            let c = (t/2.0).cos();
+            let s = (t/2.0).sin();
+            [
+                [Complex64::new(c, 0.0), Complex64::new(-s, 0.0)],
+                [Complex64::new(s, 0.0), Complex64::new(c, 0.0)],
+            ]
+        }
+        fn matmul(a: Mat2, b: Mat2) -> Mat2 {
+            [
+                [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
+                [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
+            ]
+        }
+
+        let mut rng = StdRng::seed_from_u64(0xBEEF);
+        let n = 4;
+        let eps: f64 = std::env::var("Z1_EPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1e-4);
+
+        eprintln!("\n=== ε={eps:.0e}, {n} random U3 targets ===");
+        let mut total_single = 0.0_f64;
+        let mut total_m1_relaxed = 0.0_f64;
+        let mut total_m2_strict = 0.0_f64;
+        let mut wins_m1 = 0;
+        let mut wins_m2 = 0;
+
+        for i in 0..n {
+            let alpha = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let beta = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let gamma = 2.0 * std::f64::consts::PI * rng.random::<f64>();
+            let target = matmul(matmul(rz(alpha), ry(beta)), rz(gamma));
+
+            let synth_s = SynthesizerQ::new(eps).with_max_lde(20);
+            let t0 = std::time::Instant::now();
+            let r_s = synth_s.synthesize(target);
+            let ts = t0.elapsed().as_secs_f64() * 1000.0;
+            assert!(r_s.is_some());
+
+            let synth_m1 = SynthesizerQ::new(eps).with_max_lde(20)
+                .with_prefix_split_m(1).with_inner_det_phase_filter(vec![0, 1, 15]);
+            let t0 = std::time::Instant::now();
+            let r_m1 = synth_m1.synthesize(target);
+            let tm1 = t0.elapsed().as_secs_f64() * 1000.0;
+
+            let synth_m2 = SynthesizerQ::new(eps).with_max_lde(20)
+                .with_prefix_split_m(2).with_inner_det_phase_filter(vec![0]);
+            let t0 = std::time::Instant::now();
+            let r_m2 = synth_m2.synthesize(target);
+            let tm2 = t0.elapsed().as_secs_f64() * 1000.0;
+
+            total_single += ts;
+            total_m1_relaxed += tm1;
+            total_m2_strict += tm2;
+            if tm1 < ts { wins_m1 += 1; }
+            if tm2 < ts { wins_m2 += 1; }
+            eprintln!(
+                "  trial {i}  single={ts:>6.0}ms  m1_relaxed={tm1:>6.0}ms ({:.2}×)  m2_strict={tm2:>6.0}ms ({:.2}×)",
+                ts/tm1, ts/tm2
+            );
+            // Sanity: dc found a valid result.
+            if let Some(r) = r_m1 {
+                assert!(r.distance < eps, "m1 trial {i} dist={:.3e}", r.distance);
+            }
+            if let Some(r) = r_m2 {
+                assert!(r.distance < eps, "m2 trial {i} dist={:.3e}", r.distance);
+            }
+        }
+        eprintln!("\n  TOTAL  single={total_single:.0}ms  m1_relaxed={total_m1_relaxed:.0}ms ({:.2}×)  m2_strict={total_m2_strict:.0}ms ({:.2}×)",
+            total_single/total_m1_relaxed, total_single/total_m2_strict);
+        eprintln!("  wins:  m1_relaxed {wins_m1}/{n}   m2_strict {wins_m2}/{n}");
+    }
+
+    #[test]
+    #[ignore = "slow diagnostic; run with --ignored"]
+    fn times_divide_and_conquer_split() {
+        let theta = 0.3_f64;
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let eps = 1e-3_f64;
+
+        // Single-search baseline.
+        let synth_single = SynthesizerQ::new(eps).with_max_lde(15);
+        let t0 = std::time::Instant::now();
+        let r_single = synth_single.synthesize(target);
+        let t_single = t0.elapsed();
+        eprintln!(
+            "single: lde={:?} dist={:?} t={:.1}ms",
+            r_single.as_ref().map(|r| r.lde),
+            r_single.as_ref().map(|r| r.distance),
+            t_single.as_secs_f64() * 1000.0
+        );
+        assert!(r_single.is_some());
+
+        // D&C across several m values to characterize per-prefix cost.
+        for m in [1u32, 2, 3] {
+            let synth_dc = SynthesizerQ::new(eps).with_max_lde(15).with_prefix_split_m(m);
+            let t1 = std::time::Instant::now();
+            let r_dc = synth_dc.synthesize(target);
+            let t_dc = t1.elapsed();
+            let l_size = build_fgkm_prefix_set(m).len();
+            let per_prefix_us = t_dc.as_secs_f64() * 1e6 / (l_size as f64);
+            eprintln!(
+                "  d&c m={m}: |L|={l_size:>6}  lde={:?}  t={:.1}ms  per-prefix={per_prefix_us:.0}μs",
+                r_dc.as_ref().map(|r| r.lde),
+                t_dc.as_secs_f64() * 1000.0
+            );
+            assert!(r_dc.is_some(), "D&C m={m} should also find a solution");
         }
     }

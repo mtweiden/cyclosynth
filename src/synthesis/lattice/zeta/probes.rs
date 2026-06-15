@@ -10,6 +10,12 @@
 use crate::rings::MpFloat;
 use super::*; // the tests module
 use super::super::*; // lattice::zeta internals
+use crate::synthesis::lattice::zeta::integer::find_aligned_lattice_points;
+use crate::synthesis::lattice::zeta::scratch::IntScratch16;
+use crate::synthesis::lattice::zeta::se::SeCenter16;
+use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta;
+use crate::synthesis::clifford_sqrt_t::{det_phase_of, solution_to_u2q_with_det_phase, unitary_to_uv_zeta};
+use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Measures the radial (norm) error the f64 target→lattice-vector chain
     /// introduces, to check the f64-input entry path doesn't push the cap
@@ -124,3 +130,202 @@ use super::super::*; // lattice::zeta internals
         }
     }
 
+    // ---- relocated from integer.rs (diagnostic probes, not unit tests) ----
+
+    /// Diagnostic (ignored): decompose the QHQ@k=1 solution's Q-norm into
+    /// geometric Q (true fractional cap center), Q from the i64-rounded
+    /// center, and Q from the fractional SeCenter16 the walk uses (should
+    /// match geometric to ~1e-6). The rounded center is why a generous bound
+    /// was once needed; geometric Q ≤ 1.25. Run
+    /// with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn q_norm_center_source_breakdown() {
+        use crate::matrix::u2::U2Q;
+
+        unsafe { std::env::set_var("CYCLOSYNTH_BOUND_SQ", "8") };
+        let qhq: U2Q = U2Q::q() * U2Q::h() * U2Q::q();
+        let target = qhq.to_float();
+        let v = unitary_to_uv_zeta(&target);
+        let k = qhq.k;
+        let y = uv_to_lattice_y_zeta(v, k);
+        let eps = 0.1_f64;
+
+        let mut s = IntScratch16::new(eps);
+        let abort = AtomicBool::new(false);
+        let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
+        unsafe { std::env::remove_var("CYCLOSYNTH_BOUND_SQ") };
+        assert!(!sols.is_empty(), "find_aligned_lattice_points@bound8 must find QHQ");
+
+        let q = crate::synthesis::lattice::zeta::q_metric::build_q_zzeta_lattice(v, k, eps);
+        // True cap center (ambient), legacy rounded-z_c effective center,
+        // and the fractional SE center (int + frac pair) the walk now uses.
+        let c_true: [f64; 16] = std::array::from_fn(|i| s.c[i].to_f64());
+        let mut c_rounded = [0.0f64; 16];
+        for i in 0..16 {
+            let zi = s.lu_x[i].to_f64().round();
+            for j in 0..16 {
+                c_rounded[j] += zi * s.basis[i][j] as f64;
+            }
+        }
+        let se_center = SeCenter16::from_lu_x(&s.lu_x);
+        let mut c_se = [0.0f64; 16];
+        for i in 0..16 {
+            let zi = se_center.int[i] as f64 + se_center.frac[i];
+            for j in 0..16 {
+                c_se[j] += zi * s.basis[i][j] as f64;
+            }
+        }
+        let q_norm = |x: &[i64; 16], c: &[f64; 16]| -> f64 {
+            let d: [f64; 16] = std::array::from_fn(|i| x[i] as f64 - c[i]);
+            let mut acc = 0.0;
+            for i in 0..16 {
+                for j in 0..16 {
+                    acc += d[i] * q[i][j] * d[j];
+                }
+            }
+            acc
+        };
+        for (n, sol) in sols.iter().enumerate() {
+            eprintln!(
+                "sol {n}: Q_geometric={:.6}  Q_se_rounded_center={:.4}  Q_se_effective={:.6}",
+                q_norm(sol, &c_true),
+                q_norm(sol, &c_rounded),
+                q_norm(sol, &c_se)
+            );
+        }
+        let frac_err: f64 = (0..16)
+            .map(|i| (s.lu_x[i].to_f64() - s.lu_x[i].to_f64().round()).abs())
+            .fold(0.0, f64::max);
+        eprintln!("max |frac(lu_x)| = {frac_err:.4}");
+    }
+
+    /// Telemetry (ignored): geometric Q-norm² distribution of ε-close
+    /// solutions across a θ × ε × k grid, enumerated at a wide bound to
+    /// observe the full distribution. The geometric band is [0.875, 1.25];
+    /// this sweep is how that was measured.
+    /// Run with --ignored --nocapture.
+    #[test]
+    #[ignore]
+    fn q_norm_distribution_sweep() {
+        use crate::synthesis::distance::diamond_distance_float;
+        use num_complex::Complex;
+
+        unsafe { std::env::set_var("CYCLOSYNTH_BOUND_SQ", "4") };
+        let mut global_max_close = 0.0f64;
+        let mut global_max_all = 0.0f64;
+        let mut total_close = 0usize;
+
+        for &theta in &[0.3f64, 0.55, 0.8, 1.05, 1.3] {
+            let target: crate::synthesis::Mat2 = [
+                [Complex::from_polar(1.0, -theta / 2.0), Complex::new(0.0, 0.0)],
+                [Complex::new(0.0, 0.0), Complex::from_polar(1.0, theta / 2.0)],
+            ];
+            let v = unitary_to_uv_zeta(&target);
+            let d = det_phase_of(&target);
+            for &(eps, k_lo, k_hi) in &[(3e-2f64, 5u32, 7u32), (1e-3, 9, 10)] {
+                for k in k_lo..=k_hi {
+                    let y = uv_to_lattice_y_zeta(v, k);
+                    let mut s = IntScratch16::new(eps);
+                    let abort = AtomicBool::new(false);
+                    let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
+                    if sols.is_empty() {
+                        continue;
+                    }
+                    let q = crate::synthesis::lattice::zeta::q_metric::build_q_zzeta_lattice(
+                        v, k, eps,
+                    );
+                    let c: [f64; 16] = std::array::from_fn(|i| s.c[i].to_f64());
+                    let mut max_close = 0.0f64;
+                    let mut max_all = 0.0f64;
+                    let mut n_close = 0usize;
+                    for sol in &sols {
+                        let dvec: [f64; 16] =
+                            std::array::from_fn(|i| sol[i] as f64 - c[i]);
+                        let mut qn = 0.0;
+                        for i in 0..16 {
+                            for j in 0..16 {
+                                qn += dvec[i] * q[i][j] * dvec[j];
+                            }
+                        }
+                        max_all = max_all.max(qn);
+                        let cand = solution_to_u2q_with_det_phase(sol, k, d);
+                        if diamond_distance_float(&cand.to_float(), &target) <= eps {
+                            max_close = max_close.max(qn);
+                            n_close += 1;
+                        }
+                    }
+                    if n_close > 0 {
+                        eprintln!(
+                            "θ={theta:<4} ε={eps:.0e} k={k:<2} sols={:<5} close={n_close:<4} maxQ_close={max_close:.4} maxQ_all={max_all:.4}",
+                            sols.len()
+                        );
+                    }
+                    global_max_close = global_max_close.max(max_close);
+                    global_max_all = global_max_all.max(max_all);
+                    total_close += n_close;
+                }
+            }
+        }
+        unsafe { std::env::remove_var("CYCLOSYNTH_BOUND_SQ") };
+        eprintln!(
+            "GLOBAL: eps-close sols={total_close}  maxQ_close={global_max_close:.4}  maxQ_all={global_max_all:.4}"
+        );
+    }
+
+    /// Diagnostic: for Rz(0.3) at ε=1e-3, first establish the lde the 8D
+    /// Clifford+T synthesizer reaches (upper bound for Clifford+√T since
+    /// `T = QQ` as gates and lde counts √2 denominators identically). Then
+    /// verify the Z[ζ_16] / Clifford+√T flow hits it at ≤ that lde.
+    /// Behind `#[ignore]`: `cargo test --release --lib sqrt_t_depth_vs_clifford_t_baseline --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn sqrt_t_depth_vs_clifford_t_baseline() {
+        use crate::synthesis::distance::diamond_distance_float;
+        use crate::synthesis::clifford_t::SynthesizerT;
+        let theta = 0.3_f64;
+        let target: crate::synthesis::distance::Mat2 = [
+            [num_complex::Complex64::from_polar(1.0, -theta / 2.0),
+             num_complex::Complex64::new(0.0, 0.0)],
+            [num_complex::Complex64::new(0.0, 0.0),
+             num_complex::Complex64::from_polar(1.0, theta / 2.0)],
+        ];
+        let eps = 1e-3_f64;
+
+        // 1. Upper bound from 8D Clifford+T.
+        let synth_t = SynthesizerT::new(eps);
+        let t0 = std::time::Instant::now();
+        let r_t = synth_t.synthesize(target).expect("8D should land Rz(0.3) at ε=1e-3");
+        eprintln!(
+            "8D Clifford+T:  lde={}  dist={:.3e}  t={:?}",
+            r_t.lde, r_t.distance, t0.elapsed()
+        );
+        let upper_bound = r_t.lde;
+
+        // 2. Sweep Clifford+√T at increasing budget at each k up to upper_bound.
+        let v = unitary_to_uv_zeta(&target);
+        let d = det_phase_of(&target);
+        eprintln!("upper bound k = {upper_bound}; v={v:?}, d={d}");
+        for k in 5u32..=(upper_bound + 2).min(20) {
+            let y = uv_to_lattice_y_zeta(v, k);
+            let budget = 1_000_000_000_u64;
+            let mut s = IntScratch16::new(eps);
+            let abort = AtomicBool::new(false);
+            let t0 = std::time::Instant::now();
+            let sols = find_aligned_lattice_points(&mut s, &y, k, eps, budget, &abort);
+            let dt = t0.elapsed();
+            let abort_v = abort.load(Ordering::Relaxed);
+            let min_dist = sols.iter().map(|sol| {
+                let cand = solution_to_u2q_with_det_phase(sol, k, d);
+                diamond_distance_float(&cand.to_float(), &target)
+            }).fold(f64::INFINITY, f64::min);
+            let hit = min_dist < eps;
+            eprintln!(
+                "k={k:>2}  sols={:>4}  budget_hit={abort_v:>5}  \
+                 min_dist={min_dist:.3e}  hit_eps={hit:>5}  t={:?}",
+                sols.len(), dt
+            );
+            if hit { break; }
+        }
+    }

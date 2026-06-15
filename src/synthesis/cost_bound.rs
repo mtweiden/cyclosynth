@@ -27,9 +27,9 @@ const MIN_SYLLABLE_COST_HALF_UNITS: usize = 2;
 /// where N is the reduced Bloch/SO(3) denominator exponent:
 ///   * `t + 2q ≥ N` — Bloch-exponent subadditivity with per-gate
 ///     constants N(T) = 1, N(Q) = 2, N(Clifford) = 0, holding for every
-///     circuit (docs/proof_pa_peel_exactness.md);
+///     circuit;
 ///   * `N ≥ 2k − 3` — adjugate argument + √2/λ conversion lemma
-///     (docs/proof_pb_valuation.md), tight with deficit 3 at every k ≥ 3.
+///     tight with deficit 3 at every k ≥ 3.
 ///
 /// The syllable-count floor (≈ k − 1, the `max` arm) only binds at k ≤ 2.
 pub fn cost_lb_half_units(k: u32) -> usize {

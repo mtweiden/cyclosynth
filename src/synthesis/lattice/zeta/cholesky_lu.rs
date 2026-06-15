@@ -316,7 +316,7 @@ pub fn euclidean_cholesky_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyD
 /// accurate — the f64 Cholesky factorization error was one of the channels
 /// behind the ε=1.5e-8 partial-Q overshoot), and the dd projection drives
 /// the incremental dd partial-Q that makes the bound-1.5 prune decisions
-/// sound (docs/bound_sq_soundness.md, docs/w_q_bracket_notes.md).
+/// sound.
 ///
 /// The i256 Gram is exact through both LLL and BKZ (gram-update
 /// invariant), so this factors the same matrix `cholesky_f64` reads —

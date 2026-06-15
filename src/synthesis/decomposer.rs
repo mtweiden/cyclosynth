@@ -790,10 +790,10 @@ mod tests {
         }
     }
 
-    // ── P-a: per-peel Bloch-denominator drop (docs/proof_pa_peel_exactness.md) ─
+    // ── P-a: per-peel Bloch-denominator drop ─
     //
     // Verifies the loop invariant of `decompose_so3_canonical_q` that the
-    // slope-2 certificate floor (docs/certificate_validity.md §4, obligation
+    // slope-2 certificate floor (obligation
     // P-a) rests on. Two unit systems are in play:
     //
     //   * N  = `SO3Q::maximum_denominator_exponent()` — the √2-denominator

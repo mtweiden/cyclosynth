@@ -29,7 +29,7 @@ pub struct LatticeSearchOutcome {
 
 /// SE walk bound (squared Q-norm from the cap center). The structural band
 /// for valid in-cap solutions is [0.75, 1.5] (½-embedding factor, one
-/// pinned bullet block; see docs/w_zomega_fixes_notes.md): waist 0.75,
+/// pinned bullet block): waist 0.75,
 /// apex (exact solutions) 1.0, rim 1.5. The default 1.51 is rim + 0.7% —
 /// the SE distance arithmetic is MPFR-128 from the MPFR LU center, so
 /// there is no f64-drift slack to budget for (unlike the 16D walk's 20%).

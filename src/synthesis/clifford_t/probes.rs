@@ -1,6 +1,6 @@
 //! Research probes (all #[ignore]): forensic and telemetry harnesses
 //! kept runnable but out of the unit-test file. Run individually, e.g.
-//! `cargo test --release --lib l_coset_census -- --ignored --nocapture`.
+//! `cargo test --release --lib prefix_count_with_vs_without_coset_dedup -- --ignored --nocapture`.
 
 #![allow(unused_imports)]
 use crate::rings::MpFloat;
@@ -17,10 +17,10 @@ use std::f64::consts::PI;
     /// kept coset representative, reruns the rep's two branches, and checks
     /// whether the image solution c·U_R appears — pinpointing where the
     /// Q-isometric-bijection argument breaks in practice.
-    /// Run: `cargo test --release --lib probe_coset_flip_target_47 -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib coset_dedup_loses_solution_47 -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn probe_coset_flip_target_47() {
+    fn coset_dedup_loses_solution_47() {
         // SplitMix64(0xC0FFEE) — t_identity_1e5's generator; target idx 2.
         struct Xs(u64);
         impl Xs {
@@ -72,10 +72,10 @@ use std::f64::consts::PI;
     /// target_00 (xorshift64, seed 0xC0FFEEBAADD0E|1), lde 78 (t'=12),
     /// which still drifts to 80 under coset dedup after the
     /// euclidean_cholesky trust guards.
-    /// Run: `cargo test --release --lib probe_coset_flip_target_78 -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib coset_dedup_loses_solution_1e8_78 -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn probe_coset_flip_target_78() {
+    fn coset_dedup_loses_solution_1e8_78() {
         std::env::set_var("CYCLOSYNTH_SE_BOUND_8D", "4.0");
         fn xorshift64(s: &mut u64) -> u64 {
             *s ^= *s << 13;
@@ -397,13 +397,13 @@ use std::f64::consts::PI;
         }
     }
 
-    /// M1 census probe (stage 0 of docs/plan_8d_prefix_rework.md):
+    /// M1 census probe (stage 0 of the 8D prefix rework):
     /// |L_{t'}| with vs without right-coset dedup, t' = 1..13. Lever B1
     /// predicts 4.5-8×; kill if < 2×.
-    /// Run: `cargo test --release --lib l_coset_census -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib prefix_count_with_vs_without_coset_dedup -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn l_coset_census() {
+    fn prefix_count_with_vs_without_coset_dedup() {
         eprintln!("\nM1 census: build_ma_prefix_set_reference plain phase-dedup vs right-coset dedup");
         eprintln!("  t'   |L| plain   |L| coset   ratio");
         for tp in 1..=13u32 {
@@ -421,7 +421,7 @@ use std::f64::consts::PI;
     }
 
     /// Telemetry (ignored): geometric Q-norm² distribution of ε-close 8D
-    /// solutions, the Z[ω] mirror of the 16D `q_telemetry_sweep` that
+    /// solutions, the Z[ω] mirror of the 16D `q_norm_distribution_sweep` that
     /// found the ζ₁₆ band [0.875, 1.25] and dropped that bound 8 → 1.5.
     /// The 8D SE bound is the empirical 1.51 (lattice/integer.rs); this
     /// measures where ε-close solutions actually sit, from the TRUE cap
@@ -438,12 +438,12 @@ use std::f64::consts::PI;
     /// walk unbudgeted for tens of minutes). Optionally widen the walk
     /// region via CYCLOSYNTH_SE_BOUND_8D (e.g. 2.5) to check for
     /// solutions ABOVE the production bound.
-    /// Run: `cargo test --release --lib q_telemetry_sweep -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib q_norm_distribution_sweep -- --ignored --nocapture`
     /// Env: T8_EPS (default sweeps 3e-2 and 1e-3), T8_BUDGET (default 20M),
     /// T8_NODES (default 50M).
     #[test]
     #[ignore]
-    fn q_telemetry_sweep() {
+    fn q_norm_distribution_sweep() {
         use crate::synthesis::lattice::omega::{integer::find_aligned_lattice_points_outcome as find_aligned_lattice_points, q_metric::build_q_mpfr};
         use crate::synthesis::lattice::omega::scratch::IntScratch;
         use std::sync::atomic::AtomicBool;
@@ -602,7 +602,7 @@ use std::f64::consts::PI;
     }
 
 
-    /// Stage-4 warm-LLL gate experiment (docs/plan_8d_prefix_rework.md
+    /// Stage-4 warm-LLL gate experiment (8D prefix rework,
     /// lever C): on a captured set of production prefixes (bench
     /// target_00, found/empty levels at 1e-7 and 1e-8), compare
     /// `lll_l2` iteration counts between the identity start and a seed
@@ -610,10 +610,10 @@ use std::f64::consts::PI;
     /// Adoption gate: ≥25% total iteration reduction, else kill (16D
     /// precedent).
     /// Env: WARM_N (prefix cap per level, default 400).
-    /// Run: `cargo test --release --lib warm_lll_seed_iteration_reduction -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib warm_started_lll_iteration_savings -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn warm_lll_seed_iteration_reduction() {
+    fn warm_started_lll_iteration_savings() {
         use crate::synthesis::lattice::omega::lll::{lll_l2_seeded, LllResult};
         use crate::synthesis::lattice::omega::q_metric::{build_q_int, build_q_mpfr};
         use crate::synthesis::lattice::omega::scratch::IntScratch;
@@ -719,10 +719,10 @@ use std::f64::consts::PI;
     /// `S(t', α) = Σ_k count(t', k)/α^k` D&C cost-ratio for Clifford+T's
     /// `build_ma_prefix_set_reference` — the empirical sister of
     /// `clifford_sqrt_t`'s `fgkm_prefix_split_cost_ratio`.
-    /// Run: `cargo test --release --lib build_l_size_and_cost_ratio -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib prefix_count_and_cost_histogram -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn build_l_size_and_cost_ratio() {
+    fn prefix_count_and_cost_histogram() {
         eprintln!("\n|L_{{t'}}| sizes:");
         for t_prime in 0..=10 {
             let l = build_ma_prefix_set_reference(t_prime);

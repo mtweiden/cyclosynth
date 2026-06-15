@@ -7,7 +7,7 @@
 //! Note: CYCLOSYNTH_TRACE inflates SE walls (per-leaf counters), which
 //! BIASES the SE share upward — but if LLL+build still lose by 20×
 //! under trace, they lose untraced too (the falsification direction is
-//! robust; see docs/w_predictive_trunc_notes.md round-2 debate).
+//! robust).
 
 use cyclosynth::synthesis::clifford_sqrt_t::SynthesizerQ;
 use cyclosynth::synthesis::diag;

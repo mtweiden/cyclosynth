@@ -1,4 +1,4 @@
-//! W0 (docs/plan_fast_exhaustive_walks.md): shared yardstick for
+//! W0: shared yardstick for
 //! exhaustive lattice-level walks.
 //!
 //! Runs ONE unbudgeted m = 0 level enumeration — the operation

@@ -1,5 +1,5 @@
 //! M0 attribution driver for the 8D Z[ω] prefix-sweep rework
-//! (docs/plan_8d_prefix_rework.md, stage 0).
+//! (stage 0).
 //!
 //! Self-sets `CYCLOSYNTH_TRACE=1` (env-prefixed invocations are not always
 //! possible in the sandboxed harness), then synthesizes the SAME targets as
@@ -9,7 +9,7 @@
 //! Per-pass `[trace]` blocks land on stderr — `try_at_lde` calls
 //! `diag::reset_all()` per pass, so end-of-run snapshots only see the LAST
 //! pass; the per-pass stderr stream is the ground truth and is summed by
-//! `bench_logs/prefix_rework_2026_06_11/parse_trace.py`. Stdout carries the
+//! an external trace-parsing script. Stdout carries the
 //! per-target wall table (one `[m0] target=... eps=...` line per run, used
 //! as the run delimiter by the parser).
 //!

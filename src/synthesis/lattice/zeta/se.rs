@@ -74,7 +74,7 @@ pub fn set_verify_prune_mpfr(value: bool) {
 /// no thread-local state — fully stack-resident. About 10× faster than the
 /// rug-128 verify in the hot SE prune-firing path.
 ///
-/// Center-relative form (docs/w_center_relative_w_notes.md): each row is
+/// Center-relative form: each row is
 /// `(R·z)[i] = u_eucl_dd[i] + Σ_{j≥i} R[i][j]·(z[j] − z_c.int[j])`, where
 /// `u_eucl_dd[i] = (R·z_c.int)[i]` is the per-walk dd constant from
 /// [`center_relative_seed`]. The deltas `z[j] − z_c.int[j]` are
@@ -198,7 +198,7 @@ fn center_relative_seed(
 // `q_cholesky_mpfr_dual` and integer.rs's gating). The f64 partial-Q
 // historically overshot truth by up to ~1.8× at the ε=1.5e-8 cliff, which
 // forced the deep-ε `bound_sq` default to 3.0 against a geometric solution
-// band of [0.875, 1.25] (docs/bound_sq_soundness.md). With the dd
+// band of [0.875, 1.25]. With the dd
 // companion, every Q-prune decision on the boundary is made on a value
 // accurate to ~1e-32 — both overshoot (lost solutions) and undershoot
 // (spurious subtrees) are eliminated — so the bound default drops to the
@@ -334,8 +334,8 @@ pub fn reconstruct_x(b_lll: &[[i64; 16]; 16], z: &[i64; 16]) -> [i64; 16] {
 /// The walk's true per-coordinate center is `int[i] + frac[i]`; all walker
 /// arithmetic keeps the integer part separate so deltas stay small-magnitude
 /// f64. Measuring Q from this true center (instead of the rounded one)
-/// removes the center-rounding inflation documented in
-/// docs/bound_sq_soundness.md: a valid solution's measured Q now equals its
+/// removes the center-rounding inflation: a valid solution's measured Q
+/// now equals its
 /// geometric Q (band [0.875, 1.25]) at every k.
 #[derive(Clone, Copy, Debug)]
 pub struct SeCenter16 {
@@ -977,8 +977,8 @@ where
     // Center-relative seeding state (precision-audit ranked fix 2): the
     // walk's implied baseline is z = z_c.int, not z = 0, so the f64
     // Euclidean accumulator w never passes through the M ≈ 30·√T·2^53
-    // intermediates of the old `z_15_f · R[i][15]` seeding (E3/E4 of
-    // docs/w_precision_audit_notes.md). One-time per-walk cost.
+    // intermediates of the old `z_15_f · R[i][15]` seeding. One-time
+    // per-walk cost.
     let (x_base, u_eucl_dd, u_eucl) = center_relative_seed(basis, r_eucl_dd, z_c);
     let u_eucl_dd = &u_eucl_dd;
 

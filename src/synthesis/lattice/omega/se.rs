@@ -203,7 +203,7 @@ fn recurse<F>(
     // (`z_c[d].to_f64() − tail/r_dd`) was off by ±2 ulps ≈ ±4 units while
     // the per-level span is O(1), so the branch holding a TRUE solution
     // could fall outside [z_low, z_high] — observed live at ε=1e-8
-    // (docs/w_8d_rework_notes.md; frame-dependent FOUND→none flips that
+    // (frame-dependent FOUND→none flips that
     // build_ma_prefix_set's coset-mate redundancy used to mask). The span itself is
     // O(1) and stays f64.
     let r_dd_f = r_dd.to_f64();

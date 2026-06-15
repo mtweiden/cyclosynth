@@ -293,7 +293,7 @@ pub(crate) fn build_fgkm_prefix_set_inner(m: u32) -> Vec<U2Q> {
     // makes z-axis and Clifford-heavy prefixes drop to k ≈ 0-1, so their
     // suffix searches run at nearly full depth (large wall regression); a
     // sound reduction needs a dual coordinate (reduced lde for cost, peel
-    // depth for shell selection — see docs/design_certified_optimal_cost.md).
+    // depth for shell selection).
     let mut candidates: Vec<U2Q> = Vec::with_capacity(bodies.len() * cliffords_q.len());
     for body in &bodies {
         for c in &cliffords_q {

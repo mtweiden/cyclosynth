@@ -174,7 +174,7 @@ mod probes;
     /// floor). Minutes-scale unbudgeted walk — milestone runs only.
     #[test]
     #[ignore = "unbudgeted k=8 shell walk; run with --ignored"]
-    fn certificate_closes_on_single_q_target_slow() {
+    fn certifies_single_q_circuit_is_optimal() {
         let g = Complex64::from_polar(1.0, -PI / 16.0);
         let hqh = (U2Q::h() * U2Q::q() * U2Q::h()).reduced().to_float();
         let target: Mat2 = [
@@ -215,133 +215,6 @@ mod probes;
             "odd branch should find the exact single-Q circuit, got {gates}");
     }
 
-    #[test]
-    #[ignore]
-    fn det_phase_filter_random_targets() {
-        use rand::{Rng, SeedableRng};
-        use rand::rngs::StdRng;
-
-        fn rz(t: f64) -> Mat2 {
-            [
-                [Complex64::from_polar(1.0, -t/2.0), Complex64::new(0.0, 0.0)],
-                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, t/2.0)],
-            ]
-        }
-        fn ry(t: f64) -> Mat2 {
-            let c = (t/2.0).cos();
-            let s = (t/2.0).sin();
-            [
-                [Complex64::new(c, 0.0), Complex64::new(-s, 0.0)],
-                [Complex64::new(s, 0.0), Complex64::new(c, 0.0)],
-            ]
-        }
-        fn matmul(a: Mat2, b: Mat2) -> Mat2 {
-            [
-                [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
-                [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
-            ]
-        }
-
-        let mut rng = StdRng::seed_from_u64(0xBEEF);
-        let n = 4;
-        let eps: f64 = std::env::var("Z1_EPS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(1e-4);
-
-        eprintln!("\n=== ε={eps:.0e}, {n} random U3 targets ===");
-        let mut total_single = 0.0_f64;
-        let mut total_m1_relaxed = 0.0_f64;
-        let mut total_m2_strict = 0.0_f64;
-        let mut wins_m1 = 0;
-        let mut wins_m2 = 0;
-
-        for i in 0..n {
-            let alpha = 2.0 * std::f64::consts::PI * rng.random::<f64>();
-            let beta = 2.0 * std::f64::consts::PI * rng.random::<f64>();
-            let gamma = 2.0 * std::f64::consts::PI * rng.random::<f64>();
-            let target = matmul(matmul(rz(alpha), ry(beta)), rz(gamma));
-
-            let synth_s = SynthesizerQ::new(eps).with_max_lde(20);
-            let t0 = std::time::Instant::now();
-            let r_s = synth_s.synthesize(target);
-            let ts = t0.elapsed().as_secs_f64() * 1000.0;
-            assert!(r_s.is_some());
-
-            let synth_m1 = SynthesizerQ::new(eps).with_max_lde(20)
-                .with_prefix_split_m(1).with_inner_det_phase_filter(vec![0, 1, 15]);
-            let t0 = std::time::Instant::now();
-            let r_m1 = synth_m1.synthesize(target);
-            let tm1 = t0.elapsed().as_secs_f64() * 1000.0;
-
-            let synth_m2 = SynthesizerQ::new(eps).with_max_lde(20)
-                .with_prefix_split_m(2).with_inner_det_phase_filter(vec![0]);
-            let t0 = std::time::Instant::now();
-            let r_m2 = synth_m2.synthesize(target);
-            let tm2 = t0.elapsed().as_secs_f64() * 1000.0;
-
-            total_single += ts;
-            total_m1_relaxed += tm1;
-            total_m2_strict += tm2;
-            if tm1 < ts { wins_m1 += 1; }
-            if tm2 < ts { wins_m2 += 1; }
-            eprintln!(
-                "  trial {i}  single={ts:>6.0}ms  m1_relaxed={tm1:>6.0}ms ({:.2}×)  m2_strict={tm2:>6.0}ms ({:.2}×)",
-                ts/tm1, ts/tm2
-            );
-            // Sanity: dc found a valid result.
-            if let Some(r) = r_m1 {
-                assert!(r.distance < eps, "m1 trial {i} dist={:.3e}", r.distance);
-            }
-            if let Some(r) = r_m2 {
-                assert!(r.distance < eps, "m2 trial {i} dist={:.3e}", r.distance);
-            }
-        }
-        eprintln!("\n  TOTAL  single={total_single:.0}ms  m1_relaxed={total_m1_relaxed:.0}ms ({:.2}×)  m2_strict={total_m2_strict:.0}ms ({:.2}×)",
-            total_single/total_m1_relaxed, total_single/total_m2_strict);
-        eprintln!("  wins:  m1_relaxed {wins_m1}/{n}   m2_strict {wins_m2}/{n}");
-    }
-
-
-    #[test]
-    #[ignore = "slow diagnostic; run with --ignored"]
-    fn dc_split_smoke_rz_eps_1e_3() {
-        let theta = 0.3_f64;
-        let target: Mat2 = [
-            [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
-            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, theta / 2.0)],
-        ];
-        let eps = 1e-3_f64;
-
-        // Single-search baseline.
-        let synth_single = SynthesizerQ::new(eps).with_max_lde(15);
-        let t0 = std::time::Instant::now();
-        let r_single = synth_single.synthesize(target);
-        let t_single = t0.elapsed();
-        eprintln!(
-            "single: lde={:?} dist={:?} t={:.1}ms",
-            r_single.as_ref().map(|r| r.lde),
-            r_single.as_ref().map(|r| r.distance),
-            t_single.as_secs_f64() * 1000.0
-        );
-        assert!(r_single.is_some());
-
-        // D&C across several m values to characterize per-prefix cost.
-        for m in [1u32, 2, 3] {
-            let synth_dc = SynthesizerQ::new(eps).with_max_lde(15).with_prefix_split_m(m);
-            let t1 = std::time::Instant::now();
-            let r_dc = synth_dc.synthesize(target);
-            let t_dc = t1.elapsed();
-            let l_size = build_fgkm_prefix_set(m).len();
-            let per_prefix_us = t_dc.as_secs_f64() * 1e6 / (l_size as f64);
-            eprintln!(
-                "  d&c m={m}: |L|={l_size:>6}  lde={:?}  t={:.1}ms  per-prefix={per_prefix_us:.0}μs",
-                r_dc.as_ref().map(|r| r.lde),
-                t_dc.as_secs_f64() * 1000.0
-            );
-            assert!(r_dc.is_some(), "D&C m={m} should also find a solution");
-        }
-    }
 
     #[test]
     fn auto_defaults_at_various_eps() {
@@ -527,13 +400,12 @@ mod probes;
         }
     }
 
-    /// End-to-end deep-ε test: Rz(0.3) at ε=1e-3. Behind `#[ignore]` because
-    /// it can take minutes — the lattice search at k=10 needs ~1G SE leaves.
-    /// Run with `cargo test --release --lib synthesize_rz_eps_1e_3 --
-    /// --ignored --nocapture`.
+    /// End-to-end: synthesize Rz(0.3) at ε=1e-3 and confirm Clifford+√T
+    /// reaches depth ≤14 (the 8D Clifford+T baseline is 28, since `T = QQ`
+    /// doubles the effective denominator factor). Runs in well under a
+    /// second; `-- --nocapture` to see the lde/distance line.
     #[test]
-    #[ignore]
-    fn synthesize_rz_eps_1e_3() {
+    fn synthesizes_rz_within_depth_14_at_1e_3() {
         let theta = 0.3_f64;
         let target: Mat2 = [
             [Complex64::from_polar(1.0, -theta / 2.0), Complex64::new(0.0, 0.0)],
@@ -580,9 +452,8 @@ mod probes;
     /// search covers every mate's solutions with identical totals. The
     /// list member matched to u·C is ζ^p·(u·C), so mates' d_R differ by
     /// arbitrary EVEN offsets (the argument is d_R-agnostic).
-    /// Run: `cargo test --release --lib zeta_coset_census -- --ignored --nocapture`
+    /// Run: `cargo test --release --lib zeta_coset_census -- --nocapture`
     #[test]
-    #[ignore]
     fn zeta_coset_census() {
         use std::collections::{HashMap, HashSet};
 
