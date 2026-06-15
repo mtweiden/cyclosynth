@@ -308,10 +308,10 @@ impl SynthesizerQ {
             deep_rot_src: None,
             my_screen_done: None,
             peer_screen_done: None,
-            // At ε ≤ 1e-7 the cost minimum often sits above find-lde, so
-            // search a wider window; window 4 regresses (extra levels
-            // dilute the deadline).
-            optimal_lde_window: if epsilon <= 1e-7 { 3 } else { 2 },
+            // Window 2 is the cost-ratio winner across the sweep (best at
+            // both 1e-7 and 1e-8; window 1 underfits and 3+ dilute the
+            // deadline without recovering cost). See scripts/sweep_deep_eps.
+            optimal_lde_window: 2,
             // Open the d_R filters only at ε ≤ 1e-5, where the closed
             // first-hit filters exclude real cost optima; above that they
             // recover nothing and only cost enum wall.

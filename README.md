@@ -72,6 +72,40 @@ Synthesizer(epsilon, *, sqrt_t=False, max_lde=None, min_lde=None,
 The `optimize_cost`, `q_cost`, `lde_window`, `deadline_ms`, and
 `seq_parity` knobs apply to the Clifford+√T backend only.
 
+### Choosing Clifford+√T settings
+
+The defaults (`optimize_cost=True`, `lde_window=2`) already minimize the
+circuit cost — the remaining knobs only trade a little cost for speed at
+deep `ε`. The table below is medians over 30 random `U3` targets on Apple
+M-series, 8 threads; **cost** is `T + 3.5·Q` *relative to the Clifford+T
+circuit for the same target* (lower = cheaper):
+
+| ε    | settings              | cost vs Clifford+T | wall (median) |
+| ---- | --------------------- | ------------------ | ------------- |
+| 1e-7 | defaults              | 0.89×              | 1.9 s         |
+| 1e-7 | `deadline_ms=750`     | 0.90×              | 1.2 s         |
+| 1e-8 | defaults              | 0.89×              | 21 s          |
+| 1e-8 | `deadline_ms=6000`    | 0.92×              | 13 s          |
+| 1e-8 | `deadline_ms=2000`    | 0.94×              | 5.4 s         |
+
+- The √T advantage comes entirely from `optimize_cost` (on by default),
+  which also floors the result at the Clifford+T cost — so it never costs
+  *more* than Clifford+T. Setting `optimize_cost=False` returns the first
+  circuit found instead: fast, but it can cost more than the Clifford+T
+  baseline, so it is not recommended.
+- `deadline_ms` caps the cost-optimization search — lower is faster and
+  slightly more expensive. It only bites at deep `ε` (≲1e-7); above that the
+  search self-terminates well before any reasonable deadline.
+- `lde_window` (default 2) widens the depth band the optimizer considers;
+  2 was the cost-minimum at every `ε` tested, so leave it unless profiling
+  your own target distribution.
+- `q_cost` (default 3.5) is the Q-vs-T cost weight — set it if your hardware
+  prices √T differently. `seq_parity` is a deep-`ε` reliability knob and does
+  not change cost.
+
+(Wall times vary widely target-to-target; see the [Performance](#performance)
+note. These are guidance, not guarantees.)
+
 ## Examples (Python)
 
 After `maturin develop --release`, the [`examples/`](examples/) directory
