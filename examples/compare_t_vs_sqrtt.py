@@ -22,19 +22,31 @@ def u3(alpha, beta, gamma):
     return rz(alpha) @ ry @ rz(gamma)
 
 
+def haar_u3(rng):
+    """Draw a Haar-random SU(2) in ZYZ form.
+
+    The Haar measure on SU(2) is ∝ sin(β) dα dβ dγ, so α and γ are uniform on
+    [0, 2π) but β must be sine-weighted on [0, π]. Drawing β uniformly is *not*
+    Haar — it over-samples near-diagonal unitaries.
+    """
+    alpha, gamma = 2 * np.pi * rng.random(2)
+    beta = np.arccos(1.0 - 2.0 * rng.random())
+    return u3(alpha, beta, gamma)
+
+
 def main():
     epsilon, n_targets = 1e-5, 10
     synth_t = cyclosynth.Synthesizer(epsilon)
     synth_q = cyclosynth.Synthesizer(epsilon, sqrt_t=True, optimize_cost=True)
 
-    print(f"ε = {epsilon:.0e}, {n_targets} random U3 targets, cost = T + 3.5·Q\n")
+    print(f"ε = {epsilon:.0e}, {n_targets} Haar-random U3 targets, cost = T + 3.5·Q\n")
     header = f"{'#':>3}  {'T':>3} {'Q':>3}  {'cost_T':>7} {'cost_√T':>8}  {'win':>4}"
     print(header)
     print("-" * len(header))
 
     costs_t, costs_q, wins = [], [], {"T": 0, "√T": 0, "tie": 0}
     for i in range(n_targets):
-        target = u3(*(2 * np.pi * rng.random(3)))
+        target = haar_u3(rng)
         r_t, r_q = synth_t.synthesize(target), synth_q.synthesize(target)
         if not (r_t and r_q):
             print(f"{i:>3}  (no circuit within ε)")
