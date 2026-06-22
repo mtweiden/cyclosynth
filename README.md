@@ -1,29 +1,23 @@
-# cyclosynth-rs
+# cyclosynth
 
-Pure-Rust, optimal-T-count synthesis of single-qubit unitaries into
-Clifford+T (and Clifford+√T) circuits, with Python bindings.
+Optimal-T-count synthesis of single-qubit unitaries into Clifford+T (and Clifford+√T) circuits, with Python bindings.
 
 ## What it does
 
-Given a 2×2 target unitary `V` and a tolerance `ε`, the synthesizer
-returns a gate sequence `U` with diamond distance `d_diamond(U, V) < ε`
-and the (close to) smallest gate count achievable at that `ε`.
+Given a 2×2 target unitary `V` and a tolerance `ε`, the synthesizer returns a gate sequence `U` with diamond distance `d_diamond(U, V) < ε` and the (close to) smallest gate count achievable at that `ε`.
 
-- **Clifford+T** (default). Gates `{H, S, T, X, Y, Z}`. Finds the
-  *minimal T-count* circuit. Implements Algorithm 3.14 of
-  [Morisaki et al., arXiv:2510.05816](https://arxiv.org/abs/2510.05816)
-  — an 8-dimensional integer lattice enumeration (Alg. 3.6) over the
-  ring `Z[ω]`, with a divide-and-conquer prefix split (Alg. 3.11).
-- **Clifford+√T** (`sqrt_t=True`). Adds `Q = √T`, working in `Z[ζ₁₆]`
-  on a 16-dimensional lattice. This denser gate set generally yields
-  cheaper circuits; `optimize_cost=True` minimizes a weighted cost
-  `T_count + c·Q_count` instead of returning the first solution.
+- **Clifford+T** (default).
+  Gates `{H, S, T, X, Y, Z}`.
+  Finds the *minimal T-count* circuit.
+  Implements Algorithm 3.14 of [Morisaki et al., arXiv:2510.05816](https://arxiv.org/abs/2510.05816) — an 8-dimensional integer lattice enumeration (Alg. 3.6) over the ring `Z[ω]`, with a divide-and-conquer prefix split (Alg. 3.11).
+- **Clifford+√T** (`sqrt_t=True`).
+  Adds `Q = √T`, working in `Z[ζ]` on a 16-dimensional lattice.
+  This denser gate set generally yields cheaper circuits; `optimize_cost=True` minimizes a weighted cost `T_count + c·Q_count` instead of returning the first solution.
 
 ## Install
 
-Built with [maturin](https://www.maturin.rs/), which compiles the Rust
-extension and installs the `cyclosynth` module into the active
-environment. The crate links system `gmp`/`mpfr`:
+Built with [maturin](https://www.maturin.rs/), which compiles the Rust extension and installs the `cyclosynth` module into the active environment.
+The crate links system `gmp`/`mpfr`:
 
 ```sh
 brew install gmp mpfr          # macOS  (Debian: apt-get install libgmp-dev libmpfr-dev)
@@ -31,8 +25,11 @@ pip install maturin
 maturin develop --release
 ```
 
-(`examples/verify.py` additionally needs `pip install mpmath` for its
-high-precision cross-check.)
+- **mpfr** (arbitrary-precision floating point) is the precision scaffolding of the lattice search.
+  The search metric is severely ill-conditioned — its condition number grows like `ε⁻⁴` (≈ 2¹⁰⁷ at `ε = 1e-8`) — so hardware `f64` loses too many bits; MPFR keeps the LLL reduction and Schnorr-Euchner enumeration faithful at deep `ε`.
+- **gmp** (arbitrary-precision integers) backs the exact integer Gram arithmetic when the fixed-width `i256` path would overflow at large lde, and is also the foundation MPFR itself is built on.
+
+(`examples/verify.py` additionally needs `pip install mpmath` for its high-precision cross-check.)
 
 ## Usage (Python)
 
@@ -57,28 +54,13 @@ if result:                        # None if no circuit was found within epsilon
     print(result.distance)        # diamond distance, < epsilon
 ```
 
-The composition convention is *leftmost gate is the leftmost matrix
-factor*: for `"ABC"` the unitary is `A·B·C`. `examples/verify.py`
-round-trips a gate string back to a unitary and re-checks the distance.
-
-Constructor (all keywords optional):
-
-```python
-Synthesizer(epsilon, *, sqrt_t=False, max_lde=None, min_lde=None,
-            optimize_cost=None, q_cost=None, lde_window=None,
-            deadline_ms=None, seq_parity=None)
-```
-
-The `optimize_cost`, `q_cost`, `lde_window`, `deadline_ms`, and
-`seq_parity` knobs apply to the Clifford+√T backend only.
+The composition convention is *leftmost gate is the leftmost matrix factor*: for `"ABC"` the unitary is `A·B·C`.
+`examples/verify.py` round-trips a gate string back to a unitary and re-checks the distance.
 
 ### Choosing Clifford+√T settings
 
-The defaults (`optimize_cost=True`, `lde_window=2`) already minimize the
-circuit cost — the remaining knobs only trade a little cost for speed at
-deep `ε`. The table below is medians over 30 random `U3` targets on Apple
-M-series, 8 threads; **cost** is `T + 3·Q` *relative to the Clifford+T
-circuit for the same target* (lower = cheaper):
+The defaults (`optimize_cost=True`, `lde_window=2`) already minimize the circuit cost — the remaining knobs only trade a little cost for speed at deep `ε`.
+The table below is medians over 30 random `U3` targets on Apple M-series, 8 threads; **cost** is `T + 3·Q` *relative to the Clifford+T circuit for the same target* (lower = cheaper):
 
 | ε    | settings              | cost vs Clifford+T | wall (median) |
 | ---- | --------------------- | ------------------ | ------------- |
@@ -88,28 +70,20 @@ circuit for the same target* (lower = cheaper):
 | 1e-8 | `deadline_ms=6000`    | 0.92×              | 13 s          |
 | 1e-8 | `deadline_ms=2000`    | 0.94×              | 5.4 s         |
 
-- The √T advantage comes entirely from `optimize_cost` (on by default),
-  which also floors the result at the Clifford+T cost — so it never costs
-  *more* than Clifford+T. Setting `optimize_cost=False` returns the first
-  circuit found instead: fast, but it can cost more than the Clifford+T
-  baseline, so it is not recommended.
-- `deadline_ms` caps the cost-optimization search — lower is faster and
-  slightly more expensive. It only bites at deep `ε` (≲1e-7); above that the
-  search self-terminates well before any reasonable deadline.
-- `lde_window` (default 2) widens the depth band the optimizer considers;
-  2 was the cost-minimum at every `ε` tested, so leave it unless profiling
-  your own target distribution.
-- `q_cost` (default 3) is the Q-vs-T cost weight — set it if your hardware
-  prices √T differently. `seq_parity` is a deep-`ε` reliability knob and does
-  not change cost.
+- The √T advantage comes entirely from `optimize_cost` (on by default), which also floors the result at the Clifford+T cost — so it never costs *more* than Clifford+T.
+  Setting `optimize_cost=False` returns the first circuit found instead: fast, but it can cost more than the Clifford+T baseline, so it is not recommended.
+- `deadline_ms` caps the cost-optimization search — lower is faster and slightly more expensive.
+  It only bites at deep `ε` (≲1e-7); above that the search self-terminates well before any reasonable deadline.
+- `lde_window` (default 2) widens the depth band the optimizer considers; 2 was the cost-minimum at every `ε` tested, so leave it unless profiling your own target distribution.
+- `q_cost` (default 3) is the Q-vs-T cost weight — set it if your hardware prices √T differently.
+  `seq_parity` is a deep-`ε` reliability knob and does not change cost.
 
-(Wall times vary widely target-to-target; see the [Performance](#performance)
-note. These are guidance, not guarantees.)
+(Wall times vary widely target-to-target; see the [Performance](#performance) note.
+These are guidance, not guarantees.)
 
 ## Examples (Python)
 
-After `maturin develop --release`, the [`examples/`](examples/) directory
-shows the Python bindings in use:
+After `maturin develop --release`, the [`examples/`](examples/) directory shows the Python bindings in use:
 
 | example | what it does |
 |---|---|
@@ -137,8 +111,7 @@ let gates = result.gates.unwrap();
 println!("T-count = {}, gates = {}", gates.matches('T').count(), gates);
 ```
 
-The `time_synthesis_omega` / `time_synthesis_zeta` binaries run the
-benchmark suites:
+The `time_synthesis_omega` / `time_synthesis_zeta` binaries run the benchmark suites:
 
 ```sh
 cargo run --release --bin time_synthesis_omega -- --threads 8 --trials 3
@@ -146,11 +119,8 @@ cargo run --release --bin time_synthesis_omega -- --threads 8 --trials 3
 
 ### Telemetry (`trace` feature)
 
-Diagnostic telemetry — trace counters and per-phase timers — is **off by
-default**: `diag::trace_enabled()` is a compile-time `false`, so every
-instrumentation site (including the per-leaf hot path) is eliminated and the
-default build carries zero overhead. The `probe_*` / `bench_*` bins and the
-`#[ignore]` telemetry tests need it enabled:
+Diagnostic telemetry — trace counters and per-phase timers — is **off by default**: `diag::trace_enabled()` is a compile-time `false`, so every instrumentation site (including the per-leaf hot path) is eliminated and the default build carries zero overhead.
+The `probe_*` / `bench_*` bins and the `#[ignore]` telemetry tests need it enabled:
 
 ```sh
 cargo run --release --features trace --bin probe_walk_bench_omega -- 0.7 1e-3 16
@@ -158,58 +128,42 @@ cargo run --release --features trace --bin probe_walk_bench_omega -- 0.7 1e-3 16
 
 ## How it works
 
-The synthesizer tries circuits of increasing length, shortest first, and
-returns the first one that lands within `ε` of the target. The hard part
-is finding *which* circuit of a given length (if any) is close enough:
+The synthesizer tries circuits of increasing length, shortest first, and returns the first one that lands within `ε` of the target.
+The hard part is finding *which* circuit of a given length (if any) is close enough:
 
 - **Short circuits** are found by direct search over a small candidate set.
-- **Longer circuits** are split into a fixed prefix and a remainder. For
-  each prefix, finding the best remainder becomes a "closest point in a
-  grid" problem, solved with lattice reduction. Many prefixes are searched
-  in parallel, and the search stops as soon as one of them works.
+- **Longer circuits** are split into a fixed prefix and a remainder.
+  For each prefix, finding the best remainder becomes a "closest point in a grid" problem, solved with lattice reduction.
+  Many prefixes are searched in parallel, and the search stops as soon as one of them works.
 
-This is the algorithm of
-[Morisaki et al.](https://arxiv.org/abs/2510.05816); see the paper for the
-full derivation. The lattice code lives in `src/synthesis/lattice/`, with
-one variant per gate set — `omega/` for Clifford+T and `zeta/` for
-Clifford+√T. Build with `--features trace` and set `CYCLOSYNTH_TRACE=1` to print
-per-step timings to stderr (see the Telemetry section above — the env var is
-inert without the feature).
+This is the algorithm of [Morisaki et al.](https://arxiv.org/abs/2510.05816); see the paper for the full derivation.
+The lattice code lives in `src/synthesis/lattice/`, with one variant per gate set — `omega/` for Clifford+T and `zeta/` for Clifford+√T.
+Build with `--features trace` and set `CYCLOSYNTH_TRACE=1` to print per-step timings to stderr (see the Telemetry section above — the env var is inert without the feature).
 
 ## Glossary
 
 Terms used throughout the code and docs:
 
-- **T gate / Q gate** — `T` is the π/8 phase gate (the Clifford+T generator);
-  `Q` is √T (the Clifford+√T generator). The circuit cost we minimize is
-  `T_count + 3·Q_count`.
-- **lde** ("least denominator exponent") — the power of √2 in a circuit's ring
-  denominator; the synthesizer uses it as the search depth (`max_lde`). Deeper
-  lde = more candidate circuits = tighter achievable `ε`.
-- **Z[ω] / Z[ζ₁₆]** — the two number rings the lattice search runs in: `omega/`
-  (8-dimensional, Clifford+T) and `zeta/` (16-dimensional, Clifford+√T).
-- **Matsumoto-Amano (MA) prefix / FGKM** — the canonical "normal forms" the
-  fixed circuit prefixes are enumerated from: Matsumoto-Amano for Clifford+T,
-  and the FGKM form ([arXiv:1501.04944](https://arxiv.org/abs/1501.04944)) for
-  Clifford+√T.
-- **det-phase** — the determinant's root-of-unity class; used to prune prefixes
-  that can't match the target up to global phase.
-- **Lattice search internals** — **LLL** / **L²-LLL** (basis reduction),
-  **Schnorr-Euchner** / SE (lattice-point enumeration), **BKZ** (block
-  reduction), **SVP** (shortest-vector problem), **Cholesky** / CFA
-  (factorization), **dd** (double-double, ~106-bit float). A fuller version of
-  this list is in the `src/synthesis/` module docs.
+- **T gate / Q gate** — `T` is the π/8 phase gate (the Clifford+T generator); `Q` is √T (the Clifford+√T generator).
+  The circuit cost we minimize is `T_count + 3·Q_count`.
+- **lde** ("least denominator exponent") — the power of √2 in a circuit's ring denominator; the synthesizer uses it as the search depth (`max_lde`).
+  Deeper lde = more candidate circuits = tighter achievable `ε`.
+- **Z[ω] / Z[ζ]** — the two number rings the lattice search runs in: `omega/` (8-dimensional, Clifford+T) and `zeta/` (16-dimensional, Clifford+√T).
+- **Matsumoto-Amano (MA) prefix / FGKM** — the canonical "normal forms" the fixed circuit prefixes are enumerated from: Matsumoto-Amano for Clifford+T, and the FGKM form ([arXiv:1501.04944](https://arxiv.org/abs/1501.04944)) for Clifford+√T.
+- **det-phase** — the determinant's root-of-unity class; used to prune prefixes that can't match the target up to global phase.
+- **Lattice search internals** — **LLL** / **L²-LLL** (basis reduction), **Schnorr-Euchner** / SE (lattice-point enumeration), **BKZ** (block reduction), **SVP** (shortest-vector problem), **Cholesky** / CFA (factorization), **dd** (double-double, ~106-bit float).
+  A fuller version of this list is in the `src/synthesis/` module docs.
 
 ## Repository layout
 
 ```
 src/
 ├── lib.rs              PyO3 module + crate root
-├── matrix/, rings/     U2/SO3 types; rings Z[ω], Z[ζ₁₆]
+├── matrix/, rings/     U2/SO3 types; rings Z[ω], Z[ζ]
 └── synthesis/
     ├── synthesizer.rs      top-level Synthesizer over both backends
     ├── clifford_t/         Clifford+T backend (8-D, Z[ω])
-    ├── clifford_sqrt_t/    Clifford+√T backend (16-D, Z[ζ₁₆])
+    ├── clifford_sqrt_t/    Clifford+√T backend (16-D, Z[ζ])
     ├── decomposer.rs       ring unitary → gate string
     ├── distance.rs         diamond distance via Frobenius identity
     └── lattice/            integer-lattice search
@@ -219,9 +173,7 @@ src/
 examples/               Python usage, verification, and comparison
 ```
 
-Advanced/internal tuning is exposed through `CYCLOSYNTH_*` environment
-variables; the names are frozen and documented inline at their use
-sites in `src/synthesis/`.
+Advanced/internal tuning is exposed through `CYCLOSYNTH_*` environment variables; the names are frozen and documented inline at their use sites in `src/synthesis/`.
 
 ## Testing
 
@@ -231,10 +183,8 @@ cargo test --release
 
 ## Performance
 
-Per-target wall-clock from `time_synthesis_omega --trials 3` on Apple
-M-series, 8 threads, 10 random SU(2) targets per ε (fixed seed). `T-count`
-is the range of resolved T-counts across the 10 targets; the time columns
-summarize the per-target minimums.
+Per-target wall-clock from `time_synthesis_omega --trials 3` on Apple M-series, 8 threads, 10 random SU(2) targets per ε (fixed seed).
+`T-count` is the range of resolved T-counts across the 10 targets; the time columns summarize the per-target minimums.
 
 | ε    | T-count | min (ms) | median (ms) | max (ms) | mean (ms) |
 | ---- | ------- | -------- | ----------- | -------- | --------- |
@@ -246,10 +196,3 @@ summarize the per-target minimums.
 | 1e-7 | 62–68   | 0.9      | 7.7         | 35.3     | 10.2      |
 | 1e-8 | 72–78   | 20.0     | 364         | 961      | 425       |
 
-(Sum of per-target minimums across all 70 runs: ≈ 4.5 s.)
-
-Times vary widely at the same ε and are not monotonic in ε. The cost is
-dominated by how many prefixes the search tries before one succeeds, which
-depends on where the target falls relative to the lattice. Some angles —
-e.g. `π/n` for small `n` — sit in sparse regions and need longer circuits,
-a property of the approximation problem rather than the implementation.
