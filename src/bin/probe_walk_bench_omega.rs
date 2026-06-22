@@ -48,7 +48,7 @@ fn cpu_time_s() -> f64 {
 }
 
 /// Half-unit cost 2·T + 7·Q of a decomposed gate string (the default
-/// q_cost_x2 = 7); Clifford+T circuits carry no Q, so this is 2·T_count.
+/// q_cost_x2 = 6); Clifford+T circuits carry no Q, so this is 2·T_count.
 fn cost_half_units(gates: &str) -> usize {
     let t = gates.chars().filter(|&c| c == 'T').count();
     let q = gates.chars().filter(|&c| c == 'Q').count();

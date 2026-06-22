@@ -278,7 +278,7 @@ use std::f64::consts::PI;
                 eprintln!(
                     "[t{index}] RESULT lde={} T={t} Q={q} cost={} dist={:.3e}",
                     r.lde,
-                    t as f64 + 3.5 * q as f64,
+                    t as f64 + 3.0 * q as f64,
                     r.distance
                 );
             }
@@ -330,7 +330,7 @@ use std::f64::consts::PI;
                         eprintln!(
                             "target {i} {label}: lde={} T={tc} Q={qc} cost={} dist={:.2e} t={:.1}s",
                             r.lde,
-                            gates_cost(g, 7) as f64 / 2.0,
+                            gates_cost(g, 6) as f64 / 2.0,
                             r.distance,
                             t0.elapsed().as_secs_f64()
                         );

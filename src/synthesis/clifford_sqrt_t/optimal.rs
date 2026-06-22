@@ -177,7 +177,7 @@ impl SynthesizerQ {
                 }
                 let u_l_cost = 2 * t + q_cost_x2 * q;
                 let floor = u_l_cost.saturating_add(
-                    crate::synthesis::cost_bound::class_cost_lb_half_units(d_r),
+                    crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
                 );
                 cands.push((pi, d_r, floor));
             }

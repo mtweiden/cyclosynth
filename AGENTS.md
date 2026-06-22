@@ -7,7 +7,7 @@ non-obvious facts needed to navigate the codebase.)
 ## What this is
 
 A pure-Rust library that synthesizes a single-qubit target unitary into a
-**Clifford+T** or **Clifford+√T** circuit, minimizing `T_count + 3.5·Q_count`
+**Clifford+T** or **Clifford+√T** circuit, minimizing `T_count + 3·Q_count`
 (arXiv:2510.05816). It exposes a Python API via PyO3. The hard part is a
 Lenstra-style lattice search (LLL + Schnorr-Euchner enumeration).
 

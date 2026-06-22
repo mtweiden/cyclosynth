@@ -815,7 +815,7 @@ mod tests {
     // the pre-peel Nγ is odd and by 1 when it is even (ceiling division).
     // The originally claimed table δ = {T:1, Q:2, TQ:3} is therefore false
     // for TQ (drop 3 is impossible) and only half-true for Q. Cost-per-peel
-    // still dominates the drop: T = 1 ≥ 1, Q = 3.5 ≥ 2, TQ = 4.5 ≥ 2
+    // still dominates the drop: T = 1 ≥ 1, Q = 3 ≥ 2, TQ = 4 ≥ 2
     // (T-units), and the drops telescope to N(U), so cost ≥ N survives.
 
     /// γ-denominator exponent of a reduced SO3Q (max over non-zero entries).
@@ -867,7 +867,7 @@ mod tests {
     /// P-a companion: per-gate Bloch-denominator constants. With N
     /// subadditive under matrix products (Ratio exps add in Mul, Add takes
     /// max — same argument as the B2 U(2)-lde constants), N(T) = 1,
-    /// N(Q) = 2, N(Clifford) = 0 give cost(W) = t + 3.5q ≥ t + 2q ≥ N(U)
+    /// N(Q) = 2, N(Clifford) = 0 give cost(W) = t + 3q ≥ t + 2q ≥ N(U)
     /// in T-units for EVERY gate word W, not just canonical ones. This is
     /// the exhaustive finite check those constants rest on.
     #[test]

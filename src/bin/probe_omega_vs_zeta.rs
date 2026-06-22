@@ -1,4 +1,4 @@
-//! Compare Clifford+T vs Clifford+√T under cost = T + 3.5·Q.
+//! Compare Clifford+T vs Clifford+√T under cost = T + 3·Q.
 //!
 //! Random U3 targets across a fixed seed, both synthesizers, gate counts,
 //! per-target winner + aggregate. Args:
@@ -152,7 +152,7 @@ fn main() {
     )).collect();
 
     let verbose = n <= 20;
-    println!("ε={eps:e}, n={n} U3 targets, seed=0x{seed:X}, cost = T + 3.5·Q, √T mode={mode_label}, lde_window={lde_window}, m_sweep={}, deadline={}, zeta_coset={}\n",
+    println!("ε={eps:e}, n={n} U3 targets, seed=0x{seed:X}, cost = T + 3·Q, √T mode={mode_label}, lde_window={lde_window}, m_sweep={}, deadline={}, zeta_coset={}\n",
         m_sweep_override.as_ref().map(|v| format!("{:?}", v)).unwrap_or_else(|| "auto".to_string()),
         deadline_override.as_deref().unwrap_or("auto"),
         std::env::var("CYCLOSYNTH_ZETA_COSET").as_deref().unwrap_or("default(1)"));
@@ -198,7 +198,7 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
             cyclosynth::synthesis::diag::reset_all();
         }
         let (t_t, t_q, _t_h, t_len) = gate_cost(rt.as_ref().and_then(|r| r.gates.as_deref()));
-        let t_cost = t_t as f64 + 3.5 * t_q as f64;
+        let t_cost = t_t as f64 + 3.0 * t_q as f64;
         let t_lde = rt.as_ref().map(|r| r.lde).unwrap_or(0);
         if verbose {
             eprint!("{t_wall:>5.1}s √T... ");
@@ -211,7 +211,7 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
         }
         q_total_wall += q_wall;
         let (q_t, q_q, _q_h, q_len) = gate_cost(qg.as_deref());
-        let q_cost = q_t as f64 + 3.5 * q_q as f64;
+        let q_cost = q_t as f64 + 3.0 * q_q as f64;
         if verbose { eprintln!("{q_wall:>5.1}s"); }
         total_t_cost += t_cost;
         total_q_cost += q_cost;
@@ -268,20 +268,20 @@ fn run_compare(targets: &[(f64, f64, f64)], eps: f64, verbose: bool, lde_window:
         }
         let rt = SynthesizerT::new(eps).synthesize(target);
         let (t_t, t_q, _, _) = gate_cost(rt.as_ref().and_then(|r| r.gates.as_deref()));
-        let t_cost = t_t as f64 + 3.5 * t_q as f64;
+        let t_cost = t_t as f64 + 3.0 * t_q as f64;
         t_costs.push(t_cost);
 
         if verbose { eprint!("Q_first... "); let _ = std::io::stderr().flush(); }
         let (qg1, qw1, _) = run_q(target, eps, false, 0, None, deadline.as_deref());
         let (q_t1, q_q1, _, _) = gate_cost(qg1.as_deref());
-        let q_first_cost = q_t1 as f64 + 3.5 * q_q1 as f64;
+        let q_first_cost = q_t1 as f64 + 3.0 * q_q1 as f64;
         q_first_costs.push(q_first_cost);
         q_first_walls.push(qw1);
 
         if verbose { eprint!("Q_opt... "); let _ = std::io::stderr().flush(); }
         let (qg2, qw2, _) = run_q(target, eps, true, lde_window, m_sweep.clone(), deadline.as_deref());
         let (q_t2, q_q2, _, _) = gate_cost(qg2.as_deref());
-        let q_opt_cost = q_t2 as f64 + 3.5 * q_q2 as f64;
+        let q_opt_cost = q_t2 as f64 + 3.0 * q_q2 as f64;
         q_opt_costs.push(q_opt_cost);
         q_opt_walls.push(qw2);
 

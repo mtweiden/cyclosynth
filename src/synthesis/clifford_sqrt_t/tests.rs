@@ -57,14 +57,14 @@ mod probes;
             let rt = crate::synthesis::clifford_t::SynthesizerT::new(eps)
                 .synthesize(target)
                 .expect("clifford_t baseline should synthesize");
-            let t_cost = gates_cost(rt.gates.as_deref().unwrap_or(""), 7);
+            let t_cost = gates_cost(rt.gates.as_deref().unwrap_or(""), 6);
             let rq = SynthesizerQ::new(eps)
                 .with_optimize_cost(true)
                 .with_optimal_lde_window(2)
                 .synthesize(target)
                 .expect("hybrid optimal should synthesize");
             assert!(rq.distance < eps);
-            let q_cost = gates_cost(rq.gates.as_deref().unwrap_or(""), 7);
+            let q_cost = gates_cost(rq.gates.as_deref().unwrap_or(""), 6);
             assert!(
                 q_cost <= t_cost,
                 "hybrid cost {q_cost} > clifford_t cost {t_cost} at θ={theta}, ε={eps:e}"
@@ -114,9 +114,9 @@ mod probes;
         assert!(cert.lower_half_units <= cert.upper_half_units);
         assert_eq!(
             cert.upper_half_units,
-            gates_cost(r.gates.as_deref().unwrap(), 7)
+            gates_cost(r.gates.as_deref().unwrap(), 6)
         );
-        // At 3e-2 the optimum costs ~19 HU; the extension reaches the
+        // At 3e-2 the optimum costs ~18 HU; the extension reaches the
         // closing horizon (k ≈ 6) within the budget.
         assert!(cert.certified_optimal,
             "expected closure at coarse ε: upper {} lower {} k {}",
@@ -170,8 +170,8 @@ mod probes;
             cert.upper_half_units, cert.lower_half_units);
     }
 
-    /// k = 8 closure on the single-Q target (cost 7 HU needs the L(9)=8
-    /// floor). Minutes-scale unbudgeted walk — milestone runs only.
+    /// k = 8 closure on the single-Q target (cost 6 HU at the default
+    /// q_cost_x2). Minutes-scale unbudgeted walk — milestone runs only.
     #[test]
     #[ignore = "unbudgeted k=8 shell walk; run with --ignored"]
     fn certifies_single_q_circuit_is_optimal() {
@@ -184,14 +184,14 @@ mod probes;
         let (_, cert) = SynthesizerQ::new(1e-3)
             .synthesize_exhaustive_certified(target, 8)
             .expect("certified synthesis should succeed");
-        assert_eq!(cert.upper_half_units, 7);
+        assert_eq!(cert.upper_half_units, 6);
         assert!(cert.certified_optimal);
     }
 
     /// The odd-parity branch must reach circuits the single-target
     /// pipeline cannot: V = e^{-iπ/16}·(H·Q·H) has det 1 (even class),
     /// but its physical optimum is the single-Q circuit (odd class,
-    /// cost 3.5). Without the branch the search can only offer even-Q
+    /// cost 3). Without the branch the search can only offer even-Q
     /// approximations.
     #[test]
     fn odd_parity_branch_finds_single_q() {

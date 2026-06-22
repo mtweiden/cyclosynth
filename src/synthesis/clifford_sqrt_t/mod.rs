@@ -216,7 +216,7 @@ fn default_inner_det_phase_filter(m: u32) -> Vec<u32> {
 }
 
 /// Resource cost of a decomposed Clifford+√T gate string in half-units
-/// of a T gate: `2·T + q_cost_x2·Q` (default `q_cost_x2 = 7` ⇒ `T + 3.5·Q`).
+/// of a T gate: `2·T + q_cost_x2·Q` (default `q_cost_x2 = 6` ⇒ `T + 3·Q`).
 /// Integer so prefix-prune comparisons and atomic CAS stay exact.
 fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
     let (t, q) = gates_tq(gates);
@@ -331,7 +331,7 @@ impl SynthesizerQ {
             },
             certify: false,
             certify_extra_ms: 2_000,
-            q_cost_x2: 7,
+            q_cost_x2: 6,
         }
     }
 
@@ -433,8 +433,8 @@ impl SynthesizerQ {
         self
     }
 
-    /// Set the Q-gate cost weight in T-gate units (e.g. `3.5` for the
-    /// `T + 3.5·Q` model). Stored in exact half-units; weights are
+    /// Set the Q-gate cost weight in T-gate units (e.g. `3` for the
+    /// `T + 3·Q` model). Stored in exact half-units; weights are
     /// rounded to the nearest 0.5.
     pub fn with_q_cost(mut self, weight: f64) -> Self {
         debug_assert!(weight > 0.0 && weight.is_finite());

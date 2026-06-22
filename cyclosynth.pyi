@@ -26,7 +26,7 @@ class SynthResult:
     def __bool__(self) -> bool: ...
 
 class Synthesizer:
-    """Single-qubit unitary synthesizer; minimizes T_count + 3.5·Q_count."""
+    """Single-qubit unitary synthesizer; minimizes T_count + 3·Q_count."""
 
     def __init__(
         self,

@@ -1,5 +1,5 @@
 //! cyclosynth — single-qubit gate synthesis: approximate a target 2×2 unitary
-//! by a Clifford+T or Clifford+√T circuit, minimizing `T_count + 3.5·Q_count`
+//! by a Clifford+T or Clifford+√T circuit, minimizing `T_count + 3·Q_count`
 //! (arXiv:2510.05816). The entry point is [`synthesis::Synthesizer`]; see the
 //! [`synthesis`] module for the domain glossary and the algorithm overview.
 

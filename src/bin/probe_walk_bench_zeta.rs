@@ -63,7 +63,7 @@ fn cpu_time_s() -> f64 {
 
 
 /// Half-unit cost 2·T + 7·Q of a decomposed gate string (local copy of
-/// the private `gates_cost` with the default q_cost_x2 = 7).
+/// the private `gates_cost` with the default q_cost_x2 = 6).
 fn cost_half_units(gates: &str) -> usize {
     let t = gates.chars().filter(|&c| c == 'T').count();
     let q = gates.chars().filter(|&c| c == 'Q').count();

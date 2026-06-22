@@ -1,7 +1,7 @@
 //! Certified cost-vs-lde lower bound for Clifford+√T circuits.
 //!
 //! `L(k) = cost_lb_half_units(k)` lower-bounds the weighted gate cost
-//! (half-units `2·T_count + q_cost_x2·Q_count`, default `q_cost_x2 = 7`)
+//! (half-units `2·T_count + q_cost_x2·Q_count`, default `q_cost_x2 = 6`)
 //! of any Clifford+√T unitary with reduced denominator exponent (lde)
 //! `k`. It powers the certified search cutoff and the sound prefix
 //! prune. Monotone non-decreasing in `k`, which the cutoff relies on.
@@ -16,13 +16,14 @@ pub const CLIFFORD_LDE_MAX: u32 = 1;
 pub const XY_SYLLABLE_LDE: u32 = 2;
 
 /// Minimum half-unit cost over the 9 syllables (the T syllable costs 2;
-/// Q costs 7; TQ costs 9).
+/// Q costs `q_cost_x2`, default 6; TQ costs 2 + that).
 const MIN_SYLLABLE_COST_HALF_UNITS: usize = 2;
 
 /// Certified lower bound, in half-units, on the weighted cost of any
 /// Clifford+√T unitary with reduced lde `k`:
 ///
-///   c̃ = 2t + 7q ≥ 2·(t + 2q) ≥ 2·N ≥ 2·(2k − 3) = 4k − 6,
+///   c̃ = 2t + q_cost_x2·q ≥ 2t + 4q ≥ 2·(t + 2q) ≥ 2·N ≥ 2·(2k − 3) = 4k − 6,
+///   (sound for any q_cost_x2 ≥ 4; default 6),
 ///
 /// where N is the reduced Bloch/SO(3) denominator exponent:
 ///   * `t + 2q ≥ N` — Bloch-exponent subadditivity with per-gate
@@ -49,12 +50,12 @@ pub fn cost_lb_half_units(k: u32) -> usize {
 /// Callers add this to a prefix's own cost as a sound suffix lower bound. A
 /// stronger mod-4 bound is NOT sound.
 ///
-/// The `7` is one Q gate in half-units, i.e. the default `q_cost_x2` (see
-/// [`crate::synthesis::clifford_sqrt_t`]). It is a sound lower bound only while
-/// `q_cost_x2 ≥ 7`; if the Q weight is ever retuned below 3.5, this must track
-/// `q_cost_x2` instead, or it would over-claim.
-pub fn class_cost_lb_half_units(d: u32) -> usize {
-    if d % 2 == 1 { 7 } else { 0 }
+/// An odd class forces ≥ 1 Q gate, whose cost is exactly `q_cost_x2`
+/// half-units; even classes give nothing. Passing `q_cost_x2` (rather than a
+/// hard-coded constant) keeps this sound under any Q weight — a hard-coded `7`
+/// would over-claim once the weight drops below 3.5.
+pub fn class_cost_lb_half_units(d: u32, q_cost_x2: usize) -> usize {
+    if d % 2 == 1 { q_cost_x2 } else { 0 }
 }
 
 #[cfg(test)]
@@ -179,9 +180,9 @@ mod tests {
                     "Q-parity congruence violated at k={k}: d={d}, t={t}, q={q}, gates={gates}"
                 );
                 assert!(
-                    2 * t + 7 * q >= class_cost_lb_half_units(d),
+                    2 * t + 6 * q >= class_cost_lb_half_units(d, 6),
                     "class bound violated at k={k}: d={d}, cost={}",
-                    2 * t + 7 * q
+                    2 * t + 6 * q
                 );
                 checked += 1;
             }
@@ -210,7 +211,7 @@ mod tests {
                 let gates = BlochDecomposer.decompose(&u);
                 let t = gates.chars().filter(|&c| c == 'T').count();
                 let q = gates.chars().filter(|&c| c == 'Q').count();
-                min_cost = min_cost.min(2 * t + 7 * q);
+                min_cost = min_cost.min(2 * t + 6 * q);
             }
             if min_cost != usize::MAX {
                 assert!(

@@ -7,7 +7,7 @@
 //! the field's / this crate's standard vocabulary, defined here once:
 //!
 //! - **T / Q gates** — `T` is the π/8 phase gate; `Q` = √T is the Clifford+√T
-//!   generator. The cost we minimize is `T_count + 3.5·Q_count`.
+//!   generator. The cost we minimize is `T_count + 3·Q_count`.
 //! - **lde** — "least denominator exponent": the power `k` of √2 in a
 //!   circuit's ring denominator, used as the search-depth parameter
 //!   (`min_lde`/`max_lde`).

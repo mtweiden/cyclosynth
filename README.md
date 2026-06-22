@@ -77,7 +77,7 @@ The `optimize_cost`, `q_cost`, `lde_window`, `deadline_ms`, and
 The defaults (`optimize_cost=True`, `lde_window=2`) already minimize the
 circuit cost — the remaining knobs only trade a little cost for speed at
 deep `ε`. The table below is medians over 30 random `U3` targets on Apple
-M-series, 8 threads; **cost** is `T + 3.5·Q` *relative to the Clifford+T
+M-series, 8 threads; **cost** is `T + 3·Q` *relative to the Clifford+T
 circuit for the same target* (lower = cheaper):
 
 | ε    | settings              | cost vs Clifford+T | wall (median) |
@@ -99,7 +99,7 @@ circuit for the same target* (lower = cheaper):
 - `lde_window` (default 2) widens the depth band the optimizer considers;
   2 was the cost-minimum at every `ε` tested, so leave it unless profiling
   your own target distribution.
-- `q_cost` (default 3.5) is the Q-vs-T cost weight — set it if your hardware
+- `q_cost` (default 3) is the Q-vs-T cost weight — set it if your hardware
   prices √T differently. `seq_parity` is a deep-`ε` reliability knob and does
   not change cost.
 
@@ -115,8 +115,8 @@ shows the Python bindings in use:
 |---|---|
 | [`synth.py`](examples/synth.py) | Synthesize a `U3(α, β, γ)` target with both Clifford+T and Clifford+√T; read the result. |
 | [`choosing_epsilon.py`](examples/choosing_epsilon.py) | Sweep ε to see the accuracy/T-count trade-off. |
-| [`optimize_cost.py`](examples/optimize_cost.py) | The Clifford+√T `optimize_cost` knob: minimize `T + 3.5·Q`. |
-| [`compare_t_vs_sqrtt.py`](examples/compare_t_vs_sqrtt.py) | Clifford+T vs Clifford+√T cost (`T + 3.5·Q`) on the same targets. |
+| [`optimize_cost.py`](examples/optimize_cost.py) | The Clifford+√T `optimize_cost` knob: minimize `T + 3·Q`. |
+| [`compare_t_vs_sqrtt.py`](examples/compare_t_vs_sqrtt.py) | Clifford+T vs Clifford+√T cost (`T + 3·Q`) on the same targets. |
 | [`verify.py`](examples/verify.py) | Verification harness: independently re-check synthesized circuits at high precision (needs `mpmath`; runs 100 trials, slow). |
 
 ## Usage (Rust)
@@ -182,7 +182,7 @@ Terms used throughout the code and docs:
 
 - **T gate / Q gate** — `T` is the π/8 phase gate (the Clifford+T generator);
   `Q` is √T (the Clifford+√T generator). The circuit cost we minimize is
-  `T_count + 3.5·Q_count`.
+  `T_count + 3·Q_count`.
 - **lde** ("least denominator exponent") — the power of √2 in a circuit's ring
   denominator; the synthesizer uses it as the search depth (`max_lde`). Deeper
   lde = more candidate circuits = tighter achievable `ε`.

@@ -100,7 +100,7 @@ impl Synthesizer {
     }
 
     /// Clifford+√T only: Q-gate weight in T units for the optimize-cost
-    /// model (default 3.5). Quantized to the nearest half-unit (the model
+    /// model (default 3). Quantized to the nearest half-unit (the model
     /// compares `2·T + round(2·weight)·Q`), so e.g. 3.6 → 3.5. Ignored for
     /// Clifford+T.
     pub fn with_q_cost(mut self, weight: f64) -> Self {
@@ -190,10 +190,10 @@ impl Synthesizer {
     }
 
     /// Weight of a Q (√T) gate in the cost model `T_count + q_weight·Q_count`.
-    /// Canonical 3.5; reflects a custom `with_q_cost` on the √T backend.
+    /// Canonical 3; reflects a custom `with_q_cost` on the √T backend.
     pub fn q_weight(&self) -> f64 {
         match &self.inner {
-            Backend::T(_) => 3.5,
+            Backend::T(_) => 3.0,
             Backend::Q(s) => s.q_cost_x2 as f64 / 2.0,
         }
     }
@@ -223,7 +223,7 @@ pub struct PySynthResult {
     /// Diamond distance from the synthesized unitary to the target (< epsilon).
     #[pyo3(get)]
     pub distance: f64,
-    /// Q-gate weight used for `cost` (3.5 unless overridden on the √T backend).
+    /// Q-gate weight used for `cost` (3 unless overridden on the √T backend).
     q_weight: f64,
 }
 
@@ -242,7 +242,7 @@ impl PySynthResult {
         self.gates.as_deref().map_or(0, |g| g.matches('Q').count())
     }
 
-    /// The minimized cost: `t_count + q_weight·q_count` (q_weight 3.5 default).
+    /// The minimized cost: `t_count + q_weight·q_count` (q_weight 3 default).
     #[getter]
     fn cost(&self) -> f64 {
         self.t_count() as f64 + self.q_weight * self.q_count() as f64
