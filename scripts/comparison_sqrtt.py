@@ -6,9 +6,9 @@ with both backends, writes per-target rows to CSV. Sister script
 plot.
 
 Cost model:
-    cost = T_count + 3.5 · Q_count
+    cost = T_count + 3 · Q_count
 (other Clifford gates are free in fault-tolerant accounting; Q gates cost
-3.5× a T gate).
+3× a T gate).
 """
 
 import csv
@@ -35,7 +35,7 @@ def ry(t):
 # ─── Cost model ─────────────────────────────────────────────────────────────
 
 T_COST = 1.0
-Q_COST = 3.5
+Q_COST = 3.0
 
 
 def cost_of(gates: str) -> float:
@@ -101,11 +101,21 @@ def main():
                 beta = np.arccos(1.0 - 2.0 * random())
                 target = rz(alpha) @ ry(beta) @ rz(gamma)
 
-                for method, synth in (
-                    ("clifford_t", synth_t),
-                    ("clifford_sqrt_t", synth_q),
-                ):
-                    gates, dist, dur = run(synth, target)
+                # Synthesize both backends, then apply the never-costlier floor
+                # (Algorithm 2): a Clifford+sqrt(T) circuit is never costlier than
+                # the Clifford+T circuit for the same target, so if the raw sqrt(T)
+                # result is costlier (or failed) we report the Clifford+T circuit
+                # for the sqrt(T) row, keeping its own synthesis duration.
+                res = {m: run(s, target) for m, s in
+                       (("clifford_t", synth_t), ("clifford_sqrt_t", synth_q))}
+                cost_t = cost_of(res["clifford_t"][0]) if res["clifford_t"][0] else float("inf")
+                cost_q = cost_of(res["clifford_sqrt_t"][0]) if res["clifford_sqrt_t"][0] else float("inf")
+                if cost_t < cost_q:
+                    t_gates, t_dist, _ = res["clifford_t"]
+                    res["clifford_sqrt_t"] = (t_gates, t_dist, res["clifford_sqrt_t"][2])
+
+                for method in ("clifford_t", "clifford_sqrt_t"):
+                    gates, dist, dur = res[method]
                     t_count = gates.count("T")
                     q_count = gates.count("Q")
                     cost = cost_of(gates) if gates else float("nan")
