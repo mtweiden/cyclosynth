@@ -27,7 +27,9 @@ pgo/cyclosynth.profdata
 !README.md
 !AGENTS.md
 
-# Local-only: run artifacts, analysis scripts, generated docs (kept on disk, out of git)
+# Local-only: run artifacts and generated docs (kept on disk, out of git).
+# The experiment/plotting scripts ARE tracked (reproducibility); only their
+# generated data/figures/logs under scripts/data/ stay local.
 bench_logs/
-scripts/
+scripts/data/
 docs/
