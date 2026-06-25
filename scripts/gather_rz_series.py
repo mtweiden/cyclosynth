@@ -12,12 +12,13 @@ import csv
 import sys
 import numpy as np
 import cyclosynth
-from comparison_gridsynth import grid_rz, rz
+from gridsynth_real import grid_rz, rz
 
 OUT_CSV = "scripts/data/cost_vs_eps_rz.csv"
 EPSS = [1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]
-# Capped at deep eps where sqrt(T) + gridsynth are slow (~20 s/target).
-N_BY_EPS = {1e-3: 120, 1e-4: 120, 1e-5: 120, 1e-6: 80, 1e-7: 60, 1e-8: 40}
+# 500 per eps to match the U3 panel. Deep eps is slow (~20 s/target), so this
+# is a long run -- background it.
+N_BY_EPS = {e: 500 for e in EPSS}
 
 
 def cyc_T(U, eps):
