@@ -21,7 +21,7 @@ import _plotstyle  # noqa: E402
 _plotstyle.apply()
 plt.rcParams.update({"axes.labelsize": 16, "xtick.labelsize": 13, "ytick.labelsize": 13})
 
-CSV = "scripts/data/comparison_sqrtt_data.csv"
+CSV = "scripts/data/u3.csv"
 OUT = "scripts/data/cost_weight_sweep.pdf"  # vector; .svg also written
 C_REF = 3.0
 
@@ -30,7 +30,7 @@ byk = collections.defaultdict(dict)
 for r in rows:
     if r["success"] != "True":
         continue
-    byk[(r["epsilon"], r["alpha"], r["beta"], r["gamma"])][r["method"]] = r
+    byk[(r["epsilon"], r["alpha"], r["beta"], r["gamma"])][r["synthesizer"]] = r
 
 epsilons = sorted({k[0] for k in byk}, key=lambda e: -float(e))
 
@@ -38,12 +38,12 @@ epsilons = sorted({k[0] for k in byk}, key=lambda e: -float(e))
 def med_rho(eps, c):
     rr = []
     for k, d in byk.items():
-        if k[0] != eps or "clifford_t" not in d or "clifford_sqrt_t" not in d:
+        if k[0] != eps or "cyclosynth_t" not in d or "cyclosynth_sqrt_t" not in d:
             continue
-        tT = int(d["clifford_t"]["t_count"])
-        qT = int(d["clifford_t"]["q_count"])
-        tQ = int(d["clifford_sqrt_t"]["t_count"])
-        qQ = int(d["clifford_sqrt_t"]["q_count"])
+        tT = int(d["cyclosynth_t"]["t_count"])
+        qT = int(d["cyclosynth_t"]["q_count"])
+        tQ = int(d["cyclosynth_sqrt_t"]["t_count"])
+        qQ = int(d["cyclosynth_sqrt_t"]["q_count"])
         den = tT + c * qT
         if den > 0:
             rr.append((tQ + c * qQ) / den)

@@ -1,16 +1,13 @@
-"""Grouped-violin cost comparison, Clifford+T vs Clifford+sqrt(T).
+"""Grouped-violin cost comparison, Clifford+T vs Clifford+sqrt(T) (Fig 2).
 
 For each precision epsilon, two full violins show the distribution of per-target
-cost = T_count + 3*sqrt(T)_count over the 500 Haar-random targets at that
+cost = T_count + 3*sqrt(T)_count over the Haar-random U3 targets at that
 epsilon: Clifford+T (blue, left) and Clifford+sqrt(T) (reddish-purple, right).
-The sqrt(T) cost is floored at the Clifford+T cost (the synthesizer's floor
-guarantee), so every sqrt(T) value is <= its paired T value.
+The sqrt(T) cost is floored at the Clifford+T cost, so every sqrt(T) value is
+<= its paired T value.
 
-Targets are sampled independently per epsilon (500 fresh Haar targets each),
-and the comparison is paired *within* each epsilon bucket -- so the figure
-makes no cross-epsilon per-target claim.
-
-Output: scripts/data/comparison_sqrtt_violin.{pdf,svg}  (vector)
+Reads the long-format gather (scripts/data/u3.csv), filtering to the two
+cyclosynth synthesizers. Output: scripts/data/cost_violin.{pdf,svg} (vector).
 """
 import csv
 import os
@@ -25,8 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _plotstyle  # noqa: E402
 _plotstyle.apply()
 
-CSV_PATH = "scripts/data/comparison_sqrtt_data.csv"
-OUT_PATH = "scripts/data/comparison_sqrtt_violin.pdf"  # vector; .svg also written
+CSV_PATH = "scripts/data/u3.csv"
+OUT_PATH = "scripts/data/cost_violin.pdf"  # vector; .svg also written
 
 Q_WEIGHT = 3
 COLOR_T = _plotstyle.CLIFFORD_T        # blue (shared)
@@ -45,14 +42,14 @@ def load(path):
             if row["success"] != "True":
                 continue
             cost = int(row["t_count"]) + Q_WEIGHT * int(row["q_count"])
-            by[float(row["epsilon"])][int(row["trial"])][row["method"]] = cost
+            by[float(row["epsilon"])][int(row["trial"])][row["synthesizer"]] = cost
     out = {}
     for eps, trials in by.items():
         pairs = []
         for d in trials.values():
-            if "clifford_t" in d and "clifford_sqrt_t" in d:
-                t = d["clifford_t"]
-                q = min(d["clifford_sqrt_t"], t)   # floor guarantee
+            if "cyclosynth_t" in d and "cyclosynth_sqrt_t" in d:
+                t = d["cyclosynth_t"]
+                q = min(d["cyclosynth_sqrt_t"], t)   # floor guarantee
                 pairs.append((t, q))
         out[eps] = pairs
     return out
@@ -78,8 +75,6 @@ def main():
     data = load(CSV_PATH)
     epsilons = sorted(data.keys(), reverse=True)   # 1e-3 leftmost
 
-    # Width matches the full-width Fig. 3 (both placed at \textwidth) so the
-    # on-page text size is identical across figures; compressed vertically.
     fig, ax = plt.subplots(figsize=(9.4, 3.5))
     gmin = min(min(q for _, q in data[e]) for e in epsilons)
     gmax = max(max(t for t, _ in data[e]) for e in epsilons)
@@ -91,9 +86,8 @@ def main():
         violin(ax, ts, j - OFFSET, COLOR_T)
         violin(ax, qs, j + OFFSET, COLOR_Q)
 
-    # Annotations in a tidy row below the violins (median reduction +
-    # strictly-cheaper count), placed in axes-fraction y so they never
-    # collide with the violins -- which run off the top at deep epsilon.
+    # Annotations below the violins (median reduction + strictly-cheaper count),
+    # in axes-fraction y so they never collide with the violins.
     trans = blended_transform_factory(ax.transData, ax.transAxes)
     for j, eps in enumerate(epsilons):
         pairs = data[eps]
@@ -110,7 +104,6 @@ def main():
     ax.set_ylabel(r"Cost ($T$ states)")
     ax.grid(axis="y", alpha=0.25)
     ax.set_xlim(-0.6, len(epsilons) - 0.4)
-    # Headroom at the bottom for the annotation row.
     ax.set_ylim(gmin - 0.16 * (gmax - gmin), gmax + 0.04 * (gmax - gmin))
 
     handles = [
