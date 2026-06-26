@@ -24,8 +24,13 @@ import multiprocessing as mp
 import os
 from time import perf_counter
 
+import sys
+
 import numpy as np
 import cyclosynth
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _cost  # block-model cost (sqrt(T)-class blocks, T^{3/2}=R)
 
 # ─── Config (env-overridable for smoke tests) ────────────────────────────────
 SEED = 42
@@ -83,8 +88,9 @@ def angles_for(eps, n):
     return alpha, beta, gamma
 
 
-def cost_of(t_count, q_count):
-    return t_count + Q_WEIGHT * q_count
+def cost_of(gates):
+    """Block-model resource cost in T states (sqrt(T)-class blocks, T^{3/2}=R)."""
+    return _cost.block_cost(gates, Q_WEIGHT)
 
 
 def run_cyc(synth, target):
@@ -179,8 +185,8 @@ def main():
                 # failed relative to) Clifford+T, report the T circuit for the
                 # sqrt(T) row, keeping the sqrt(T) synthesis duration.
                 ct, cq = rows["cyclosynth_t"], rows["cyclosynth_sqrt_t"]
-                c_t = cost_of(ct["t_count"], ct["q_count"]) if ct["gates"] else float("inf")
-                c_q = cost_of(cq["t_count"], cq["q_count"]) if cq["gates"] else float("inf")
+                c_t = cost_of(ct["gates"]) if ct["gates"] else float("inf")
+                c_q = cost_of(cq["gates"]) if cq["gates"] else float("inf")
                 if c_t < c_q:
                     rows["cyclosynth_sqrt_t"] = dict(ct, duration_ms=cq["duration_ms"])
 
@@ -188,7 +194,7 @@ def main():
                     d = rows.get(name)
                     if d is None:
                         continue
-                    cost = cost_of(d["t_count"], d["q_count"]) if d["gates"] else float("nan")
+                    cost = cost_of(d["gates"]) if d["gates"] else float("nan")
                     w.writerow([f"{eps:.0e}", name, trial, alpha, beta, gamma,
                                 d["t_count"], d["q_count"], f"{cost:.1f}",
                                 f"{d['distance']:.6e}", f"{d['duration_ms']:.3f}",
