@@ -1,11 +1,14 @@
 //! Certified cost-vs-lde lower bound for Clifford+√T circuits.
 //!
-//! `L(k) = cost_lb_half_units(k)` lower-bounds the weighted gate cost
-//! (half-units `2·T_count + q_cost_x2·Q_count`, default `q_cost_x2 = 6`)
-//! of any Clifford+√T unitary with reduced denominator exponent (lde)
-//! `k`. It powers the certified search cutoff and the sound prefix
-//! prune. Monotone non-decreasing in `k`, which the cutoff relies on.
-//! The derivation lives on [`cost_lb_half_units`].
+//! `L(k) = cost_lb_half_units(k)` lower-bounds the block-model cost
+//! (half-units; a √T-class block costs `q_cost_x2`, default 6, a T-class
+//! block 2, Cliffords 0 — see `gates_cost`) of any Clifford+√T unitary
+//! with reduced denominator exponent (lde) `k`. It powers the certified
+//! search cutoff and the sound prefix prune. Monotone non-decreasing in
+//! `k`, which the cutoff relies on. The derivation lives on
+//! [`cost_lb_half_units`]. The bound is unchanged from the old per-gate
+//! `2t+6q` model: both rest on `cost ≥ 2N`, and the block model removes
+//! only slack above `2N` (absorbing a T into a √T block).
 
 /// Maximum reduced lde over the single-qubit Clifford group in the
 /// `U2Q` representation (⟨H, S⟩ closure, incl. phases): 1 under full
@@ -15,23 +18,30 @@ pub const CLIFFORD_LDE_MAX: u32 = 1;
 /// Per-x/y-syllable lde contribution. `tests::syllable_lde_constants`.
 pub const XY_SYLLABLE_LDE: u32 = 2;
 
-/// Minimum half-unit cost over the 9 syllables (the T syllable costs 2;
-/// Q costs `q_cost_x2`, default 6; TQ costs 2 + that).
+/// Minimum block-model cost (half-units) of a non-Clifford syllable: the
+/// T syllable is a T-class block costing 2 (a √T-class syllable costs
+/// `q_cost_x2`, default 6; `TQ = T^{3/2}` is a single √T-class block, not
+/// 2 + 6). Used as the per-x/y-syllable cost floor.
 const MIN_SYLLABLE_COST_HALF_UNITS: usize = 2;
 
-/// Certified lower bound, in half-units, on the weighted cost of any
-/// Clifford+√T unitary with reduced lde `k`:
+/// Certified lower bound, in half-units, on the block-model cost of any
+/// Clifford+√T unitary with reduced lde `k`. Writing n_R for its number of
+/// √T-class diagonal blocks and n_2 for its T-class blocks:
 ///
-///   c̃ = 2t + q_cost_x2·q ≥ 2t + 4q ≥ 2·(t + 2q) ≥ 2·N ≥ 2·(2k − 3) = 4k − 6,
-///   (sound for any q_cost_x2 ≥ 4; default 6),
+///   c̃ = q_cost_x2·n_R + 2·n_2 ≥ 4·n_R + 2·n_2 = 2·(2·n_R + n_2) ≥ 2·N
+///       ≥ 2·(2k − 3) = 4k − 6,   (sound for any q_cost_x2 ≥ 4; default 6),
 ///
 /// where N is the reduced Bloch/SO(3) denominator exponent:
-///   * `t + 2q ≥ N` — Bloch-exponent subadditivity with per-gate
-///     constants N(T) = 1, N(Q) = 2, N(Clifford) = 0, holding for every
-///     circuit;
-///   * `N ≥ 2k − 3` — adjugate argument + √2/λ conversion lemma
-///     tight with deficit 3 at every k ≥ 3.
+///   * `2·n_R + n_2 ≥ N` — Bloch-exponent subadditivity over the blocks'
+///     net rotations, with N(√T-class) = 2, N(T-class) = 1, N(Clifford) = 0
+///     (an odd multiple of π/8 has Bloch exponent 2; an odd multiple of
+///     π/4 has 1), holding for every circuit;
+///   * `N ≥ 2k − 3` — adjugate argument + √2/λ conversion lemma, tight
+///     with deficit 3 at every k ≥ 3.
 ///
+/// This is the same bound as the old per-gate `2t+6q` model: both reduce
+/// to c̃ ≥ 2N. A √T-class block costs 6 ≥ 2·N(=2), a T-class block 2 = 2·N(=1),
+/// so absorbing a T into a √T block (T^{3/2}) removes only slack above 2N.
 /// The syllable-count floor (≈ k − 1, the `max` arm) only binds at k ≤ 2.
 pub fn cost_lb_half_units(k: u32) -> usize {
     let excess = k.saturating_sub(CLIFFORD_LDE_MAX);
@@ -42,18 +52,18 @@ pub fn cost_lb_half_units(k: u32) -> usize {
     syllable_floor.max(slope2_floor)
 }
 
-/// Per-det-phase-class cost lower bound, in half-units. Q syllables
-/// contribute ζ₁₆ to det(U), T contributes ζ₁₆², Cliffords powers of
-/// ζ₁₆⁴ — but a circuit matches a target only up to a global phase
-/// ζ₁₆ʲ, which shifts the det class by 2j. Only the parity of `d`
-/// survives, so an odd class forces ≥ 1 Q gate; even classes give nothing.
-/// Callers add this to a prefix's own cost as a sound suffix lower bound. A
-/// stronger mod-4 bound is NOT sound.
+/// Per-det-phase-class cost lower bound, in half-units. A √T-class block
+/// contributes an odd power of ζ₁₆ to det(U), a T-class block an even
+/// power, Cliffords powers of ζ₁₆⁴ — but a circuit matches a target only
+/// up to a global phase ζ₁₆ʲ, which shifts the det class by 2j. Only the
+/// parity of `d` survives, so an odd class forces ≥ 1 √T-class block;
+/// even classes give nothing. Callers add this to a prefix's own cost as
+/// a sound suffix lower bound. A stronger mod-4 bound is NOT sound.
 ///
-/// An odd class forces ≥ 1 Q gate, whose cost is exactly `q_cost_x2`
-/// half-units; even classes give nothing. Passing `q_cost_x2` (rather than a
-/// hard-coded constant) keeps this sound under any Q weight — a hard-coded `7`
-/// would over-claim once the weight drops below 3.5.
+/// An odd class forces ≥ 1 √T-class block, whose cost is exactly
+/// `q_cost_x2` half-units; even classes give nothing. Passing `q_cost_x2`
+/// (rather than a hard-coded constant) keeps this sound under any √T weight
+/// — a hard-coded `7` would over-claim once the weight drops below 3.5.
 pub fn class_cost_lb_half_units(d: u32, q_cost_x2: usize) -> usize {
     if d % 2 == 1 { q_cost_x2 } else { 0 }
 }
@@ -162,7 +172,7 @@ mod tests {
     /// congruence derivation disagree.
     #[test]
     fn class_bound_holds_on_brute_shells() {
-        use crate::synthesis::clifford_sqrt_t::{det_phase_of, solution_to_u2q};
+        use crate::synthesis::clifford_sqrt_t::{det_phase_of, gates_cost, solution_to_u2q};
         use crate::synthesis::decomposer::BlochDecomposer;
         use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
 
@@ -172,17 +182,18 @@ mod tests {
                 let u = solution_to_u2q(sol, k);
                 let d = det_phase_of(&u.to_float());
                 let gates = BlochDecomposer.decompose(&u);
-                let t = gates.chars().filter(|&c| c == 'T').count();
                 let q = gates.chars().filter(|&c| c == 'Q').count();
                 assert_eq!(
                     q % 2,
                     (d as usize) % 2,
-                    "Q-parity congruence violated at k={k}: d={d}, t={t}, q={q}, gates={gates}"
+                    "Q-parity congruence violated at k={k}: d={d}, q={q}, gates={gates}"
                 );
+                // Realized cost under the block model (gates_cost), not 2t+6q:
+                // an odd class must still pay >= one √T-class block.
+                let cost = gates_cost(&gates, 6);
                 assert!(
-                    2 * t + 6 * q >= class_cost_lb_half_units(d, 6),
-                    "class bound violated at k={k}: d={d}, cost={}",
-                    2 * t + 6 * q
+                    cost >= class_cost_lb_half_units(d, 6),
+                    "class bound violated at k={k}: d={d}, cost={cost}, gates={gates}"
                 );
                 checked += 1;
             }
@@ -196,7 +207,7 @@ mod tests {
     /// fix a convention), so this validates soundness, not exactness.
     #[test]
     fn cost_bound_below_brute_minimum_small_k() {
-        use crate::synthesis::clifford_sqrt_t::solution_to_u2q;
+        use crate::synthesis::clifford_sqrt_t::{gates_cost, solution_to_u2q};
         use crate::synthesis::decomposer::BlochDecomposer;
         use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
 
@@ -209,9 +220,7 @@ mod tests {
                     continue; // completion reduced below the shell lde
                 }
                 let gates = BlochDecomposer.decompose(&u);
-                let t = gates.chars().filter(|&c| c == 'T').count();
-                let q = gates.chars().filter(|&c| c == 'Q').count();
-                min_cost = min_cost.min(2 * t + 6 * q);
+                min_cost = min_cost.min(gates_cost(&gates, 6));
             }
             if min_cost != usize::MAX {
                 assert!(

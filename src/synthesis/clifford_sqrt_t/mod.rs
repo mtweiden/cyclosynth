@@ -228,7 +228,7 @@ fn default_inner_det_phase_filter(m: u32) -> Vec<u32> {
 /// Hence `TQ = QT = Q³ = T^{3/2} = Q†S` costs 3 (not 4), and `QQ = T` costs
 /// 1: a `T` sharing a block with a `√T` is absorbed into one √T-class gate.
 /// Integer so prefix-prune comparisons and atomic CAS stay exact.
-fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
+pub(crate) fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
     gates
         .split(|c| c == 'H' || c == 'X' || c == 'Y')
         .map(|block| {
