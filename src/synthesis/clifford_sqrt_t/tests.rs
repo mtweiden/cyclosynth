@@ -6,6 +6,37 @@ mod probes;
     use num_complex::Complex64;
     use std::f64::consts::PI;
 
+    /// `gates_cost` charges per diagonal block (split on off-diagonal
+    /// H/X/Y) by the net Q-power class, not per gate. `q_cost_x2 = 6` ⇒
+    /// √T-class block = 6 half-units (3 T), T-class = 2 (1 T), Clifford = 0.
+    #[test]
+    fn gates_cost_block_model() {
+        // Single gates.
+        assert_eq!(gates_cost("Q", 6), 6); // √T
+        assert_eq!(gates_cost("T", 6), 2); // T
+        assert_eq!(gates_cost("S", 6), 0); // Clifford
+        assert_eq!(gates_cost("", 6), 0);
+        assert_eq!(gates_cost("HHH", 6), 0);
+        // T^{3/2} = TQ = QT = Q³ = Q†S: one √T-class injection, not T + √T.
+        assert_eq!(gates_cost("TQ", 6), 6);
+        assert_eq!(gates_cost("QT", 6), 6);
+        // QQ = T (T-class), TT = S (Clifford) — composed within a block.
+        assert_eq!(gates_cost("QQ", 6), 2);
+        assert_eq!(gates_cost("TT", 6), 0);
+        // H/X/Y break blocks, so each √T is then charged on its own.
+        assert_eq!(gates_cost("QHQ", 6), 12);
+        assert_eq!(gates_cost("TQHQT", 6), 12);
+        assert_eq!(gates_cost("QXT", 6), 8); // Q | T = 6 + 2
+        assert_eq!(gates_cost("QYT", 6), 8);
+        // S, Z add multiples of 4, so never change a block's class.
+        assert_eq!(gates_cost("QSZ", 6), 6); // √T-class
+        assert_eq!(gates_cost("TS", 6), 2); // T-class
+        // q_cost_x2 reweights only the √T-class blocks.
+        assert_eq!(gates_cost("Q", 7), 7);
+        assert_eq!(gates_cost("TQ", 7), 7);
+        assert_eq!(gates_cost("T", 7), 2);
+    }
+
     fn complex_target(matrix: [[Complex64; 2]; 2]) -> Mat2 {
         matrix
     }

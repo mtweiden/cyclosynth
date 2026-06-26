@@ -215,12 +215,40 @@ fn default_inner_det_phase_filter(m: u32) -> Vec<u32> {
     }
 }
 
-/// Resource cost of a decomposed Clifford+√T gate string in half-units
-/// of a T gate: `2·T + q_cost_x2·Q` (default `q_cost_x2 = 6` ⇒ `T + 3·Q`).
+/// Resource cost of a decomposed Clifford+√T gate string in half-units of
+/// a T gate. Cost is charged per *diagonal block* — a maximal run of gates
+/// with no off-diagonal `H`/`X`/`Y` between them — not per gate. The gates
+/// of a block commute and compose to a single net Z-rotation `Q^k` (with
+/// `Q = √T`), realizable by one magic-state injection of that rotation's
+/// class. Classifying by `k mod 4` (each `Q` adds 1, `T` adds 2, while
+/// `S`, `Z` add multiples of 4 and so never change the class):
+///   - `k` odd        → √T-class, one √T injection → `q_cost_x2` (default 6 = 3 T)
+///   - `k ≡ 2 (mod 4)` → T-class, one T injection   → `2` (= 1 T)
+///   - `k ≡ 0 (mod 4)` → Clifford                    → `0`
+/// Hence `TQ = QT = Q³ = T^{3/2} = Q†S` costs 3 (not 4), and `QQ = T` costs
+/// 1: a `T` sharing a block with a `√T` is absorbed into one √T-class gate.
 /// Integer so prefix-prune comparisons and atomic CAS stay exact.
 fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
-    let (t, q) = gates_tq(gates);
-    2 * t + q_cost_x2 * q
+    gates
+        .split(|c| c == 'H' || c == 'X' || c == 'Y')
+        .map(|block| {
+            let k: usize = block
+                .chars()
+                .map(|c| match c {
+                    'Q' => 1,
+                    'T' => 2,
+                    'S' => 4,
+                    'Z' => 8,
+                    _ => 0,
+                })
+                .sum();
+            match k % 4 {
+                1 | 3 => q_cost_x2,
+                2 => 2,
+                _ => 0,
+            }
+        })
+        .sum()
 }
 
 /// `(T_count, Q_count)` of a decomposed gate string.

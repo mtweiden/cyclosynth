@@ -1,11 +1,15 @@
-"""Cost-weight sensitivity: median cost ratio rho vs the sqrt(T)-to-T weight c.
+"""Cost-weight sensitivity: median cost ratio rho vs the sqrt(T) price c.
 
-For each target, rho(c) = (t_sqrtT + c*q_sqrtT)/(t_T + c*q_T) with q_T=0, so the
-denominator is just t_T. We plot the median over 500 paired Haar targets per
-precision, UNFLOORED (no min with T), so the crossover c* where median rho=1 is
-the honest weight above which the raw sqrt(T) circuit stops being cheaper.
+Under the block cost model a circuit's cost in T states is
+n_Tclass + c * n_sqrtTclass (T-class blocks cost 1, sqrt(T)-class blocks cost
+the sqrt(T) price c; see scripts/_cost.py). Per paired target,
+rho(c) = (n_Tclass^Q + c*n_R^Q)/(n_Tclass^T + c*n_R^T), with n_R^T = 0 for the
+Clifford+T circuit so its denominator is just its T-class count. We plot the
+median over 500 paired Haar targets per precision, UNFLOORED (no min with T),
+so the crossover c* where median rho=1 is the honest sqrt(T) price above which
+the raw sqrt(T) circuit stops being cheaper.
 
-Output: scripts/data/cost_weight_sweep.png
+Output: scripts/data/cost_weight_sweep.pdf
 """
 import csv
 import collections
@@ -18,6 +22,7 @@ import matplotlib.colors as mcolors
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _plotstyle  # noqa: E402
+import _cost       # noqa: E402  block-model cost (sqrt(T)-class blocks, T^{3/2}=R)
 _plotstyle.apply()
 plt.rcParams.update({"axes.labelsize": 16, "xtick.labelsize": 13, "ytick.labelsize": 13})
 
@@ -40,13 +45,11 @@ def med_rho(eps, c):
     for k, d in byk.items():
         if k[0] != eps or "cyclosynth_t" not in d or "cyclosynth_sqrt_t" not in d:
             continue
-        tT = int(d["cyclosynth_t"]["t_count"])
-        qT = int(d["cyclosynth_t"]["q_count"])
-        tQ = int(d["cyclosynth_sqrt_t"]["t_count"])
-        qQ = int(d["cyclosynth_sqrt_t"]["q_count"])
-        den = tT + c * qT
+        ntT, nrT = _cost.block_classes(d["cyclosynth_t"]["gates"])
+        ntQ, nrQ = _cost.block_classes(d["cyclosynth_sqrt_t"]["gates"])
+        den = ntT + c * nrT
         if den > 0:
-            rr.append((tQ + c * qQ) / den)
+            rr.append((ntQ + c * nrQ) / den)
     return statistics.median(rr)
 
 
@@ -74,8 +77,9 @@ ax.axhspan(0.0, 1.0, color="tab:green", alpha=0.07, zorder=0)
 ax.axhspan(1.0, 2.0, color="tab:red", alpha=0.07, zorder=0)
 # Crossover band: the range of c* across precisions.
 ax.axvspan(min(cstars), max(cstars), color="0.5", alpha=0.12, zorder=0)
-# Extrapolated asymptote of c* as eps -> 0  [ (10-3)/2 ~ 3.5 ].
-C_ASYMP = 3.5
+# Extrapolated asymptote of c* as eps -> 0 under the block cost model
+# [ per-decade n_Tclass^T~10, n_Tclass^Q~2, n_R^Q~2 -> (10-2)/2 ~ 4.0; fit 4.15 ].
+C_ASYMP = 4.0
 ax.axvline(C_ASYMP, color="darkgreen", lw=1.5, ls=(0, (5, 2)), zorder=1)
 
 cmap = plt.cm.plasma(np.linspace(0.05, 0.85, len(epsilons)))
@@ -101,7 +105,7 @@ ax.text(1.75, 1.035, r"$\sqrt{T}$ more" + "\nexpensive", color="tab:red",
 # Short vertical-line labels at the top (details in the caption).
 ax.text(C_REF - 0.06, 1.43, r"$c=3$", color="black",
         fontsize=14, rotation=90, va="top", ha="right")
-ax.text(C_ASYMP + 0.06, 1.43, r"$c^\star\!\to\!3.5$",
+ax.text(C_ASYMP + 0.06, 1.43, r"$c^\star\!\to\!4.0$",
         color="darkgreen", fontsize=14, rotation=90, va="top", ha="left")
 ax.text(np.mean(cstars), 0.53, "measured\ncrossover\nrange", color="0.3",
         fontsize=14, ha="center", va="bottom", ma="center")

@@ -20,12 +20,13 @@ from matplotlib.transforms import blended_transform_factory
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _plotstyle  # noqa: E402
+import _cost       # noqa: E402  block-model cost (sqrt(T)-class blocks, T^{3/2}=R)
 _plotstyle.apply()
 
 CSV_PATH = "scripts/data/u3.csv"
 OUT_PATH = "scripts/data/cost_violin.pdf"  # vector; .svg also written
 
-Q_WEIGHT = 3
+Q_WEIGHT = 3  # sqrt(T) price in T states (block-model sqrt(T)-class cost)
 COLOR_T = _plotstyle.CLIFFORD_T        # blue (shared)
 COLOR_Q = _plotstyle.CLIFFORD_SQRT_T   # reddish-purple (shared)
 MEAN_COLOR = "0.95"                    # light grey / almost white
@@ -41,7 +42,7 @@ def load(path):
         for row in csv.DictReader(f):
             if row["success"] != "True":
                 continue
-            cost = int(row["t_count"]) + Q_WEIGHT * int(row["q_count"])
+            cost = _cost.block_cost(row["gates"], Q_WEIGHT)
             by[float(row["epsilon"])][int(row["trial"])][row["synthesizer"]] = cost
     out = {}
     for eps, trials in by.items():
