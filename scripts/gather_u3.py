@@ -19,9 +19,10 @@ Cost: n_T + 3 n_sqrt(T) (T states).  Output: scripts/data/u3.csv
 Smoke test: GATHER_N=2 GATHER_EPS=1e-3 python3 scripts/gather_u3.py
 """
 import csv
+import hashlib
+import multiprocessing as mp
 import os
 from time import perf_counter
-from random import random, seed as set_seed
 
 import numpy as np
 import cyclosynth
@@ -34,6 +35,17 @@ N_TRIALS = int(os.environ.get("GATHER_N", "500"))
 _eps_env = os.environ.get("GATHER_EPS")
 EPSILONS = ([float(x) for x in _eps_env.split(",")] if _eps_env
             else [1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8])
+# Guard on the cyclosynth searches (esp. Clifford+sqrt(T) optimize_cost), which
+# are expensive at deep eps and can occasionally take far longer than median on
+# above-median-depth targets. See scripts/gather_rz.py for the full rationale.
+#  1. deadline_ms (sqrt(T) only): README knob; 2000 chosen on the rz sweep
+#     (cost plateaus, time keeps climbing past it). Only bites at deep eps.
+#  2. CYC_TIMEOUT_S: hard guarantee. Each cyclosynth call runs in a spawn child
+#     process the parent SIGKILLs on overrun (a killed call floors to the
+#     Clifford+T cost via existing logic). 120s clears observed slow targets
+#     with margin while bounding any genuine hang.
+SQRT_T_DEADLINE_MS = int(os.environ.get("GATHER_SQRT_T_DEADLINE_MS", "2000"))
+CYC_TIMEOUT_S = float(os.environ.get("GATHER_CYC_TIMEOUT_S", "120"))
 
 # ─── gridsynth gate: skip its rows entirely if the binary isn't installed ────
 try:
@@ -57,6 +69,20 @@ def ry(t):
     return np.array([[c, -s], [s, c]], dtype=np.complex128)
 
 
+def angles_for(eps, n):
+    """The n Haar-random (alpha, beta, gamma) Euler angles for a given epsilon,
+    seeded from (SEED, eps) so the sample is independent of which epsilons run.
+    A full sweep and a `GATHER_EPS=1e-8` rerun therefore hit the *same* targets
+    at 1e-8 (lets us re-run one epsilon on identical targets and merge). alpha,
+    gamma uniform; beta sine-weighted via arccos(1-2u) for Haar SU(2)."""
+    key = int.from_bytes(hashlib.sha256(f"{eps:.0e}".encode()).digest()[:8], "big")
+    rng = np.random.default_rng([SEED, key])
+    alpha = rng.uniform(0.0, 2 * np.pi, n)
+    gamma = rng.uniform(0.0, 2 * np.pi, n)
+    beta = np.arccos(1.0 - 2.0 * rng.uniform(0.0, 1.0, n))
+    return alpha, beta, gamma
+
+
 def cost_of(t_count, q_count):
     return t_count + Q_WEIGHT * q_count
 
@@ -78,6 +104,42 @@ def run_cyc(synth, target):
                     duration_ms=(perf_counter() - t0) * 1000.0, gates="")
 
 
+# Hard wall-clock guard for cyclosynth calls. "spawn" (not "fork") because
+# cyclosynth runs a rayon threadpool and forking a multithreaded native process
+# is unsafe; spawn gives each call a clean interpreter.
+_CTX = mp.get_context("spawn")
+
+
+def _cyc_worker(q, synth_kwargs, target):
+    synth = cyclosynth.Synthesizer(**synth_kwargs)
+    q.put(run_cyc(synth, target))
+
+
+def run_cyc_timeout(synth_kwargs, target, timeout_s):
+    """run_cyc in a child process, SIGKILLed if it overruns timeout_s. A killed
+    call returns a failed (inf-distance, empty-gates) row, as run_cyc does on
+    error, so downstream handling is unchanged."""
+    t0 = perf_counter()
+    q = _CTX.Queue()
+    p = _CTX.Process(target=_cyc_worker, args=(q, synth_kwargs, target))
+    p.start()
+    p.join(timeout_s)
+    if p.is_alive():
+        p.terminate()
+        p.join(5)
+        if p.is_alive():
+            p.kill()
+            p.join()
+        return dict(t_count=0, q_count=0, distance=float("inf"),
+                    duration_ms=(perf_counter() - t0) * 1000.0, gates="",
+                    timed_out=True)
+    try:
+        return q.get(timeout=5)
+    except Exception:                                     # noqa: BLE001
+        return dict(t_count=0, q_count=0, distance=float("inf"),
+                    duration_ms=(perf_counter() - t0) * 1000.0, gates="")
+
+
 def run_grid(a, b, g, eps):
     t0 = perf_counter()
     try:
@@ -92,7 +154,6 @@ def run_grid(a, b, g, eps):
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 def main():
-    set_seed(SEED)
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w", newline="") as f:
         w = csv.writer(f)
@@ -101,18 +162,16 @@ def main():
                     "success", "gates"])
         for eps in EPSILONS:
             print(f"\n=== eps = {eps:.0e} ===", flush=True)
-            synth_t = cyclosynth.Synthesizer(epsilon=eps)
-            synth_q = cyclosynth.Synthesizer(epsilon=eps, sqrt_t=True,
-                                             optimize_cost=True)
+            kw_t = dict(epsilon=eps)
+            kw_q = dict(epsilon=eps, sqrt_t=True, optimize_cost=True,
+                        deadline_ms=SQRT_T_DEADLINE_MS)
+            alphas, betas, gammas = angles_for(eps, N_TRIALS)
             for trial in range(N_TRIALS):
-                # Haar-random SU(2): alpha/gamma uniform, beta sine-weighted.
-                alpha = 2 * np.pi * random()
-                gamma = 2 * np.pi * random()
-                beta = np.arccos(1.0 - 2.0 * random())
+                alpha, beta, gamma = float(alphas[trial]), float(betas[trial]), float(gammas[trial])
                 target = rz(alpha) @ ry(beta) @ rz(gamma)
 
-                rows = {"cyclosynth_t": run_cyc(synth_t, target),
-                        "cyclosynth_sqrt_t": run_cyc(synth_q, target)}
+                rows = {"cyclosynth_t": run_cyc_timeout(kw_t, target, CYC_TIMEOUT_S),
+                        "cyclosynth_sqrt_t": run_cyc_timeout(kw_q, target, CYC_TIMEOUT_S)}
                 if HAVE_GRID:
                     rows["gridsynth"] = run_grid(alpha, beta, gamma, eps)
 
