@@ -189,8 +189,9 @@ impl Synthesizer {
         matches!(&self.inner, Backend::Q(_))
     }
 
-    /// Weight of a Q (√T) gate in the cost model `T_count + q_weight·Q_count`.
-    /// Canonical 3; reflects a custom `with_q_cost` on the √T backend.
+    /// Cost in `T` states of one √T-class syllable in the block cost model
+    /// (a T-class syllable costs 1). Canonical 3; reflects a custom
+    /// `with_q_cost` on the √T backend.
     pub fn q_weight(&self) -> f64 {
         match &self.inner {
             Backend::T(_) => 3.0,
@@ -242,10 +243,18 @@ impl PySynthResult {
         self.gates.as_deref().map_or(0, |g| g.matches('Q').count())
     }
 
-    /// The minimized cost: `t_count + q_weight·q_count` (q_weight 3 default).
+    /// The minimized resource cost, in `T` states. This is the block-model
+    /// cost the optimizer minimizes: gates are charged per diagonal syllable
+    /// by their net √T-power class (a √T-class syllable costs `q_weight`, a
+    /// T-class syllable 1, Cliffords 0), so a `T` that composes with a `√T`
+    /// into `T^{3/2}=√T†S` is one √T-class injection. It can therefore be
+    /// *below* `t_count + q_weight·q_count`. (`q_weight` 3 default.)
     #[getter]
     fn cost(&self) -> f64 {
-        self.t_count() as f64 + self.q_weight * self.q_count() as f64
+        let q_cost_x2 = (2.0 * self.q_weight).round() as usize;
+        self.gates.as_deref().map_or(0.0, |g| {
+            crate::synthesis::clifford_sqrt_t::gates_cost(g, q_cost_x2) as f64 / 2.0
+        })
     }
 
     /// `True` if synthesis produced a circuit, so `if result:` works.
