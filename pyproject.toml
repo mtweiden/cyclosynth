@@ -7,10 +7,10 @@ name = "cyclosynth"
 version = "0.1.0"
 description = "Optimal-T-count Clifford+T synthesis for single-qubit unitaries."
 requires-python = ">=3.8"
+license = { file = "LICENSE" }
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
-    "License :: OSI Approved :: MIT License",
 ]
 
 [tool.maturin]
