@@ -137,13 +137,13 @@ def main():
     # matches the final aspect; not in the legend).
     if rz is not None:
         add_ref_lines(ax1, [
-            (3.0, r"$3\log_2(1/\varepsilon)$", 5.4, 11),
-            (2.4, r"$2.4\log_2(1/\varepsilon)$", 5.4, -13),
+            (3.0, r"$3\,\log_2(1/\varepsilon)$", 5.4, 11),
+            (2.4, r"$2.4\,\log_2(1/\varepsilon)$", 5.4, -20),
         ])
     add_ref_lines(ax2, [
-        (9.0, r"$9\log_2(1/\varepsilon)$", 4.6, 12),
-        (3.0, r"$3\log_2(1/\varepsilon)$", 6.6, 12),
-        (2.4, r"$2.4\log_2(1/\varepsilon)$", 7.3, -19),
+        (9.0, r"$9\,\log_2(1/\varepsilon)$", 4.6, 12),
+        (3.0, r"$3\,\log_2(1/\varepsilon)$", 6.6, 12),
+        (2.4, r"$2.4\,\log_2(1/\varepsilon)$", 7.3, -19),
     ])
     fig.savefig(OUT_PNG, bbox_inches="tight")
     fig.savefig(OUT_PNG.replace(".pdf", ".svg"), bbox_inches="tight")
