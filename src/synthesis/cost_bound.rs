@@ -182,7 +182,9 @@ mod tests {
                 let u = solution_to_u2q(sol, k);
                 let d = det_phase_of(&u.to_float());
                 let gates = BlochDecomposer.decompose(&u);
-                let q = gates.chars().filter(|&c| c == 'Q').count();
+                // √T-class gates: Q and its adjoint q (=Q†) both flip det-phase
+                // parity by one, so both count toward the congruence.
+                let q = gates.chars().filter(|&c| c == 'Q' || c == 'q').count();
                 assert_eq!(
                     q % 2,
                     (d as usize) % 2,

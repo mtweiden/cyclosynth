@@ -48,9 +48,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// backend's result through one type.
 #[derive(Debug, Clone)]
 pub struct SynthResultQ {
-    /// Clifford+√T gate string in the alphabet `{H, S, T, Q, X, Y, Z}`
-    /// (leftmost gate = first applied; matching the rest of cyclosynth's
-    /// composition convention). `None` if the gate string couldn't be
+    /// Clifford+√T gate string in the alphabet `{H, S, T, Q, X, Y, Z}` plus
+    /// the adjoints `{q=Q†, t=T†, s=S†}` (lowercase) that the decomposer
+    /// emits when collapsing a diagonal block to its minimal cost-class form.
+    /// Leftmost gate = first applied, matching the rest of cyclosynth's
+    /// composition convention. `None` if the gate string couldn't be
     /// extracted.
     pub gates: Option<String>,
     /// Denominator exponent of the synthesized unitary.
@@ -225,24 +227,19 @@ fn default_inner_det_phase_filter(m: u32) -> Vec<u32> {
 ///   - `k` odd        → √T-class, one √T injection → `q_cost_x2` (default 6 = 3 T)
 ///   - `k ≡ 2 (mod 4)` → T-class, one T injection   → `2` (= 1 T)
 ///   - `k ≡ 0 (mod 4)` → Clifford                    → `0`
+///
 /// Hence `TQ = QT = Q³ = T^{3/2} = Q†S` costs 3 (not 4), and `QQ = T` costs
 /// 1: a `T` sharing a block with a `√T` is absorbed into one √T-class gate.
-/// Integer so prefix-prune comparisons and atomic CAS stay exact.
+/// Lowercase `q,t,s` are the adjoints `Q†,T†,S†` (powers −1,−2,−4) the
+/// decomposer emits in canonical block form; `rem_euclid` keeps the class
+/// correct for the negative powers. Integer so prefix-prune comparisons and
+/// atomic CAS stay exact.
 pub(crate) fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
     gates
-        .split(|c| c == 'H' || c == 'X' || c == 'Y')
+        .split(['H', 'X', 'Y'])
         .map(|block| {
-            let k: usize = block
-                .chars()
-                .map(|c| match c {
-                    'Q' => 1,
-                    'T' => 2,
-                    'S' => 4,
-                    'Z' => 8,
-                    _ => 0,
-                })
-                .sum();
-            match k % 4 {
+            let k: i32 = block.chars().map(q_power).sum();
+            match k.rem_euclid(4) {
                 1 | 3 => q_cost_x2,
                 2 => 2,
                 _ => 0,
@@ -251,14 +248,31 @@ pub(crate) fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
         .sum()
 }
 
-/// `(T_count, Q_count)` of a decomposed gate string.
+/// Net √T-power of a single diagonal gate (`Q = √T`, so `T = Q²`, `S = Q⁴`,
+/// `Z = Q⁸`; lowercase are the adjoints). Off-diagonal gates contribute `0`.
+fn q_power(c: char) -> i32 {
+    match c {
+        'Q' => 1,
+        'T' => 2,
+        'S' => 4,
+        'Z' => 8,
+        'q' => -1,
+        't' => -2,
+        's' => -4,
+        _ => 0,
+    }
+}
+
+/// `(T_count, Q_count)` of a decomposed gate string: number of T-class
+/// (`T`/`T†`) and √T-class (`Q`/`Q†`) gates. Cliffords (`S`/`S†`/`Z`/…) are
+/// not counted.
 fn gates_tq(gates: &str) -> (usize, usize) {
     let mut t = 0usize;
     let mut q = 0usize;
     for c in gates.chars() {
         match c {
-            'T' => t += 1,
-            'Q' => q += 1,
+            'T' | 't' => t += 1,
+            'Q' | 'q' => q += 1,
             _ => {}
         }
     }

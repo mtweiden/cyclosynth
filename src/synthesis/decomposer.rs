@@ -427,7 +427,56 @@ fn decompose_so3_canonical_q(target: &U2Q) -> String {
 
     let combined: String = raw_segments.join("");
     let full = format!("{combined}{clifford_suffix}");
-    simplify_gate_string(&full)
+    canonicalize_diagonal_blocks(&simplify_gate_string(&full))
+}
+
+/// Minimal gate string for a diagonal block by net √T-power `k` (mod 16),
+/// indexed `BLOCK_FORMS[k]`. `Q = √T = Rz(π/8)` so `T = Q²`, `S = Q⁴`,
+/// `Z = Q⁸`; lowercase `q,t,s` are the adjoints `Q†,T†,S†` (powers
+/// −1,−2,−4). Each block reduces to at most one non-Clifford gate carrying
+/// the block's cost class — `Q`/`q` (√T-class), `T`/`t` (T-class), or none
+/// (Clifford) — plus at most one Clifford residual (`S`/`s`/`Z`). This is
+/// exactly the form [`crate::synthesis::clifford_sqrt_t::gates_cost`] charges
+/// per block, so the emitted circuit realizes the cost it is scored at (a
+/// √T³ block is one `Q†S = T^{3/2}` injection at cost 3, not a separate
+/// `T` and `Q` at cost 4).
+const BLOCK_FORMS: [&str; 16] = [
+    "", "Q", "T", "qS", "S", "QS", "TS", "qZ", "Z", "QZ", "TZ", "qs", "s", "Qs", "t", "q",
+];
+
+/// Net √T-power of a single diagonal gate (`0` for non-diagonal / identity).
+fn q_power(c: char) -> i32 {
+    match c {
+        'Q' => 1,
+        'T' => 2,
+        'S' => 4,
+        'Z' => 8,
+        'q' => -1,
+        't' => -2,
+        's' => -4,
+        _ => 0,
+    }
+}
+
+/// Rewrite each diagonal block (maximal run between off-diagonal `H`/`X`/`Y`)
+/// of a simplified Clifford+√T gate string into its minimal [`BLOCK_FORMS`]
+/// representation. Off-diagonal gates pass through unchanged and delimit the
+/// blocks; the net √T-power of each block is preserved mod 16, so the result
+/// is diamond-distance-identical to the input.
+fn canonicalize_diagonal_blocks(s: &str) -> String {
+    let mut out = String::new();
+    let mut k: i32 = 0;
+    for c in s.chars() {
+        if c == 'H' || c == 'X' || c == 'Y' {
+            out.push_str(BLOCK_FORMS[k.rem_euclid(16) as usize]);
+            out.push(c);
+            k = 0;
+        } else {
+            k += q_power(c);
+        }
+    }
+    out.push_str(BLOCK_FORMS[k.rem_euclid(16) as usize]);
+    out
 }
 
 /// Translate a single (axis, a) peel into a literal gate-string fragment
@@ -553,6 +602,10 @@ mod tests {
             'Z' => U2Q::z(),
             'X' => U2Q::x(),
             'Y' => U2Q::y(),
+            // Adjoints emitted by canonicalize_diagonal_blocks.
+            's' => U2Q::s().dagger(),
+            't' => U2Q::t().dagger(),
+            'q' => U2Q::q().dagger(),
             _ => panic!("Invalid gate character: {ch}"),
         }
     }

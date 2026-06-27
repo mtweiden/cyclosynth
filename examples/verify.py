@@ -28,7 +28,10 @@ X = np.array([[0, 1], [1, 0]], dtype=np.complex128)
 Y = np.array([[0, -1j], [1j, 0]], dtype=np.complex128)
 Z = np.array([[1, 0], [0, -1]], dtype=np.complex128)
 I = np.eye(2, dtype=np.complex128)
-GATES_F64 = {"H": H, "S": S, "T": T, "X": X, "Y": Y, "Z": Z, "I": I}
+# Q = √T; lowercase q, t, s are the adjoints Q†, T†, S†.
+Q = np.array([[1, 0], [0, np.exp(1j * np.pi / 8)]], dtype=np.complex128)
+GATES_F64 = {"H": H, "S": S, "T": T, "Q": Q, "X": X, "Y": Y, "Z": Z, "I": I,
+             "q": Q.conj().T, "t": T.conj().T, "s": S.conj().T}
 
 
 def _gates_mp():
@@ -42,8 +45,15 @@ def _gates_mp():
     x = mp.matrix([[0, one], [one, 0]])
     y = mp.matrix([[0, -j], [j, 0]])
     z = mp.matrix([[one, 0], [0, -one]])
+    q = mp.matrix([[one, 0], [0, mp.exp(j * mp.pi / 8)]])
     eye = mp.matrix([[one, 0], [0, one]])
-    return {"H": h, "S": s, "T": t, "X": x, "Y": y, "Z": z, "I": eye}
+
+    def dag(m):
+        return mp.matrix([[mp.conj(m[c, r]) for c in range(2)] for r in range(2)])
+
+    # Q = √T; lowercase q, t, s are the adjoints Q†, T†, S†.
+    return {"H": h, "S": s, "T": t, "Q": q, "X": x, "Y": y, "Z": z, "I": eye,
+            "q": dag(q), "t": dag(t), "s": dag(s)}
 
 
 def rebuild_f64(gate_str):
@@ -174,7 +184,7 @@ def main():
         print(
             f"[{i:3d}] {status}  rust={result.distance:.3e}  mp={py_mp:.3e}  "
             f"f64={py_f64:.3e}  |mp−rust|={disagreement:.1e}  "
-            f"|f64−mp|={f64_drift:.1e}  T={result.gates.count('T')}  "
+            f"|f64−mp|={f64_drift:.1e}  T={result.t_count}  "
             f"len={len(result.gates)}"
         )
         if not (ok_below_eps and ok_consistent):

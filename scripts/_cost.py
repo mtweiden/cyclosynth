@@ -11,10 +11,14 @@ net Z-rotation Q^k (Q = sqrt(T)); its cost depends only on k mod 4 (each Q adds
     k == 0 (mod 4) -> Clifford                            -> 0
 
 So TQ = QT = Q^3 = T^{3/2} = Q-dagger S costs 3 (not 4), and QQ = T costs 1.
+
+Lowercase q, t, s are the adjoints Q-dagger, T-dagger, S-dagger (powers -1, -2,
+-4) the decomposer emits in canonical block form; Python's `%` is already
+floor/euclidean, so negative powers classify correctly.
 """
 import re
 
-_P = {"Q": 1, "T": 2, "S": 4, "Z": 8}
+_P = {"Q": 1, "T": 2, "S": 4, "Z": 8, "q": -1, "t": -2, "s": -4}
 
 
 def block_classes(gates):

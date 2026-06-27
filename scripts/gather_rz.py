@@ -102,8 +102,10 @@ def run_cyc(synth, target):
         if r is None:
             return dict(t_count=0, q_count=0, distance=float("inf"),
                         duration_ms=dur, gates="")
-        g = (r.gates or "").upper()
-        return dict(t_count=g.count("T"), q_count=g.count("Q"),
+        # Keep case: lowercase q,t,s are the adjoints Q†,T†,S† (don't upper()).
+        g = r.gates or ""
+        return dict(t_count=g.count("T") + g.count("t"),
+                    q_count=g.count("Q") + g.count("q"),
                     distance=float(r.distance), duration_ms=dur, gates=g)
     except Exception:                                     # noqa: BLE001
         return dict(t_count=0, q_count=0, distance=float("inf"),

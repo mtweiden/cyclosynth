@@ -231,16 +231,22 @@ pub struct PySynthResult {
 #[cfg(feature = "python")]
 #[pymethods]
 impl PySynthResult {
-    /// Number of T gates in the circuit (0 if synthesis failed).
+    /// Number of T-class gates (`T` or its adjoint `t`=T†) in the circuit
+    /// (0 if synthesis failed).
     #[getter]
     fn t_count(&self) -> usize {
-        self.gates.as_deref().map_or(0, |g| g.matches('T').count())
+        self.gates.as_deref().map_or(0, |g| {
+            g.chars().filter(|&c| c == 'T' || c == 't').count()
+        })
     }
 
-    /// Number of Q (√T) gates in the circuit (0 for Clifford+T, or on failure).
+    /// Number of √T-class gates (`Q`=√T or its adjoint `q`=Q†) in the circuit
+    /// (0 for Clifford+T, or on failure).
     #[getter]
     fn q_count(&self) -> usize {
-        self.gates.as_deref().map_or(0, |g| g.matches('Q').count())
+        self.gates.as_deref().map_or(0, |g| {
+            g.chars().filter(|&c| c == 'Q' || c == 'q').count()
+        })
     }
 
     /// The minimized resource cost, in `T` states. This is the block-model

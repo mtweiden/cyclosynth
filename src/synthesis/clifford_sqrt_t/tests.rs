@@ -422,6 +422,9 @@ mod probes;
                     'X' => U2Q::x(),
                     'Y' => U2Q::y(),
                     'Z' => U2Q::z(),
+                    's' => U2Q::s().dagger(),
+                    't' => U2Q::t().dagger(),
+                    'q' => U2Q::q().dagger(),
                     _ => panic!("unexpected gate {c}"),
                 };
             }

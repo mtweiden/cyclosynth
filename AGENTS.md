@@ -33,7 +33,7 @@ import cyclosynth
 synth  = cyclosynth.Synthesizer(1e-5, sqrt_t=True)   # omit sqrt_t for Clifford+T
 result = synth.synthesize(target)                    # target: 2x2 complex unitary (numpy)
 if result:                                           # None if no circuit within epsilon
-    result.gates       # gate string over {H, S, T, Q(=√T), X, Y, Z}
+    result.gates       # gate string over {H, S, T, Q(=√T), X, Y, Z}; lowercase q/t/s = Q†/T†/S†
     result.t_count, result.q_count, result.cost, result.lde, result.distance
 ```
 
