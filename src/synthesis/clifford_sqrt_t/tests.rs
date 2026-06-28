@@ -321,6 +321,20 @@ mod probes;
     }
 
     #[test]
+    fn synthesize_non_su2_input() {
+        // U(2) target: Rz(0.3) scaled by a global phase (det ≠ 1). to_su2
+        // must strip it so the search lands as it would for the SU(2) form.
+        let ph = Complex64::from_polar(1.0, 0.9);
+        let target = complex_target([
+            [Complex64::from_polar(1.0, -0.15) * ph, Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, 0.15) * ph],
+        ]);
+        let synth = SynthesizerQ::new(1e-3);
+        let result = synth.synthesize(target).expect("U(2) input should synthesize");
+        assert!(result.distance < 1e-3);
+    }
+
+    #[test]
     fn synthesize_hqh() {
         let hqh: U2Q = U2Q::h() * U2Q::q() * U2Q::h();
         let target = hqh.to_float();

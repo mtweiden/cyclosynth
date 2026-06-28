@@ -250,6 +250,18 @@ mod probes;
     }
 
     #[test]
+    fn test_synthesize_non_su2_input() {
+        // U(2) target: an SU(2) rotation scaled by a global phase (det ≠ 1).
+        // to_su2 must strip the phase so it synthesizes like its SU(2) form.
+        let phase = Complex::from_polar(1., 0.9);
+        let mut target = rz(0.3);
+        for row in &mut target { for e in row { *e = *e * phase; } }
+        let synth = SynthesizerT::new(0.01);
+        let result = synth.synthesize(target).expect("Should synthesize a U(2) input");
+        check_result(&result, &target, 0.01);
+    }
+
+    #[test]
     fn test_synthesize_rz_moderate_2() {
         let target = rz(1.34);
         let synth = SynthesizerT::new(0.01);

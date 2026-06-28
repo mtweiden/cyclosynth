@@ -31,7 +31,7 @@ use crate::rings::ZZeta;
 use crate::rings::types::Int;
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
-use crate::synthesis::distance::{diamond_distance_u2q_float, Mat2};
+use crate::synthesis::distance::{diamond_distance_u2q_float, to_su2, Mat2};
 use crate::synthesis::lattice::zeta::{find_aligned_lattice_points_with_stop, find_aligned_lattice_points_mpfr, IntScratch16};
 use crate::synthesis::lattice::zeta::brute::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta, uv_to_lattice_y_zeta_mpfr};
 use num_complex::Complex64;

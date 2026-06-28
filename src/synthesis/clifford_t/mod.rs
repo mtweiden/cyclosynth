@@ -40,7 +40,7 @@ use crate::rings::types::{Float, Int};
 use crate::rings::ZOmega;
 use crate::synthesis::cliffords::{CLIFFORD_LDE0_IDX, CLIFFORD_TABLE_T};
 use crate::synthesis::decomposer::BlochDecomposer;
-use crate::synthesis::distance::{diamond_distance_u2t_float, Mat2};
+use crate::synthesis::distance::{diamond_distance_u2t_float, to_su2, Mat2};
 use crate::synthesis::lattice::omega::brute::{
     brute_aligned_search, apply_t_dag_to_uv, apply_t_to_uv, apply_u2t_dag_to_uv, compute_align_vec,
     normalize4,
@@ -531,6 +531,8 @@ impl SynthesizerT {
     /// Gram + f64 GS + MPFR-128 Schnorr-Euchner + MPFR LU for the
     /// cap-center), with MPFR precision scaled to ε.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultT> {
+        // Project to SU(2): the search assumes det = 1 (see `to_su2`).
+        let target = to_su2(&target);
         // 16 MiB worker stacks: the 8D path races the ζ₁₆ entries for
         // global-pool init, and a 2 MiB pool overflows later deep walks.
         crate::synthesis::ensure_rayon_stack();

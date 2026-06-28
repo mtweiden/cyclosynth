@@ -36,6 +36,22 @@ use crate::rings::{ZOmega, ZZeta};
 /// elements alike.
 pub type Mat2 = [[Complex<Float>; 2]; 2];
 
+/// Project a 2×2 unitary onto SU(2): `U' = U / √det(U)`, so `det(U') = 1`.
+/// The search assumes an SU(2) target, so a U(2) input (det ≠ 1) otherwise
+/// silently fails; global phase is unobservable, so the operation is
+/// unchanged. The guard handles a degenerate (non-unitary) `det ≈ 0`.
+pub fn to_su2(u: &Mat2) -> Mat2 {
+    let det = u[0][0] * u[1][1] - u[0][1] * u[1][0];
+    let s = det.sqrt();
+    if s.norm() < 1e-12 {
+        return *u;
+    }
+    [
+        [u[0][0] / s, u[0][1] / s],
+        [u[1][0] / s, u[1][1] / s],
+    ]
+}
+
 /// Diamond distance between two 2×2 unitaries, in pure f64 with the
 /// algebraic Frobenius reformulation:
 ///

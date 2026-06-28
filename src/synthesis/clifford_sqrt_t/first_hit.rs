@@ -498,9 +498,11 @@ impl SynthesizerQ {
         use crate::synthesis::diag;
         crate::synthesis::ensure_rayon_stack();
 
-        // Land the det exactly on a ζ₁₆ power first (lossless, see
-        // `project_det_to_zeta_coset`) — generic U(2) inputs otherwise
-        // carry a residual phase no completion can absorb.
+        // Project to SU(2) (see `to_su2`), so the ζ₁₆-coset landing below is
+        // exact (det = 1 = ζ⁰) rather than rounding an arbitrary phase.
+        let target = to_su2(&target);
+        // Land the det exactly on a ζ₁₆ power (lossless, see
+        // `project_det_to_zeta_coset`).
         let target = project_det_to_zeta_coset(&target);
 
         if self.optimize_cost {
