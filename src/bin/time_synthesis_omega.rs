@@ -186,7 +186,7 @@ fn main() {
                     let tcnt = r
                         .gates
                         .as_deref()
-                        .map(|g| g.matches('T').count())
+                        .map(|g| g.chars().filter(|&c| c == 'T' || c == 't').count())
                         .unwrap_or(0);
                     println!(
                         "{:<12}  {:>6.0e}  {:>4}  {:>4}  {:>11.3e}  {:>10.1}  {:>10.1}",

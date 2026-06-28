@@ -251,6 +251,12 @@ fn translate(raw: &str, magic: &str) -> String {
 /// algorithm: at each step it tries all 9 candidate peels
 /// `R_p(a·π/8)` for `p ∈ {x,y,z}, a ∈ {1,2,3}` and picks the (unique, by
 /// Theorem 4.1(c)) argmin in `max_exp`.
+///
+/// The peeled string is run through [`canonicalize_syllables`] before
+/// returning, so each syllable is emitted in its minimal cost-class form
+/// — including the adjoints `T†`/`S†` when they are shorter (a `T·S·Z` syllable,
+/// net √T-power 14, comes back as `t` = `T†`). ZOmega syllables are always
+/// even-power, so only `{T, t, S, s, Z}` (never `Q`/`q`) appear.
 fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
     let rz = R::rz_neg();   // negative generators guarantee progress
     let rx = R::rx_neg();
@@ -307,7 +313,7 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
         .filter(|&name| name != "I")
         .unwrap_or("");
     let full_raw = format!("{raw}{clifford_suffix}");
-    translate(&full_raw, R::magic_gate_name())
+    canonicalize_syllables(&translate(&full_raw, R::magic_gate_name()))
 }
 
 // ─── Canonical-form decomposition for ZZeta (Clifford+√T) ────────────────────
@@ -427,20 +433,20 @@ fn decompose_so3_canonical_q(target: &U2Q) -> String {
 
     let combined: String = raw_segments.join("");
     let full = format!("{combined}{clifford_suffix}");
-    canonicalize_diagonal_blocks(&simplify_gate_string(&full))
+    canonicalize_syllables(&simplify_gate_string(&full))
 }
 
-/// Minimal gate string for a diagonal block by net √T-power `k` (mod 16),
-/// indexed `BLOCK_FORMS[k]`. `Q = √T = Rz(π/8)` so `T = Q²`, `S = Q⁴`,
+/// Minimal gate string for a syllable by net √T-power `k` (mod 16),
+/// indexed `SYLLABLE_FORMS[k]`. `Q = √T = Rz(π/8)` so `T = Q²`, `S = Q⁴`,
 /// `Z = Q⁸`; lowercase `q,t,s` are the adjoints `Q†,T†,S†` (powers
-/// −1,−2,−4). Each block reduces to at most one non-Clifford gate carrying
-/// the block's cost class — `Q`/`q` (√T-class), `T`/`t` (T-class), or none
+/// −1,−2,−4). Each syllable reduces to at most one non-Clifford gate carrying
+/// the syllable's cost class — `Q`/`q` (√T-class), `T`/`t` (T-class), or none
 /// (Clifford) — plus at most one Clifford residual (`S`/`s`/`Z`). This is
 /// exactly the form [`crate::synthesis::clifford_sqrt_t::gates_cost`] charges
-/// per block, so the emitted circuit realizes the cost it is scored at (a
-/// √T³ block is one `Q†S = T^{3/2}` injection at cost 3, not a separate
+/// per syllable, so the emitted circuit realizes the cost it is scored at (a
+/// √T³ syllable is one `Q†S = T^{3/2}` injection at cost 3, not a separate
 /// `T` and `Q` at cost 4).
-const BLOCK_FORMS: [&str; 16] = [
+const SYLLABLE_FORMS: [&str; 16] = [
     "", "Q", "T", "qS", "S", "QS", "TS", "qZ", "Z", "QZ", "TZ", "qs", "s", "Qs", "t", "q",
 ];
 
@@ -458,24 +464,26 @@ fn q_power(c: char) -> i32 {
     }
 }
 
-/// Rewrite each diagonal block (maximal run between off-diagonal `H`/`X`/`Y`)
-/// of a simplified Clifford+√T gate string into its minimal [`BLOCK_FORMS`]
-/// representation. Off-diagonal gates pass through unchanged and delimit the
-/// blocks; the net √T-power of each block is preserved mod 16, so the result
-/// is diamond-distance-identical to the input.
-fn canonicalize_diagonal_blocks(s: &str) -> String {
+/// Rewrite each syllable (maximal run between off-diagonal `H`/`X`/`Y`)
+/// of a simplified Clifford+T or Clifford+√T gate string into its minimal
+/// [`SYLLABLE_FORMS`] representation. Off-diagonal gates pass through unchanged
+/// and delimit the syllables; the net √T-power of each syllable is preserved mod 16,
+/// so the result is diamond-distance-identical to the input. Clifford+T syllables
+/// are always even-power, so they collapse to `{T, t, S, s, Z}` (the `Q`/`q`
+/// √T-class forms only arise for odd-power Clifford+√T syllables).
+fn canonicalize_syllables(s: &str) -> String {
     let mut out = String::new();
     let mut k: i32 = 0;
     for c in s.chars() {
         if c == 'H' || c == 'X' || c == 'Y' {
-            out.push_str(BLOCK_FORMS[k.rem_euclid(16) as usize]);
+            out.push_str(SYLLABLE_FORMS[k.rem_euclid(16) as usize]);
             out.push(c);
             k = 0;
         } else {
             k += q_power(c);
         }
     }
-    out.push_str(BLOCK_FORMS[k.rem_euclid(16) as usize]);
+    out.push_str(SYLLABLE_FORMS[k.rem_euclid(16) as usize]);
     out
 }
 
@@ -570,6 +578,9 @@ mod tests {
             'Z' => { U2T::z() }
             'X' => { U2T::x() }
             'Y' => { U2T::y() }
+            // Adjoints emitted by canonicalize_syllables (e.g. T·S·Z → t).
+            's' => { U2T::s().dagger() }
+            't' => { U2T::t().dagger() }
             _ => { panic!("Invalid gate character: {ch}"); }
         };
         u
@@ -602,7 +613,7 @@ mod tests {
             'Z' => U2Q::z(),
             'X' => U2Q::x(),
             'Y' => U2Q::y(),
-            // Adjoints emitted by canonicalize_diagonal_blocks.
+            // Adjoints emitted by canonicalize_syllables.
             's' => U2Q::s().dagger(),
             't' => U2Q::t().dagger(),
             'q' => U2Q::q().dagger(),
@@ -658,6 +669,27 @@ mod tests {
         let gates = "HTH";
         let decomp = decompose_from_gates_t(gates);
         assert_eq!(decomp, gates);
+    }
+
+    /// Clifford+T syllables collapse to their minimal cost-class form, using
+    /// the adjoints `t`/`s` when shorter. `T·S·Z` (net √T-power 14) is one
+    /// `T†`; six `T`s (power 12) collapse to the lone Clifford `s` (=S†);
+    /// five `T`s (power 10) is `TZ`.
+    #[test]
+    fn test_clifford_t_syllable_daggers() {
+        // (input, expected minimal form).
+        for (gates, want) in [("TSZ", "t"), ("TTTTTT", "s"), ("TTTTT", "TZ")] {
+            let decomp = decompose_from_gates_t(gates);
+            assert_eq!(decomp, want, "decompose(\"{gates}\")");
+            // No `Q`/`q` ever leaks into a Clifford+T string.
+            assert!(
+                !decomp.contains('Q') && !decomp.contains('q'),
+                "Clifford+T decomp \"{decomp}\" must not contain √T gates",
+            );
+            // And it is the same unitary.
+            let dist = gates_to_u2t(gates).diamond_distance(&gates_to_u2t(&decomp));
+            assert!(dist < 1e-7, "\"{gates}\" → \"{decomp}\": dist={dist:.3e}");
+        }
     }
 
     #[test]

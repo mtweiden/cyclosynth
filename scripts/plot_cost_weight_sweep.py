@@ -1,7 +1,7 @@
 """Cost-weight sensitivity: median cost ratio rho vs the sqrt(T) price c.
 
-Under the block cost model a circuit's cost in T states is
-n_Tclass + c * n_sqrtTclass (T-class blocks cost 1, sqrt(T)-class blocks cost
+Under the syllable cost model a circuit's cost in T states is
+n_Tclass + c * n_sqrtTclass (T-class syllables cost 1, sqrt(T)-class syllables cost
 the sqrt(T) price c; see scripts/_cost.py). Per paired target,
 rho(c) = (n_Tclass^Q + c*n_R^Q)/(n_Tclass^T + c*n_R^T), with n_R^T = 0 for the
 Clifford+T circuit so its denominator is just its T-class count. We plot the
@@ -22,7 +22,7 @@ import matplotlib.colors as mcolors
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _plotstyle  # noqa: E402
-import _cost       # noqa: E402  block-model cost (sqrt(T)-class blocks, T^{3/2}=R)
+import _cost       # noqa: E402  syllable-model cost (sqrt(T)-class syllables, T^{3/2}=R)
 _plotstyle.apply()
 plt.rcParams.update({"axes.labelsize": 16, "xtick.labelsize": 13, "ytick.labelsize": 13})
 
@@ -45,8 +45,8 @@ def med_rho(eps, c):
     for k, d in byk.items():
         if k[0] != eps or "cyclosynth_t" not in d or "cyclosynth_sqrt_t" not in d:
             continue
-        ntT, nrT = _cost.block_classes(d["cyclosynth_t"]["gates"])
-        ntQ, nrQ = _cost.block_classes(d["cyclosynth_sqrt_t"]["gates"])
+        ntT, nrT = _cost.syllable_classes(d["cyclosynth_t"]["gates"])
+        ntQ, nrQ = _cost.syllable_classes(d["cyclosynth_sqrt_t"]["gates"])
         den = ntT + c * nrT
         if den > 0:
             rr.append((ntQ + c * nrQ) / den)
@@ -77,7 +77,7 @@ ax.axhspan(0.0, 1.0, color="tab:green", alpha=0.07, zorder=0)
 ax.axhspan(1.0, 2.0, color="tab:red", alpha=0.07, zorder=0)
 # Crossover band: the range of c* across precisions.
 ax.axvspan(min(cstars), max(cstars), color="0.5", alpha=0.12, zorder=0)
-# Extrapolated asymptote of c* as eps -> 0 under the block cost model
+# Extrapolated asymptote of c* as eps -> 0 under the syllable cost model
 # [ per-decade n_Tclass^T~10, n_Tclass^Q~2, n_R^Q~2 -> (10-2)/2 ~ 4.0; fit 4.15 ].
 C_ASYMP = 4.0
 ax.axvline(C_ASYMP, color="darkgreen", lw=1.5, ls=(0, (5, 2)), zorder=1)

@@ -27,7 +27,7 @@ import numpy as np
 import cyclosynth
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _cost  # block-model cost (sqrt(T)-class blocks, T^{3/2}=R)
+import _cost  # syllable-model cost (sqrt(T)-class syllables, T^{3/2}=R)
 
 # ─── Config (env-overridable for smoke tests) ────────────────────────────────
 SEED = 0x5172A          # "RzA"
@@ -90,8 +90,8 @@ def angles_for(eps, n):
 
 
 def cost_of(gates):
-    """Block-model resource cost in T states (sqrt(T)-class blocks, T^{3/2}=R)."""
-    return _cost.block_cost(gates, Q_WEIGHT)
+    """Syllable-model resource cost in T states (sqrt(T)-class syllables, T^{3/2}=R)."""
+    return _cost.syllable_cost(gates, Q_WEIGHT)
 
 
 def run_cyc(synth, target):

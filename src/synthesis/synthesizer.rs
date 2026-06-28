@@ -189,7 +189,7 @@ impl Synthesizer {
         matches!(&self.inner, Backend::Q(_))
     }
 
-    /// Cost in `T` states of one √T-class syllable in the block cost model
+    /// Cost in `T` states of one √T-class syllable in the syllable cost model
     /// (a T-class syllable costs 1). Canonical 3; reflects a custom
     /// `with_q_cost` on the √T backend.
     pub fn q_weight(&self) -> f64 {
@@ -249,7 +249,7 @@ impl PySynthResult {
         })
     }
 
-    /// The minimized resource cost, in `T` states. This is the block-model
+    /// The minimized resource cost, in `T` states. This is the syllable-model
     /// cost the optimizer minimizes: gates are charged per diagonal syllable
     /// by their net √T-power class (a √T-class syllable costs `q_weight`, a
     /// T-class syllable 1, Cliffords 0), so a `T` that composes with a `√T`

@@ -73,8 +73,8 @@ fn u3(theta: f64, phi: f64, lam: f64) -> Mat2 {
 
 fn gate_cost(g: Option<&str>) -> (usize, usize, usize, usize) {
     g.map(|s| (
-        s.chars().filter(|&c| c == 'T').count(),
-        s.chars().filter(|&c| c == 'Q').count(),
+        s.chars().filter(|&c| c == 'T' || c == 't').count(),
+        s.chars().filter(|&c| c == 'Q' || c == 'q').count(),
         s.chars().filter(|&c| c == 'H').count(),
         s.chars().count(),
     )).unwrap_or((0, 0, 0, 0))

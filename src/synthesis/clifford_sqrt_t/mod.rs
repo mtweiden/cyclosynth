@@ -50,7 +50,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub struct SynthResultQ {
     /// Clifford+√T gate string in the alphabet `{H, S, T, Q, X, Y, Z}` plus
     /// the adjoints `{q=Q†, t=T†, s=S†}` (lowercase) that the decomposer
-    /// emits when collapsing a diagonal block to its minimal cost-class form.
+    /// emits when collapsing a syllable to its minimal cost-class form.
     /// Leftmost gate = first applied, matching the rest of cyclosynth's
     /// composition convention. `None` if the gate string couldn't be
     /// extracted.
@@ -106,7 +106,7 @@ pub struct SynthesizerQ {
     /// Allowed `(d_target − d_L) mod 16` offsets for a prefix to be
     /// processed; empty = no filter. Builder: [`Self::with_inner_det_phase_filter`].
     pub inner_det_phase_filter: Vec<u32>,
-    /// BKZ-β post-pass block size (0 = off). Builder: [`Self::with_bkz`].
+    /// BKZ-β post-pass syllable size (0 = off). Builder: [`Self::with_bkz`].
     pub bkz_block_size: u32,
     /// Number of lde levels the dc path dispatches concurrently, with a
     /// cross-LDE abort so the first finder cancels its peers. ε-tuned in
@@ -218,9 +218,9 @@ fn default_inner_det_phase_filter(m: u32) -> Vec<u32> {
 }
 
 /// Resource cost of a decomposed Clifford+√T gate string in half-units of
-/// a T gate. Cost is charged per *diagonal block* — a maximal run of gates
+/// a T gate. Cost is charged per *syllable* — a maximal run of gates
 /// with no off-diagonal `H`/`X`/`Y` between them — not per gate. The gates
-/// of a block commute and compose to a single net Z-rotation `Q^k` (with
+/// of a syllable commute and compose to a single net Z-rotation `Q^k` (with
 /// `Q = √T`), realizable by one magic-state injection of that rotation's
 /// class. Classifying by `k mod 4` (each `Q` adds 1, `T` adds 2, while
 /// `S`, `Z` add multiples of 4 and so never change the class):
@@ -229,16 +229,16 @@ fn default_inner_det_phase_filter(m: u32) -> Vec<u32> {
 ///   - `k ≡ 0 (mod 4)` → Clifford                    → `0`
 ///
 /// Hence `TQ = QT = Q³ = T^{3/2} = Q†S` costs 3 (not 4), and `QQ = T` costs
-/// 1: a `T` sharing a block with a `√T` is absorbed into one √T-class gate.
+/// 1: a `T` sharing a syllable with a `√T` is absorbed into one √T-class gate.
 /// Lowercase `q,t,s` are the adjoints `Q†,T†,S†` (powers −1,−2,−4) the
-/// decomposer emits in canonical block form; `rem_euclid` keeps the class
+/// decomposer emits in canonical syllable form; `rem_euclid` keeps the class
 /// correct for the negative powers. Integer so prefix-prune comparisons and
 /// atomic CAS stay exact.
 pub(crate) fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
     gates
         .split(['H', 'X', 'Y'])
-        .map(|block| {
-            let k: i32 = block.chars().map(q_power).sum();
+        .map(|syllable| {
+            let k: i32 = syllable.chars().map(q_power).sum();
             match k.rem_euclid(4) {
                 1 | 3 => q_cost_x2,
                 2 => 2,

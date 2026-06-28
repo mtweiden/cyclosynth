@@ -148,8 +148,8 @@ Terms used throughout the code and docs:
 - **T gate / Q gate** — `T` is the π/8 phase gate (the Clifford+T generator); `Q` is √T (the Clifford+√T generator).
   The circuit cost we minimize is `T_count + 3·Q_count`.
 - **Daggers (lowercase)** — adjoint (inverse) gates are written as the lowercase of their letter: `q` = `Q†` (√T†), `t` = `T†`, `s` = `S†`.
-  The Clifford+√T decomposer emits these when collapsing a diagonal block to its minimal cost form (for example `T^{3/2}` is written `qS` = `Q†S`, one √T-class gate, rather than `TQ`), so each block carries exactly one cost-bearing gate.
-  Clifford+T circuits never need them, so their gate strings stay in `{H, S, T, X, Y, Z}`.
+  Both decomposers emit these when collapsing a syllable to its minimal cost form, so each syllable carries exactly one cost-bearing gate.
+  Clifford+√T uses the full `{Q, q, T, t, S, s, Z}` set (for example `T^{3/2}` is written `qS` = `Q†S`, one √T-class gate, rather than `TQ`); Clifford+T syllables are always even-power, so they collapse to `{T, t, S, s, Z}` (for example `T·S·Z` is written `t` = `T†`, never `Q`/`q`).
 - **lde** ("least denominator exponent") — the power of √2 in a circuit's ring denominator; the synthesizer uses it as the search depth (`max_lde`).
   Deeper lde = more candidate circuits = tighter achievable `ε`.
 - **Z[ω] / Z[ζ]** — the two number rings the lattice search runs in: `omega/` (8-dimensional, Clifford+T) and `zeta/` (16-dimensional, Clifford+√T).

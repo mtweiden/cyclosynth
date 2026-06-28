@@ -1,14 +1,14 @@
 //! Certified cost-vs-lde lower bound for Clifford+√T circuits.
 //!
-//! `L(k) = cost_lb_half_units(k)` lower-bounds the block-model cost
-//! (half-units; a √T-class block costs `q_cost_x2`, default 6, a T-class
-//! block 2, Cliffords 0 — see `gates_cost`) of any Clifford+√T unitary
+//! `L(k) = cost_lb_half_units(k)` lower-bounds the syllable-model cost
+//! (half-units; a √T-class syllable costs `q_cost_x2`, default 6, a T-class
+//! syllable 2, Cliffords 0 — see `gates_cost`) of any Clifford+√T unitary
 //! with reduced denominator exponent (lde) `k`. It powers the certified
 //! search cutoff and the sound prefix prune. Monotone non-decreasing in
 //! `k`, which the cutoff relies on. The derivation lives on
 //! [`cost_lb_half_units`]. The bound is unchanged from the old per-gate
-//! `2t+6q` model: both rest on `cost ≥ 2N`, and the block model removes
-//! only slack above `2N` (absorbing a T into a √T block).
+//! `2t+6q` model: both rest on `cost ≥ 2N`, and the syllable model removes
+//! only slack above `2N` (absorbing a T into a √T syllable).
 
 /// Maximum reduced lde over the single-qubit Clifford group in the
 /// `U2Q` representation (⟨H, S⟩ closure, incl. phases): 1 under full
@@ -18,21 +18,21 @@ pub const CLIFFORD_LDE_MAX: u32 = 1;
 /// Per-x/y-syllable lde contribution. `tests::syllable_lde_constants`.
 pub const XY_SYLLABLE_LDE: u32 = 2;
 
-/// Minimum block-model cost (half-units) of a non-Clifford syllable: the
-/// T syllable is a T-class block costing 2 (a √T-class syllable costs
-/// `q_cost_x2`, default 6; `TQ = T^{3/2}` is a single √T-class block, not
+/// Minimum syllable-model cost (half-units) of a non-Clifford syllable: the
+/// T syllable is a T-class syllable costing 2 (a √T-class syllable costs
+/// `q_cost_x2`, default 6; `TQ = T^{3/2}` is a single √T-class syllable, not
 /// 2 + 6). Used as the per-x/y-syllable cost floor.
 const MIN_SYLLABLE_COST_HALF_UNITS: usize = 2;
 
-/// Certified lower bound, in half-units, on the block-model cost of any
+/// Certified lower bound, in half-units, on the syllable-model cost of any
 /// Clifford+√T unitary with reduced lde `k`. Writing n_R for its number of
-/// √T-class diagonal blocks and n_2 for its T-class blocks:
+/// √T-class syllables and n_2 for its T-class syllables:
 ///
 ///   c̃ = q_cost_x2·n_R + 2·n_2 ≥ 4·n_R + 2·n_2 = 2·(2·n_R + n_2) ≥ 2·N
 ///       ≥ 2·(2k − 3) = 4k − 6,   (sound for any q_cost_x2 ≥ 4; default 6),
 ///
 /// where N is the reduced Bloch/SO(3) denominator exponent:
-///   * `2·n_R + n_2 ≥ N` — Bloch-exponent subadditivity over the blocks'
+///   * `2·n_R + n_2 ≥ N` — Bloch-exponent subadditivity over the syllables'
 ///     net rotations, with N(√T-class) = 2, N(T-class) = 1, N(Clifford) = 0
 ///     (an odd multiple of π/8 has Bloch exponent 2; an odd multiple of
 ///     π/4 has 1), holding for every circuit;
@@ -40,8 +40,8 @@ const MIN_SYLLABLE_COST_HALF_UNITS: usize = 2;
 ///     with deficit 3 at every k ≥ 3.
 ///
 /// This is the same bound as the old per-gate `2t+6q` model: both reduce
-/// to c̃ ≥ 2N. A √T-class block costs 6 ≥ 2·N(=2), a T-class block 2 = 2·N(=1),
-/// so absorbing a T into a √T block (T^{3/2}) removes only slack above 2N.
+/// to c̃ ≥ 2N. A √T-class syllable costs 6 ≥ 2·N(=2), a T-class syllable 2 = 2·N(=1),
+/// so absorbing a T into a √T syllable (T^{3/2}) removes only slack above 2N.
 /// The syllable-count floor (≈ k − 1, the `max` arm) only binds at k ≤ 2.
 pub fn cost_lb_half_units(k: u32) -> usize {
     let excess = k.saturating_sub(CLIFFORD_LDE_MAX);
@@ -52,15 +52,15 @@ pub fn cost_lb_half_units(k: u32) -> usize {
     syllable_floor.max(slope2_floor)
 }
 
-/// Per-det-phase-class cost lower bound, in half-units. A √T-class block
-/// contributes an odd power of ζ₁₆ to det(U), a T-class block an even
+/// Per-det-phase-class cost lower bound, in half-units. A √T-class syllable
+/// contributes an odd power of ζ₁₆ to det(U), a T-class syllable an even
 /// power, Cliffords powers of ζ₁₆⁴ — but a circuit matches a target only
 /// up to a global phase ζ₁₆ʲ, which shifts the det class by 2j. Only the
-/// parity of `d` survives, so an odd class forces ≥ 1 √T-class block;
+/// parity of `d` survives, so an odd class forces ≥ 1 √T-class syllable;
 /// even classes give nothing. Callers add this to a prefix's own cost as
 /// a sound suffix lower bound. A stronger mod-4 bound is NOT sound.
 ///
-/// An odd class forces ≥ 1 √T-class block, whose cost is exactly
+/// An odd class forces ≥ 1 √T-class syllable, whose cost is exactly
 /// `q_cost_x2` half-units; even classes give nothing. Passing `q_cost_x2`
 /// (rather than a hard-coded constant) keeps this sound under any √T weight
 /// — a hard-coded `7` would over-claim once the weight drops below 3.5.
@@ -190,8 +190,8 @@ mod tests {
                     (d as usize) % 2,
                     "Q-parity congruence violated at k={k}: d={d}, q={q}, gates={gates}"
                 );
-                // Realized cost under the block model (gates_cost), not 2t+6q:
-                // an odd class must still pay >= one √T-class block.
+                // Realized cost under the syllable model (gates_cost), not 2t+6q:
+                // an odd class must still pay >= one √T-class syllable.
                 let cost = gates_cost(&gates, 6);
                 assert!(
                     cost >= class_cost_lb_half_units(d, 6),

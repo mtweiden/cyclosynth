@@ -129,7 +129,8 @@ mod probes;
         // Check 3: T-count of the gate string. result.lde holds the
         // synthesizer's t-loop value (the *target* T-count for the search).
         // The actual gate string can have at most that many T gates.
-        let t_count = gates.chars().filter(|&c| c == 'T').count() as u32;
+        // T-class includes the adjoint t (=T†) a canonicalized syllable may emit.
+        let t_count = gates.chars().filter(|&c| c == 'T' || c == 't').count() as u32;
         // We accept up to lde + a few (the BlochDecomposer can introduce
         // small constant overhead from final Clifford fixup).
         assert!(
