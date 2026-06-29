@@ -498,7 +498,7 @@ impl PySynthesizer {
 impl PySynthesizer {
     /// Build the SU(2) target from ZYZ angles (radians) and run the search.
     fn run_zyz(&self, alpha: f64, beta: f64, gamma: f64) -> Option<PySynthResult> {
-        let mat = su2_from_zyz(alpha, beta, gamma);
+        let mat = crate::synthesis::angle::su2_from_zyz(alpha, beta, gamma);
         let q_weight = self.inner.q_weight();
         self.inner.synthesize(mat).map(|r| PySynthResult {
             gates: r.gates,
@@ -509,130 +509,16 @@ impl PySynthesizer {
     }
 }
 
-/// `Rz(alpha)·Ry(beta)·Rz(gamma)` as an SU(2) `Mat2` (det = 1 by construction).
-/// Convention: `Rz(t) = diag(e^{-it/2}, e^{it/2})`, `Ry(t) = [[c,-s],[s,c]]`.
+/// Parse one angle argument — a Python float/int, or a string (the `pi`
+/// rational forms of [`crate::synthesis::angle::parse_angle_str`]).
 #[cfg(feature = "python")]
-fn su2_from_zyz(alpha: f64, beta: f64, gamma: f64) -> Mat2 {
-    let cb = (beta * 0.5).cos();
-    let sb = (beta * 0.5).sin();
-    let pag = (alpha + gamma) * 0.5;
-    let pamg = (alpha - gamma) * 0.5;
-    let polar = |r: f64, theta: f64| Complex::new(r * theta.cos(), r * theta.sin());
-    [
-        [polar(cb, -pag), -polar(sb, -pamg)],
-        [polar(sb, pamg), polar(cb, pag)],
-    ]
-}
-
-/// A parsed angle: `PiRatio(p, q)` is exactly `(p/q)·π`; `Rad(x)` is f64
-/// radians.
-#[cfg(feature = "python")]
-#[derive(Clone, Copy, Debug)]
-enum Angle {
-    Rad(f64),
-    PiRatio(i64, i64),
-}
-
-#[cfg(feature = "python")]
-impl Angle {
-    /// Evaluate to f64 radians.
-    fn to_radians_f64(self) -> f64 {
-        match self {
-            Angle::Rad(x) => x,
-            Angle::PiRatio(p, q) => (p as f64) / (q as f64) * std::f64::consts::PI,
-        }
-    }
-}
-
-#[cfg(feature = "python")]
-fn gcd_i64(a: i64, b: i64) -> i64 {
-    let (mut a, mut b) = (a.abs(), b.abs());
-    while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
-    }
-    a.max(1)
-}
-
-/// Parse a signed integer-or-decimal literal as an exact rational `(num, den)`,
-/// e.g. `"3" -> (3, 1)`, `"0.25" -> (1, 4)`, `"-1.5" -> (-3, 2)`.
-#[cfg(feature = "python")]
-fn parse_decimal_ratio(s: &str) -> Option<(i64, i64)> {
-    let (sign, body) = match s.strip_prefix('-') {
-        Some(rest) => (-1i64, rest),
-        None => (1i64, s.strip_prefix('+').unwrap_or(s)),
-    };
-    if body.is_empty() {
-        return None;
-    }
-    let (num, den) = match body.split_once('.') {
-        None => (body.parse::<i64>().ok()?, 1i64),
-        Some((int_part, frac)) => {
-            // >18 fractional digits overflows the i64 denominator (10^19 > i64::MAX).
-            if frac.is_empty() || frac.len() > 18 {
-                return None;
-            }
-            let den = 10i64.checked_pow(frac.len() as u32)?;
-            let int_v: i64 = if int_part.is_empty() { 0 } else { int_part.parse().ok()? };
-            let frac_v: i64 = frac.parse().ok()?;
-            (int_v.checked_mul(den)?.checked_add(frac_v)?, den)
-        }
-    };
-    let g = gcd_i64(num, den);
-    Some((sign * num / g, den / g))
-}
-
-/// Parse one angle argument — a Python float/int or a string.
-#[cfg(feature = "python")]
-fn parse_angle(obj: &Bound<'_, PyAny>) -> PyResult<Angle> {
+fn parse_angle(obj: &Bound<'_, PyAny>) -> PyResult<crate::synthesis::angle::Angle> {
+    use crate::synthesis::angle::{parse_angle_str, Angle};
     if let Ok(x) = obj.extract::<f64>() {
         return Ok(Angle::Rad(x));
     }
     let s: String = obj.extract().map_err(|_| {
         PyErr::new::<pyo3::exceptions::PyTypeError, _>("angle must be a float or string")
     })?;
-    parse_angle_str(&s)
-}
-
-/// Parse an angle string. A string containing `pi` (whitespace ignored,
-/// optional `*`) is a rational multiple of π — `[coeff][*]pi[/denom]`, e.g.
-/// `"pi"`, `"3pi"`, `"3*pi"`, `"pi/8"`, `"3*pi/4"`, `"-2pi/3"`, `"0.25pi"` —
-/// returned as an exact `PiRatio`. A string with no `pi` parses as `Rad`.
-#[cfg(feature = "python")]
-fn parse_angle_str(raw: &str) -> PyResult<Angle> {
-    let bad = |m: String| PyErr::new::<pyo3::exceptions::PyValueError, _>(m);
-    let s: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
-    let lower = s.to_lowercase();
-    let Some(pos) = lower.find("pi") else {
-        return lower
-            .parse::<f64>()
-            .map(Angle::Rad)
-            .map_err(|_| bad(format!("could not parse angle '{raw}'")));
-    };
-    let before = lower[..pos].trim_end_matches('*');
-    let after = &lower[pos + 2..];
-    let (cnum, cden): (i64, i64) = match before {
-        "" | "+" => (1, 1),
-        "-" => (-1, 1),
-        c => parse_decimal_ratio(c)
-            .ok_or_else(|| bad(format!("bad π coefficient in angle '{raw}'")))?,
-    };
-    let denom: i64 = if after.is_empty() {
-        1
-    } else if let Some(d) = after.strip_prefix('/') {
-        d.parse::<i64>()
-            .map_err(|_| bad(format!("bad π denominator in angle '{raw}'")))?
-    } else {
-        return Err(bad(format!("unexpected '{after}' after π in angle '{raw}'")));
-    };
-    if denom == 0 {
-        return Err(bad(format!("zero π denominator in angle '{raw}'")));
-    }
-    let den = cden
-        .checked_mul(denom)
-        .ok_or_else(|| bad(format!("π denominator overflow in angle '{raw}'")))?;
-    let g = gcd_i64(cnum, den);
-    let sign = if den < 0 { -1 } else { 1 };
-    Ok(Angle::PiRatio(sign * cnum / g, den.abs() / g))
+    parse_angle_str(&s).map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
 }

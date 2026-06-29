@@ -26,6 +26,7 @@
 //!   reduction; **SVP** = shortest-vector problem; **GSO** = Gram-Schmidt
 //!   orthogonalization; **dd** = double-double (~106-bit) arithmetic.
 
+pub mod angle;
 pub mod clifford_sqrt_t;
 pub mod clifford_t;
 pub mod cliffords;
