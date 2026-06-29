@@ -30,6 +30,8 @@
 use num_complex::Complex64;
 use std::f64::consts::FRAC_1_SQRT_2;
 use crate::matrix::U2T;
+use crate::rings::types::int_to_f64;
+use crate::rings::{MpFloat, ZOmega};
 
 // ─── Alignment vector ─────────────────────────────────────────────────────────
 
@@ -115,6 +117,71 @@ pub fn apply_u2t_dag_to_uv(c: &U2T, v: [f64; 4]) -> [f64; 4] {
         ]
     } else {
         [w1.re, w1.im, w2.re, w2.im]
+    }
+}
+
+/// MPFR analog of [`apply_u2t_dag_to_uv`]: column 1 of `C† · target` in the
+/// √det-normalized uv form, from exact ring `C` and an MPFR target column
+/// `v = [Re v1, Im v1, Re v2, Im v2]`. Preserves precision below the f64 ULP
+/// for the deep-ε prefix-split search (prefix coefficients are far inside
+/// i64 there, so `int_to_f64` is exact). `prec` is the working precision.
+pub fn apply_u2t_dag_to_uv_mpfr(c: &U2T, v: &[MpFloat; 4], prec: u32) -> [MpFloat; 4] {
+    let f = |x: f64| MpFloat::with_val(prec, x);
+    let mul = |a: &MpFloat, b: &MpFloat| MpFloat::with_val(prec, a * b);
+    let add = |a: &MpFloat, b: &MpFloat| MpFloat::with_val(prec, a + b);
+    let sub = |a: &MpFloat, b: &MpFloat| MpFloat::with_val(prec, a - b);
+
+    // ZOmega → (re, im): re = a + (b−d)/√2, im = c + (b+d)/√2.
+    let r2 = MpFloat::with_val(prec, 2.0).sqrt().recip();
+    let zo = |z: &ZOmega| -> (MpFloat, MpFloat) {
+        let (a, b, cc, d) = (f(int_to_f64(z.a)), f(int_to_f64(z.b)), f(int_to_f64(z.c)), f(int_to_f64(z.d)));
+        (add(&a, &mul(&sub(&b, &d), &r2)), add(&cc, &mul(&add(&b, &d), &r2)))
+    };
+    type C = (MpFloat, MpFloat);
+    let cmul = |x: &C, y: &C| -> C { (sub(&mul(&x.0, &y.0), &mul(&x.1, &y.1)), add(&mul(&x.0, &y.1), &mul(&x.1, &y.0))) };
+    let cmul_conj = |x: &C, y: &C| -> C { (add(&mul(&x.0, &y.0), &mul(&x.1, &y.1)), sub(&mul(&x.0, &y.1), &mul(&x.1, &y.0))) };
+    let cadd = |x: &C, y: &C| -> C { (add(&x.0, &y.0), add(&x.1, &y.1)) };
+    // Principal complex sqrt: √((|z|+re)/2) + sign(im)·√((|z|−re)/2)·i.
+    let csqrt = |z: &C| -> C {
+        let mag = add(&mul(&z.0, &z.0), &mul(&z.1, &z.1)).sqrt();
+        let re = MpFloat::with_val(prec, add(&mag, &z.0) / 2.0).sqrt();
+        let im = MpFloat::with_val(prec, sub(&mag, &z.0) / 2.0).sqrt();
+        (re, if z.1.is_sign_negative() { -im } else { im })
+    };
+
+    let (u11, u12, u21, u22) = (zo(&c.u11), zo(&c.u12), zo(&c.u21), zo(&c.u22));
+    let v1 = (v[0].clone(), v[1].clone());
+    let v2 = (v[2].clone(), v[3].clone());
+
+    // scale = 1/√2^k.
+    let mut pow = MpFloat::with_val(prec, 1.0);
+    pow <<= c.k / 2;
+    if c.k % 2 == 1 {
+        pow *= MpFloat::with_val(prec, 2.0).sqrt();
+    }
+    let scale = MpFloat::with_val(prec, 1.0) / pow;
+
+    // w = C† · v, scaled.
+    let w1 = cadd(&cmul_conj(&u11, &v1), &cmul_conj(&u21, &v2));
+    let w2 = cadd(&cmul_conj(&u12, &v1), &cmul_conj(&u22, &v2));
+    let w1 = (mul(&w1.0, &scale), mul(&w1.1, &scale));
+    let w2 = (mul(&w2.0, &scale), mul(&w2.1, &scale));
+
+    // det(C)·scale², then divide both rows by √conj(det) to land in SU(2).
+    let scale2 = mul(&scale, &scale);
+    let det0 = { let p = cmul(&u11, &u22); let q = cmul(&u12, &u21); (sub(&p.0, &q.0), sub(&p.1, &q.1)) };
+    let det = (mul(&det0.0, &scale2), mul(&det0.1, &scale2));
+    let s = csqrt(&(det.0.clone(), MpFloat::with_val(prec, -&det.1))); // √conj(det)
+    let s_norm_sq = add(&mul(&s.0, &s.0), &mul(&s.1, &s.1));
+    if s_norm_sq.to_f64() > 1e-24 {
+        let inv_re = MpFloat::with_val(prec, &s.0 / &s_norm_sq);
+        let inv_im = MpFloat::with_val(prec, &s.1 / &s_norm_sq);
+        let inv = (inv_re, -inv_im);
+        let r1 = cmul(&w1, &inv);
+        let r2c = cmul(&w2, &inv);
+        [r1.0, r1.1, r2c.0, r2c.1]
+    } else {
+        [w1.0, w1.1, w2.0, w2.1]
     }
 }
 
@@ -625,5 +692,31 @@ mod tests {
         let sols = brute_aligned_search(v, 0, 0.0, 100);
         let found = sols.iter().any(|s| *s == [1,0,0,0,0,0,0,0] || *s == [-1,0,0,0,0,0,0,0]);
         assert!(found, "Should find identity solution");
+    }
+}
+#[cfg(test)]
+mod mpfr_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn apply_u2t_dag_to_uv_mpfr_matches_f64() {
+        let prec = 160;
+        let v = normalize4([0.6, 0.1, 0.7, 0.35]).unwrap();
+        let t = U2T::t();
+        let prefixes = [t, t * t, t * t * t, t * t * t * t];
+        for c in prefixes {
+            let want = apply_u2t_dag_to_uv(&c, v);
+            let vm: [MpFloat; 4] = std::array::from_fn(|i| MpFloat::with_val(prec, v[i]));
+            let got = apply_u2t_dag_to_uv_mpfr(&c, &vm, prec);
+            for i in 0..4 {
+                assert!(
+                    (got[i].to_f64() - want[i]).abs() < 1e-9,
+                    "k={} entry {i}: mpfr {} vs f64 {}",
+                    c.k,
+                    got[i].to_f64(),
+                    want[i]
+                );
+            }
+        }
     }
 }
