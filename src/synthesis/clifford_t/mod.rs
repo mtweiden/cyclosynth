@@ -41,10 +41,29 @@ use crate::rings::ZOmega;
 use crate::synthesis::cliffords::{CLIFFORD_LDE0_IDX, CLIFFORD_TABLE_T};
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2t_float, to_su2, Mat2};
+use crate::rings::MpFloat;
 use crate::synthesis::lattice::omega::brute::{
-    brute_aligned_search, apply_t_dag_to_uv, apply_t_to_uv, apply_u2t_dag_to_uv, compute_align_vec,
-    normalize4,
+    brute_aligned_search, apply_t_dag_to_uv, apply_t_dag_to_uv_mpfr, apply_t_to_uv,
+    apply_u2t_dag_to_uv, apply_u2t_dag_to_uv_mpfr, compute_align_vec, normalize4,
 };
+use crate::synthesis::lattice::omega::find_aligned_lattice_points_exact;
+use crate::synthesis::lattice::omega::q_metric::uv_to_lattice_y_mpfr;
+
+/// At ε ≤ this, the deep-ε MPFR alignment path replaces the f64 chain (the
+/// f64 prefix residual and lattice y lose precision once the cap half-width
+/// ε²/4 nears the f64 ULP). `CYCLOSYNTH_OMEGA_FORCE_EXACT=1` forces it on at
+/// any ε (used to check exact-vs-f64 equivalence without deep-ε runs).
+const OMEGA_EXACT_EPS: f64 = 2e-8;
+
+fn omega_force_exact() -> bool {
+    static F: LazyLock<bool> =
+        LazyLock::new(|| std::env::var("CYCLOSYNTH_OMEGA_FORCE_EXACT").as_deref() == Ok("1"));
+    *F
+}
+
+fn omega_use_exact(eps: f64) -> bool {
+    eps <= OMEGA_EXACT_EPS || omega_force_exact()
+}
 
 /// `(t', coset_dedup)` → MA prefix list. `Arc`-wrapped so cache hits are a
 /// refcount bump, not a clone of the full prefix list (~329 k U2T at t'=14).
@@ -401,9 +420,11 @@ const DC_WALK_MAX_SOLUTIONS: usize = 8;
 /// `external_abort` is the cross-branch winner signal (checked at every SE
 /// recurse-entry; does not set `budget_hit`).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn lll_aligned_search(
     scratch: &mut crate::synthesis::lattice::omega::scratch::IntScratch,
     v: [Float; 4],
+    v_mpfr: Option<&[MpFloat; 4]>,
     k: u32,
     eps: Float,
     max_solutions: usize,
@@ -417,9 +438,18 @@ fn lll_aligned_search(
     if max_solutions == 0 || k > 110 {
         return Vec::new();
     }
-    let y = uv_to_lattice_y(v, k);
     // Lenstra-style 8D enumeration (Algorithm 3.6 of arXiv:2510.05816):
     // MPFR at adaptive precision for LLL+Cholesky, f64 for the SE step.
+    // At deep ε an exact MPFR alignment vector keeps the cap center and SE
+    // dot exact below the f64 ULP.
+    if let Some(vm) = v_mpfr.filter(|_| omega_use_exact(eps)) {
+        let y_q = uv_to_lattice_y_mpfr(vm, k, scratch.prec_q);
+        return find_aligned_lattice_points_exact(
+            scratch, &y_q, k, eps, max_solutions, max_leaf_checks, max_nodes,
+            budget_hit, external_abort,
+        );
+    }
+    let y = uv_to_lattice_y(v, k);
     crate::synthesis::lattice::omega::find_aligned_lattice_points(
         scratch, &y, k, eps, max_solutions, max_leaf_checks, max_nodes,
         budget_hit, external_abort,
@@ -531,6 +561,23 @@ impl SynthesizerT {
     /// Gram + f64 GS + MPFR-128 Schnorr-Euchner + MPFR LU for the
     /// cap-center), with MPFR precision scaled to ε.
     pub fn synthesize(&self, target: Mat2) -> Option<SynthResultT> {
+        self.run(target, None)
+    }
+
+    /// Synthesize with a higher-precision target column `exact_col` (the
+    /// √det-normalized first column of the SU(2) target, e.g. from exact
+    /// rational-π angles). At deep ε the search aligns to this MPFR column
+    /// instead of the f64 chain, reaching ε below the f64 ULP wall. `target`
+    /// (f64) is still used for the diamond-distance acceptance check.
+    pub fn synthesize_with_exact_col(
+        &self,
+        target: Mat2,
+        exact_col: &[MpFloat; 4],
+    ) -> Option<SynthResultT> {
+        self.run(target, Some(exact_col))
+    }
+
+    fn run(&self, target: Mat2, exact_col: Option<&[MpFloat; 4]>) -> Option<SynthResultT> {
         // Project to SU(2): the search assumes det = 1 (see `to_su2`).
         let target = to_su2(&target);
         // 16 MiB worker stacks: the 8D path races the ζ₁₆ entries for
@@ -542,7 +589,7 @@ impl SynthesizerT {
         // Direct search starts at min_lde, not 0: no generic rotation
         // reaches ε with fewer T-gates.
         for t in self.min_lde..=self.direct_limit {
-            let result = self.try_at_lde(&target, v, t);
+            let result = self.try_at_lde(&target, v, exact_col, t);
             if result.is_some() {
                 return result;
             }
@@ -579,7 +626,7 @@ impl SynthesizerT {
         }
 
         for t in t_dc_start..=self.max_lde {
-            let result = self.try_at_lde(&target, v, t);
+            let result = self.try_at_lde(&target, v, exact_col, t);
             if result.is_some() {
                 return result;
             }
@@ -592,7 +639,13 @@ impl SynthesizerT {
     /// unproductive prefixes fast, and PASS2's full budget runs only if
     /// pass 1 actually exhausted its budget (otherwise pass 1 was already
     /// exhaustive and no solution exists at this lde).
-    fn try_at_lde(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResultT> {
+    fn try_at_lde(
+        &self,
+        target: &Mat2,
+        v: [Float; 4],
+        exact_col: Option<&[MpFloat; 4]>,
+        t: u32,
+    ) -> Option<SynthResultT> {
         let trace = crate::synthesis::diag::trace_enabled();
         if t <= self.direct_limit {
             let t_start = std::time::Instant::now();
@@ -612,7 +665,7 @@ impl SynthesizerT {
             }
             let t_start = std::time::Instant::now();
             let (result, budget_hit) =
-                self.prefix_split_search(target, v, t, PASS1_CAP, PASS1_NODE_CAP);
+                self.prefix_split_search(target, v, exact_col, t, PASS1_CAP, PASS1_NODE_CAP);
             let pass1_ms = t_start.elapsed().as_secs_f64() * 1000.0;
             if trace {
                 let s = crate::synthesis::diag::snapshot();
@@ -631,7 +684,7 @@ impl SynthesizerT {
             }
             let t_start2 = std::time::Instant::now();
             let (result2, budget_hit2) =
-                self.prefix_split_search(target, v, t, PASS2_CAP, PASS2_NODE_CAP);
+                self.prefix_split_search(target, v, exact_col, t, PASS2_CAP, PASS2_NODE_CAP);
             if trace {
                 let s = crate::synthesis::diag::snapshot();
                 trace_dump_pass(
@@ -732,10 +785,12 @@ impl SynthesizerT {
     /// returns any valid find (speed > completeness), so abort-racing is
     /// acceptable; the per-lde loop structure (hence the reported lde) is
     /// unchanged.
+    #[allow(clippy::too_many_arguments)]
     fn prefix_split_search(
         &self,
         target: &Mat2,
         v: [Float; 4],
+        exact_col: Option<&[MpFloat; 4]>,
         t: u32,
         max_leaf_checks: u64,
         max_nodes: u64,
@@ -857,6 +912,10 @@ impl SynthesizerT {
                                 return None;
                             }
                         };
+                        // Exact MPFR residual for the deep-ε alignment vector
+                        // (same √det-normalized column as v_inner, kept exact).
+                        let v_inner_mpfr: Option<[MpFloat; 4]> =
+                            exact_col.map(|col| apply_u2t_dag_to_uv_mpfr(u_l, col, scratch.prec_q));
 
                         for &odd in plan {
                             // Even inner branch: U_L · U_R ≈ target
@@ -866,8 +925,16 @@ impl SynthesizerT {
                             } else {
                                 v_inner
                             };
+                            let v_branch_mpfr: Option<[MpFloat; 4]> =
+                                v_inner_mpfr.as_ref().map(|vm| {
+                                    if odd {
+                                        apply_t_dag_to_uv_mpfr(vm, scratch.prec_q)
+                                    } else {
+                                        vm.clone()
+                                    }
+                                });
                             for sol in lll_aligned_search(
-                                scratch, v_branch, lde_inner, eps,
+                                scratch, v_branch, v_branch_mpfr.as_ref(), lde_inner, eps,
                                 DC_WALK_MAX_SOLUTIONS, max_leaf_checks,
                                 max_nodes, &budget_hit, Some(&found_abort),
                             ) {

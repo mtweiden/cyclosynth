@@ -159,6 +159,30 @@ impl Synthesizer {
         }
     }
 
+    /// Synthesize with a higher-precision target column `exact_col` — the
+    /// √det-normalized first column `[Re u00, Im u00, Re u10, Im u10]` of the
+    /// SU(2) target (e.g. from exact rational-π angles via
+    /// [`crate::synthesis::angle::su2_col_mpfr`]). Clifford+T aligns to it on
+    /// the deep-ε MPFR path; Clifford+√T uses the f64 `target` for now.
+    pub fn synthesize_su2_col(
+        &self,
+        target: Mat2,
+        exact_col: &[crate::rings::MpFloat; 4],
+    ) -> Option<SynthResult> {
+        match &self.inner {
+            Backend::T(s) => s.synthesize_with_exact_col(target, exact_col).map(|r| SynthResult {
+                gates: r.gates,
+                lde: r.lde,
+                distance: r.distance,
+            }),
+            Backend::Q(s) => s.synthesize(target).map(|r| SynthResult {
+                gates: r.gates,
+                lde: r.lde,
+                distance: r.distance,
+            }),
+        }
+    }
+
     /// Target diamond distance the synthesized circuit must come within.
     pub fn epsilon(&self) -> f64 {
         match &self.inner {
@@ -439,11 +463,7 @@ impl PySynthesizer {
         phi: &Bound<'_, PyAny>,
         lam: &Bound<'_, PyAny>,
     ) -> PyResult<Option<PySynthResult>> {
-        Ok(self.run_zyz(
-            parse_angle(phi)?.to_radians_f64(),
-            parse_angle(theta)?.to_radians_f64(),
-            parse_angle(lam)?.to_radians_f64(),
-        ))
+        Ok(self.run_zyz(parse_angle(phi)?, parse_angle(theta)?, parse_angle(lam)?))
     }
 
     /// Synthesize the SU(2) rotation `Rz(alpha)·Ry(beta)·Rz(gamma)` from its
@@ -456,11 +476,7 @@ impl PySynthesizer {
         beta: &Bound<'_, PyAny>,
         gamma: &Bound<'_, PyAny>,
     ) -> PyResult<Option<PySynthResult>> {
-        Ok(self.run_zyz(
-            parse_angle(alpha)?.to_radians_f64(),
-            parse_angle(beta)?.to_radians_f64(),
-            parse_angle(gamma)?.to_radians_f64(),
-        ))
+        Ok(self.run_zyz(parse_angle(alpha)?, parse_angle(beta)?, parse_angle(gamma)?))
     }
 
     #[getter]
@@ -496,11 +512,21 @@ impl PySynthesizer {
 
 #[cfg(feature = "python")]
 impl PySynthesizer {
-    /// Build the SU(2) target from ZYZ angles (radians) and run the search.
-    fn run_zyz(&self, alpha: f64, beta: f64, gamma: f64) -> Option<PySynthResult> {
-        let mat = crate::synthesis::angle::su2_from_zyz(alpha, beta, gamma);
+    /// Build the SU(2) target from ZYZ angles and run the search, passing the
+    /// exact MPFR target column so the deep-ε path can align below the f64 ULP
+    /// (exact for rational-π angles).
+    fn run_zyz(
+        &self,
+        alpha: crate::synthesis::angle::Angle,
+        beta: crate::synthesis::angle::Angle,
+        gamma: crate::synthesis::angle::Angle,
+    ) -> Option<PySynthResult> {
+        use crate::synthesis::angle::{su2_col_mpfr, su2_from_zyz};
+        let mat = su2_from_zyz(alpha.to_radians_f64(), beta.to_radians_f64(), gamma.to_radians_f64());
+        // 384 bits covers the search precision (≈6·log₂(1/ε)) for any ε ≳ 1e-19.
+        let col = su2_col_mpfr(alpha, beta, gamma, 384);
         let q_weight = self.inner.q_weight();
-        self.inner.synthesize(mat).map(|r| PySynthResult {
+        self.inner.synthesize_su2_col(mat, &col).map(|r| PySynthResult {
             gates: r.gates,
             lde: r.lde,
             distance: r.distance,

@@ -116,7 +116,7 @@ use std::f64::consts::PI;
                 let v_b = if odd { apply_t_dag_to_uv(v_inner) } else { v_inner };
                 let hit = AtomicBool::new(false);
                 for sol in lll_aligned_search(
-                    &mut scratch, v_b, lde_inner, eps, max_sols, u64::MAX,
+                    &mut scratch, v_b, None, lde_inner, eps, max_sols, u64::MAX,
                     50_000_000, &hit, None,
                 ) {
                     let u2t = if odd {

@@ -120,6 +120,20 @@ pub fn apply_u2t_dag_to_uv(c: &U2T, v: [f64; 4]) -> [f64; 4] {
     }
 }
 
+/// MPFR analog of [`apply_t_dag_to_uv`]: rotate the uv pair by `e^{iπ/8}`.
+pub fn apply_t_dag_to_uv_mpfr(v: &[MpFloat; 4], prec: u32) -> [MpFloat; 4] {
+    let ang = MpFloat::with_val(prec, rug::float::Constant::Pi) / 8u32;
+    let c = ang.clone().cos();
+    let s = ang.sin();
+    let m = |a: &MpFloat, b: &MpFloat| MpFloat::with_val(prec, a * b);
+    [
+        MpFloat::with_val(prec, m(&v[0], &c) - m(&v[1], &s)),
+        MpFloat::with_val(prec, m(&v[0], &s) + m(&v[1], &c)),
+        MpFloat::with_val(prec, m(&v[2], &c) - m(&v[3], &s)),
+        MpFloat::with_val(prec, m(&v[2], &s) + m(&v[3], &c)),
+    ]
+}
+
 /// MPFR analog of [`apply_u2t_dag_to_uv`]: column 1 of `C† · target` in the
 /// √det-normalized uv form, from exact ring `C` and an MPFR target column
 /// `v = [Re v1, Im v1, Re v2, Im v2]`. Preserves precision below the f64 ULP
