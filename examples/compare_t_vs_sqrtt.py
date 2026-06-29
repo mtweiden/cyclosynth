@@ -1,13 +1,4 @@
-"""Compare Clifford+T vs Clifford+√T synthesis cost on the same targets.
-
-Cost model (the crate's objective): cost = T_count + 3.5·Q_count. Clifford
-gates (H/S/X/Y/Z) are free in fault-tolerant accounting. Lower wins. The
-question is whether Clifford+√T's denser gate set saves enough T-count to pay
-for its Q gates at 3.5× the weight; the √T synthesizer runs with
-`optimize_cost=True` so it minimizes this weighted cost directly.
-
-Run: python examples/compare_t_vs_sqrtt.py
-"""
+"""Compare Clifford+T vs Clifford+√T synthesis cost on the same targets."""
 import numpy as np
 import cyclosynth
 
@@ -35,19 +26,27 @@ def haar_u3(rng):
 
 
 def main():
-    epsilon, n_targets = 1e-5, 10
+    epsilon, n_targets = 1e-7, 10
     synth_t = cyclosynth.Synthesizer(epsilon)
     synth_q = cyclosynth.Synthesizer(epsilon, sqrt_t=True, optimize_cost=True)
 
-    print(f"ε = {epsilon:.0e}, {n_targets} Haar-random U3 targets, cost = T + 3.5·Q\n")
-    header = f"{'#':>3}  {'T':>3} {'Q':>3}  {'cost_T':>7} {'cost_√T':>8}  {'win':>4}"
+    print(f"ε = {epsilon:.0e}, {n_targets} Haar-random U3 targets, cost = T + 3·Q\n")
+    header = (f"{'#':>3}  {'T':>3} {'Q':>3}  {'cost_T':>7} {'cost_√T':>8}  "
+              f"{'dist_T':>9} {'dist_√T':>9}  {'win':>4}")
     print(header)
     print("-" * len(header))
 
-    costs_t, costs_q, wins = [], [], {"T": 0, "√T": 0, "tie": 0}
+    costs_t, costs_q, dists_t, dists_q = [], [], [], []
+    wins = {"T": 0, "√T": 0, "tie": 0}
     for i in range(n_targets):
         target = haar_u3(rng)
+
+        # ========================================
+        # DOING SYNTHESIS HERE
+        # ========================================
         r_t, r_q = synth_t.synthesize(target), synth_q.synthesize(target)
+        # ========================================
+
         if not (r_t and r_q):
             print(f"{i:>3}  (no circuit within ε)")
             continue
@@ -55,12 +54,16 @@ def main():
         wins[win] += 1
         costs_t.append(r_t.cost)
         costs_q.append(r_q.cost)
+        dists_t.append(r_t.distance)
+        dists_q.append(r_q.distance)
         # r_q.t_count / r_q.q_count are the √T circuit's gate split.
         print(f"{i:>3}  {r_q.t_count:>3} {r_q.q_count:>3}  "
-              f"{r_t.cost:>7.1f} {r_q.cost:>8.1f}  {win:>4}")
+            f"{r_t.cost:>7.1f} {r_q.cost:>8.1f}  "
+            f"{r_t.distance:>9.2e} {r_q.distance:>9.2e}  {win:>4}")
 
     print(f"\navg cost:  T={np.mean(costs_t):.1f}  √T={np.mean(costs_q):.1f}  "
           f"({(np.mean(costs_q) / np.mean(costs_t) - 1) * 100:+.1f}%)")
+    print(f"avg dist:  T={np.mean(dists_t):.2e}  √T={np.mean(dists_q):.2e}  (ε={epsilon:.0e})")
     print(f"wins:  T={wins['T']}  √T={wins['√T']}  tie={wins['tie']}")
 
 
