@@ -45,6 +45,34 @@ class Synthesizer:
     def synthesize(
         self, target: npt.NDArray[np.complex128]
     ) -> SynthResult | None: ...
+    def synthesize_u3(
+        self,
+        theta: float | str,
+        phi: float | str,
+        lam: float | str,
+    ) -> SynthResult | None:
+        """Synthesize a ``U3(theta, phi, lambda)`` gate (qiskit/bqskit
+        convention) from its angles, building the SU(2) target
+        ``Rz(phi)·Ry(theta)·Rz(lambda)`` directly.
+
+        Each angle is a float in radians, or a string. A string containing
+        ``pi`` (whitespace ignored, optional ``*``) is a rational multiple of
+        π: ``"pi"``, ``"3pi"``, ``"3*pi"``, ``"pi/8"``, ``"3*pi/4"``,
+        ``"-2pi/3"``, ``"0.25pi"``. Any other string parses as a float.
+        """
+        ...
+    def synthesize_zyz(
+        self,
+        alpha: float | str,
+        beta: float | str,
+        gamma: float | str,
+    ) -> SynthResult | None:
+        """Synthesize ``Rz(alpha)·Ry(beta)·Rz(gamma)`` from ZYZ Euler angles.
+
+        Each angle accepts the same float / ``pi``-string forms as
+        :meth:`synthesize_u3`.
+        """
+        ...
     @property
     def epsilon(self) -> float: ...
     @property
