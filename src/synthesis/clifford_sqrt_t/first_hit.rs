@@ -498,11 +498,12 @@ impl SynthesizerQ {
         use crate::synthesis::diag;
         crate::synthesis::ensure_rayon_stack();
 
-        // Project to SU(2) (see `to_su2`), so the ζ₁₆-coset landing below is
-        // exact (det = 1 = ζ⁰) rather than rounding an arbitrary phase.
-        let target = to_su2(&target);
-        // Land the det exactly on a ζ₁₆ power (lossless, see
-        // `project_det_to_zeta_coset`).
+        // Land det on a ζ₁₆ power via a global phase rotation (norm-preserving;
+        // see `project_det_to_zeta_coset`). The cap requires a unit-norm target
+        // column — `unitary_to_uv_zeta` reads it directly and the
+        // reconstruction's `d` parameter carries the det-phase. At ε≈1e-8 the
+        // cap half-width ≈ ε² ≈ 1 ULP, so a sub-ULP shift of the column flips
+        // rim membership.
         let target = project_det_to_zeta_coset(&target);
 
         if self.optimize_cost {
