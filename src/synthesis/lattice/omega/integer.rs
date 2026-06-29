@@ -15,7 +15,7 @@ use std::sync::atomic::AtomicBool;
 
 use super::cholesky_lu::{cholesky_f64, lu_solve_int_inplace};
 use super::lll::LllResult;
-use super::q_metric::{build_q_int, build_q_mpfr};
+use super::q_metric::{build_q_int, build_q_mpfr_y};
 use super::scratch::{rfv, IntScratch};
 use crate::rings::Float;
 
@@ -67,12 +67,35 @@ pub fn find_aligned_lattice_points(
     .solutions
 }
 
+/// As [`find_aligned_lattice_points`], but the alignment vector `y` is given in
+/// MPFR (an exact target column at deep ε), so the cap center and SE dot keep
+/// precision below the f64 ULP.
+#[allow(clippy::too_many_arguments)]
+pub fn find_aligned_lattice_points_exact(
+    scratch: &mut IntScratch,
+    y_q: &[MpFloat; 8],
+    k: u32,
+    eps: Float,
+    max_solutions: usize,
+    max_leaf_checks: u64,
+    max_nodes: u64,
+    budget_hit: &AtomicBool,
+    external_abort: Option<&AtomicBool>,
+) -> Vec<[i64; 8]> {
+    scratch.reset_basis();
+    find_aligned_outcome_mpfr(
+        scratch, y_q, k, eps, max_solutions, max_leaf_checks,
+        max_nodes, budget_hit, external_abort,
+    )
+    .solutions
+}
+
 /// Per-(k, ε) warm seed (8D mirror of the 16D `warm_seed_q_base`):
 /// Q_base is prefix-independent and carries most of the shared
 /// reduction work, so seeding each prefix's LLL with its reduced basis
 /// cuts iterations ~40%. Computed lazily once per scratch per (k, ε);
 /// rebuilds the real prefix Q afterwards.
-fn warm_seed_q_base(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float) {
+fn warm_seed_q_base(scratch: &mut IntScratch, y_q: &[MpFloat; 8], k: u32, eps: Float) {
     let seed_key = (k, eps.to_bits());
     if scratch.q_base_seed_key != Some(seed_key) {
         for i in 0..8 {
@@ -87,7 +110,7 @@ fn warm_seed_q_base(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
             _ => None, // overflow/cap: fall back to cold starts at this key
         };
         scratch.q_base_seed_key = Some(seed_key);
-        build_q_mpfr(scratch, y, k, eps);
+        build_q_mpfr_y(scratch, y_q, k, eps);
         build_q_int(scratch);
     }
 }
@@ -106,6 +129,28 @@ fn warm_seed_q_base(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
 pub fn find_aligned_lattice_points_outcome(
     scratch: &mut IntScratch,
     y: &[Float; 8],
+    k: u32,
+    eps: Float,
+    max_solutions: usize,
+    max_leaf_checks: u64,
+    max_nodes: u64,
+    budget_hit: &AtomicBool,
+    external_abort: Option<&AtomicBool>,
+) -> LatticeSearchOutcome {
+    let y_q: [MpFloat; 8] = std::array::from_fn(|i| MpFloat::with_val(scratch.prec_q, y[i]));
+    find_aligned_outcome_mpfr(
+        scratch, &y_q, k, eps, max_solutions, max_leaf_checks, max_nodes,
+        budget_hit, external_abort,
+    )
+}
+
+/// MPFR-`y` core of [`find_aligned_lattice_points_outcome`]: the alignment
+/// vector carries full precision, so the cap center and the SE alignment dot
+/// stay exact below the f64 ULP. `y_q` is at `scratch.prec_q`.
+#[allow(clippy::too_many_arguments)]
+pub fn find_aligned_outcome_mpfr(
+    scratch: &mut IntScratch,
+    y_q: &[MpFloat; 8],
     k: u32,
     eps: Float,
     max_solutions: usize,
@@ -138,20 +183,20 @@ pub fn find_aligned_lattice_points_outcome(
         MpFloat::with_val(prec, 1.0) - eps_rf.clone() * &eps_rf;
     let threshold_xy_mpfr =
         MpFloat::with_val(prec, &two_to_2k * &one_minus_eps_sq) / 4u32;
-    let y_mpfr: [MpFloat; 8] = std::array::from_fn(|i| MpFloat::with_val(prec, y[i]));
+    let y_mpfr: [MpFloat; 8] = std::array::from_fn(|i| MpFloat::with_val(prec, &y_q[i]));
 
     let trace = crate::synthesis::diag::trace_enabled();
 
     // Step 1: build Q in MPFR + integer snapshot.
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
-    build_q_mpfr(scratch, y, k, eps);
+    build_q_mpfr_y(scratch, y_q, k, eps);
     build_q_int(scratch);
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_BUILD_NS
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 
-    warm_seed_q_base(scratch, y, k, eps);
+    warm_seed_q_base(scratch, y_q, k, eps);
 
     // Step 2: L²-LLL (f64 GS over exact i256 Gram + INSERT semantics),
     // warm-seeded when the Q_base reduction converged.

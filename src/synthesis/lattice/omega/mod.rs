@@ -25,7 +25,7 @@ pub mod scratch;
 pub mod se;
 
 
-pub use integer::find_aligned_lattice_points;
+pub use integer::{find_aligned_lattice_points, find_aligned_lattice_points_exact};
 
 #[cfg(test)]
 mod tests {
