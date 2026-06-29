@@ -83,6 +83,30 @@ mod tests {
         assert!(sols.is_empty(), "no leaf is reachable within 1 node");
     }
 
+    /// The MPFR-`y` entry must reproduce the f64 entry exactly when handed the
+    /// f64 alignment vector lifted to MPFR (same numbers, same walk).
+    #[test]
+    fn exact_entry_matches_f64() {
+        use crate::rings::MpFloat;
+        for (k, eps) in [(14u32, 1e-3_f64), (21, 1e-5)] {
+            let y = realistic_y(k);
+            let mut s_f64 = scratch::IntScratch::new(eps);
+            let bh = AtomicBool::new(false);
+            let sols_f64 = find_aligned_lattice_points(
+                &mut s_f64, &y, k, eps, usize::MAX, u64::MAX, u64::MAX, &bh, None,
+            );
+
+            let mut s_exact = scratch::IntScratch::new(eps);
+            let prec = s_exact.prec_q;
+            let y_q: [MpFloat; 8] = std::array::from_fn(|i| MpFloat::with_val(prec, y[i]));
+            let bh2 = AtomicBool::new(false);
+            let sols_exact = find_aligned_lattice_points_exact(
+                &mut s_exact, &y_q, k, eps, usize::MAX, u64::MAX, u64::MAX, &bh2, None,
+            );
+            assert_eq!(sols_f64, sols_exact, "k={k} eps={eps}: exact-y must match f64-y");
+        }
+    }
+
     /// A pre-set external abort must return immediately with no solutions
     /// and must NOT report a budget hit.
     #[test]
