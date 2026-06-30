@@ -144,17 +144,9 @@ pub fn i256_log2_ceil(v: &i256) -> i32 {
         return -1;
     }
     let abs = if *v < zero { -*v } else { *v };
-    let bytes = abs.to_le_bytes();
-    let mut leading_zeros: u32 = 0;
-    for byte in bytes.iter().rev() {
-        if *byte == 0 {
-            leading_zeros += 8;
-        } else {
-            leading_zeros += byte.leading_zeros();
-            break;
-        }
-    }
-    (256 - leading_zeros as i32) - 1
+    // Index of the highest set bit (= ⌊log₂|v|⌋). `leading_zeros` is a
+    // limb-wise count-leading-zeros, avoiding a 32-byte materialization.
+    255 - abs.leading_zeros() as i32
 }
 
 // ─── Dimension-generic integer-Gram kernels ─────────────────────────────────
@@ -168,12 +160,19 @@ pub fn i256_log2_ceil(v: &i256) -> i32 {
 // MPFR GS at d=16).
 
 /// `true` if any Gram entry exceeds `2^GRAM_OVERFLOW_THRESHOLD_BITS`.
+///
+/// Runs once per LLL iteration over all D² entries, so it sidesteps
+/// `i256_log2_ceil` entirely: `⌊log₂|g|⌋ > 240` is exactly `|g| ≥ 2^241`, a
+/// pair of i256 comparisons against precomputed `±2^241` bounds (the first
+/// short-circuits for the common in-range entry).
 #[inline]
 pub fn gram_overflow_check<const D: usize>(gram: &[[i256; D]; D]) -> bool {
-    let thresh = GRAM_OVERFLOW_THRESHOLD_BITS as i32;
+    let pos = i256::from_i64(1).wrapping_shl(GRAM_OVERFLOW_THRESHOLD_BITS + 1);
+    let neg = -pos;
     for i in 0..D {
         for j in 0..D {
-            if i256_log2_ceil(&gram[i][j]) > thresh {
+            let g = gram[i][j];
+            if g >= pos || g <= neg {
                 return true;
             }
         }
@@ -364,4 +363,98 @@ pub fn i256_to_rfloat(v: i256, dst: &mut MpFloat) {
         mpfr::set_z(dst.as_raw_mut(), &mpz as *const _, mpfr::rnd_t::RNDN);
     }
     // limbs goes out of scope; mpfr::set_z has already copied the bits.
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::*;
+
+    /// The pre-optimization `i256_log2_ceil` (byte-loop) as a reference
+    /// oracle for the `leading_zeros` and direct-comparison rewrites.
+    fn ref_log2(v: &i256) -> i32 {
+        let zero = i256::from_i64(0);
+        if *v == zero {
+            return -1;
+        }
+        let abs = if *v < zero { -*v } else { *v };
+        let bytes = abs.to_le_bytes();
+        let mut lz: u32 = 0;
+        for byte in bytes.iter().rev() {
+            if *byte == 0 {
+                lz += 8;
+            } else {
+                lz += byte.leading_zeros();
+                break;
+            }
+        }
+        (256 - lz as i32) - 1
+    }
+
+    #[test]
+    fn log2_ceil_matches_byte_loop() {
+        for e in 0..255u32 {
+            let p = i256::from_i64(1).wrapping_shl(e);
+            assert_eq!(i256_log2_ceil(&p), e as i32, "2^{e}");
+            assert_eq!(i256_log2_ceil(&p), ref_log2(&p), "2^{e}");
+            assert_eq!(i256_log2_ceil(&(-p)), ref_log2(&(-p)), "-2^{e}");
+        }
+        assert_eq!(i256_log2_ceil(&i256::from_i64(0)), -1);
+
+        let mut s = 0x1234_5678_9abc_def1u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for _ in 0..5000 {
+            let mut bytes = [0u8; 32];
+            for b in bytes.iter_mut() {
+                *b = (next() & 0xff) as u8;
+            }
+            let v = i256::from_le_bytes(bytes);
+            assert_eq!(i256_log2_ceil(&v), ref_log2(&v));
+        }
+    }
+
+    #[test]
+    fn overflow_check_matches_log2_threshold() {
+        let thresh = GRAM_OVERFLOW_THRESHOLD_BITS as i32;
+
+        for &e in &[200u32, 239, 240, 241, 242, 255] {
+            let p = i256::from_i64(1).wrapping_shl(e);
+            let want = ref_log2(&p) > thresh;
+            let mut g = [[i256::from_i64(0); 8]; 8];
+            g[3][5] = p;
+            assert_eq!(gram_overflow_check(&g), want, "2^{e}");
+            g[3][5] = -p;
+            assert_eq!(gram_overflow_check(&g), want, "-2^{e}");
+        }
+
+        // Exact boundary: 2^241 - 1 is in range, 2^241 overflows.
+        let mut g = [[i256::from_i64(0); 8]; 8];
+        g[0][0] = i256::from_i64(1).wrapping_shl(241) - i256::from_i64(1);
+        assert!(!gram_overflow_check(&g));
+        g[0][0] = i256::from_i64(1).wrapping_shl(241);
+        assert!(gram_overflow_check(&g));
+
+        let mut s = 0xdead_beef_cafe_1234u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        for _ in 0..3000 {
+            let mut g = [[i256::from_i64(0); 8]; 8];
+            for i in 0..8 {
+                for j in 0..8 {
+                    let shift = (next() % 250) as u32;
+                    g[i][j] = i256::from_i64((next() as i64) | 1).wrapping_shl(shift);
+                }
+            }
+            let want = (0..8).any(|i| (0..8).any(|j| ref_log2(&g[i][j]) > thresh));
+            assert_eq!(gram_overflow_check(&g), want);
+        }
+    }
 }
