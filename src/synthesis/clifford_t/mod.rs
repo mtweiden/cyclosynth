@@ -460,7 +460,10 @@ fn lll_aligned_search(
 
 /// Optimal D&C split exponent (Proposition 3.13):
 /// `t' = max(0, ⌈t − 5/2·log₂(1/ε)⌉)`. `t' > 0` (D&C beats direct) once
-/// `t > 5/2·log₂(1/ε)`; `t' = 0` for ε ≥ 1.
+/// `t > 5/2·log₂(1/ε)`; `t' = 0` for ε ≥ 1. The 5/2 balances prefix-set
+/// growth `|L_{t'}| ≈ 2^{t'}` against the inner search cost and is a sharp
+/// optimum — smaller explodes the prefix count, larger explodes the inner
+/// Schnorr-Euchner walk.
 fn optimal_t_prime(t: u32, eps: Float) -> u32 {
     if eps >= 1.0 {
         return 0;
@@ -586,6 +589,18 @@ impl SynthesizerT {
         let raw_uv = unitary_to_uv(&target);
         let v = normalize4(raw_uv).unwrap_or([1.0, 0.0, 0.0, 0.0]);
 
+        // Det-parity gate (Lemma 3.10 corollary): a prefix U_L ∈ L_{t'} has
+        // parity(det U_L) = t' mod 2 (T contributes ζ, Cliffords are even
+        // ζ-powers). `try_unitary_to_uv(U_L†·target)` succeeds only when
+        // parity(det U_L) == parity(det target), so every level whose t'
+        // parity mismatches the target is structurally empty. Skipping it
+        // avoids generating and matmul-rejecting its entire prefix list.
+        let target_parity = det_zeta_parity(&target);
+        let parity_ok = |t_prime: u32| {
+            t_prime == 0
+                || target_parity.map_or(true, |par| (t_prime % 2) as u8 == par)
+        };
+
         // Direct search starts at min_lde, not 0: no generic rotation
         // reaches ε with fewer T-gates.
         for t in self.min_lde..=self.direct_limit {
@@ -617,7 +632,11 @@ impl SynthesizerT {
                 (t_dc_start..=horizon)
                     .filter_map(|t| {
                         let tp = optimal_t_prime(t, self.epsilon);
-                        if tp > 0 && seen.insert(tp) { Some(tp) } else { None }
+                        if tp > 0 && parity_ok(tp) && seen.insert(tp) {
+                            Some(tp)
+                        } else {
+                            None
+                        }
                     })
                     .collect()
             };
@@ -626,6 +645,9 @@ impl SynthesizerT {
         }
 
         for t in t_dc_start..=self.max_lde {
+            if !parity_ok(optimal_t_prime(t, self.epsilon)) {
+                continue;
+            }
             let result = self.try_at_lde(&target, v, exact_col, t);
             if result.is_some() {
                 return result;
