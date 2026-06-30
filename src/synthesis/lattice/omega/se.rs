@@ -40,6 +40,32 @@ pub fn rfloat_to_se(r: &MpFloat) -> MpFloat {
     MpFloat::with_val(SE_PREC, r)
 }
 
+/// Per-walk reusable MPFR scratch for [`recurse`]. These eight temporaries are
+/// recomputed (via `assign`) at every node and never read across the recursive
+/// call, so one shared set passed by `&mut` down the recursion replaces ~10
+/// `MpFloat::with_val` allocations per node. (`tail` and `new_partial` are NOT
+/// here: they must persist across the child call, so they stay per-frame.)
+struct SharedTemps {
+    tmp: MpFloat,
+    diff: MpFloat,
+    prod: MpFloat,
+    zd_rf: MpFloat,
+    level: MpFloat,
+    level_sq: MpFloat,
+    center: MpFloat,
+    scratch_c: MpFloat,
+}
+
+impl SharedTemps {
+    fn new() -> Self {
+        let z = || MpFloat::with_val(SE_PREC, 0.0_f64);
+        SharedTemps {
+            tmp: z(), diff: z(), prod: z(), zd_rf: z(),
+            level: z(), level_sq: z(), center: z(), scratch_c: z(),
+        }
+    }
+}
+
 // ─── 8D Schnorr-Euchner enumeration ──────────────────────────────────────────
 
 /// Enumerate integer 8-tuples z ∈ ℤ⁸ satisfying ‖R·(z − z_c)‖² ≤ bound, in
@@ -88,6 +114,7 @@ where
     let mut z = [0i64; 8];
     let result = std::cell::RefCell::new(None);
     let zero = MpFloat::with_val(SE_PREC, 0.0_f64);
+    let mut shared = SharedTemps::new();
 
     recurse(
         7,
@@ -104,6 +131,7 @@ where
         budget_exhausted,
         &mut callback,
         &result,
+        &mut shared,
     );
     result.into_inner()
 }
@@ -124,6 +152,7 @@ fn recurse<F>(
     budget_exhausted: &AtomicBool,
     callback: &mut F,
     result: &std::cell::RefCell<Option<[i64; 8]>>,
+    shared: &mut SharedTemps,
 ) where
     F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
 {
@@ -149,32 +178,26 @@ fn recurse<F>(
     let d = depth as usize;
     let r_dd = &r_chol[d][d];
 
-    // Per-call scratch pre-allocated once, reused inside the inner loop via
-    // assign() patterns. ~10 allocations per recurse call instead of per
-    // inner iteration.
+    // `tail` and `new_partial` must survive the recursive call (tail is reused
+    // across this frame's offset loop; new_partial is read by the child as its
+    // `partial`), so they stay per-frame. Every other temporary lives in
+    // `shared` (reused via assign, recomputed each node — never read across the
+    // child call), replacing ~10 allocations per node with two.
     let mut tail = MpFloat::with_val(SE_PREC, 0.0_f64);
-    let mut tmp = MpFloat::with_val(SE_PREC, 0.0_f64);
-    let mut diff = MpFloat::with_val(SE_PREC, 0.0_f64);
-    let mut prod = MpFloat::with_val(SE_PREC, 0.0_f64);
-    let mut zd_rf = MpFloat::with_val(SE_PREC, 0.0_f64);
-    let mut level = MpFloat::with_val(SE_PREC, 0.0_f64);
-    let mut level_sq = MpFloat::with_val(SE_PREC, 0.0_f64);
     let mut new_partial = MpFloat::with_val(SE_PREC, 0.0_f64);
 
     // Structural guard against a degenerate diagonal (r_chol PD-ness should
     // exclude this, but tolerate it gracefully).
-    tmp.assign(r_dd.clone().abs());
-    if tmp.to_f64() < 1e-30 {
-        z[d] = z_c[d]
-            .clone()
-            .round()
-            .to_integer()
-            .and_then(|n| n.to_i64())
-            .unwrap_or(0);
+    shared.tmp.assign(r_dd);
+    shared.tmp.abs_mut();
+    if shared.tmp.to_f64() < 1e-30 {
+        shared.scratch_c.assign(&z_c[d]);
+        shared.scratch_c.round_mut();
+        z[d] = shared.scratch_c.to_integer().and_then(|n| n.to_i64()).unwrap_or(0);
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             partial_eucl, z, partial, abort, node_budget, budget_exhausted,
-            callback, result,
+            callback, result, shared,
         );
         return;
     }
@@ -186,17 +209,17 @@ fn recurse<F>(
         // (ε=1e-8, lde_inner=34) in Euclid-pathological frames, and a ±2-ulp
         // error here times R[d][j] is an O(1) error in `level` against an
         // O(1) span.
-        diff.assign(z[j]);
-        diff -= &z_c[j];
-        prod.assign(&r_chol[d][j] * &diff);
-        tail += &prod;
+        shared.diff.assign(z[j]);
+        shared.diff -= &z_c[j];
+        shared.prod.assign(&r_chol[d][j] * &shared.diff);
+        tail += &shared.prod;
     }
 
-    tmp.assign(bound - partial);
-    if tmp.to_f64() < 0.0 {
+    shared.tmp.assign(bound - partial);
+    if shared.tmp.to_f64() < 0.0 {
         return;
     }
-    let rem_sqrt_f = tmp.to_f64().sqrt();
+    let rem_sqrt_f = shared.tmp.to_f64().sqrt();
 
     // Iteration bounds. The CENTER must be computed and rounded in MPFR:
     // with |z| beyond f64's exact-integer range the old f64 center
@@ -208,17 +231,21 @@ fn recurse<F>(
     // O(1) and stays f64.
     let r_dd_f = r_dd.to_f64();
     let span = rem_sqrt_f / r_dd_f.abs();
-    let center = {
-        let mut c = MpFloat::with_val(SE_PREC, &tail / r_dd);
-        c = MpFloat::with_val(SE_PREC, &z_c[d] - &c);
-        c
-    };
-    let to_i64 = |v: MpFloat| -> Option<i64> { v.to_integer().and_then(|n| n.to_i64()) };
-    let (Some(z_low), Some(z_high), Some(z_mid)) = (
-        to_i64(MpFloat::with_val(SE_PREC, &center - span).ceil()),
-        to_i64(MpFloat::with_val(SE_PREC, &center + span).floor()),
-        to_i64(center.clone().round()),
-    ) else {
+    // center = z_c[d] − tail/r_dd, held in shared.center (scratch_c is the
+    // intermediate tail/r_dd term, then reused for the round below).
+    shared.scratch_c.assign(&tail / r_dd);
+    shared.center.assign(&z_c[d] - &shared.scratch_c);
+    let to_i64 = |v: &MpFloat| -> Option<i64> { v.to_integer().and_then(|n| n.to_i64()) };
+    shared.tmp.assign(&shared.center - span);
+    shared.tmp.ceil_mut();
+    let z_low = to_i64(&shared.tmp);
+    shared.tmp.assign(&shared.center + span);
+    shared.tmp.floor_mut();
+    let z_high = to_i64(&shared.tmp);
+    shared.scratch_c.assign(&shared.center);
+    shared.scratch_c.round_mut();
+    let z_mid = to_i64(&shared.scratch_c);
+    let (Some(z_low), Some(z_high), Some(z_mid)) = (z_low, z_high, z_mid) else {
         return;
     };
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
@@ -254,14 +281,14 @@ fn recurse<F>(
         }
 
         // level = r_dd·(zd − z_c[d]) + tail; exact i64 lift (see tail loop).
-        zd_rf.assign(zd);
-        diff.assign(&zd_rf - &z_c[d]);
-        level.assign(r_dd * &diff);
-        level += &tail;
-        level_sq.assign(&level * &level);
-        new_partial.assign(partial + &level_sq);
-        tmp.assign(&new_partial - bound);
-        if tmp.to_f64() > 1e-9 {
+        shared.zd_rf.assign(zd);
+        shared.diff.assign(&shared.zd_rf - &z_c[d]);
+        shared.level.assign(r_dd * &shared.diff);
+        shared.level += &tail;
+        shared.level_sq.assign(&shared.level * &shared.level);
+        new_partial.assign(partial + &shared.level_sq);
+        shared.tmp.assign(&new_partial - bound);
+        if shared.tmp.to_f64() > 1e-9 {
             continue;
         }
 
@@ -285,7 +312,7 @@ fn recurse<F>(
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             new_partial_eucl, z, &new_partial, abort, node_budget,
-            budget_exhausted, callback, result,
+            budget_exhausted, callback, result, shared,
         );
     }
 }
