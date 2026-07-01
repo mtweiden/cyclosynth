@@ -1,9 +1,10 @@
 //! Compiler-enforced contract shared by the per-ring lattice backends:
 //! [`Omega`] (Z[ω], d=8, Clifford+T) and [`Zeta`] (Z[ζ_16], d=16, Clifford+√T).
 //!
-//! Only the structurally-identical lattice core is captured here — the
-//! exact-i256 Gram recompute and the L²-LLL reduction, plus the dimension and
-//! scratch type. The ring-specific pieces (building the anisotropic Q-metric
+//! Captures the dimension-only-different core: the dimension and scratch type,
+//! scratch build/reset, the exact-i256 Gram + L²-LLL reduction, the
+//! unimodularity det check, and the f64 Cholesky + LU cap-center solve. The
+//! ring-specific pieces (building the anisotropic Q-metric
 //! from a target, and the prefix/enumeration strategy) stay in each backend:
 //! their signatures genuinely differ — the target is a 4-vector for √T and an
 //! 8-vector for T — and unifying them produces a leaky abstraction. This
@@ -30,6 +31,21 @@ pub trait LatticeBackend {
     /// L²-LLL-reduce the basis from a clean start (reset → Gram → reduce) at
     /// the precision this ring requires.
     fn run_lll(scratch: &mut Self::Scratch) -> LllResult;
+
+    /// Fresh per-call working set for tolerance `eps`.
+    fn new_scratch(eps: f64) -> Self::Scratch;
+
+    /// Reset the basis to the identity (to reuse a scratch across prefixes).
+    fn reset_basis(scratch: &mut Self::Scratch);
+
+    /// Determinant of the current basis, or `None` on integer overflow.
+    fn det_exact(scratch: &Self::Scratch) -> Option<i64>;
+
+    /// f64 Cholesky of the post-LLL Gram; `false` if not positive-definite.
+    fn cholesky_f64(scratch: &mut Self::Scratch) -> bool;
+
+    /// Solve for the cap-center in lattice coords; `false` on singular LU.
+    fn lu_solve_int_inplace(scratch: &mut Self::Scratch) -> bool;
 }
 
 /// Z[ω] / Clifford+T, 8-dimensional.
@@ -45,6 +61,18 @@ impl LatticeBackend for Omega {
 
     fn run_lll(scratch: &mut Self::Scratch) -> LllResult {
         super::omega::lll::lll_l2(scratch)
+    }
+
+    fn new_scratch(eps: f64) -> Self::Scratch { super::omega::scratch::IntScratch::new(eps) }
+    fn reset_basis(scratch: &mut Self::Scratch) { scratch.reset_basis() }
+    fn det_exact(scratch: &Self::Scratch) -> Option<i64> {
+        super::omega::cholesky_lu::det_exact(&scratch.basis)
+    }
+    fn cholesky_f64(scratch: &mut Self::Scratch) -> bool {
+        super::omega::cholesky_lu::cholesky_f64(scratch)
+    }
+    fn lu_solve_int_inplace(scratch: &mut Self::Scratch) -> bool {
+        super::omega::cholesky_lu::lu_solve_int_inplace(scratch)
     }
 }
 
@@ -62,6 +90,18 @@ impl LatticeBackend for Zeta {
     fn run_lll(scratch: &mut Self::Scratch) -> LllResult {
         super::zeta::lll::run_lll(scratch)
     }
+
+    fn new_scratch(eps: f64) -> Self::Scratch { super::zeta::scratch::IntScratch16::new(eps) }
+    fn reset_basis(scratch: &mut Self::Scratch) { scratch.reset_basis() }
+    fn det_exact(scratch: &Self::Scratch) -> Option<i64> {
+        super::zeta::cholesky_lu::det_exact(&scratch.basis)
+    }
+    fn cholesky_f64(scratch: &mut Self::Scratch) -> bool {
+        super::zeta::cholesky_lu::cholesky_f64(scratch)
+    }
+    fn lu_solve_int_inplace(scratch: &mut Self::Scratch) -> bool {
+        super::zeta::cholesky_lu::lu_solve_int_inplace(scratch)
+    }
 }
 
 #[cfg(test)]
@@ -78,5 +118,19 @@ mod tests {
     fn backends_expose_their_dimension() {
         assert_eq!(dim::<Omega>(), 8);
         assert_eq!(dim::<Zeta>(), 16);
+    }
+
+    // Exercises the scratch primitives generically, so a signature drift in
+    // either backend's new/reset breaks the build here.
+    fn build_reset<B: LatticeBackend>(eps: f64) -> B::Scratch {
+        let mut s = B::new_scratch(eps);
+        B::reset_basis(&mut s);
+        s
+    }
+
+    #[test]
+    fn backends_build_and_reset_scratch() {
+        let _o = build_reset::<Omega>(1e-5);
+        let _z = build_reset::<Zeta>(1e-5);
     }
 }
