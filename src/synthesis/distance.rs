@@ -28,13 +28,13 @@ use rug::Assign;
 use crate::rings::MpFloat;
 
 use crate::matrix::{U2T, U2Q};
-use crate::rings::types::{int_to_f64, Float};
+use crate::rings::types::int_to_f64;
 use crate::rings::{ZOmega, ZZeta};
 
 /// A 2×2 matrix of complex f64 values — the synthesizer's representation of
 /// arbitrary unitary inputs (target matrices) and float-converted Clifford+T
 /// elements alike.
-pub type Mat2 = [[Complex<Float>; 2]; 2];
+pub type Mat2 = [[Complex<f64>; 2]; 2];
 
 /// Project a 2×2 unitary onto SU(2): `U' = U / √det(U)`, so `det(U') = 1`.
 /// The search assumes an SU(2) target, so a U(2) input (det ≠ 1) otherwise
@@ -64,7 +64,7 @@ pub fn to_su2(u: &Mat2) -> Mat2 {
 /// Equivalent to `1 − |tr|²/4` for exactly-unitary inputs but precision-
 /// stable down to f64 epsilon (~10⁻¹⁶) and non-negative by construction
 /// for any inputs.
-pub fn diamond_distance_float(a: &Mat2, b: &Mat2) -> Float {
+pub fn diamond_distance_float(a: &Mat2, b: &Mat2) -> f64 {
     let tr = a[0][0] * b[0][0].conj()
         + a[0][1] * b[0][1].conj()
         + a[1][0] * b[1][0].conj()
@@ -77,7 +77,7 @@ pub fn diamond_distance_float(a: &Mat2, b: &Mat2) -> Float {
     } else {
         Complex::new(1.0, 0.0)
     };
-    let mut fro_sq: Float = 0.0;
+    let mut fro_sq: f64 = 0.0;
     for i in 0..2 {
         for j in 0..2 {
             let diff = a[i][j] - phi * b[i][j];
@@ -93,7 +93,7 @@ pub fn diamond_distance_float(a: &Mat2, b: &Mat2) -> Float {
 /// against the f64 algebraic version. `prec` is the working precision in
 /// bits (128 recommended — there the trace formula's cancellation is well
 /// below the noise floor for any ε we care about).
-pub fn diamond_distance_float_mpfr(a: &Mat2, b: &Mat2, prec: u32) -> Float {
+pub fn diamond_distance_float_mpfr(a: &Mat2, b: &Mat2, prec: u32) -> f64 {
     let mut tr_re = MpFloat::with_val(prec, 0.0);
     let mut tr_im = MpFloat::with_val(prec, 0.0);
     let mut tmp = MpFloat::with_val(prec, 0.0);
@@ -153,7 +153,7 @@ pub fn diamond_distance_float_mpfr(a: &Mat2, b: &Mat2, prec: u32) -> Float {
 /// deviates from 2 by ~10⁻¹⁶.
 ///
 /// Cost: ~2 μs/call. Fires only on SE hits, ~100× per `synthesize` call.
-pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
+pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> f64 {
     let prec: u32 = 128;
     let two = MpFloat::with_val(prec, 2.0);
     let inv_sqrt2 = MpFloat::with_val(prec, 1.0) / two.clone().sqrt();
@@ -259,7 +259,7 @@ pub(crate) fn diamond_distance_u2t_float(u: &U2T, target: &Mat2) -> Float {
 /// entry directly (basis `ζ^k = (cos kπ/8, sin kπ/8)`) instead of through
 /// `to_float()`, and using the same Frobenius `D² = q(8−q)/16` reformulation.
 /// ~3 μs/call (vs ~2 for U2T — twice the ring coefficients).
-pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
+pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> f64 {
     use std::f64::consts::PI;
     let prec: u32 = 128;
     let two = MpFloat::with_val(prec, 2.0);
@@ -289,7 +289,7 @@ pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> Float {
     // Convert one ZZeta to a (re, im) pair at *unit* scale (already
     // divided by √2^k). For random U(2) targets the entries are O(1).
     let zzeta_to_mpfr_unit = |z: &ZZeta| -> (MpFloat, MpFloat) {
-        let coeffs: [Float; 8] = [
+        let coeffs: [f64; 8] = [
             int_to_f64(z.a), int_to_f64(z.b), int_to_f64(z.c), int_to_f64(z.d),
             int_to_f64(z.e), int_to_f64(z.f), int_to_f64(z.g), int_to_f64(z.h),
         ];

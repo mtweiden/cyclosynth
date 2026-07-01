@@ -17,7 +17,6 @@ use super::cholesky_lu::{cholesky_f64, lu_solve_int_inplace};
 use super::lll::LllResult;
 use super::q_metric::{build_q_int, build_q_mpfr_y};
 use super::scratch::{rfv, IntScratch};
-use crate::rings::Float;
 
 /// `should_escalate` is set when the i256 Gram overflowed during LLL
 /// (transient B-growth at very deep ε beyond what `TARGET_BITS = 180`
@@ -50,9 +49,9 @@ fn se_bound() -> f64 {
 #[allow(clippy::too_many_arguments)]
 pub fn find_aligned_lattice_points(
     scratch: &mut IntScratch,
-    y: &[Float; 8],
+    y: &[f64; 8],
     k: u32,
-    eps: Float,
+    eps: f64,
     max_solutions: usize,
     max_leaf_checks: u64,
     max_nodes: u64,
@@ -75,7 +74,7 @@ pub fn find_aligned_lattice_points_exact(
     scratch: &mut IntScratch,
     y_q: &[MpFloat; 8],
     k: u32,
-    eps: Float,
+    eps: f64,
     max_solutions: usize,
     max_leaf_checks: u64,
     max_nodes: u64,
@@ -95,7 +94,7 @@ pub fn find_aligned_lattice_points_exact(
 /// reduction work, so seeding each prefix's LLL with its reduced basis
 /// cuts iterations ~40%. Computed lazily once per scratch per (k, ε);
 /// rebuilds the real prefix Q afterwards.
-fn warm_seed_q_base(scratch: &mut IntScratch, y_q: &[MpFloat; 8], k: u32, eps: Float) {
+fn warm_seed_q_base(scratch: &mut IntScratch, y_q: &[MpFloat; 8], k: u32, eps: f64) {
     let seed_key = (k, eps.to_bits());
     if scratch.q_base_seed_key != Some(seed_key) {
         for i in 0..8 {
@@ -128,9 +127,9 @@ fn warm_seed_q_base(scratch: &mut IntScratch, y_q: &[MpFloat; 8], k: u32, eps: F
 #[allow(clippy::too_many_arguments)]
 pub fn find_aligned_lattice_points_outcome(
     scratch: &mut IntScratch,
-    y: &[Float; 8],
+    y: &[f64; 8],
     k: u32,
-    eps: Float,
+    eps: f64,
     max_solutions: usize,
     max_leaf_checks: u64,
     max_nodes: u64,
@@ -148,7 +147,7 @@ pub fn find_aligned_lattice_points_outcome(
 /// empty, non-escalating outcome. (The `GramOverflow` case escalates, so it
 /// stays inline.)
 #[cold]
-fn bail(eps: Float, k: u32, msg: std::fmt::Arguments) -> LatticeSearchOutcome {
+fn bail(eps: f64, k: u32, msg: std::fmt::Arguments) -> LatticeSearchOutcome {
     eprintln!("[lattice] {msg} at eps={eps:e}, k={k}; bailing.");
     LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false }
 }
@@ -161,7 +160,7 @@ pub fn find_aligned_outcome_mpfr(
     scratch: &mut IntScratch,
     y_q: &[MpFloat; 8],
     k: u32,
-    eps: Float,
+    eps: f64,
     max_solutions: usize,
     max_leaf_checks: u64,
     max_nodes: u64,
@@ -387,7 +386,7 @@ mod tests {
     use super::super::scratch::IntScratch;
     use i256::i256;
 
-    fn realistic_y(k: u32) -> [Float; 8] {
+    fn realistic_y(k: u32) -> [f64; 8] {
         let r2 = 1.0 / 2.0_f64.sqrt();
         // 2^(k/2-1) — for k > 63 we can't do `(1u64 << k) as f64`, use powi
         let s = 2.0_f64.powi(k as i32 / 2 - 1);
@@ -408,7 +407,7 @@ mod tests {
     /// Verify build_q_int produces an i256 matrix that, when scaled back to
     /// f64, matches the MPFR Q to within rounding error (≤ 2^-(TARGET_BITS-2)
     /// relative for max-magnitude entries).
-    fn check_int_q_matches_mpfr(eps: Float, k: u32) {
+    fn check_int_q_matches_mpfr(eps: f64, k: u32) {
         let y = realistic_y(k);
         let mut s = IntScratch::new(eps);
         build_q_mpfr(&mut s, &y, k, eps);
@@ -562,7 +561,7 @@ mod tests {
     /// (unimodular basis), (b) post-conditions of an L³-reduced basis
     /// (size-reduced + Lovász). This is the invariant-based validation the
     /// critic mandated for Task #60.
-    fn check_l2_lll(eps: Float, k: u32) -> LllResult {
+    fn check_l2_lll(eps: f64, k: u32) -> LllResult {
         let y = realistic_y(k);
         let mut s = IntScratch::new(eps);
         build_q_mpfr(&mut s, &y, k, eps);
@@ -634,7 +633,7 @@ mod tests {
     /// Run the integer LLL for given (eps, k) and assert det = ±1
     /// (unimodular basis output). Uses `crate::synthesis::lattice::omega::cholesky_lu::det_exact` for the
     /// integer determinant check.
-    fn check_lll_unimodular(eps: Float, k: u32) -> LllResult {
+    fn check_lll_unimodular(eps: f64, k: u32) -> LllResult {
         let y = realistic_y(k);
         let mut s = IntScratch::new(eps);
         build_q_mpfr(&mut s, &y, k, eps);
@@ -781,7 +780,7 @@ mod tests {
     /// guardrail that catches any precision-budget regression in the f64
     /// Cholesky path: if the LLL invariant κ ≤ 16 ever stops holding (e.g.
     /// upstream LLL change leaves a non-reduced basis), this test trips.
-    fn cholesky_f64_matches_mpfr(eps: Float, k: u32) {
+    fn cholesky_f64_matches_mpfr(eps: f64, k: u32) {
         let y = realistic_y(k);
         let mut s = IntScratch::new(eps);
         build_q_mpfr(&mut s, &y, k, eps);

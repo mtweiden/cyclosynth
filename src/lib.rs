@@ -1,7 +1,6 @@
 //! cyclosynth — single-qubit gate synthesis: approximate a target 2×2 unitary
-//! by a Clifford+T or Clifford+√T circuit, minimizing `T_count + 3·Q_count`
-//! (arXiv:2510.05816). The entry point is [`synthesis::Synthesizer`]; see the
-//! [`synthesis`] module for the domain glossary and the algorithm overview.
+//! by a Clifford+T or Clifford+√T circuit. See the [`synthesis`] module for
+//! the domain glossary and the algorithm overview.
 
 pub mod rings;
 pub mod matrix;
@@ -10,9 +9,9 @@ pub mod synthesis;
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
-/// Diagnostic: take a Clifford+T gate word (H/S/T/X/Y/Z, W = ω global phase
-/// is dropped) and return our canonical (MA normal-form) decomposition. Used
-/// to check our exact-synthesis T-count against an external word (gridsynth).
+/// Diagnostic: take a Clifford+T gate word (H/S/T/X/Y/Z) and return our canonical
+/// (MA normal-form) decomposition. Used to check our exact-synthesis T-count
+/// VERIFY: I don't think this actually does MA form.
 #[cfg(all(feature = "python", feature = "trace"))]
 #[pyfunction]
 fn decompose_gates_t(gates: &str) -> String {
@@ -26,7 +25,7 @@ fn decompose_gates_t(gates: &str) -> String {
             'X' => U2T::x(),
             'Y' => U2T::y(),
             'Z' => U2T::z(),
-            _ => continue, // W (ω global phase) and unknowns: skip
+            _ => continue,
         };
         u = u * g;
     }

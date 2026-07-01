@@ -44,7 +44,6 @@ use super::se::{
     qbracket_dd_disabled, schnorr_euchner,
     verify_prune_mpfr, LeafAction, SeCenter16,
 };
-use crate::rings::Float;
 use crate::synthesis::diag;
 
 /// MPFR precision used by the alignment-threshold dot product. Same as 8D
@@ -58,7 +57,7 @@ const ALIGN_PREC: u32 = 128;
 /// pre-done. Always sound (any LLL-output basis is unimodular) — only
 /// effectiveness varies. Returns whether the caller must clear
 /// `warm_lll` after its own LLL step.
-fn warm_seed_q_base(scratch: &mut IntScratch16, k: u32, eps: Float) -> bool {
+fn warm_seed_q_base(scratch: &mut IntScratch16, k: u32, eps: f64) -> bool {
     if !warm_lll16_enabled() || scratch.warm_lll {
         return false;
     }
@@ -90,7 +89,7 @@ fn warm_seed_q_base(scratch: &mut IntScratch16, k: u32, eps: Float) -> bool {
 /// GramOverflow (i256 saturation, unhelped by precision) → None; a
 /// non-unimodular det → None; det = None (Bareiss i128 overflow) is an
 /// inconclusive-success. Returns `None` when the basis is unusable.
-fn run_lll_ladder(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> {
+fn run_lll_ladder(scratch: &mut IntScratch16, k: u32, eps: f64) -> Option<()> {
     let trace = diag::trace_enabled();
     let t_lll = if trace { Some(std::time::Instant::now()) } else { None };
 
@@ -123,7 +122,7 @@ fn run_lll_ladder(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> 
 /// Optional BKZ-β post-pass: replaces Lovász with β-block SVP for a
 /// tighter basis; empirically helpful at deep ε where the post-LLL SE
 /// region is large. `None` = degenerate basis from the insertion path.
-fn run_bkz_postpass(scratch: &mut IntScratch16, k: u32, eps: Float) -> Option<()> {
+fn run_bkz_postpass(scratch: &mut IntScratch16, k: u32, eps: f64) -> Option<()> {
     if scratch.bkz_block_size >= 3 {
         let block_size = scratch.bkz_block_size as usize;
         // Populate the GS state from the current basis for BKZ to read.
@@ -162,9 +161,9 @@ fn warm_lll16_enabled() -> bool {
 #[cfg(test)]
 pub(crate) fn find_aligned_lattice_points(
     scratch: &mut IntScratch16,
-    y: &[Float; 16],
+    y: &[f64; 16],
     k: u32,
-    eps: Float,
+    eps: f64,
     max_leaf_checks: u64,
     budget_hit: &AtomicBool,
 ) -> Vec<[i64; 16]> {
@@ -193,9 +192,9 @@ pub(crate) fn find_aligned_lattice_points(
 #[allow(clippy::too_many_arguments)]
 pub fn find_aligned_lattice_points_with_stop<F>(
     scratch: &mut IntScratch16,
-    y: &[Float; 16],
+    y: &[f64; 16],
     k: u32,
-    eps: Float,
+    eps: f64,
     max_leaf_checks: u64,
     budget_hit: &AtomicBool,
     should_stop: F,
@@ -235,7 +234,7 @@ pub fn find_aligned_lattice_points_mpfr<F>(
     y: &[MpFloat; 16],
     v: &[MpFloat; 4],
     k: u32,
-    eps: Float,
+    eps: f64,
     max_leaf_checks: u64,
     budget_hit: &AtomicBool,
     should_stop: F,

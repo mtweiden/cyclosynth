@@ -9,7 +9,7 @@ use super::scratch::{
     compute_scale_bits, imat_zero, rfv, IntScratch, TARGET_BITS,
 };
 use super::scratch::{r_add, r_div, r_mul, r_sub};
-use crate::rings::{Float, MpFloat};
+use crate::rings::MpFloat;
 
 // ─── build_q_mpfr: anisotropic Q-metric construction in MPFR ─────────────────
 
@@ -28,7 +28,7 @@ use crate::rings::{Float, MpFloat};
 /// `(k, ε)` (cached via `scratch.q_base_key`); the per-prefix remainder is
 /// just the rank-1 term over the symmetric lower triangle plus the ‖y‖²
 /// and cap-center loops.
-pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float) {
+pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[f64; 8], k: u32, eps: f64) {
     let prec = scratch.prec_q;
     ensure_q_base(scratch, k, eps);
     for i in 0..8 {
@@ -40,7 +40,7 @@ pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[Float; 8], k: u32, eps: Float
 /// As [`build_q_mpfr`], but reads the alignment vector `y` directly from MPFR
 /// instead of lifting it from f64. Below the f64 ULP (cap half-width ≈ ε² at
 /// ε≈1e-8) this preserves the precision an exact target column carries.
-pub fn build_q_mpfr_y(scratch: &mut IntScratch, y: &[MpFloat; 8], k: u32, eps: Float) {
+pub fn build_q_mpfr_y(scratch: &mut IntScratch, y: &[MpFloat; 8], k: u32, eps: f64) {
     ensure_q_base(scratch, k, eps);
     for i in 0..8 {
         scratch.y_rf[i].assign(&y[i]);
@@ -49,7 +49,7 @@ pub fn build_q_mpfr_y(scratch: &mut IntScratch, y: &[MpFloat; 8], k: u32, eps: F
 }
 
 /// Build the prefix-independent Q_base/coef_y/cap_mid for `(k, ε)`, cached.
-fn ensure_q_base(scratch: &mut IntScratch, k: u32, eps: Float) {
+fn ensure_q_base(scratch: &mut IntScratch, k: u32, eps: f64) {
     let key = (k, eps.to_bits());
     if scratch.q_base_key != Some(key) {
         build_q_base(scratch, k, eps);
@@ -122,7 +122,7 @@ pub fn uv_to_lattice_y_mpfr(v: &[MpFloat; 4], k: u32, prec: u32) -> [MpFloat; 8]
 /// `coef_y = inv_dy_sq − inv_dp_sq`, and the ε-only `cap_mid`.
 /// `p_u`/`p_ub` themselves are Σ-constants filled once in
 /// `IntScratch::new`.
-fn build_q_base(scratch: &mut IntScratch, k: u32, eps: Float) {
+fn build_q_base(scratch: &mut IntScratch, k: u32, eps: f64) {
     let prec = scratch.prec_q;
 
     // R² = 2^k. For k ≥ 64, `1u64 << k` is UB — build via f64 powi (f64 exp

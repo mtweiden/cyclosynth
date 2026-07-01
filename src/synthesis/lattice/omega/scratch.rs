@@ -6,7 +6,6 @@
 // 8×8 matrix code reads more clearly with explicit (i, j) indexing.
 #![allow(clippy::needless_range_loop)]
 
-use crate::rings::Float;
 use i256::i256;
 use rug::Assign;
 use crate::rings::MpFloat;
@@ -278,7 +277,7 @@ fn precompute_sigma_projections(scratch: &mut IntScratch) {
 }
 
 impl IntScratch {
-    pub fn new(eps: Float) -> Self {
+    pub fn new(eps: f64) -> Self {
         let prec_q = compute_prec_q(eps);
         let lu_prec = compute_lu_prec(eps);
         let mut s = Self {

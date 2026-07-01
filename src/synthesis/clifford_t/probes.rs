@@ -6,7 +6,6 @@
 use crate::rings::MpFloat;
 use super::*; // the tests module: shared helpers (u3, rz, …)
 use super::super::*; // clifford_t internals
-use crate::rings::Float;
 use crate::synthesis::distance::{diamond_distance_float, Mat2};
 use num_complex::Complex;
 use std::f64::consts::PI;
@@ -95,7 +94,7 @@ use std::f64::consts::PI;
     }
 
     #[allow(clippy::needless_range_loop)]
-    fn coset_flip_probe(target: Mat2, eps: Float, t: u32) {
+    fn coset_flip_probe(target: Mat2, eps: f64, t: u32) {
         use std::sync::atomic::AtomicBool;
         let t_prime = optimal_t_prime(t, eps);
         let t_inner = t - t_prime;
@@ -495,7 +494,7 @@ use std::f64::consts::PI;
                     // bound governs.
                     let t_level = std::time::Instant::now();
                     let t_prime = optimal_t_prime(t, eps);
-                    let mut frames: Vec<([Float; 4], u32)> = Vec::new();
+                    let mut frames: Vec<([f64; 4], u32)> = Vec::new();
                     if t_prime == 0 || t_prime > t {
                         for v_s in [v, apply_t_dag_to_uv(v), apply_t_to_uv(v)] {
                             frames.push((v_s, t));
@@ -650,7 +649,7 @@ use std::f64::consts::PI;
 
             // Capture surviving prefixes' y vectors (both inner branches,
             // like production).
-            let mut ys: Vec<[Float; 8]> = Vec::new();
+            let mut ys: Vec<[f64; 8]> = Vec::new();
             for u_l in prefixes.iter() {
                 if ys.len() >= n_cap {
                     break;

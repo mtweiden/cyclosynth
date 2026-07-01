@@ -94,7 +94,6 @@ pub fn i256_to_f64(v: i256) -> f64 {
 
 // ─── Adaptive precision + i256 ↔ MPFR scalar helpers (shared, dim-free) ──────
 
-use crate::rings::Float;
 use gmp_mpfr_sys::{gmp, mpfr};
 use rug::integer::Order;
 use crate::rings::MpFloat;
@@ -103,7 +102,7 @@ use std::ptr::NonNull;
 /// MPFR precision in bits used to construct the anisotropic Q metric.
 /// `8·log₂(1/ε)` covers κ(Q) ≈ 16/ε⁴ with safety margin; floor at 100 bits
 /// for moderate ε where the formula otherwise underflows.
-pub fn compute_prec_q(eps: Float) -> u32 {
+pub fn compute_prec_q(eps: f64) -> u32 {
     let log_recip = (1.0 / eps).log2().max(1.0);
     let bits = (8.0 * log_recip).ceil() as u32;
     bits.max(100)
@@ -118,7 +117,7 @@ pub fn compute_prec_q(eps: Float) -> u32 {
 /// Empirically at ε=1e-8 a 96-bit LU loses enough precision in z_c that SE
 /// misses the canonical-lde solution; 6·log₂(1/ε) bits leaves margin (75% of
 /// `prec_q`, so each MPFR op in the LU is ~1.3× cheaper).
-pub fn compute_lu_prec(eps: Float) -> u32 {
+pub fn compute_lu_prec(eps: f64) -> u32 {
     let log_recip = (1.0 / eps).log2().max(1.0);
     let bits = (6.0 * log_recip).ceil() as u32;
     bits.max(96)

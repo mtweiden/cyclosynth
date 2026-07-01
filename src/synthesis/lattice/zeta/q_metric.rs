@@ -13,7 +13,6 @@ use std::f64::consts::PI;
 use super::scratch::{
     compute_scale_bits, imat_zero, rfv, rfz, IntScratch16, TARGET_BITS,
 };
-use crate::rings::Float;
 
 // ─── build_q_mpfr_zeta: 16D Q-metric construction in MPFR ────────────────────
 
@@ -40,7 +39,7 @@ pub fn build_q_mpfr_zeta_from_mpfr_v(
     scratch: &mut IntScratch16,
     v: &[MpFloat; 4],
     k: u32,
-    eps: Float,
+    eps: f64,
 ) {
     let prec = scratch.prec_q;
     let one = rfv(prec, 1.0);
@@ -132,7 +131,7 @@ pub fn build_q_mpfr_zeta_from_mpfr_v(
 /// [`build_q_mpfr_zeta_from_mpfr_v`] without the rank-1 `coef_yy · ŷŷᵀ`
 /// term (the only part that varies with the prefix direction v). Used to
 /// compute the per-(k, ε) warm-LLL seed.
-pub fn build_q_base_mpfr_zeta(scratch: &mut IntScratch16, k: u32, eps: Float) {
+pub fn build_q_base_mpfr_zeta(scratch: &mut IntScratch16, k: u32, eps: f64) {
     let prec = scratch.prec_q;
     let one = rfv(prec, 1.0);
 
@@ -170,7 +169,7 @@ pub fn build_q_base_mpfr_zeta(scratch: &mut IntScratch16, k: u32, eps: Float) {
 /// Build Q from an f64 `v`. Test-only entry point (production uses
 /// `build_q_mpfr_zeta_from_mpfr_v` per prefix and `build_q_base_mpfr_zeta`
 /// for the seed); kept as the oracle for `build_q_zzeta_lattice`.
-pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: Float) {
+pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: f64) {
     let prec = scratch.prec_q;
     let one = rfv(prec, 1.0);
     let two = rfv(prec, 2.0);

@@ -30,12 +30,11 @@ pub use integer::{find_aligned_lattice_points, find_aligned_lattice_points_exact
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rings::Float;
     use std::sync::atomic::AtomicBool;
 
-    fn realistic_y(k: u32) -> [Float; 8] {
+    fn realistic_y(k: u32) -> [f64; 8] {
         let r2 = 1.0 / 2.0_f64.sqrt();
-        let s = ((1u64 << k) as Float).sqrt() / 2.0;
+        let s = ((1u64 << k) as f64).sqrt() / 2.0;
         let c = 0.15_f64.cos();
         let ns = -0.15_f64.sin();
         [

@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::matrix::U2T;
-use crate::rings::types::{Float, Int};
+use crate::rings::types::Int;
 use crate::rings::ZOmega;
 use crate::synthesis::cliffords::{CLIFFORD_LDE0_IDX, CLIFFORD_TABLE_T};
 use crate::synthesis::decomposer::BlochDecomposer;
@@ -74,7 +74,7 @@ static MA_PREFIX_CACHE: MaPrefixCache = LazyLock::new(|| Mutex::new(HashMap::new
 /// to SU(2) by dividing by √det so that e.g. diag(1, i) (det = i) maps to
 /// the same search direction as its SU(2) representative.
 /// Convention: `V ≈ e^{iφ} · [[u1, −ū2],[u2, ū1]]`.
-pub fn unitary_to_uv(v: &Mat2) -> [Float; 4] {
+pub fn unitary_to_uv(v: &Mat2) -> [f64; 4] {
     let det = v[0][0] * v[1][1] - v[0][1] * v[1][0];
     let phase = det.sqrt();
     if phase.norm() > 1e-12 {
@@ -89,10 +89,10 @@ pub fn unitary_to_uv(v: &Mat2) -> [Float; 4] {
 /// `uv` of the SU(2) form `[[u1, −ū2], [u2, ū1]]`, found by trying the 8
 /// global phases e^{ikπ/4} (the possible Clifford+T determinants). `None`
 /// if no phase yields that form.
-fn try_unitary_to_uv(u: &Mat2) -> Option<[Float; 4]> {
+fn try_unitary_to_uv(u: &Mat2) -> Option<[f64; 4]> {
     use std::f64::consts::FRAC_PI_4;
     for k in 0..8 {
-        let ph = Complex::from_polar(1.0, k as Float * FRAC_PI_4);
+        let ph = Complex::from_polar(1.0, k as f64 * FRAC_PI_4);
         let m00 = ph * u[0][0];
         let m01 = ph * u[0][1];
         let m10 = ph * u[1][0];
@@ -104,7 +104,7 @@ fn try_unitary_to_uv(u: &Mat2) -> Option<[Float; 4]> {
             let u1 = m00;
             let u2 = m10;
             let v = [u1.re, u1.im, u2.re, u2.im];
-            let n: Float = v.iter().map(|x| x * x).sum::<Float>().sqrt();
+            let n: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
             if n > 1e-12 {
                 return Some(v.map(|x| x / n));
             }
@@ -200,10 +200,10 @@ static L_COSET_DEDUP: LazyLock<Option<bool>> = LazyLock::new(|| {
 /// mate redundancy lets SOME frame land inside the walk bound — dedup
 /// there flips FOUND→none. Gated off until the 8D y chain runs above
 /// f64 precision.
-const COSET_EPS_FLOOR: Float = 1e-7;
+const COSET_EPS_FLOOR: f64 = 1e-7;
 
 /// Resolve the dedup mode for a given ε (env override first).
-fn coset_mode_for(eps: Float) -> bool {
+fn coset_mode_for(eps: f64) -> bool {
     (*L_COSET_DEDUP).unwrap_or(eps >= COSET_EPS_FLOOR)
 }
 
@@ -375,7 +375,7 @@ fn trace_dump_pass(
 /// the lattice pipeline. `y = compute_align_vec(v) · sqrt(2^k) / 2`,
 /// satisfying `‖y‖² = 2^(k-1)`. Uses `powf` (not bit-shift) so `k ≥ 64`
 /// stays well-defined.
-pub fn uv_to_lattice_y(v: [Float; 4], k: u32) -> [Float; 8] {
+pub fn uv_to_lattice_y(v: [f64; 4], k: u32) -> [f64; 8] {
     let scale = 2.0_f64.powf(k as f64 / 2.0 - 1.0);
     compute_align_vec(v).map(|x| x * scale)
 }
@@ -422,10 +422,10 @@ const DC_WALK_MAX_SOLUTIONS: usize = 8;
 #[allow(clippy::too_many_arguments)]
 fn lll_aligned_search(
     scratch: &mut crate::synthesis::lattice::omega::scratch::IntScratch,
-    v: [Float; 4],
+    v: [f64; 4],
     v_mpfr: Option<&[MpFloat; 4]>,
     k: u32,
-    eps: Float,
+    eps: f64,
     max_solutions: usize,
     max_leaf_checks: u64,
     max_nodes: u64,
@@ -463,15 +463,15 @@ fn lll_aligned_search(
 /// growth `|L_{t'}| ≈ 2^{t'}` against the inner search cost and is a sharp
 /// optimum — smaller explodes the prefix count, larger explodes the inner
 /// Schnorr-Euchner walk.
-fn optimal_t_prime(t: u32, eps: Float) -> u32 {
+fn optimal_t_prime(t: u32, eps: f64) -> u32 {
     if eps >= 1.0 {
         return 0;
     }
     let threshold = (5.0 / 2.0) * (1.0 / eps).log2();
-    if t as Float <= threshold {
+    if t as f64 <= threshold {
         0
     } else {
-        (t as Float - threshold).ceil() as u32
+        (t as f64 - threshold).ceil() as u32
     }
 }
 
@@ -485,7 +485,7 @@ pub struct SynthResultT {
     /// Denominator exponent of the synthesized unitary.
     pub lde: u32,
     /// Diamond distance to the target.
-    pub distance: Float,
+    pub distance: f64,
 }
 
 // ─── Direct search branch tags ────────────────────────────────────────────────
@@ -505,7 +505,7 @@ enum DirectBranch {
 /// Prefer the unified [`crate::synthesis::Synthesizer`]; public for tests.
 pub struct SynthesizerT {
     /// Approximation precision in diamond distance.
-    pub epsilon: Float,
+    pub epsilon: f64,
     pub max_lde: u32,
     /// Defaults to floor(coef·log₂(1/ε)) with coef ramping 1.5 → 2.8 over
     /// ε (see [`Self::new`]); ~the information-theoretic T-count lower bound
@@ -525,7 +525,7 @@ impl SynthesizerT {
     /// angles. direct_limit is large only at moderate ε, where it
     /// covers the gap below the t' > 0 threshold; direct search is
     /// exponential in t, so deep ε keeps it small.
-    pub fn new(epsilon: Float) -> Self {
+    pub fn new(epsilon: f64) -> Self {
         let (min_lde, max_lde) = if epsilon > 0.0 && epsilon < 1.0 {
             let log2_recip  = (1.0 / epsilon).log2();
             let log10_recip = (1.0 / epsilon).log10();
@@ -663,7 +663,7 @@ impl SynthesizerT {
     fn try_at_lde(
         &self,
         target: &Mat2,
-        v: [Float; 4],
+        v: [f64; 4],
         exact_col: Option<&[MpFloat; 4]>,
         t: u32,
     ) -> Option<SynthResultT> {
@@ -723,15 +723,15 @@ impl SynthesizerT {
     /// (U, U·T, U·T† ≈ target) plus 3 for each of the 23 non-identity
     /// left-Cliffords C. LLL+CVP (`lll_aligned_search`) is reserved for
     /// the D&C path where the inner lde is large.
-    fn direct_search(&self, target: &Mat2, v: [Float; 4], t: u32) -> Option<SynthResultT> {
+    fn direct_search(&self, target: &Mat2, v: [f64; 4], t: u32) -> Option<SynthResultT> {
         let eps = self.epsilon;
 
-        let clif_vs: Vec<[Float; 4]> = CLIFFORD_TABLE_T.iter()
+        let clif_vs: Vec<[f64; 4]> = CLIFFORD_TABLE_T.iter()
             .map(|(_, c_u2t)| apply_u2t_dag_to_uv(c_u2t, v))
             .collect();
 
         // 3 top-level + 23 Cliffords × 3 (index 0 = "I", already covered).
-        let mut branches: Vec<([Float; 4], DirectBranch)> = Vec::with_capacity(75);
+        let mut branches: Vec<([f64; 4], DirectBranch)> = Vec::with_capacity(75);
         branches.push((v, DirectBranch::Plain));
         branches.push((apply_t_dag_to_uv(v), DirectBranch::T));
         branches.push((apply_t_to_uv(v), DirectBranch::Tdg));
@@ -810,7 +810,7 @@ impl SynthesizerT {
     fn prefix_split_search(
         &self,
         target: &Mat2,
-        v: [Float; 4],
+        v: [f64; 4],
         exact_col: Option<&[MpFloat; 4]>,
         t: u32,
         max_leaf_checks: u64,

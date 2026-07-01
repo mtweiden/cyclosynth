@@ -8,7 +8,6 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use crate::rings::Float;
 use i256::i256;
 use crate::rings::MpFloat;
 
@@ -126,13 +125,13 @@ pub struct IntScratch16 {
 }
 
 impl IntScratch16 {
-    pub fn new(eps: Float) -> Self {
+    pub fn new(eps: f64) -> Self {
         Self::with_gs_prec(eps, GS_PREC)
     }
 
     /// Construct with an overridden Gram-Schmidt precision (lower = faster
     /// MPFR ops, less correctness margin). The default is [`GS_PREC`].
-    pub fn with_gs_prec(eps: Float, gs_prec: u32) -> Self {
+    pub fn with_gs_prec(eps: f64, gs_prec: u32) -> Self {
         let prec_q = compute_prec_q(eps);
         let lu_prec = compute_lu_prec(eps);
         Self {

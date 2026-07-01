@@ -395,7 +395,7 @@ fn mpfr_cholesky_dual(g: &[[MpFloat; 16]; 16]) -> Option<CholeskyDual16> {
     Some((r_f64, r_dd))
 }
 
-/// Convert i128 → MPFR Float, lossless. rug doesn't accept i128 directly.
+/// Convert i128 → MPFR float, lossless. rug doesn't accept i128 directly.
 fn i128_to_mpfr(v: i128, prec: u32) -> MpFloat {
     let neg = v < 0;
     let abs = if neg { -v } else { v } as u128;

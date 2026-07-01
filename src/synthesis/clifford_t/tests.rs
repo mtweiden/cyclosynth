@@ -5,14 +5,14 @@ mod probes;
     use crate::synthesis::distance::diamond_distance_float;
     use std::{f64::consts::{FRAC_1_SQRT_2, PI}};
 
-    fn rz(theta: Float) -> Mat2 {
+    fn rz(theta: f64) -> Mat2 {
         [
             [Complex::from_polar(1., -theta / 2.), Complex::new(0., 0.)],
             [Complex::new(0., 0.), Complex::from_polar(1., theta / 2.)],
         ]
     }
 
-    fn ry(theta: Float) -> Mat2 {
+    fn ry(theta: f64) -> Mat2 {
         let c = (theta / 2.).cos();
         let s = (theta / 2.).sin();
         [
@@ -29,11 +29,11 @@ mod probes;
     }
 
     /// Same convention as bin/time_synthesis_omega: U3(a,b,c) = Rz(a)·Ry(b)·Rz(c).
-    fn u3(a: Float, b: Float, c: Float) -> Mat2 {
+    fn u3(a: f64, b: f64, c: f64) -> Mat2 {
         mat_mul(mat_mul(rz(a), ry(b)), rz(c))
     }
 
-    fn check_result(result: &SynthResultT, _target: &Mat2, eps: Float) {
+    fn check_result(result: &SynthResultT, _target: &Mat2, eps: f64) {
         assert!(
             result.distance < eps,
             "distance={:.6e} ≥ epsilon={:.6e}",
@@ -70,7 +70,7 @@ mod probes;
     ///   2. The gate string parses to a U2T whose lde matches result.lde
     ///   3. Re-evaluated diamond distance to target matches result.distance
     ///   4. T-count of the gate string is consistent with the lde
-    fn verify_synthesis_round_trip(target: &Mat2, eps: Float, label: &str) {
+    fn verify_synthesis_round_trip(target: &Mat2, eps: f64, label: &str) {
         // max_lde generously oversized so very tight ε (1e-5+) has room.
         let synth = SynthesizerT::new(eps).with_max_lde(80);
         let result = synth
@@ -220,7 +220,7 @@ mod probes;
 
     #[test]
     fn test_synthesize_h_gate() {
-        let r = FRAC_1_SQRT_2 as Float;
+        let r = FRAC_1_SQRT_2;
         let h: Mat2 = [
             [Complex::new(r, 0.), Complex::new(r, 0.)],
             [Complex::new(r, 0.), Complex::new(-r, 0.)],
@@ -233,7 +233,7 @@ mod probes;
     #[test]
     fn test_synthesize_rz_small() {
         // Rz(π/4) = T gate, should need lde=1.
-        let target = rz(PI as Float / 4.);
+        let target = rz(PI / 4.);
         let synth = SynthesizerT::new(0.01);
         let result = synth.synthesize(target).expect("Should synthesize Rz(π/4)");
         println!("{:?}", result.gates);
@@ -277,7 +277,7 @@ mod probes;
     fn deep_eps_canary_rz_pi_64() {
         use crate::synthesis::angle::{su2_col_mpfr, Angle};
         let eps = 1e-10;
-        let target = rz(PI as Float / 64.0);
+        let target = rz(PI / 64.0);
         // Exact MPFR column — deep ε aligns to this, not the f64 chain.
         let col = su2_col_mpfr(Angle::PiRatio(1, 64), Angle::Rad(0.0), Angle::Rad(0.0), 384);
         let result = SynthesizerT::new(eps)
@@ -450,7 +450,7 @@ mod probes;
                 let threshold = (5.0 / 2.0) * (1.0 / eps).log2();
                 // t_inner should be <= threshold (direct_search is cheap enough).
                 assert!(
-                    t_inner as Float <= threshold + 1.0,
+                    t_inner as f64 <= threshold + 1.0,
                     "t={t}, eps={eps}: t_inner={t_inner} > threshold={threshold:.1}"
                 );
             }
@@ -475,9 +475,9 @@ mod probes;
         let mut rng = StdRng::seed_from_u64(42);
         let eps = 0.001_f64;
 
-        let theta: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
-        let phi: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
-        let lambda: Float = rng.random::<Float>() * (2.0 * std::f64::consts::PI);
+        let theta: f64 = rng.random::<f64>() * (2.0 * std::f64::consts::PI);
+        let phi: f64 = rng.random::<f64>() * (2.0 * std::f64::consts::PI);
+        let lambda: f64 = rng.random::<f64>() * (2.0 * std::f64::consts::PI);
         
         let ct = (theta / 2.0).cos();
         let st = (theta / 2.0).sin();
