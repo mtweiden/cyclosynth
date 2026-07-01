@@ -43,7 +43,9 @@ rand = "0.9"
 # walkers (lockstep-edit contract: do not bundle their params).
 [lints.rust]
 unused_qualifications = "warn"
-unsafe_op_in_unsafe_fn = "deny"
+# NOT denying unsafe_op_in_unsafe_fn: the crate itself has zero `unsafe fn`,
+# and pyo3 0.22's #[pymethods] expansion violates it (70 E0133s under
+# --features python). Re-add on the pyo3 ≥0.23 upgrade.
 
 [lints.clippy]
 needless_range_loop = "allow"
