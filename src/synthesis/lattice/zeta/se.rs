@@ -408,6 +408,46 @@ where
     leaves
 }
 
+/// f64 tail `Σ_{j>d} l[d][j]·((z[j] − z_c.int[j]) − z_c.frac[j])` for coord
+/// `d` — the Schnorr-Euchner level's contribution from already-fixed
+/// coordinates. (The deep-ε dd variant is [`q_tail_dd`].)
+#[inline]
+fn se_tail_f64(l: &[[f64; 16]; 16], d: usize, z: &[i64; 16], z_c: &SeCenter16) -> f64 {
+    let mut t = 0.0_f64;
+    for j in (d + 1)..16 {
+        t += l[d][j] * ((z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
+    }
+    t
+}
+
+/// Integer search bracket for one Schnorr-Euchner coordinate `d`: the range
+/// `[z_low, z_high]`, its center `z_mid`, and `max_off = max(z_high−z_mid,
+/// z_mid−z_low)`, for integer `zd` around base `z_c.int[d]` given the
+/// fractional center offset and half-width `span`.
+///
+/// The base stays i64 (not folded into an f64 center) because at deep ε it can
+/// exceed 2^53, where f64 rounding would mis-bracket the range; only the small
+/// `center_off ± span` offsets pass through f64 (`|center_off ± span| < 2^53`
+/// always holds for our `bound_sq`).
+///
+/// Fail-loud on overflow: a `saturating_add` would silently clamp the bracket
+/// to garbage if `base` ever neared 2^63 — the i64 deep-ε trap the ω backend
+/// fixed by widening SE coords to i128 (b387ad5). Zeta runs only at ε ≥ 1e-8
+/// today (base ≲ 2^55), so this must never fire; a future zeta exact-column
+/// deep path must widen z to i128 rather than reach this panic.
+fn se_bracket(base: i64, center_off: f64, span: f64) -> (i64, i64, i64, i64) {
+    let add = |off: f64| -> i64 {
+        base.checked_add(off as i64).expect(
+            "zeta SE coord overflowed i64 at deep ε — widen z to i128 (cf. ω backend b387ad5)",
+        )
+    };
+    let z_low = add((center_off - span).ceil());
+    let z_high = add((center_off + span).floor());
+    let z_mid = add(center_off.round());
+    let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
+    (z_low, z_high, z_mid, max_off)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn recurse<F>(
     depth: i32,
@@ -451,11 +491,7 @@ fn recurse<F>(
         return;
     }
 
-    // tail = Σ_{j > d} l[d][j] · (z[j] − z_c[j])
-    let mut tail = 0.0_f64;
-    for j in (d + 1)..16 {
-        tail += l[d][j] * ((z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
-    }
+    let tail = se_tail_f64(l, d, z, z_c);
 
     // Remaining budget for this level.
     let rem = bound_sq - partial;
@@ -464,22 +500,12 @@ fn recurse<F>(
     }
     let rem_sqrt = rem.sqrt();
 
-    // The level value at integer offset Δ from z_c.int[d] is
-    // l_dd · (Δ − frac[d]) + tail; minimized at Δ = frac[d] − tail/l_dd.
-    // Bound: |level| ≤ rem_sqrt → Δ ∈ center_off ± span.
-    //
-    // **Precision**: at deep ε (1e-8) the center can exceed 2^53 (the f64
-    // exact-integer ceiling). Casting it to f64 and adding a small
-    // continuous offset would lose 1-2 ULP, mis-bracketing the integer
-    // search range. Compute the ranged offsets in f64 (small magnitude:
-    // frac + span) then add to the i64 integer part — exact whenever
-    // |center_off ± span| < 2^53 (always for our bound_sq).
+    // Level value at integer offset Δ from z_c.int[d] is l_dd·(Δ − frac[d]) +
+    // tail, minimized at Δ = frac[d] − tail/l_dd; bound |level| ≤ rem_sqrt gives
+    // Δ ∈ center_off ± span. (se_bracket documents the i64/f64 precision split.)
     let center_off = z_c.frac[d] - tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
-    let z_low = z_c.int[d].saturating_add((center_off - span).ceil() as i64);
-    let z_high = z_c.int[d].saturating_add((center_off + span).floor() as i64);
-    let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
-    let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
+    let (z_low, z_high, z_mid, max_off) = se_bracket(z_c.int[d], center_off, span);
 
     // Walk offsets in distance-from-center order: 0, +1, -1, +2, -2, …
     for raw in 0..=(2 * max_off + 1) {
@@ -837,11 +863,7 @@ fn expand_se_prefix_node(
         tail_dd = q_tail_dd(lq, d, &item.z, z_c);
         tail_dd.0 + tail_dd.1
     } else {
-        let mut t = 0.0_f64;
-        for j in (d + 1)..16 {
-            t += l[d][j] * ((item.z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
-        }
-        t
+        se_tail_f64(l, d, &item.z, z_c)
     };
     let rem = bound_sq - item.partial_q;
     if rem < 0.0 {
@@ -853,10 +875,7 @@ fn expand_se_prefix_node(
     // Δ = frac[d] − tail/l_dd.
     let center_off = z_c.frac[d] - tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
-    let z_low = z_c.int[d].saturating_add((center_off - span).ceil() as i64);
-    let z_high = z_c.int[d].saturating_add((center_off + span).floor() as i64);
-    let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
-    let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
+    let (z_low, z_high, z_mid, max_off) = se_bracket(z_c.int[d], center_off, span);
 
     for raw in 0..=(2 * max_off + 1) {
         if aborted.load(Ordering::Relaxed) {
@@ -1300,11 +1319,7 @@ fn recurse_collect_norm_pruned<F>(
         tail_dd = q_tail_dd(lq, d, z, z_c);
         tail_dd.0 + tail_dd.1
     } else {
-        let mut t = 0.0_f64;
-        for j in (d + 1)..16 {
-            t += l[d][j] * ((z[j] - z_c.int[j]) as f64 - z_c.frac[j]);
-        }
-        t
+        se_tail_f64(l, d, z, z_c)
     };
     let rem = bound_sq - partial_q;
     if rem < 0.0 {
@@ -1316,12 +1331,7 @@ fn recurse_collect_norm_pruned<F>(
     // Δ = frac[d] − tail/l_dd.
     let center_off = z_c.frac[d] - tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
-    // Keep the center's integer part as i64 to avoid f64 quantization at
-    // deep ε where it can exceed 2^53; frac rides in center_off.
-    let z_low = z_c.int[d].saturating_add((center_off - span).ceil() as i64);
-    let z_high = z_c.int[d].saturating_add((center_off + span).floor() as i64);
-    let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
-    let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
+    let (z_low, z_high, z_mid, max_off) = se_bracket(z_c.int[d], center_off, span);
 
     for raw in 0..=(2 * max_off + 1) {
         if aborted.load(Ordering::Relaxed) {
