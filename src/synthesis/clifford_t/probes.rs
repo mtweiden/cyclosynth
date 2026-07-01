@@ -110,15 +110,15 @@ use std::f64::consts::PI;
         let lde_inner: u32 = if t_inner % 2 == 1 { (t_inner - 1) / 2 + 1 } else { t_inner / 2 + 1 };
         eprintln!("t={t} t'={t_prime} t_inner={t_inner} lde_inner={lde_inner}");
 
-        let plain = build_l_inner_with(t_prime, false);
-        let coset = build_l_inner_with(t_prime, true);
+        let plain = build_ma_prefix_set_inner(t_prime, false);
+        let coset = build_ma_prefix_set_inner(t_prime, true);
         eprintln!("|plain|={} |coset|={}", plain.len(), coset.len());
 
         let run_prefix = |u_l: &U2T, max_sols: usize| -> Vec<(bool, [i64; 8], f64)> {
             let mut out = Vec::new();
             let m_inner = prefix_dag_times_target(u_l, &target);
             let Some(v_inner) = try_unitary_to_uv(&m_inner) else { return out };
-            let mut scratch = crate::synthesis::lattice::omega::scratch::IntScratch::new(eps);
+            let mut scratch = IntScratch::new(eps);
             for odd in [false, true] {
                 let v_b = if odd { apply_t_dag_to_uv(v_inner) } else { v_inner };
                 let hit = AtomicBool::new(false);
@@ -415,10 +415,10 @@ use std::f64::consts::PI;
         eprintln!("  t'   |L| plain   |L| coset   ratio");
         for tp in 1..=13u32 {
             let t0 = std::time::Instant::now();
-            let plain = build_l_inner_with(tp, false).len();
+            let plain = build_ma_prefix_set_inner(tp, false).len();
             let t_plain = t0.elapsed().as_secs_f64() * 1000.0;
             let t0 = std::time::Instant::now();
-            let coset = build_l_inner_with(tp, true).len();
+            let coset = build_ma_prefix_set_inner(tp, true).len();
             let t_coset = t0.elapsed().as_secs_f64() * 1000.0;
             eprintln!(
                 "  {tp:>2}   {plain:>9}   {coset:>9}   {:>5.2}x   (build {t_plain:.0} / {t_coset:.0} ms)",

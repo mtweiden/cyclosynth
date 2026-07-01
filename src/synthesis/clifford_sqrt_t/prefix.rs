@@ -6,7 +6,7 @@ use super::*;
 /// cache hits are a refcount bump, not a deep clone.
 type CacheByM<V> = LazyLock<Mutex<HashMap<u32, Arc<Vec<V>>>>>;
 
-// ─── FGKM canonical-form prefix generation (syllable-count enumeration) ──
+// ─── Canonical-form prefix generation (arXiv:1501.04944 §4; syllable-count enumeration) ──
 //
 // Mirrors `clifford_t::build_ma_prefix_set`. Where Clifford+T enumerates
 // Matsumoto–Amano words `T^{a₀} · ∏ (HS^bᵢ T) · C` of T-count t', this
@@ -57,8 +57,8 @@ pub(crate) fn canonical_key_q(u: &U2Q) -> [i64; 8] {
         .expect("8-element rotated key")
 }
 
-/// Build `L_m^Q`: the FGKM canonical-form prefix set with Clifford suffix,
-/// at syllable count `m`. Cached by `m` (Arc-cloned on hit).
+/// Build `L_m^Q`: the canonical-form (arXiv:1501.04944 §4) prefix set with
+/// Clifford suffix, at syllable count `m`. Cached by `m` (Arc-cloned on hit).
 pub fn build_fgkm_prefix_set(m: u32) -> Arc<Vec<U2Q>> {
     {
         let cache = FGKM_PREFIX_CACHE.lock().expect("FGKM prefix cache poisoned");

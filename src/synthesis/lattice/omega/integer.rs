@@ -70,7 +70,7 @@ pub fn find_aligned_lattice_points(
 /// MPFR (an exact target column at deep ε), so the cap center and SE dot keep
 /// precision below the f64 ULP.
 #[allow(clippy::too_many_arguments)]
-pub fn find_aligned_lattice_points_exact(
+pub fn find_aligned_lattice_points_mpfr(
     scratch: &mut IntScratch,
     y_q: &[MpFloat; 8],
     k: u32,
@@ -82,7 +82,7 @@ pub fn find_aligned_lattice_points_exact(
     external_abort: Option<&AtomicBool>,
 ) -> Vec<[i64; 8]> {
     scratch.reset_basis();
-    find_aligned_outcome_mpfr(
+    find_aligned_lattice_points_outcome_mpfr(
         scratch, y_q, k, eps, max_solutions, max_leaf_checks,
         max_nodes, budget_hit, external_abort,
     )
@@ -137,7 +137,7 @@ pub fn find_aligned_lattice_points_outcome(
     external_abort: Option<&AtomicBool>,
 ) -> LatticeSearchOutcome {
     let y_q: [MpFloat; 8] = std::array::from_fn(|i| MpFloat::with_val(scratch.prec_q, y[i]));
-    find_aligned_outcome_mpfr(
+    find_aligned_lattice_points_outcome_mpfr(
         scratch, &y_q, k, eps, max_solutions, max_leaf_checks, max_nodes,
         budget_hit, external_abort,
     )
@@ -156,7 +156,7 @@ fn bail(eps: f64, k: u32, msg: std::fmt::Arguments) -> LatticeSearchOutcome {
 /// vector carries full precision, so the cap center and the SE alignment dot
 /// stay exact below the f64 ULP. `y_q` is at `scratch.prec_q`.
 #[allow(clippy::too_many_arguments)]
-pub fn find_aligned_outcome_mpfr(
+pub fn find_aligned_lattice_points_outcome_mpfr(
     scratch: &mut IntScratch,
     y_q: &[MpFloat; 8],
     k: u32,

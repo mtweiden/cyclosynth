@@ -27,7 +27,6 @@
 
 #![allow(clippy::needless_range_loop)]
 
-use i256::i256;
 use rug::Assign;
 use crate::rings::MpFloat;
 
@@ -42,15 +41,11 @@ pub use crate::synthesis::lattice::common::{
 
 
 // ─── i256 → MPFR conversion ──────────────────────────────────────────────────
-
-/// Set `dst` to the value of i256 `v` (lossless). i256 is at most 256 bits,
-/// so any GS_PREC ≥ 256 is exact; at GS_PREC=80 we keep the leading 80 bits
-/// (f64 + ~28 bits) — still well above the L²-LLL precision requirement at
-/// d=16.
-#[inline]
-pub fn i256_to_rfloat_inplace(v: i256, dst: &mut MpFloat) {
-    common::i256_to_rfloat(v, dst);
-}
+//
+// Gram entries are read via `common::i256_to_rfloat`. i256 is at most 256
+// bits, so any GS_PREC ≥ 256 is exact; at GS_PREC=80 we keep the leading 80
+// bits (f64 + ~28 bits) — still well above the L²-LLL precision requirement
+// at d=16.
 
 /// Check whether any Gram entry exceeds the overflow threshold.
 #[inline]
@@ -67,7 +62,7 @@ pub fn cfa_row(scratch: &mut IntScratch16, i: usize) {
     // Off-diagonal entries: j = 0..i-1
     for j in 0..i {
         // r̄_{i,j} = <b_i, b_j> from i256 Gram.
-        i256_to_rfloat_inplace(scratch.gram[i][j], &mut scratch.r_bar[i][j]);
+        common::i256_to_rfloat(scratch.gram[i][j], &mut scratch.r_bar[i][j]);
         // r̄_{i,j} -= Σ_{k<j} μ̄_{j,k} · r̄_{i,k}.
         for k in 0..j {
             // tmp = μ̄_{j,k} · r̄_{i,k}
@@ -86,7 +81,7 @@ pub fn cfa_row(scratch: &mut IntScratch16, i: usize) {
     }
 
     // Diagonal: s̄_{i,*} sequence, r̄_{i,i} = s̄_{i,i}.
-    i256_to_rfloat_inplace(scratch.gram[i][i], &mut scratch.s_bar[i][0]);
+    common::i256_to_rfloat(scratch.gram[i][i], &mut scratch.s_bar[i][0]);
     for j in 1..=i {
         // s̄_{i,j} = s̄_{i,j-1} - μ̄_{i,j-1} · r̄_{i,j-1}.
         scratch.tmp_a.assign(&scratch.mu_bar[i][j - 1] * &scratch.r_bar[i][j - 1]);
@@ -305,6 +300,7 @@ mod tests {
     use super::*;
     use super::super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
     use super::super::scratch::IntScratch16;
+    use i256::i256;
 
     /// Compute the determinant of a 16×16 i64 matrix exactly via Bareiss
     /// in i256. Returns `None` on i64 overflow at the end (shouldn't happen

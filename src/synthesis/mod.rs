@@ -74,12 +74,4 @@ pub(crate) fn stride_interleave<T: Copy>(items: &[T], stride: usize) -> Vec<T> {
     out
 }
 
-pub use cliffords::CLIFFORD_TABLE_T;
-pub use decomposer::BlochDecomposer;
-pub use distance::{
-    diamond_distance_float,
-    diamond_distance_u2q_float,
-    Mat2,
-};
-pub use lattice::omega::brute::{brute_aligned_search, compute_align_vec, apply_u2t_dag_to_uv};
 pub use synthesizer::{Synthesizer, SynthResult};

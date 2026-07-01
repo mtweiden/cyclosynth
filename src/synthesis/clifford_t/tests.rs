@@ -401,8 +401,8 @@ mod probes;
     #[test]
     fn coset_dedup_covers_all_prefixes() {
         for tp in 1..=6 {
-            let plain = build_l_inner_with(tp, false);
-            let coset = build_l_inner_with(tp, true);
+            let plain = build_ma_prefix_set_inner(tp, false);
+            let coset = build_ma_prefix_set_inner(tp, true);
             assert!(coset.len() < plain.len(), "t'={tp}: coset dedup removed nothing");
             let mut covered: std::collections::HashSet<[i64; 8]> =
                 std::collections::HashSet::new();

@@ -46,7 +46,7 @@ use crate::synthesis::lattice::omega::brute::{
     brute_aligned_search, apply_t_dag_to_uv, apply_t_dag_to_uv_mpfr, apply_t_to_uv,
     apply_u2t_dag_to_uv, apply_u2t_dag_to_uv_mpfr, compute_align_vec, normalize4,
 };
-use crate::synthesis::lattice::omega::find_aligned_lattice_points_exact;
+use crate::synthesis::lattice::omega::{find_aligned_lattice_points_mpfr, IntScratch};
 use crate::synthesis::lattice::omega::q_metric::uv_to_lattice_y_mpfr;
 
 /// At ε ≤ this, the deep-ε MPFR alignment path replaces the f64 chain (the
@@ -226,7 +226,7 @@ pub fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
             return Arc::clone(v);
         }
     }
-    let result = Arc::new(build_l_inner_with(t_prime, coset_dedup));
+    let result = Arc::new(build_ma_prefix_set_inner(t_prime, coset_dedup));
     // A racing thread may have inserted an identical copy; overwrite is harmless.
     MA_PREFIX_CACHE
         .lock()
@@ -240,7 +240,7 @@ pub fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
 /// (HS^b·T) products and an odd branch prefixed with T, each times every
 /// Clifford, deduplicated up to global phase (and, in coset mode, up to
 /// the right coset u·⟨S,X⟩).
-fn build_l_inner_with(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
+fn build_ma_prefix_set_inner(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
     if t_prime == 0 {
         return vec![U2T::eye()];
     }
@@ -374,7 +374,7 @@ const DC_WALK_MAX_SOLUTIONS: usize = 8;
 /// recurse-entry; does not set `budget_hit`).
 #[allow(clippy::too_many_arguments)]
 fn lll_aligned_search(
-    scratch: &mut crate::synthesis::lattice::omega::scratch::IntScratch,
+    scratch: &mut IntScratch,
     v: [f64; 4],
     v_mpfr: Option<&[MpFloat; 4]>,
     k: u32,
@@ -396,7 +396,7 @@ fn lll_aligned_search(
     // dot exact below the f64 ULP.
     if let Some(vm) = v_mpfr.filter(|_| omega_use_exact(eps)) {
         let y_q = uv_to_lattice_y_mpfr(vm, k, scratch.prec_q);
-        return find_aligned_lattice_points_exact(
+        return find_aligned_lattice_points_mpfr(
             scratch, &y_q, k, eps, max_solutions, max_leaf_checks, max_nodes,
             budget_hit, external_abort,
         );
@@ -553,7 +553,7 @@ impl PrefixSweepCtx<'_> {
     /// `found_abort` and returns `Some`; otherwise `None`.
     fn search_prefix(
         &self,
-        scratch: &mut crate::synthesis::lattice::omega::scratch::IntScratch,
+        scratch: &mut IntScratch,
         pos: usize,
         u_l: &U2T,
     ) -> Option<SynthResultT> {
@@ -598,7 +598,7 @@ impl PrefixSweepCtx<'_> {
     /// first ε-close candidate. Sets `found_abort` on a hit.
     fn try_inner_branch(
         &self,
-        scratch: &mut crate::synthesis::lattice::omega::scratch::IntScratch,
+        scratch: &mut IntScratch,
         odd: bool,
         v_inner: [f64; 4],
         v_inner_mpfr: Option<&[MpFloat; 4]>,
@@ -1048,7 +1048,7 @@ impl SynthesizerT {
                 .enumerate()
                 .with_max_len(max_len)
                 .map_init(
-                    || crate::synthesis::lattice::omega::scratch::IntScratch::new(eps),
+                    || IntScratch::new(eps),
                     |scratch, (pos, &pi)| ctx.search_prefix(scratch, pos, &prefixes[pi as usize]),
                 )
                 .find_any(|r| r.is_some())

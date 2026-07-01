@@ -560,10 +560,10 @@ impl SynthesizerQ {
         m
     }
 
-    /// Sequential dc dispatch (`parallel_lde_window ≤ 1`): pass-1 sweep
-    /// then pass-2 retry of budget-hit levels. `unverified_small` and
+    /// Sequential prefix-split dispatch (`parallel_lde_window ≤ 1`): pass-1
+    /// sweep then pass-2 retry of budget-hit levels. `unverified_small` and
     /// still-truncated levels below a find are reported via `unclear_out`.
-    fn dc_sequential_pass(
+    fn prefix_split_sequential_pass(
         &self,
         target: &Mat2,
         m_split: u32,
@@ -765,7 +765,7 @@ impl SynthesizerQ {
             // shallow-ε million-node walks, and concurrent-lde dispatch
             // only pays where no-solution levels burn seconds (deep ε).
             if self.parallel_lde_window <= 1 {
-                return self.dc_sequential_pass(
+                return self.prefix_split_sequential_pass(
                     &target, m_split, lattice_start, &unverified_small,
                     unclear_out.as_deref_mut(),
                 );

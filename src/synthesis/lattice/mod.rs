@@ -7,5 +7,3 @@ pub mod backend;
 pub mod common;
 pub mod omega;
 pub mod zeta;
-
-pub use backend::{LatticeBackend, Omega, Zeta};

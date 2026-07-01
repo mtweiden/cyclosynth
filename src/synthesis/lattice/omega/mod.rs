@@ -25,7 +25,8 @@ pub mod scratch;
 pub mod se;
 
 
-pub use integer::{find_aligned_lattice_points, find_aligned_lattice_points_exact};
+pub use integer::{find_aligned_lattice_points, find_aligned_lattice_points_mpfr};
+pub use scratch::IntScratch;
 
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // test values are tiny/checked
@@ -46,7 +47,7 @@ mod tests {
 
     #[test]
     fn integer_path_at_eps_1e_3_runs() {
-        let mut scratch = scratch::IntScratch::new(1e-3);
+        let mut scratch = IntScratch::new(1e-3);
         let y = realistic_y(14);
         let budget_hit = AtomicBool::new(false);
         let _ = find_aligned_lattice_points(
@@ -56,7 +57,7 @@ mod tests {
 
     #[test]
     fn integer_path_at_eps_1e_5_runs() {
-        let mut scratch = scratch::IntScratch::new(1e-5);
+        let mut scratch = IntScratch::new(1e-5);
         let y = realistic_y(21);
         let budget_hit = AtomicBool::new(false);
         let _ = find_aligned_lattice_points(
@@ -70,7 +71,7 @@ mod tests {
     /// (at this config the full walk completes in < 50 nodes).
     #[test]
     fn node_budget_terminates_and_reports() {
-        let mut scratch = scratch::IntScratch::new(1e-3);
+        let mut scratch = IntScratch::new(1e-3);
         let y = realistic_y(14);
         let budget_hit = AtomicBool::new(false);
         let sols = find_aligned_lattice_points(
@@ -86,24 +87,24 @@ mod tests {
     /// The MPFR-`y` entry must reproduce the f64 entry exactly when handed the
     /// f64 alignment vector lifted to MPFR (same numbers, same walk).
     #[test]
-    fn exact_entry_matches_f64() {
+    fn mpfr_entry_matches_f64() {
         use crate::rings::MpFloat;
         for (k, eps) in [(14u32, 1e-3_f64), (21, 1e-5)] {
             let y = realistic_y(k);
-            let mut s_f64 = scratch::IntScratch::new(eps);
+            let mut s_f64 = IntScratch::new(eps);
             let bh = AtomicBool::new(false);
             let sols_f64 = find_aligned_lattice_points(
                 &mut s_f64, &y, k, eps, usize::MAX, u64::MAX, u64::MAX, &bh, None,
             );
 
-            let mut s_exact = scratch::IntScratch::new(eps);
-            let prec = s_exact.prec_q;
+            let mut s_mpfr = IntScratch::new(eps);
+            let prec = s_mpfr.prec_q;
             let y_q: [MpFloat; 8] = std::array::from_fn(|i| MpFloat::with_val(prec, y[i]));
             let bh2 = AtomicBool::new(false);
-            let sols_exact = find_aligned_lattice_points_exact(
-                &mut s_exact, &y_q, k, eps, usize::MAX, u64::MAX, u64::MAX, &bh2, None,
+            let sols_mpfr = find_aligned_lattice_points_mpfr(
+                &mut s_mpfr, &y_q, k, eps, usize::MAX, u64::MAX, u64::MAX, &bh2, None,
             );
-            assert_eq!(sols_f64, sols_exact, "k={k} eps={eps}: exact-y must match f64-y");
+            assert_eq!(sols_f64, sols_mpfr, "k={k} eps={eps}: mpfr-y must match f64-y");
         }
     }
 
@@ -111,7 +112,7 @@ mod tests {
     /// and must NOT report a budget hit.
     #[test]
     fn external_abort_returns_immediately() {
-        let mut scratch = scratch::IntScratch::new(1e-3);
+        let mut scratch = IntScratch::new(1e-3);
         let y = realistic_y(14);
         let budget_hit = AtomicBool::new(false);
         let abort = AtomicBool::new(true);
