@@ -760,13 +760,17 @@ pub(crate) fn diag_inner_cap(
     p!("(6) f64-Cholesky ‖R(z_a−z_c)‖² = {:.9}   (production SE bound test uses this)", f64_q.to_f64());
 
     // MPFR-oracle cross-check: cholesky_int on the snapshotted post-LLL Gram.
-    snapshot_gram_to_mpfr(&mut s);
-    let oracle_ok = cholesky_int(&mut s);
+    let g_post = snapshot_gram_to_mpfr(&s);
+    let oracle_l_opt = cholesky_int(&s, &g_post);
+    let oracle_ok = oracle_l_opt.is_some();
+    let oracle_l = oracle_l_opt.unwrap_or_else(|| {
+        std::array::from_fn(|_| std::array::from_fn(|_| MpFloat::with_val(prec_q, 0.0)))
+    });
     let mut oracle_q = MpFloat::with_val(prec_q, 0.0);
     for d in 0..8 {
         let mut lvl = MpFloat::with_val(prec_q, 0.0);
         for j in d..8 {
-            let r = MpFloat::with_val(prec_q, &s.l[j][d]);
+            let r = MpFloat::with_val(prec_q, &oracle_l[j][d]);
             let mut dd = MpFloat::with_val(prec_q, &z_big[j]);
             dd -= &z_c[j];
             lvl += MpFloat::with_val(prec_q, &r * &dd);
@@ -785,7 +789,7 @@ pub(crate) fn diag_inner_cap(
     for i in 0..8 {
         for j in 0..=i {
             let f = s.l_f64[i][j];
-            let o = s.l[i][j].to_f64();
+            let o = oracle_l[i][j].to_f64();
             let rel = (f - o).abs() / (1e-300 + o.abs());
             if rel > worst_rel { worst_rel = rel; worst_at = (i, j, f, o); }
         }

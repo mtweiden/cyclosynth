@@ -87,7 +87,6 @@ pub struct IntScratch16 {
     // ── Scratch MpFloats reused inside LLL ──
     pub tmp_a: MpFloat,
     pub tmp_b: MpFloat,
-    pub tmp_c: MpFloat,
 
     // ── post-LLL Cholesky output (f64) ──
     pub l_f64: [[f64; 16]; 16],
@@ -148,7 +147,6 @@ impl IntScratch16 {
             s_bar: rmat_zero(gs_prec),
             tmp_a: rfz(gs_prec),
             tmp_b: rfz(gs_prec),
-            tmp_c: rfz(gs_prec),
             l_f64: [[0.0_f64; 16]; 16],
             c: rvec_zero(prec_q),
             lu_prec,

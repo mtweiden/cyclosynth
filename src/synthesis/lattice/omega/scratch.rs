@@ -99,10 +99,8 @@ pub struct IntScratch {
     // ── MPFR buffers for build_q (constants + per-call working values) ──
     pub q_mpfr: [[MpFloat; 8]; 8],
     pub c: [MpFloat; 8],
-    pub sigma: [[MpFloat; 8]; 8],
     pub one: MpFloat,
     pub two: MpFloat,
-    pub half: MpFloat,
     pub tmp: MpFloat,
     pub tmp2: MpFloat,
     pub tmp3: MpFloat,
@@ -172,12 +170,6 @@ pub struct IntScratch {
     /// yields ~10⁻¹⁵ absolute error at the SE unit-scale bound check, six
     /// orders of magnitude below SE's 10⁻⁹ tolerance.
     pub l_f64: [[f64; 8]; 8],
-
-    // ── MPFR Cholesky buffers (test-suite oracle only) ──
-    /// Kept so the test suite can run `cholesky_int` as a reference oracle
-    /// against `cholesky_f64` across ε regimes. Not used in production.
-    pub g_post_lll: [[MpFloat; 8]; 8],
-    pub l: [[MpFloat; 8]; 8],
 
     // ── MPFR LU buffers at lu_prec (decoupled from prec_q; see compute_lu_prec) ──
     pub lu_prec: u32,
@@ -253,25 +245,25 @@ fn fill_sigma(sigma: &mut [[MpFloat; 8]; 8], prec: u32) {
 /// constant Σ matrix, so it runs once at scratch construction; the values
 /// persist across every build_q_mpfr call. Eliminates ~512 MPFR mul + 512
 /// MPFR add ops per find_aligned_lattice_points invocation.
-fn precompute_sigma_projections(scratch: &mut IntScratch) {
+fn precompute_sigma_projections(
+    scratch: &mut IntScratch,
+    sigma: &[[MpFloat; 8]; 8],
+    half: &MpFloat,
+) {
     for i in 0..8 {
         for j in 0..8 {
             scratch.acc.assign(0.0_f64);
             scratch.tmp2.assign(0.0_f64);
             for r_idx in 0..4 {
-                r_mul!(scratch.tmp, scratch.sigma[r_idx][i], scratch.sigma[r_idx][j]);
+                r_mul!(scratch.tmp, sigma[r_idx][i], sigma[r_idx][j]);
                 let acc_clone = scratch.acc.clone();
                 r_add!(scratch.acc, acc_clone, scratch.tmp);
-                r_mul!(
-                    scratch.tmp,
-                    scratch.sigma[r_idx + 4][i],
-                    scratch.sigma[r_idx + 4][j]
-                );
+                r_mul!(scratch.tmp, sigma[r_idx + 4][i], sigma[r_idx + 4][j]);
                 let tmp2_clone = scratch.tmp2.clone();
                 r_add!(scratch.tmp2, tmp2_clone, scratch.tmp);
             }
-            r_mul!(scratch.p_u[i][j], scratch.acc, scratch.half);
-            r_mul!(scratch.p_ub[i][j], scratch.tmp2, scratch.half);
+            r_mul!(scratch.p_u[i][j], scratch.acc, half);
+            r_mul!(scratch.p_ub[i][j], scratch.tmp2, half);
         }
     }
 }
@@ -285,10 +277,8 @@ impl IntScratch {
             scale_bits: 0,
             q_mpfr: rmat_zero(prec_q),
             c: rvec_zero(prec_q),
-            sigma: rmat_zero(prec_q),
             one: rfv(prec_q, 1.0),
             two: rfv(prec_q, 2.0),
-            half: rfv(prec_q, 0.5),
             tmp: rfz(prec_q),
             tmp2: rfz(prec_q),
             tmp3: rfz(prec_q),
@@ -320,8 +310,6 @@ impl IntScratch {
             mu_bar: [[0.0_f64; 8]; 8],
             s_bar: [[0.0_f64; 8]; 8],
             l_f64: [[0.0_f64; 8]; 8],
-            g_post_lll: rmat_zero(prec_q),
-            l: rmat_zero(prec_q),
             lu_prec,
             lu_a: rmat_zero(lu_prec),
             lu_rhs: rvec_zero(lu_prec),
@@ -329,8 +317,10 @@ impl IntScratch {
             lu_tmp: rfz(lu_prec),
             lu_acc: rfz(lu_prec),
         };
-        fill_sigma(&mut s.sigma, prec_q);
-        precompute_sigma_projections(&mut s);
+        let mut sigma = rmat_zero(prec_q);
+        fill_sigma(&mut sigma, prec_q);
+        let half = rfv(prec_q, 0.5);
+        precompute_sigma_projections(&mut s, &sigma, &half);
         s
     }
 

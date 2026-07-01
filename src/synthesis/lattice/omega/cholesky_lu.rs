@@ -21,15 +21,20 @@ use i256::i256;
 use super::lll::i256_to_f64;
 use super::scratch::IMat8;
 use super::scratch::{rfv, rfz, IntScratch};
+use crate::rings::MpFloat;
 pub use crate::synthesis::lattice::common::i256_to_rfloat;
 
-/// Convert the post-LLL i256 Gram into MPFR `g_post_lll` so the MPFR
-/// Cholesky oracle can run on it. The integer Gram is divided by
-/// `2^scale_bits` during conversion to recover the natural Q-metric scale.
-pub fn snapshot_gram_to_mpfr(scratch: &mut IntScratch) {
+/// Convert the post-LLL i256 Gram (`scratch.gram`) into a fresh MPFR matrix at
+/// `scratch.prec_q` bits, dividing out `2^scale_bits` to recover the natural
+/// Q-metric scale `G`. Returned matrix lives on the stack; the caller passes
+/// it to `cholesky_int`. Test/diagnostic oracle only — kept out of
+/// `IntScratch` so production doesn't carry a second 8x8 MPFR matrix.
+pub fn snapshot_gram_to_mpfr(scratch: &IntScratch) -> [[MpFloat; 8]; 8] {
     let prec = scratch.prec_q;
     let shift = scratch.scale_bits;
     let mut tmp = rfz(prec);
+    let mut g_post: [[MpFloat; 8]; 8] =
+        std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)));
     for i in 0..8 {
         for j in 0..8 {
             i256_to_rfloat(scratch.gram[i][j], &mut tmp);
@@ -39,45 +44,50 @@ pub fn snapshot_gram_to_mpfr(scratch: &mut IntScratch) {
             } else if shift < 0 {
                 tmp <<= (-shift) as u32;
             }
-            scratch.g_post_lll[i][j].assign(&tmp);
+            g_post[i][j].assign(&tmp);
         }
     }
+    g_post
 }
 
 // ─── MPFR Cholesky (oracle) ──────────────────────────────────────────────────
 
-/// MPFR Cholesky on the natural-scale post-LLL Gram. Reference oracle for
-/// `cholesky_f64`; not used in production. Returns `false` on a
-/// non-positive-definite pivot (extremely rare for LLL-output bases).
-pub fn cholesky_int(scratch: &mut IntScratch) -> bool {
+/// MPFR Cholesky on `g_post` (natural-scale post-LLL Gram): lower-triangular
+/// factor at `scratch.prec_q` bits, or `None` on a non-positive-definite pivot
+/// (extremely rare for LLL-output bases). Reference oracle for `cholesky_f64`;
+/// not used in production. The fresh stack matrices are kept out of
+/// `IntScratch` so production doesn't carry a second pair of 8x8 MPFR matrices.
+pub fn cholesky_int(
+    scratch: &IntScratch,
+    g_post: &[[MpFloat; 8]; 8],
+) -> Option<[[MpFloat; 8]; 8]> {
     let prec = scratch.prec_q;
-    for i in 0..8 {
-        for j in 0..8 {
-            scratch.l[i][j].assign(0.0_f64);
-        }
-    }
+    let mut l: [[MpFloat; 8]; 8] =
+        std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)));
     let zero = rfz(prec);
+    let mut acc = rfz(prec);
+    let mut tmp = rfz(prec);
     for i in 0..8 {
         for j in 0..=i {
-            scratch.acc.assign(&scratch.g_post_lll[i][j]);
+            acc.assign(&g_post[i][j]);
             for k in 0..j {
-                scratch.tmp.assign(&scratch.l[i][k] * &scratch.l[j][k]);
-                let acc_clone = scratch.acc.clone();
-                scratch.acc.assign(&acc_clone - &scratch.tmp);
+                tmp.assign(&l[i][k] * &l[j][k]);
+                let acc_clone = acc.clone();
+                acc.assign(&acc_clone - &tmp);
             }
             if i == j {
-                if scratch.acc <= zero {
-                    return false;
+                if acc <= zero {
+                    return None;
                 }
-                let acc_clone = scratch.acc.clone();
-                scratch.l[i][i].assign(acc_clone.sqrt());
+                let acc_clone = acc.clone();
+                l[i][i].assign(acc_clone.sqrt());
             } else {
-                scratch.tmp2.assign(&scratch.l[j][j]);
-                scratch.l[i][j].assign(&scratch.acc / &scratch.tmp2);
+                let denom = l[j][j].clone();
+                l[i][j].assign(&acc / &denom);
             }
         }
     }
-    true
+    Some(l)
 }
 
 use rug::Assign;

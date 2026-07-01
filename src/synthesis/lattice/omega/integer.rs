@@ -787,13 +787,12 @@ mod tests {
         build_q_int(&mut s);
         let _ = lll_l2(&mut s);
         // MPFR reference path
-        snapshot_gram_to_mpfr(&mut s);
-        assert!(
-            cholesky_int(&mut s),
-            "MPFR Cholesky failed at eps={:e}, k={}", eps, k
-        );
+        let g_post = snapshot_gram_to_mpfr(&s);
+        let l = cholesky_int(&s, &g_post).unwrap_or_else(|| {
+            panic!("MPFR Cholesky failed at eps={:e}, k={}", eps, k)
+        });
         let l_mpfr: [[f64; 8]; 8] = std::array::from_fn(|i|
-            std::array::from_fn(|j| s.l[i][j].to_f64())
+            std::array::from_fn(|j| l[i][j].to_f64())
         );
         // f64 production path
         assert!(
