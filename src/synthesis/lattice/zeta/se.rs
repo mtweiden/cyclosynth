@@ -435,6 +435,7 @@ fn se_tail_f64(l: &[[f64; 16]; 16], d: usize, z: &[i64; 16], z_c: &SeCenter16) -
 /// fixed by widening SE coords to i128 (b387ad5). Zeta runs only at ε ≥ 1e-8
 /// today (base ≲ 2^55), so this must never fire; a future zeta exact-column
 /// deep path must widen z to i128 rather than reach this panic.
+#[inline]
 fn se_bracket(base: i64, center_off: f64, span: f64) -> (i64, i64, i64, i64) {
     let add = |off: f64| -> i64 {
         base.checked_add(off as i64).expect(
