@@ -25,6 +25,7 @@
 //! cannot always pass env prefixes); they must therefore be trusted only
 //! for THIS process (the gates are LazyLock-once).
 
+use cyclosynth::synthesis::angle::{su2_col_mpfr, Angle};
 use cyclosynth::synthesis::clifford_t::SynthesizerT;
 use num_complex::Complex;
 use std::f64::consts::PI;
@@ -99,12 +100,12 @@ fn main() {
 
     // Identical target stream to time_synthesis_omega (seed | 1 guard included).
     let mut rng_state = seed | 1;
-    let targets: Vec<(String, Mat2)> = (0..n_targets)
+    let targets: Vec<(String, Mat2, [f64; 3])> = (0..n_targets)
         .map(|idx| {
             let a = rand_angle(&mut rng_state);
             let b = rand_angle(&mut rng_state);
             let c = rand_angle(&mut rng_state);
-            (format!("target_{idx:02}"), u3(a, b, c))
+            (format!("target_{idx:02}"), u3(a, b, c), [a, b, c])
         })
         .collect();
 
@@ -120,7 +121,10 @@ fn main() {
     for &eps in &eps_list {
         let synth = SynthesizerT::new(eps);
         let mut eps_total_min = 0.0_f64;
-        for (name, target) in &targets {
+        for (name, target, angles) in &targets {
+            let col = su2_col_mpfr(
+                Angle::Rad(angles[0]), Angle::Rad(angles[1]), Angle::Rad(angles[2]), 384,
+            );
             let mut min_ms = f64::INFINITY;
             let mut last = None;
             for _ in 0..n_trials {
@@ -128,7 +132,7 @@ fn main() {
                 // run's trace blocks.
                 eprintln!("[m0] run target={name} eps={eps:e}");
                 let t0 = Instant::now();
-                last = synth.synthesize(*target);
+                last = synth.synthesize_with_exact_col(*target, &col);
                 min_ms = min_ms.min(t0.elapsed().as_secs_f64() * 1000.0);
             }
             match &last {

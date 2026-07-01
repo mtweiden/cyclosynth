@@ -26,6 +26,7 @@
 //! workaround as bench_breakdown_omega's `--coset`). Empty/unset → leave
 //! the env/default alone.
 
+use cyclosynth::synthesis::angle::{su2_col_mpfr, Angle};
 use cyclosynth::synthesis::clifford_t::SynthesizerT;
 use cyclosynth::synthesis::clifford_sqrt_t::SynthesizerQ;
 use cyclosynth::synthesis::distance::Mat2;
@@ -188,8 +189,9 @@ fn run_single(targets: &[(f64, f64, f64)], eps: f64, optimize: bool, verbose: bo
         if profile {
             cyclosynth::synthesis::diag::reset_all();
         }
+        let col = su2_col_mpfr(Angle::Rad(th), Angle::Rad(ph), Angle::Rad(la), 384);
         let t0 = Instant::now();
-        let rt = SynthesizerT::new(eps).synthesize(target);
+        let rt = SynthesizerT::new(eps).synthesize_with_exact_col(target, &col);
         let t_wall = t0.elapsed().as_secs_f64();
         t_total_wall += t_wall;
         if profile {
@@ -266,7 +268,8 @@ fn run_compare(targets: &[(f64, f64, f64)], eps: f64, verbose: bool, lde_window:
             eprint!("  #{i} θ={th:.2} φ={ph:.2} λ={la:.2}  T... ");
             let _ = std::io::stderr().flush();
         }
-        let rt = SynthesizerT::new(eps).synthesize(target);
+        let col = su2_col_mpfr(Angle::Rad(th), Angle::Rad(ph), Angle::Rad(la), 384);
+        let rt = SynthesizerT::new(eps).synthesize_with_exact_col(target, &col);
         let (t_t, t_q, _, _) = gate_cost(rt.as_ref().and_then(|r| r.gates.as_deref()));
         let t_cost = t_t as f64 + 3.0 * t_q as f64;
         t_costs.push(t_cost);

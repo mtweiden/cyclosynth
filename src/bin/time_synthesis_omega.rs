@@ -15,6 +15,7 @@
 //! cholesky, lu, se) for each lde level via the diag subsystem.
 //! --skip-tight omits ε ≤ 1e-4.
 
+use cyclosynth::synthesis::angle::{su2_col_mpfr, Angle};
 use cyclosynth::synthesis::Synthesizer;
 use num_complex::Complex;
 use std::f64::consts::PI;
@@ -158,7 +159,7 @@ fn main() {
         let mut eps_failures = 0_usize;
         let mut eps_ran = 0_usize;
 
-        for (name, target, _angles) in &targets {
+        for (name, target, angles) in &targets {
             if let Some(f) = &filter {
                 if !name.contains(f.as_str()) {
                     continue;
@@ -166,12 +167,18 @@ fn main() {
             }
             eps_ran += 1;
 
+            // Angle entry: build the 384-bit MPFR target column from the exact
+            // angles so deep ε aligns to the MPFR center. A raw f64 matrix
+            // column lacks the precision below ε ≈ 1e-8.
+            let col = su2_col_mpfr(
+                Angle::Rad(angles[0]), Angle::Rad(angles[1]), Angle::Rad(angles[2]), 384,
+            );
             let mut times = Vec::with_capacity(n_trials);
             let mut last_result = None;
 
             for trial in 0..n_trials {
                 let t0 = Instant::now();
-                let result = synth.synthesize(*target);
+                let result = synth.synthesize_su2_col(*target, &col);
                 times.push(t0.elapsed().as_secs_f64() * 1000.0);
                 if trial == n_trials - 1 {
                     last_result = result;
