@@ -40,13 +40,10 @@ pub static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
     ("ZHSH", U2T::new(ZOmega::from_i32( 0, 0, 1, 0), ZOmega::from_i32(-1, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0,-1, 0), 1)),
 ];
 
-/// Indices into [`CLIFFORD_TABLE_T`] of the 8 lde-0 Cliffords — the
-/// subgroup ⟨S, X⟩ mod phase (units of Z[ω], no 1/√2). Used by
-/// `build_ma_prefix_set`'s right-coset dedup: for lde-0 `C`, `U_L` and
-/// `U_L·C` have Q-isometric subproblems (`U_L·C·U_R = U_L·(C·U_R)`, same
-/// shell and lde), so one rep per coset `U_L·⟨S,X⟩` suffices. The 24
-/// Cliffords fall into 3 such cosets — the 24-fold postmultiplication is
-/// ~2/3 redundant work that plain phase-dedup misses.
+/// Indices into [`CLIFFORD_TABLE_T`] of the 8 lde-0 Cliffords — the subgroup
+/// ⟨S, X⟩ mod phase (units of Z[ω], no 1/√2). `build_ma_prefix_set`'s
+/// right-coset dedup keeps one rep per coset `U_L·⟨S,X⟩` (the 24 Cliffords fall
+/// into 3 cosets), since `U_L·C·U_R = U_L·(C·U_R)` shares shell and lde.
 pub static CLIFFORD_LDE0_IDX: [usize; 8] = [0, 2, 3, 4, 5, 9, 10, 11];
 
 // T = Rz(π/4) has phase e^{iπ/8} ∉ Z[ω], so it can't be a U2T value. We

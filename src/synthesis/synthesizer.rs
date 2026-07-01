@@ -304,17 +304,13 @@ impl PySynthResult {
 /// Unified Python-facing single-qubit unitary synthesizer.
 ///
 /// ```python
-/// import numpy as np, cyclosynth
-/// theta = 0.3
-/// target = np.array([[np.exp(-1j * theta / 2), 0],
-///                    [0, np.exp(1j * theta / 2)]], dtype=np.complex128)
-///
-/// # Clifford+T (default).
+/// import cyclosynth
+/// # Clifford+T (default); sqrt_t=True selects Clifford+√T (denser, often fewer gates).
 /// synth = cyclosynth.Synthesizer(epsilon=1e-5)
-/// # Clifford+√T (denser, generally fewer gates).
-/// synth = cyclosynth.Synthesizer(epsilon=1e-5, sqrt_t=True)
 ///
-/// result = synth.synthesize(target)
+/// # Angles only — U3 (theta, phi, lambda) or ZYZ Euler (alpha, beta, gamma);
+/// # each a float or an exact-pi string like "pi/64".
+/// result = synth.synthesize_u3("pi/64", 0, 0)
 /// print(result.gates, result.lde, result.distance)
 /// ```
 #[cfg(feature = "python")]
