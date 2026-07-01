@@ -1,26 +1,8 @@
-//! Bloch sphere decomposition of exactly-implementable Clifford+T (or Clifford+√T) unitaries.
+//! Bloch-sphere decomposition of exact Clifford+T / Clifford+√T unitaries into gate strings.
 //!
-//! The ring type `R` of the input `U2<R>` determines the gate set automatically:
-//!   - `U2<ZOmega>` (= `U2T`) → Clifford+T,  SO3 over Z[√2], step = Rz(π/4)
-//!   - `U2<ZZeta>`  (= `U2Q`) → Clifford+√T, SO3 over Z[γ],  step = Rz(π/8)
-//!
-//! Algorithm — common shape:
-//!   1. Convert target unitary → SO(3) matrix (exact ring arithmetic, no floats).
-//!   2. Peel rotations from the left until the residual is a Clifford SO(3).
-//!   3. Identify the residual Clifford (24-element table).
-//!   4. Translate the peel sequence + Clifford suffix into a gate string.
-//!
-//! Step 2 differs by ring:
-//!   - **ZOmega**: `decompose_so3` does single-step greedy peeling. Each peel
-//!     is one of `Rx/Ry/Rz(±π/4)`; cos(nπ/4) has √2-exp ∈ {0,1,0,1,…}, so
-//!     `max_exp` is monotone-decreasing and the argmin among 3 candidates is
-//!     always correct. Provably terminates in `max_exp` steps.
-//!   - **ZZeta**: `decompose_so3_canonical_q` follows
-//!     Forest–Gosset–Kliuchnikov–McKinnon 2015 (arXiv:1501.04944, Section 4).
-//!     cos(nπ/8) has non-monotone √2-exp pattern (single π/8 peels can
-//!     transiently *increase* `max_exp`), so we try all 9 candidate peels
-//!     `R_p(a·π/8)` for `p ∈ {x,y,z}, a ∈ {1,2,3}` per step. By
-//!     Theorem 4.1(c) the optimal `(p, a)` is unique while `max_exp > 0`.
+//! Peels rotations off SO3(target) until a Clifford residual remains, then translates.
+//!   - `U2<ZOmega>` (`U2T`) → `decompose_so3` (greedy single-step peel, Clifford+T)
+//!   - `U2<ZZeta>`  (`U2Q`) → `decompose_so3_canonical_q` (canonical form, arXiv:1501.04944 §4, Clifford+√T)
 
 use std::fmt::Debug;
 use std::ops::{Mul, Sub};
@@ -36,11 +18,8 @@ use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 
 // ─── GateRing trait ───────────────────────────────────────────────────────────
 
-/// A ring type that carries its own gate-set context for Bloch decomposition.
-///
-/// Implemented by `ZOmega` (→ Clifford+T) and `ZZeta` (→ Clifford+√T).
-/// Having this on the ring type means `U2<R>` automatically determines
-/// the SO3 representation, rotation generators, and Clifford table lookup.
+/// A ring type carrying its gate-set context (SO3 rep, generators, Clifford table)
+/// for Bloch decomposition. `ZOmega` → Clifford+T, `ZZeta` → Clifford+√T.
 pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self>{
     /// SO(3) matrix type for this gate set (`SO3T` or `SO3Q`).
     type SO3: SO3Ops + Debug;
@@ -58,14 +37,9 @@ pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self>{
     fn ry_pos_u2() -> U2<Self>;
     fn rz_pos_u2() -> U2<Self>;
 
-    /// Find the Clifford label whose gate-primitive U2 matches `u` by diamond
-    /// distance (avoids the S-convention mismatch of a direct table compare).
-    ///
-    /// Argmin over the 24 entries, not first-within-tolerance: `diamond_distance`
-    /// goes through a `1/√2^k` float scaling where k grows with the U2's
-    /// denominator exponent, so the per-comparison noise floor grows with k and a
-    /// fixed threshold can misidentify large-k inputs. Cliffords are pairwise
-    /// distinct (`test_cliffords_distinct`), so argmin is unambiguous.
+    /// Find the Clifford label whose gate-primitive U2 matches `u`, by argmin
+    /// diamond distance over the 24 entries (not first-within-tolerance: the
+    /// noise floor grows with the U2's denominator exponent).
     fn identify_clifford_from_u2(u: &U2<Self>) -> Option<&'static str> {
         CLIFFORD_TABLE_T
             .iter()
@@ -91,13 +65,6 @@ pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self>{
     fn magic_gate_name() -> &'static str;
 
     /// Ring-specific entry point for the Bloch-sphere decomposition.
-    ///
-    /// ZOmega routes through the single-step greedy peel
-    /// (`decompose_so3`), which is correct for Clifford+T (rotation step
-    /// = π/4). ZZeta routes through the canonical-form algorithm of
-    /// Forest–Gosset–Kliuchnikov–McKinnon (`decompose_so3_canonical_q`),
-    /// which tries all 9 candidate peels per step (axis × {1,2,3} π/8
-    /// rotations) and is correct for Clifford+√T.
     fn decompose_target(target: &U2<Self>) -> String;
 }
 
@@ -151,10 +118,7 @@ impl GateRing for ZZeta {
 
 // ─── BlochDecomposer ─────────────────────────────────────────────────────────
 
-/// Generic Bloch-sphere decomposer.
-///
-/// Stateless unit struct. `decompose` is generic over `R: GateRing`, so
-/// `U2<ZOmega>` and `U2<ZZeta>` are handled by the same method.
+/// Generic (stateless) Bloch-sphere decomposer; `decompose` is generic over `R: GateRing`.
 #[derive(Default)]
 pub struct BlochDecomposer;
 
@@ -172,15 +136,9 @@ impl BlochDecomposer {
 
 // ─── Gate string translation ──────────────────────────────────────────────────
 
-/// Translate a raw `{x,y,z,Clifford}` decomposition string into a gate string.
-///
-/// Rotation encoding (leftmost gate = leftmost matrix factor):
-///   'x' → H·magic·H        (Rx step)
-///   'y' → S·H·magic·H·S³   (Ry step: Ry(θ) = S · Rx(θ) · S†, with S† = S³)
-///   'z' → magic             (Rz step)
-///
-/// `magic` is `"T"` for Clifford+T or `"Q"` for Clifford+√T.
-/// After substitution, a fixpoint rewrite loop simplifies the result.
+/// Translate a raw `{x,y,z,Clifford}` decomposition string into a gate string,
+/// substituting 'x'→H·magic·H, 'y'→S·H·magic·H·S³, 'z'→magic, then simplifying.
+/// `magic` is `"T"` (Clifford+T) or `"Q"` (Clifford+√T).
 fn translate(raw: &str, magic: &str) -> String {
     let substituted = raw
         .replace('x', &format!("H{}H", magic))
@@ -189,52 +147,20 @@ fn translate(raw: &str, magic: &str) -> String {
     simplify_gate_string(&substituted)
 }
 
-/// Core peel-off loop and Clifford identification, generic over ring.
-///
-/// Uses negative rotation generators applied to SO3(target), which
-/// guarantees max_exp decreases by ≥1 each step.
-///
-/// Mathematical invariant after N steps:
-///   rx_neg_N × … × rx_neg_1 × SO3(target) = C  (Clifford SO3)
-/// ⟹ target = rx_pos_N × … × rx_pos_1 × gate_c
-/// ⟹ p_output_u2 = rx_pos_N × … × rx_pos_1  (left-accumulated)
-/// ⟹ gate_c = p_output_u2† × target
-///
-/// Gate string: raw_rev + clifford_suffix
-///   raw_rev = "step_N…step_1" translates to p_output_u2;
-///   appended Clifford makes the product equal target. ✓
-///
-/// This is the **single-step greedy** peel that works correctly for ZOmega
-/// (Clifford+T): cos(nπ/4) has √2-exp ∈ {0, 1, 0, 1, …}, so each peel reduces
-/// `max_exp` by exactly 1 and the optimal axis is determined by argmin among
-/// the three single-step candidates.
-///
-/// For ZZeta (Clifford+√T) we instead use
-/// [`decompose_so3_canonical_q`], which implements the
-/// Forest–Gosset–Kliuchnikov–McKinnon (arXiv:1501.04944) canonical-form
-/// algorithm: at each step it tries all 9 candidate peels
-/// `R_p(a·π/8)` for `p ∈ {x,y,z}, a ∈ {1,2,3}` and picks the (unique, by
-/// Theorem 4.1(c)) argmin in `max_exp`.
-///
-/// The peeled string is run through [`canonicalize_syllables`] before
-/// returning, so each syllable is emitted in its minimal cost-class form
-/// — including the adjoints `T†`/`S†` when they are shorter (a `T·S·Z` syllable,
-/// net √T-power 14, comes back as `t` = `T†`). ZOmega syllables are always
-/// even-power, so only `{T, t, S, s, Z}` (never `Q`/`q`) appear.
+/// Single-step greedy peel + Clifford identification (ZOmega / Clifford+T).
+/// Each peel reduces `max_exp` by 1 (cos(nπ/4) has √2-exp ∈ {0,1,0,1,…}), so
+/// argmin over the three axes is correct; output is canonicalized per syllable.
 fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
     let rz = R::rz_neg();   // negative generators guarantee progress
     let rx = R::rx_neg();
     let ry = R::ry_neg();
-    let rx_u2 = R::rx_pos_u2();  // positive U2 rotations (peeled steps)
+    let rx_u2 = R::rx_pos_u2();
     let ry_u2 = R::ry_pos_u2();
     let rz_u2 = R::rz_pos_u2();
 
     let mut raw = String::new();
     let mut so3 = R::so3_from_u2(target);  // start from SO3(target), not SO3(target†)
     let mut p_output_u2 = U2::<R>::eye();
-    // max_exp counts T-count, monotone-decreasing per peel (this path is
-    // ZOmega-only), so max_exp steps suffice; the ×4+32 slack is defensive.
-    // The loop early-exits via `best == 0` at a Clifford residual.
     let max_steps = (so3.max_exp() as usize) * 4 + 32;
 
     for _ in 0..max_steps {
@@ -251,7 +177,7 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
 
         if ex == best {
             so3 = rx_r;
-            p_output_u2 = p_output_u2 * rx_u2;   // right-accumulate: p = rx_1*...*rx_k
+            p_output_u2 = p_output_u2 * rx_u2;
             raw.push('x');
         } else if ey == best {
             so3 = ry_r;
@@ -266,10 +192,7 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
         if best == 0 { break; }
     }
 
-    // After N steps: target = rx_pos_1 * ... * rx_pos_N * gate_c = p_output_u2 * gate_c
-    // gate_c = p_output_u2† × target
-    // Gate string: raw + clifford_suffix (no reversal — raw = "step_1…step_N" = p_output_u2)
-    //   evaluates to p_output_u2 * gate_c = target. ✓
+    // gate_c = p_output_u2† · target; raw + clifford_suffix evaluates to target.
     let gate_c = p_output_u2.dagger() * *target;
     let clifford_suffix = R::identify_clifford_from_u2(&gate_c)
         .filter(|&name| name != "I")
@@ -280,30 +203,12 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
 
 // ─── Canonical-form decomposition for ZZeta (Clifford+√T) ────────────────────
 //
-// Forest, Gosset, Kliuchnikov, McKinnon, *Exact synthesis of single-qubit
-// unitaries over Clifford-cyclotomic gate sets* (arXiv:1501.04944), Section 4.
-//
-// For n=8 (Q = Rz(π/8)) the Bloch-sphere SO(3) representation `M̂` of any
-// Clifford+√T unitary admits a unique factorisation
-//
-//     M̂ = R_{p_1}(a_1·π/8) · R_{p_2}(a_2·π/8) · … · R_{p_m}(a_m·π/8) · Ĉ
-//
-// with `p_i ∈ {x,y,z}`, `p_i ≠ p_{i+1}`, `a_i ∈ {1,2,3}`, and `Ĉ` a Clifford
-// (Theorem 4.1 + Lemma 3.1). The greedy peel implemented in
-// [`decompose_so3`] only considers single-step (a=1) candidates and so
-// fails on `M̂ ∈ SO3<R4>`, where the √2-exponent of the entries of
-// `R_p(a·π/8)` is non-monotone in a (a=1: 2, a=2: 1, a=3: 2 in our √2-denom
-// convention). The algorithm below tries all 9 candidate peels at each step
-// and picks the (unique, by Theorem 4.1(c)) argmin in `max_exp`.
-//
-// Termination: at each step the chosen peel strictly reduces `max_exp` on
-// the *row* identified by Theorem 4.1(c); after finitely many steps the
-// residual has `max_exp == 0` and is a Clifford.
+// Canonical form from arXiv:1501.04944 §4. Greedy single-step peeling fails
+// here (cos(nπ/8) √2-exp is non-monotone in a), so each step tries all 9 peels
+// R_p(a·π/8), p ∈ {x,y,z}, a ∈ {1,2,3}, and takes the argmin in `max_exp`.
 
-/// Pre-computed candidate rotation generators for the canonical-form
-/// algorithm: 9 (p, a) pairs `(p ∈ {x,y,z}, a ∈ {1,2,3})` with both the
-/// negative SO3 generator (used to peel from the left of the SO3 residual)
-/// and the positive U2 generator (right-accumulated to form `p_output_u2`).
+/// The 9 (p ∈ {x,y,z}, a ∈ {1,2,3}) candidate generators: negative SO3 (peeled
+/// from the left of the residual) + positive U2 (right-accumulated into output).
 struct CanonicalCandidate {
     /// Axis: 0=x, 1=y, 2=z.
     axis: u8,
@@ -347,11 +252,6 @@ fn decompose_so3_canonical_q(target: &U2Q) -> String {
 
     let mut so3 = SO3Q::from_u2(target);
     let mut p_output_u2 = U2Q::eye();
-    // Each peel reduces the maximum √2-exponent of the SO3 entries by at
-    // least 1 (Theorem 4.1(b) gives an explicit closed form). The initial
-    // exponent bounds the iteration count from above; the multiplicative
-    // factor 4 + slack absorbs the difference between the paper's
-    // β = 2cos(π/8) denominator base and our √2 denominator base.
     let max_steps = (so3.max_exp() as usize) * 4 + 32;
 
     let mut raw_segments: Vec<String> = Vec::new();
@@ -398,16 +298,10 @@ fn decompose_so3_canonical_q(target: &U2Q) -> String {
     canonicalize_syllables(&simplify_gate_string(&full))
 }
 
-/// Minimal gate string for a syllable by net √T-power `k` (mod 16),
-/// indexed `SYLLABLE_FORMS[k]`. `Q = √T = Rz(π/8)` so `T = Q²`, `S = Q⁴`,
-/// `Z = Q⁸`; lowercase `q,t,s` are the adjoints `Q†,T†,S†` (powers
-/// −1,−2,−4). Each syllable reduces to at most one non-Clifford gate carrying
-/// the syllable's cost class — `Q`/`q` (√T-class), `T`/`t` (T-class), or none
-/// (Clifford) — plus at most one Clifford residual (`S`/`s`/`Z`). This is
-/// exactly the form [`crate::synthesis::clifford_sqrt_t::gates_cost`] charges
-/// per syllable, so the emitted circuit realizes the cost it is scored at (a
-/// √T³ syllable is one `Q†S = T^{3/2}` injection at cost 3, not a separate
-/// `T` and `Q` at cost 4).
+/// Minimal gate string for a syllable by net √T-power `k` (mod 16), indexed
+/// `SYLLABLE_FORMS[k]`. `Q=√T`, `T=Q²`, `S=Q⁴`, `Z=Q⁸`; lowercase `q,t,s` are
+/// the adjoints. Matches the per-syllable cost charged by
+/// [`crate::synthesis::clifford_sqrt_t::gates_cost`].
 const SYLLABLE_FORMS: [&str; 16] = [
     "", "Q", "T", "qS", "S", "QS", "TS", "qZ", "Z", "QZ", "TZ", "qs", "s", "Qs", "t", "q",
 ];
@@ -426,13 +320,9 @@ fn q_power(c: char) -> i32 {
     }
 }
 
-/// Rewrite each syllable (maximal run between off-diagonal `H`/`X`/`Y`)
-/// of a simplified Clifford+T or Clifford+√T gate string into its minimal
-/// [`SYLLABLE_FORMS`] representation. Off-diagonal gates pass through unchanged
-/// and delimit the syllables; the net √T-power of each syllable is preserved mod 16,
-/// so the result is diamond-distance-identical to the input. Clifford+T syllables
-/// are always even-power, so they collapse to `{T, t, S, s, Z}` (the `Q`/`q`
-/// √T-class forms only arise for odd-power Clifford+√T syllables).
+/// Rewrite each syllable (maximal run between off-diagonal `H`/`X`/`Y`) into its
+/// minimal [`SYLLABLE_FORMS`] form. Net √T-power is preserved mod 16, so the
+/// result is diamond-distance-identical to the input.
 fn canonicalize_syllables(s: &str) -> String {
     let mut out = String::new();
     let mut k: i32 = 0;
@@ -449,11 +339,7 @@ fn canonicalize_syllables(s: &str) -> String {
     out
 }
 
-/// Translate a single (axis, a) peel into a literal gate-string fragment
-/// (without going through `translate`'s single-character substitution).
-///
-/// The fragment is in the {H, S, Q, X, Y, Z} alphabet; `simplify_gate_string`
-/// applies the same combine/cancel rewrite loop as `translate`.
+/// Translate a single (axis, a) peel into a literal `{H,S,Q,X,Y,Z}` gate-string fragment.
 fn canonical_segment_string(axis: u8, a: u8) -> String {
     let q_run: String = "Q".repeat(a as usize);
     match axis {
@@ -497,9 +383,7 @@ fn simplify_gate_string(input: &str) -> String {
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
-/// Python-facing BlochDecomposer.
-///
-/// Stateless: construct once, call decompose() with the U2T parameters.
+/// Python-facing BlochDecomposer (stateless).
 #[cfg(feature = "python")]
 #[pyclass(name = "BlochDecomposer")]
 pub struct PyBlochDecomposer;
@@ -630,9 +514,7 @@ mod tests {
     }
 
     /// Clifford+T syllables collapse to their minimal cost-class form, using
-    /// the adjoints `t`/`s` when shorter. `T·S·Z` (net √T-power 14) is one
-    /// `T†`; six `T`s (power 12) collapse to the lone Clifford `s` (=S†);
-    /// five `T`s (power 10) is `TZ`.
+    /// the adjoints `t`/`s` when shorter.
     #[test]
     fn test_clifford_t_syllable_daggers() {
         // (input, expected minimal form).
@@ -793,13 +675,6 @@ mod tests {
             "decomp \"{decomp}\" doesn't match input \"{gates}\": dist={dist:.3e}");
     }
 
-    // Why ZZeta needs `decompose_so3_canonical_q` and ZOmega doesn't: SO3T's
-    // cos(nπ/4) has √2-exp ∈ {0,1,0,1,…} (monotone per Rz peel, so greedy
-    // single-step argmin converges), but SO3Q's cos(nπ/8) has √2-exp ∈
-    // {0,2,1,2,…} — a single Rz(π/8) peel can transiently *increase* max_exp,
-    // sending greedy off-axis. The canonical-form algorithm tries all 9 peels
-    // per step and picks the unique max_exp-reducing one instead.
-
     #[test]
     fn test_zzeta_mixed_t_and_q() {
         // T and Q can mix freely in input — both produce ZZeta unitaries
@@ -833,39 +708,11 @@ mod tests {
         }
     }
 
-    // ── P-a: per-peel Bloch-denominator drop ─
-    //
-    // Verifies the loop invariant of `decompose_so3_canonical_q` that the
-    // slope-2 certificate floor (obligation
-    // P-a) rests on. Two unit systems are in play:
-    //
-    //   * N  = `SO3Q::maximum_denominator_exponent()` — the √2-denominator
-    //     exponent of the reduced Bloch matrix (the code's `max_exp`).
-    //   * Nγ = the γ-denominator exponent, γ = √(2+√2) = 2cos(π/8) — the
-    //     unit FGKM's Theorem 4.1 (arXiv:1501.04944) is stated in.
-    //
-    // Conversion: √2 = γ²·(√2−1) (unit), so a reduced entry w/√2^e has
-    // γ-exponent 2e − min(v_γ(w), 1) and N = ⌈Nγ/2⌉ matrix-wide.
-    //
-    // FGKM Theorem 4.1 (n = 8): each canonical syllable R_p(a·π/8)
-    // contributes exactly q_a to Nγ, with q = {a=1 (Q): 3, a=2 (T): 2,
-    // a=3 (TQ): 3}. So the exact per-peel invariant is in γ-units:
-    //
-    //     Nγ drops by exactly q_a per peel.
-    //
-    // In the code's √2-units the drop is NOT a constant per syllable type:
-    // a T-peel always drops N by 1, while a Q- or TQ-peel drops N by 2 when
-    // the pre-peel Nγ is odd and by 1 when it is even (ceiling division).
-    // The table δ = {T:1, Q:2, TQ:3} is therefore false
-    // for TQ (drop 3 is impossible) and only half-true for Q. Cost-per-peel
-    // still dominates the drop: T = 1 ≥ 1, Q = 3 ≥ 2, TQ = 4 ≥ 2
-    // (T-units), and the drops telescope to N(U), so cost ≥ N survives.
+    // P-a: per-peel Bloch-denominator drop. N = code's √2-exp `max_exp`;
+    // Nγ = γ-exp (γ = 2cos(π/8)) that FGKM Theorem 4.1 is stated in. Verifies
+    // Nγ drops by exactly q_a per peel and cost-per-peel ≥ the derived N-drop.
 
     /// γ-denominator exponent of a reduced SO3Q (max over non-zero entries).
-    ///
-    /// Entry w/√2^e (reduced: √2 ∤ w or e = 0) equals w·u^e/γ^{2e} with
-    /// u = √2−1 a unit, so its γ-exponent is 2e − v_γ(w). After √2-reduction
-    /// v_γ(w) ∈ {0, 1}: v_γ(w) ≥ 2 would mean γ² | w, i.e. √2 | w.
     fn so3q_gamma_exponent(m: &SO3Q) -> u32 {
         m.e.iter()
             .filter(|r| r.num != R4::ZERO)
@@ -907,12 +754,8 @@ mod tests {
         }
     }
 
-    /// P-a companion: per-gate Bloch-denominator constants. With N
-    /// subadditive under matrix products (Ratio exps add in Mul, Add takes
-    /// max — same argument as the B2 U(2)-lde constants), N(T) = 1,
-    /// N(Q) = 2, N(Clifford) = 0 give cost(W) = t + 3q ≥ t + 2q ≥ N(U)
-    /// in T-units for EVERY gate word W, not just canonical ones. This is
-    /// the exhaustive finite check those constants rest on.
+    /// P-a companion: per-gate Bloch-denominator constants N(T)=1, N(Q)=2,
+    /// N(Clifford)=0 (the exhaustive finite check cost(W) ≥ N(U) rests on).
     #[test]
     fn test_pa_per_gate_bloch_n_constants() {
         let n_of = |u: &U2Q| {
@@ -922,8 +765,6 @@ mod tests {
         };
         assert_eq!(n_of(&U2Q::t()), 1, "N(T) ≠ 1");
         assert_eq!(n_of(&U2Q::q()), 2, "N(Q) ≠ 2");
-        // For the record: a whole TQ syllable also has N = 2, not 3 — the
-        // single-syllable refutation of the claimed δ = 3.
         assert_eq!(n_of(&(U2Q::t() * U2Q::q())), 2, "N(TQ) ≠ 2");
         for (name, _) in CLIFFORD_TABLE_T {
             let g: U2Q = name.chars().fold(U2Q::eye(), |acc, ch| {
@@ -961,9 +802,7 @@ mod tests {
                 let a = 1 + (rng.next() % 3) as u32;
                 u = (u * fgkm_syllable(axis, a)).reduced();
             }
-            // Half the corpus: append a random Clifford word — must not
-            // perturb N (Clifford Bloch matrices are signed permutations)
-            // or any per-peel drop.
+            // Half the corpus: append a random Clifford word (must not perturb N).
             if word_idx % 2 == 1 {
                 for _ in 0..(rng.next() % 4) {
                     let g = match rng.next() % 2 {
@@ -974,9 +813,7 @@ mod tests {
                 }
             }
 
-            // Replicate decompose_so3_canonical_q's peel loop exactly
-            // (same candidate order, same strict-< argmin), instrumented
-            // with N and Nγ before/after each peel.
+            // Replicate decompose_so3_canonical_q's peel loop, instrumented with N/Nγ.
             let mut so3 = SO3Q::from_u2(&u);
             so3.reduce();
             let max_steps = (so3.max_exp() as usize) * 4 + 32;
@@ -1035,8 +872,7 @@ mod tests {
                     "√2-drop off-table: a={a}, N {n_before}→{n_after}, Nγ_before={ng_before}"
                 );
 
-                // ── Cost-per-peel dominates the drop (T-units ×2 = half-units):
-                //    cost(a=1)=7 HU, cost(a=2)=2 HU, cost(a=3)=9 HU ≥ 2·drop. ──
+                // ── Cost-per-peel (half-units) dominates the drop: 2·drop ≤ cost. ──
                 let cost_hu = match a { 1 => 7, 2 => 2, _ => 9 };
                 assert!(
                     2 * drop <= cost_hu,
