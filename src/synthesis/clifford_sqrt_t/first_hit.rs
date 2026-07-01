@@ -829,8 +829,7 @@ impl SynthesizerQ {
                 if inner_det_phase_filter.is_empty() {
                     return true;
                 }
-                let d_l = det_phase_of(&u_l.to_float());
-                let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                let d_r = inner_d_r(d_target, u_l);
                 inner_det_phase_filter.contains(&d_r)
             })
             .map(|(i, _)| (i, prefix_costs[i]))
@@ -893,8 +892,7 @@ impl SynthesizerQ {
             usable
                 .iter()
                 .map(|&(u_l, c)| {
-                    let d_l = det_phase_of(&u_l.to_float());
-                    let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                    let d_r = inner_d_r(d_target, u_l);
                     PrefixWatch {
                         abort: AtomicBool::new(false),
                         active: AtomicBool::new(false),
@@ -923,8 +921,7 @@ impl SynthesizerQ {
             let k_prefix = u_l.k;
             let lde_inner = lde_total - k_prefix;
 
-            let d_l = det_phase_of(&u_l.to_float());
-            let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+            let d_r = inner_d_r(d_target, u_l);
 
             // Heuristic prune: U_R can cancel parts of U_L, so this can in
             // principle miss the optimum.

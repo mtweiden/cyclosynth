@@ -248,6 +248,13 @@ pub(crate) fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
         .sum()
 }
 
+/// Inner (right-factor) det-phase for a left prefix `u_l`: the residual ζ₁₆
+/// power the suffix must carry so `det(u_l · u_r) = ζ₁₆^d_target`.
+pub(crate) fn inner_d_r(d_target: u32, u_l: &U2Q) -> u32 {
+    let d_l = det_phase_of(&u_l.to_float());
+    ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32
+}
+
 /// Net √T-power of a single diagonal gate (`Q = √T`, so `T = Q²`, `S = Q⁴`,
 /// `Z = Q⁸`; lowercase are the adjoints). Off-diagonal gates contribute `0`.
 fn q_power(c: char) -> i32 {

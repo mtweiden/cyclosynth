@@ -130,8 +130,7 @@ use std::f64::consts::PI;
             let prefixes = build_fgkm_prefix_set(m);
             let mut hist = [0u64; 16];
             for u_l in prefixes.iter() {
-                let d_l = det_phase_of(&u_l.to_float());
-                let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                let d_r = inner_d_r(d_target, u_l);
                 hist[d_r as usize] += 1;
             }
             let mut s = format!("m={m} d_R hist (target d={d_target}):");
@@ -173,8 +172,7 @@ use std::f64::consts::PI;
             } else {
                 let prefixes = build_fgkm_prefix_set(*m);
                 prefixes.iter().filter(|u| {
-                    let d_l = det_phase_of(&u.to_float());
-                    let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                    let d_r = inner_d_r(d_target, u);
                     filter.contains(&d_r)
                 }).count() as u64
             };

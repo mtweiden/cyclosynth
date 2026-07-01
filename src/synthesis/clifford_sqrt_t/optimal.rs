@@ -170,8 +170,7 @@ impl SynthesizerQ {
                 if u_l.k >= lde_total {
                     continue;
                 }
-                let d_l = det_phase_of(&u_l.to_float());
-                let d_r = ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32;
+                let d_r = inner_d_r(d_target, u_l);
                 if !filter.is_empty() && !filter.contains(&d_r) {
                     continue;
                 }
