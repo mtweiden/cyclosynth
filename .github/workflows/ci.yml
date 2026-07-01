@@ -30,6 +30,11 @@ jobs:
       # Several diag-counter tests only do anything under `trace`.
       - name: Test (trace feature)
         run: cargo test --release --lib --features trace
+      # The pyo3 module is the product surface but is never linked in CI
+      # (that's maturin's job); at least type-check it so a lint or refactor
+      # can't silently break `--features python` (it happened: 039055c).
+      - name: Check (python feature)
+        run: cargo check --release --features "python trace"
       # Deep-ε canary (#[ignore]d out of the default suite). Guards against
       # silent deep-ε misses — a mis-prune at ε=1e-10 that shallow-ε tests
       # can't see. Machine-independent invariant (find-lde), just slower on
