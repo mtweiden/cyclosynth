@@ -61,7 +61,7 @@ pub(crate) fn match_clifford(target: &U2T) -> Option<usize> {
         .min_by(|(_, (_, a)), (_, (_, b))| {
             let da = a.diamond_distance(target);
             let db = b.diamond_distance(target);
-            da.partial_cmp(&db).unwrap()
+            da.total_cmp(&db)
         })
         .filter(|(_, (_, c))| c.diamond_distance(target) < 1e-6)
         .map(|(i, _)| i)

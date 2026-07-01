@@ -36,7 +36,9 @@ impl Angle {
             Angle::Rad(x) => MpFloat::with_val(prec, x),
             Angle::PiRatio(p, q) => {
                 let pi = MpFloat::with_val(prec, rug::float::Constant::Pi);
-                MpFloat::with_val(prec, &pi * (p as f64)) / (q as f64)
+                // Multiply/divide by i64 directly — an f64 round-trip would
+                // silently lose exactness for |p| or |q| > 2^53.
+                MpFloat::with_val(prec, &pi * p) / q
             }
         }
     }
