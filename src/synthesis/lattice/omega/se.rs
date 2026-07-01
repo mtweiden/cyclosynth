@@ -113,16 +113,16 @@ fn isqrt_i256(mut n: i256) -> i256 {
     loop {
         let xb = x + bit;
         if n >= xb {
-            n = n - xb;
+            n -= xb;
             x = (x >> 1u32) + bit;
         } else {
-            x = x >> 1u32;
+            x >>= 1u32;
         }
         if shift == 0 {
             break;
         }
         shift -= 2;
-        bit = bit >> 2u32;
+        bit >>= 2u32;
     }
     x
 }
