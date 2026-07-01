@@ -853,14 +853,19 @@ impl SynthesizerT {
                 .fetch_add(prefixes.len() as u64, std::sync::atomic::Ordering::Relaxed);
         }
 
-        // Parallel search over all left prefixes.
-        // find_any stops scheduling new prefixes as soon as any one returns
-        // Some(...); with_min_len ensures rayon distributes work evenly
-        // rather than keeping everything on one thread when items complete
-        // quickly.
+        // Parallel search over all left prefixes. `find_any` stops scheduling
+        // once any prefix returns Some(...). The per-prefix SE cost is
+        // heavy-tailed (a few prefixes run to the node cap, most prune early),
+        // so `with_max_len` keeps leaves small enough for rayon work-stealing
+        // to rebalance the tail across all cores — coarse `n/n_threads` chunks
+        // leave most cores idle on the long pole.
         let n_threads = rayon::current_num_threads();
         let n = prefixes.len();
-        let chunk = (n / n_threads).max(1);
+        let max_len = std::env::var("CYCLOSYNTH_CHUNK")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&k| k > 0)
+            .unwrap_or(64);
         let budget_hit = std::sync::atomic::AtomicBool::new(false);
         // Cross-branch winner signal: set by the first prefix that finds an
         // ε-close solution; checked at every SE recurse-entry of every
@@ -909,7 +914,7 @@ impl SynthesizerT {
             result = order
                 .par_iter()
                 .enumerate()
-                .with_min_len(chunk)
+                .with_max_len(max_len)
                 .map_init(
                     || crate::synthesis::lattice::omega::scratch::IntScratch::new(eps),
                     |scratch, (pos, &pi)| -> Option<SynthResultT> {
