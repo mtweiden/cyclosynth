@@ -31,7 +31,11 @@ Python:
 ```python
 import cyclosynth
 synth  = cyclosynth.Synthesizer(1e-5, sqrt_t=True)   # omit sqrt_t for Clifford+T
-result = synth.synthesize(target)                    # target: 2x2 complex unitary (numpy)
+# Targets are specified by ANGLES, not matrices — the input must carry more
+# than f64 precision for deep ε (cos/sin are evaluated to the search precision).
+result = synth.synthesize_zyz(alpha, beta, gamma)    # SU(2) = Rz(α)·Ry(β)·Rz(γ)
+# or synth.synthesize_u3(theta, phi, lam)            # qiskit/bqskit U3 convention
+# angles are floats (radians) or exact 'pi'-strings ("pi/64", "3*pi/4")
 if result:                                           # None if no circuit within epsilon
     result.gates       # gate string over {H, S, T, Q(=√T), X, Y, Z}; lowercase q/t/s = Q†/T†/S†
     result.t_count, result.q_count, result.cost, result.lde, result.distance
@@ -41,8 +45,9 @@ Every returned circuit satisfies `distance < epsilon` (diamond distance).
 Runnable examples are in `examples/` (`synth.py`, `compare_t_vs_sqrtt.py`,
 `optimize_cost.py`, `choosing_epsilon.py`, `verify.py`).
 
-Rust: `synthesis::Synthesizer::new(epsilon, sqrt_t).synthesize(target)`, with
-builder options (`with_optimize_cost`, `with_q_cost`, `with_max_lde`, …).
+Rust: `synthesis::Synthesizer::new(epsilon, sqrt_t)`, then `synthesize_with_exact_col`
+(deep-ε, exact MPFR column from angles) or `synthesize(target)` (f64 matrix,
+ε ≥ 1e-8 only); builder options (`with_optimize_cost`, `with_q_cost`, `with_max_lde`, …).
 
 ## Good to know
 

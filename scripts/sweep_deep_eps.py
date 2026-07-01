@@ -117,21 +117,11 @@ def config_sort_key(item):
 
 def _worker(epsilon, sqrt_t, kwargs, theta, phi, lam, q):
     import cyclosynth  # imported in child to keep parent light
-    import numpy as _np
 
-    def _rz(t):
-        return _np.array([[_np.exp(-1j * t / 2), 0],
-                          [0, _np.exp(1j * t / 2)]], dtype=_np.complex128)
-
-    def _ry(t):
-        c, s = _np.cos(t / 2), _np.sin(t / 2)
-        return _np.array([[c, -s], [s, c]], dtype=_np.complex128)
-
-    target = _rz(theta) @ _ry(phi) @ _rz(lam)
     synth = cyclosynth.Synthesizer(epsilon=epsilon, sqrt_t=sqrt_t, **kwargs)
     t0 = perf_counter()
     try:
-        r = synth.synthesize(target)
+        r = synth.synthesize_zyz(theta, phi, lam)
         dur = perf_counter() - t0
         if r is None:
             q.put(("none", dur, 0, 0, float("inf"), 0))

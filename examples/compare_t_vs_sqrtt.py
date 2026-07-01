@@ -22,7 +22,7 @@ def haar_u3(rng):
     """
     alpha, gamma = 2 * np.pi * rng.random(2)
     beta = np.arccos(1.0 - 2.0 * rng.random())
-    return u3(alpha, beta, gamma)
+    return u3(alpha, beta, gamma), (alpha, beta, gamma)
 
 
 def main():
@@ -39,12 +39,12 @@ def main():
     costs_t, costs_q, dists_t, dists_q = [], [], [], []
     wins = {"T": 0, "√T": 0, "tie": 0}
     for i in range(n_targets):
-        target = haar_u3(rng)
+        target, angles = haar_u3(rng)
 
         # ========================================
         # DOING SYNTHESIS HERE
         # ========================================
-        r_t, r_q = synth_t.synthesize(target), synth_q.synthesize(target)
+        r_t, r_q = synth_t.synthesize_zyz(*angles), synth_q.synthesize_zyz(*angles)
         # ========================================
 
         if not (r_t and r_q):

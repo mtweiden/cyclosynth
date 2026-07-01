@@ -94,10 +94,10 @@ def cost_of(gates):
     return _cost.syllable_cost(gates, Q_WEIGHT)
 
 
-def run_cyc(synth, target):
+def run_cyc(synth, angles):
     t0 = perf_counter()
     try:
-        r = synth.synthesize(target)
+        r = synth.synthesize_zyz(*angles)
         dur = (perf_counter() - t0) * 1000.0
         if r is None:
             return dict(t_count=0, q_count=0, distance=float("inf"),
@@ -119,18 +119,18 @@ def run_cyc(synth, target):
 _CTX = mp.get_context("spawn")
 
 
-def _cyc_worker(q, synth_kwargs, target):
+def _cyc_worker(q, synth_kwargs, angles):
     synth = cyclosynth.Synthesizer(**synth_kwargs)
-    q.put(run_cyc(synth, target))
+    q.put(run_cyc(synth, angles))
 
 
-def run_cyc_timeout(synth_kwargs, target, timeout_s):
+def run_cyc_timeout(synth_kwargs, angles, timeout_s):
     """run_cyc in a child process, SIGKILLed if it overruns timeout_s.
     A killed/failed call returns a failed (inf-distance, empty-gates) row,
     exactly as run_cyc does on error, so downstream handling is unchanged."""
     t0 = perf_counter()
     q = _CTX.Queue()
-    p = _CTX.Process(target=_cyc_worker, args=(q, synth_kwargs, target))
+    p = _CTX.Process(target=_cyc_worker, args=(q, synth_kwargs, angles))
     p.start()
     p.join(timeout_s)
     if p.is_alive():
@@ -176,9 +176,9 @@ def main():
             angles = angles_for(eps, N_TRIALS)
             for trial, theta in enumerate(angles):
                 theta = float(theta)
-                target = rz(theta)
-                rows = {"cyclosynth_t": run_cyc_timeout(kw_t, target, CYC_TIMEOUT_S),
-                        "cyclosynth_sqrt_t": run_cyc_timeout(kw_q, target, CYC_TIMEOUT_S)}
+                angles = (theta, 0.0, 0.0)
+                rows = {"cyclosynth_t": run_cyc_timeout(kw_t, angles, CYC_TIMEOUT_S),
+                        "cyclosynth_sqrt_t": run_cyc_timeout(kw_q, angles, CYC_TIMEOUT_S)}
                 if HAVE_GRID:
                     rows["gridsynth"] = run_grid(theta, eps)
 

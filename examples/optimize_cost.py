@@ -19,7 +19,7 @@ first_hit = cyclosynth.Synthesizer(epsilon, sqrt_t=True)
 optimized = cyclosynth.Synthesizer(epsilon, sqrt_t=True, optimize_cost=True, q_cost=3.5)
 
 for label, synth in [("first-hit ", first_hit), ("optimized ", optimized)]:
-    r = synth.synthesize(target)
+    r = synth.synthesize_zyz(theta, 0, 0)
     if not r:
         print(f"{label}: no circuit within ε={epsilon:.0e}")
         continue

@@ -34,19 +34,14 @@ maturin develop --release
 ## Usage (Python)
 
 ```python
-import numpy as np
 import cyclosynth
 
-# Any 2×2 np.complex128 unitary. Here: Rz(α)·Ry(β)·Rz(γ).
-def rz(t): return np.diag([np.exp(-1j*t/2), np.exp(1j*t/2)])
-def ry(t):
-    c, s = np.cos(t/2), np.sin(t/2)
-    return np.array([[c, -s], [s, c]], dtype=np.complex128)
-
-target = rz(4.863069) @ ry(2.757718) @ rz(5.394728)
-
+# Targets are given by their rotation ANGLES, not a matrix: deep-ε synthesis
+# needs more than f64 precision, which only the angles carry (cos/sin are
+# evaluated to the search precision). The target here is Rz(α)·Ry(β)·Rz(γ).
 synth = cyclosynth.Synthesizer(epsilon=1e-5)
-result = synth.synthesize(target)
+result = synth.synthesize_zyz(4.863069, 2.757718, 5.394728)
+# angles: floats (radians) or exact 'pi'-strings; synthesize_u3(θ, φ, λ) also available
 
 if result:                        # None if no circuit was found within epsilon
     print(result.gates)           # gate string over {H, S, s, T, t, X, Y, Z}

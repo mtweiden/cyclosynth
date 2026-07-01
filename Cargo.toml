@@ -15,7 +15,6 @@ rayon = "1.10"
 rug = { version = "1", default-features = false, features = ["float", "integer"] }
 gmp-mpfr-sys = "1.7"
 pyo3 = { version = "0.22", optional = true, features = ["extension-module", "num-complex"] }
-numpy = { version = "0.22", optional = true }
 
 [dev-dependencies]
 rand = "0.9"
@@ -32,7 +31,7 @@ debug = 1
 
 [features]
 default = []
-python = ["dep:pyo3", "dep:numpy"]
+python = ["dep:pyo3"]
 # Diagnostic telemetry (trace counters, per-phase timers). OFF by default:
 # without it, `diag::trace_enabled()` is a compile-time `false` and every
 # `if trace_enabled()` block (including the per-leaf hot path) is eliminated,

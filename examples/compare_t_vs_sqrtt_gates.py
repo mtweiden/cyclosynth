@@ -140,7 +140,7 @@ def main() -> None:
         # ========================================
         # DOING SYNTHESIS HERE
         # ========================================
-        r_t, r_q = synth_t.synthesize(target), synth_q.synthesize(target)
+        r_t, r_q = synth_t.synthesize_zyz(*angles), synth_q.synthesize_zyz(*angles)
         # ========================================
 
         report_stats("Clifford+T ", r_t, epsilon)

@@ -146,7 +146,7 @@ def main():
         alpha, beta, gamma = [2 * np.pi * random() for _ in range(3)]
         target = rz(alpha) @ ry(beta) @ rz(gamma)
 
-        result = synth.synthesize(target)
+        result = synth.synthesize_zyz(alpha, beta, gamma)
         if result is None or result.gates is None:
             print(f"[{i:3d}] U3({alpha:.3f},{beta:.3f},{gamma:.3f}): synthesis returned None")
             failures += 1

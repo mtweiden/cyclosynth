@@ -18,13 +18,14 @@ def u3(alpha, beta, gamma):
 
 
 epsilon = 1e-5
-target = u3(*(2 * np.pi * rng.random(3)))
+alpha, beta, gamma = 2 * np.pi * rng.random(3)
+target = u3(alpha, beta, gamma)
 
 for label, synth in [
     ("Clifford+T ", cyclosynth.Synthesizer(epsilon)),
     ("Clifford+√T", cyclosynth.Synthesizer(epsilon, sqrt_t=True)),
 ]:
-    result = synth.synthesize(target)
+    result = synth.synthesize_zyz(alpha, beta, gamma)
     if not result:                       # None, or no gates extracted
         print(f"{label}: no circuit within ε={epsilon:.0e}")
         continue

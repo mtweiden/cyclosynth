@@ -16,7 +16,7 @@ target = np.array([[np.exp(-1j * theta / 2), 0],
 print(f"{'epsilon':>9}  {'T-count':>7}  {'distance':>10}")
 print("-" * 30)
 for epsilon in [1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]:
-    result = cyclosynth.Synthesizer(epsilon).synthesize(target)
+    result = cyclosynth.Synthesizer(epsilon).synthesize_zyz(theta, 0, 0)
     if result:
         print(f"{epsilon:>9.0e}  {result.t_count:>7}  {result.distance:>10.2e}")
     else:

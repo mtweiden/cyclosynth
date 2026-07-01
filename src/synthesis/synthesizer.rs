@@ -227,10 +227,6 @@ impl Synthesizer {
 // ─── PyO3 bindings ────────────────────────────────────────────────────────────
 
 #[cfg(feature = "python")]
-use num_complex::Complex;
-#[cfg(feature = "python")]
-use numpy::{Complex64 as PyComplex64, PyReadonlyArray2};
-#[cfg(feature = "python")]
 use pyo3::prelude::*;
 
 /// Python-facing result of a synthesis run. Same shape for both gate sets.
@@ -392,70 +388,6 @@ impl PySynthesizer {
             s = s.with_seq_parity(seq_parity);
         }
         Ok(Self { inner: s })
-    }
-
-    /// Synthesize `target` (a 2×2 `np.complex128` unitary). Returns a
-    /// `SynthResult`, or `None` if no circuit within `epsilon` was found at the
-    /// allowed lde range. Raises `ValueError` if `target` isn't a 2×2 unitary.
-    fn synthesize(
-        &self,
-        target: PyReadonlyArray2<PyComplex64>,
-    ) -> PyResult<Option<PySynthResult>> {
-        let view = target.as_array();
-        if view.shape() != [2, 2] {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "target must be a 2×2 matrix, got shape {:?}",
-                view.shape()
-            )));
-        }
-        let mat: Mat2 = [
-            [
-                Complex::new(view[[0, 0]].re, view[[0, 0]].im),
-                Complex::new(view[[0, 1]].re, view[[0, 1]].im),
-            ],
-            [
-                Complex::new(view[[1, 0]].re, view[[1, 0]].im),
-                Complex::new(view[[1, 1]].re, view[[1, 1]].im),
-            ],
-        ];
-        // Reject non-unitary input up front: ‖U†U − I‖_F must be ~0. Loose
-        // tolerance so f64-quantized unitaries pass; a clear error beats a
-        // meaningless distance downstream.
-        let mut off = 0.0_f64;
-        for i in 0..2 {
-            for j in 0..2 {
-                let dot = mat[0][i].conj() * mat[0][j] + mat[1][i].conj() * mat[1][j];
-                let want = if i == j { 1.0 } else { 0.0 };
-                off += (dot.re - want).powi(2) + dot.im.powi(2);
-            }
-        }
-        if off.sqrt() > 1e-6 {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "target is not unitary (‖U†U − I‖_F = {:.2e})",
-                off.sqrt()
-            )));
-        }
-        // A raw f64 matrix carries its column entries (cos/sin) already rounded
-        // to ~2^-53, coarser than the inner SE cap needs below ε ≈ 1e-8: the
-        // aligned lattice point is missed and the search grinds every lde level
-        // to exhaustion. Enough input precision only comes from the exact angle
-        // (cos/sin evaluated to the search precision), so require it there.
-        // (Empirically the f64 column still resolves at ε = 1e-8.)
-        if self.inner.epsilon() < 1e-8 {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "matrix synthesis needs ε ≥ 1e-8; a raw f64 matrix lacks the \
-                 precision for deeper ε. Pass the exact rotation via \
-                 synthesize_u3(theta, phi, lambda) or synthesize_zyz(alpha, \
-                 beta, gamma) (angles accept exact 'pi'-strings).",
-            ));
-        }
-        let q_weight = self.inner.q_weight();
-        Ok(self.inner.synthesize(mat).map(|r| PySynthResult {
-            gates: r.gates,
-            lde: r.lde,
-            distance: r.distance,
-            q_weight,
-        }))
     }
 
     /// Synthesize a `U3(theta, phi, lambda)` gate (qiskit/bqskit convention)
