@@ -342,9 +342,9 @@ use std::f64::consts::PI;
                         assert!(rem == 0, "back-substitution not integral at {r2}");
                         z_big[r2] = q;
                     }
-                    let mut z_img = [0i64; 8];
+                    let mut z_img = [0i128; 8];
                     for (zi, zb) in z_img.iter_mut().zip(z_big.iter()) {
-                        *zi = zb.to_i64().expect("z fits i64");
+                        *zi = zb.to_i128().expect("z fits i128");
                     }
                     let x_chk = reconstruct_x(&basis, &z_img);
                     let x_int: [i64; 8] = std::array::from_fn(|i| x_img[i] as i64);

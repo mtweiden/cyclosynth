@@ -109,9 +109,13 @@ pub fn schnorr_euchner<F>(
     mut callback: F,
 ) -> Option<[i64; 8]>
 where
-    F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
+    F: FnMut(&[i128; 8]) -> Option<[i64; 8]>,
 {
-    let mut z = [0i64; 8];
+    // Coordinates in the LLL-reduced basis span ~√κ(Q); with κ(Q) ≈ 16/ε⁴ the
+    // reduced coordinate crosses 2^63 near ε=1e-10 (inner shell k≈43) even
+    // though the reconstructed point x stays ~2^21. i128 gives 2^127 of
+    // headroom (good past ε≈1e-14); the reconstructed x still fits i64.
+    let mut z = [0i128; 8];
     let result = std::cell::RefCell::new(None);
     let zero = MpFloat::with_val(SE_PREC, 0.0_f64);
     let mut shared = SharedTemps::new();
@@ -145,7 +149,7 @@ fn recurse<F>(
     r_chol_eucl: Option<&[[f64; 8]; 8]>,
     target_norm_eucl: f64,
     partial_eucl: f64,
-    z: &mut [i64; 8],
+    z: &mut [i128; 8],
     partial: &MpFloat,
     abort: &AtomicBool,
     node_budget: &AtomicU64,
@@ -154,7 +158,7 @@ fn recurse<F>(
     result: &std::cell::RefCell<Option<[i64; 8]>>,
     shared: &mut SharedTemps,
 ) where
-    F: FnMut(&[i64; 8]) -> Option<[i64; 8]>,
+    F: FnMut(&[i128; 8]) -> Option<[i64; 8]>,
 {
     if result.borrow().is_some()
         || abort.load(Ordering::Relaxed)
@@ -193,7 +197,7 @@ fn recurse<F>(
     if shared.tmp.to_f64() < 1e-30 {
         shared.scratch_c.assign(&z_c[d]);
         shared.scratch_c.round_mut();
-        z[d] = shared.scratch_c.to_integer().and_then(|n| n.to_i64()).unwrap_or(0);
+        z[d] = shared.scratch_c.to_integer().and_then(|n| n.to_i128()).unwrap_or(0);
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             partial_eucl, z, partial, abort, node_budget, budget_exhausted,
@@ -235,16 +239,16 @@ fn recurse<F>(
     // intermediate tail/r_dd term, then reused for the round below).
     shared.scratch_c.assign(&tail / r_dd);
     shared.center.assign(&z_c[d] - &shared.scratch_c);
-    let to_i64 = |v: &MpFloat| -> Option<i64> { v.to_integer().and_then(|n| n.to_i64()) };
+    let to_i128 = |v: &MpFloat| -> Option<i128> { v.to_integer().and_then(|n| n.to_i128()) };
     shared.tmp.assign(&shared.center - span);
     shared.tmp.ceil_mut();
-    let z_low = to_i64(&shared.tmp);
+    let z_low = to_i128(&shared.tmp);
     shared.tmp.assign(&shared.center + span);
     shared.tmp.floor_mut();
-    let z_high = to_i64(&shared.tmp);
+    let z_high = to_i128(&shared.tmp);
     shared.scratch_c.assign(&shared.center);
     shared.scratch_c.round_mut();
-    let z_mid = to_i64(&shared.scratch_c);
+    let z_mid = to_i128(&shared.scratch_c);
     let (Some(z_low), Some(z_high), Some(z_mid)) = (z_low, z_high, z_mid) else {
         return;
     };
@@ -322,21 +326,18 @@ fn recurse<F>(
 /// Reconstruct the lattice point `x = B·z` where `B` is the LLL-reduced
 /// basis (rows are basis vectors) and `z` are the SE-output coordinates.
 ///
-/// The FINAL components fit i64 (Theorem 2's L³-reduced-basis bound plus
-/// the SE bound), but in Euclid-pathological frames (basis entries ~2^33,
-/// `z` ~ 1e10 — see `euclidean_cholesky`) the INTERMEDIATE products and
-/// sums can exceed i64. Two's-complement wrapping arithmetic is exact mod
-/// 2^64 and the true value fits, so explicit wrapping ops give the correct
-/// result in every build profile (plain `+`/`*` would panic in debug).
+/// `z` reaches ~2^69 (reduced-basis coordinates span √κ(Q)) and basis entries
+/// ~2^33, so intermediate products reach ~2^102; i128 accumulation is exact
+/// and the final `x` fits i64 (Theorem 2's L³-reduced-basis bound + SE bound).
 #[inline]
-pub fn reconstruct_x(b_lll: &IMat8, z: &[i64; 8]) -> [i64; 8] {
-    let mut x = [0i64; 8];
+pub fn reconstruct_x(b_lll: &IMat8, z: &[i128; 8]) -> [i64; 8] {
+    let mut x = [0i128; 8];
     for i in 0..8 {
         for j in 0..8 {
-            x[j] = x[j].wrapping_add(z[i].wrapping_mul(b_lll[i][j]));
+            x[j] += z[i] * b_lll[i][j] as i128;
         }
     }
-    x
+    std::array::from_fn(|j| x[j] as i64)
 }
 
 /// Evaluate the bilinear form `B(x) = a₁b₁ − a₁d₁ + b₁c₁ + c₁d₁ + a₂b₂ −

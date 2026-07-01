@@ -309,7 +309,7 @@ pub fn find_aligned_outcome_mpfr(
         abort,
         &node_budget,
         &truncated,
-        |z: &[i64; 8]| {
+        |z: &[i128; 8]| {
             let n_so_far = count.load(Ordering::Relaxed);
             if n_so_far >= max_leaf_checks {
                 // Leaf budget exhausted: abort the walk (the flag is the
