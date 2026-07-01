@@ -31,7 +31,6 @@ use crate::matrix::so3::R4;
 use crate::matrix::u2::{U2, U2T, U2Q, RingElem};
 #[cfg(feature = "python")]
 use crate::matrix::u2::{PyU2, U2Variant};
-use crate::matrix::{rz_pos, rx_pos, ry_pos, rz_pos_q, rx_pos_q, ry_pos_q};
 use crate::matrix::{rz_neg, rx_neg, ry_neg, rz_neg_q, rx_neg_q, ry_neg_q};
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 
@@ -49,10 +48,7 @@ pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self>{
     /// Convert a U2 matrix to its exact SO(3) representation.
     fn so3_from_u2(u: &U2<Self>) -> Self::SO3;
 
-    /// Rz(+step) rotation generator (step = π/4 for T, π/8 for √T).
-    fn rz_pos() -> Self::SO3;
-    fn rx_pos() -> Self::SO3;
-    fn ry_pos() -> Self::SO3;
+    /// Negative Rz/Rx/Ry SO(3) rotation generators (step = π/4 for T, π/8 for √T).
     fn rz_neg() -> Self::SO3;
     fn rx_neg() -> Self::SO3;
     fn ry_neg() -> Self::SO3;
@@ -62,9 +58,34 @@ pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self>{
     fn ry_pos_u2() -> U2<Self>;
     fn rz_pos_u2() -> U2<Self>;
 
-    /// Find the Clifford gate label whose gate-primitive U2 matches `u` by diamond distance.
-    /// This is the correct identification for synthesis (avoids S-convention mismatch).
-    fn identify_clifford_from_u2(u: &U2<Self>) -> Option<&'static str>;
+    /// Find the Clifford label whose gate-primitive U2 matches `u` by diamond
+    /// distance (avoids the S-convention mismatch of a direct table compare).
+    ///
+    /// Argmin over the 24 entries, not first-within-tolerance: `diamond_distance`
+    /// goes through a `1/√2^k` float scaling where k grows with the U2's
+    /// denominator exponent, so the per-comparison noise floor grows with k and a
+    /// fixed threshold can misidentify large-k inputs. Cliffords are pairwise
+    /// distinct (`test_cliffords_distinct`), so argmin is unambiguous.
+    fn identify_clifford_from_u2(u: &U2<Self>) -> Option<&'static str> {
+        CLIFFORD_TABLE_T
+            .iter()
+            .map(|(name, _)| {
+                let gate_u: U2<Self> = name.chars().fold(U2::<Self>::eye(), |acc, ch| {
+                    acc * match ch {
+                        'H' => U2::<Self>::h(),
+                        'S' => U2::<Self>::s(),
+                        'X' => U2::<Self>::x(),
+                        'Y' => U2::<Self>::y(),
+                        'Z' => U2::<Self>::z(),
+                        _ => U2::<Self>::eye(),
+                    }
+                });
+                (*name, gate_u.diamond_distance(u))
+            })
+            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .filter(|(_, d)| *d < 1e-3)
+            .map(|(name, _)| name)
+    }
 
     /// Name of the magic gate: `"T"` or `"Q"`.
     fn magic_gate_name() -> &'static str;
@@ -86,9 +107,6 @@ impl GateRing for ZOmega {
     type SO3 = SO3T;
 
     fn so3_from_u2(u: &U2<Self>) -> SO3T { SO3T::from_u2(u) }
-    fn rz_pos() -> SO3T { rz_pos() }
-    fn rx_pos() -> SO3T { rx_pos() }
-    fn ry_pos() -> SO3T { ry_pos() }
     fn rz_neg() -> SO3T { rz_neg() }
     fn rx_neg() -> SO3T { rx_neg() }
     fn ry_neg() -> SO3T { ry_neg() }
@@ -99,30 +117,6 @@ impl GateRing for ZOmega {
         U2T::s() * U2T::h() * U2T::t() * U2T::h() * U2T::s().dagger()
     }
     fn rz_pos_u2() -> U2T { U2T::t() }
-
-    fn identify_clifford_from_u2(u: &U2T) -> Option<&'static str> {
-        // Pick the closest Clifford (argmin) rather than the first within
-        // an absolute tolerance. Cliffords are pairwise distinct
-        // (`test_cliffords_distinct`), so argmin is unambiguous.
-        CLIFFORD_TABLE_T
-            .iter()
-            .map(|(name, _)| {
-                let gate_u: U2T = name.chars().fold(U2T::eye(), |acc, ch| {
-                    acc * match ch {
-                        'H' => U2T::h(),
-                        'S' => U2T::s(),
-                        'X' => U2T::x(),
-                        'Y' => U2T::y(),
-                        'Z' => U2T::z(),
-                        _ => U2T::eye(),
-                    }
-                });
-                (*name, gate_u.diamond_distance(u))
-            })
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .filter(|(_, d)| *d < 1e-3)
-            .map(|(name, _)| name)
-    }
 
     fn magic_gate_name() -> &'static str { "T" }
 
@@ -137,9 +131,6 @@ impl GateRing for ZZeta {
     type SO3 = SO3Q;
 
     fn so3_from_u2(u: &U2<Self>) -> SO3Q { SO3Q::from_u2(u) }
-    fn rz_pos() -> SO3Q { rz_pos_q() }
-    fn rx_pos() -> SO3Q { rx_pos_q() }
-    fn ry_pos() -> SO3Q { ry_pos_q() }
     fn rz_neg() -> SO3Q { rz_neg_q() }
     fn rx_neg() -> SO3Q { rx_neg_q() }
     fn ry_neg() -> SO3Q { ry_neg_q() }
@@ -150,33 +141,6 @@ impl GateRing for ZZeta {
         U2Q::s() * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s().dagger()
     }
     fn rz_pos_u2() -> U2Q { U2Q::q() }
-
-    fn identify_clifford_from_u2(u: &U2Q) -> Option<&'static str> {
-        // Pick the closest Clifford (argmin over the 24 entries) rather than
-        // the first one within an absolute tolerance: the diamond_distance
-        // computation goes through float scaling 1/√2^k where k grows with
-        // the U2's denominator exponent, so the per-comparison noise floor
-        // grows with k and a fixed-1e-9 threshold can fail to identify the
-        // true Clifford for large-k inputs.
-        CLIFFORD_TABLE_T
-            .iter()
-            .map(|(name, _)| {
-                let gate_u: U2Q = name.chars().fold(U2Q::eye(), |acc, ch| {
-                    acc * match ch {
-                        'H' => U2Q::h(),
-                        'S' => U2Q::s(),
-                        'X' => U2Q::x(),
-                        'Y' => U2Q::y(),
-                        'Z' => U2Q::z(),
-                        _ => U2Q::eye(),
-                    }
-                });
-                (*name, gate_u.diamond_distance(u))
-            })
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-            .filter(|(_, d)| *d < 1e-3)
-            .map(|(name, _)| name)
-    }
 
     fn magic_gate_name() -> &'static str { "Q" }
 
@@ -268,11 +232,9 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
     let mut raw = String::new();
     let mut so3 = R::so3_from_u2(target);  // start from SO3(target), not SO3(target†)
     let mut p_output_u2 = U2::<R>::eye();
-    // SO3T (Clifford+T) max_exp counts T-count, monotone-decreasing per
-    // peel, so `max_steps = max_exp` would be tight. SO3Q (Clifford+√T)
-    // in the √2-denom convention is non-monotone per peel (SO3(T) has
-    // max_exp 1 but T = QQ needs 2 Rz peels: 1 → 2 → 0), so the bound is
-    // generous; the loop early-exits via `best == 0` at a Clifford residual.
+    // max_exp counts T-count, monotone-decreasing per peel (this path is
+    // ZOmega-only), so max_exp steps suffice; the ×4+32 slack is defensive.
+    // The loop early-exits via `best == 0` at a Clifford residual.
     let max_steps = (so3.max_exp() as usize) * 4 + 32;
 
     for _ in 0..max_steps {
@@ -630,10 +592,6 @@ mod tests {
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_cliffords() {
-    }
 
     #[test]
     fn test_sdg_gate() {
