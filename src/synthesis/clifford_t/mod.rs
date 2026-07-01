@@ -955,32 +955,42 @@ impl SynthesizerT {
                                         vm.clone()
                                     }
                                 });
-                            for sol in lll_aligned_search(
-                                scratch, v_branch, v_branch_mpfr.as_ref(), lde_inner, eps,
-                                DC_WALK_MAX_SOLUTIONS, max_leaf_checks,
-                                max_nodes, &budget_hit, Some(&found_abort),
-                            ) {
-                                let u2t = if odd {
-                                    *u_l * solution_to_u2t(&sol, lde_inner) * U2T::t()
-                                } else {
-                                    *u_l * solution_to_u2t(&sol, lde_inner)
-                                };
-                                let dist = diamond_distance_u2t_float(&u2t, target);
-                                if dist < eps {
-                                    found_abort
-                                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                                    crate::synthesis::diag::record_branch_win(
-                                        odd, pos, n, t,
-                                    );
-                                    return Some(SynthResultT {
-                                        gates: Some(BlochDecomposer.decompose(&u2t)),
-                                        lde: t,
-                                        distance: dist,
-                                    });
-                                }
-                                if crate::synthesis::diag::trace_enabled() {
-                                    crate::synthesis::diag::N_DIST_REJECTED
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            // Shell window: `t_inner = t − optimal_t_prime(t)` is
+                            // constant across the whole sweep (optimal_t_prime
+                            // increments 1:1 with t), so `lde_inner` is pinned to a
+                            // single shell. But an odd `t_inner`'s inner factor can
+                            // live on shell 2^lde_inner OR 2^(lde_inner+1)
+                            // (`⌊t_inner/2⌋+1` drops the half), so search both —
+                            // else factors at the higher shell are unreachable
+                            // (e.g. the 84-T suffix of Rz(π/64) at 1e-10).
+                            for cur_lde in [lde_inner, lde_inner + 1] {
+                                for sol in lll_aligned_search(
+                                    scratch, v_branch, v_branch_mpfr.as_ref(), cur_lde, eps,
+                                    DC_WALK_MAX_SOLUTIONS, max_leaf_checks,
+                                    max_nodes, &budget_hit, Some(&found_abort),
+                                ) {
+                                    let u2t = if odd {
+                                        *u_l * solution_to_u2t(&sol, cur_lde) * U2T::t()
+                                    } else {
+                                        *u_l * solution_to_u2t(&sol, cur_lde)
+                                    };
+                                    let dist = diamond_distance_u2t_float(&u2t, target);
+                                    if dist < eps {
+                                        found_abort
+                                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                                        crate::synthesis::diag::record_branch_win(
+                                            odd, pos, n, t,
+                                        );
+                                        return Some(SynthResultT {
+                                            gates: Some(BlochDecomposer.decompose(&u2t)),
+                                            lde: t,
+                                            distance: dist,
+                                        });
+                                    }
+                                    if crate::synthesis::diag::trace_enabled() {
+                                        crate::synthesis::diag::N_DIST_REJECTED
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    }
                                 }
                             }
                         }
