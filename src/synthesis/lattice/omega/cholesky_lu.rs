@@ -22,7 +22,7 @@ use super::lll::i256_to_f64;
 use super::scratch::IMat8;
 use super::scratch::{rfv, rfz, IntScratch};
 use crate::rings::MpFloat;
-pub use crate::synthesis::lattice::common::i256_to_rfloat;
+use crate::synthesis::lattice::common::i256_to_rfloat;
 
 /// Convert the post-LLL i256 Gram (`scratch.gram`) into a fresh MPFR matrix at
 /// `scratch.prec_q` bits, dividing out `2^scale_bits` to recover the natural

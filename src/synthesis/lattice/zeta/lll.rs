@@ -49,7 +49,7 @@ pub use crate::synthesis::lattice::common::{
 /// d=16.
 #[inline]
 pub fn i256_to_rfloat_inplace(v: i256, dst: &mut MpFloat) {
-    super::q_metric::i256_to_rfloat(v, dst);
+    common::i256_to_rfloat(v, dst);
 }
 
 /// Check whether any Gram entry exceeds the overflow threshold.
@@ -441,7 +441,7 @@ mod tests {
         // Convert G[0][0] back to natural Q-scale.
         let scale = 2.0f64.powi(-s.scale_bits);
         let mut g00_rf = MpFloat::with_val(s.gs_prec, 0.0);
-        super::super::q_metric::i256_to_rfloat(s.gram[0][0], &mut g00_rf);
+        common::i256_to_rfloat(s.gram[0][0], &mut g00_rf);
         let g00 = g00_rf.to_f64() * scale;
         // The reduced first vector should have Q-norm ≤ min original diag
         // (if it's larger, the LLL hasn't reduced anything — bug). At d=16

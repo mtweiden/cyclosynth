@@ -14,8 +14,8 @@ use crate::rings::MpFloat;
 // ─── Adaptive precision constants ────────────────────────────────────────────
 
 pub use crate::synthesis::lattice::common::{
-    compute_lu_prec, compute_prec_q, compute_scale_bits, rfv, rfz,
-    GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
+    compute_lu_prec, compute_prec_q, compute_scale_bits, identity_basis, imat_zero,
+    rfv, rfz, rmat_zero, rvec_zero, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
 };
 
 /// MPFR Gram-Schmidt precision. d=16 is outside the NS09 f64 proof (d ≤ 11),
@@ -29,28 +29,6 @@ pub const GS_PREC: u32 = 80;
 pub type IMat16 = [[i64; 16]; 16];
 pub type Mat256_16 = [[i256; 16]; 16];
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-pub fn rmat_zero(prec: u32) -> [[MpFloat; 16]; 16] {
-    std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)))
-}
-
-pub fn rvec_zero(prec: u32) -> [MpFloat; 16] {
-    std::array::from_fn(|_| rfz(prec))
-}
-
-pub fn imat_zero() -> Mat256_16 {
-    let z = i256::from_i64(0);
-    std::array::from_fn(|_| std::array::from_fn(|_| z))
-}
-
-pub fn identity_basis() -> IMat16 {
-    std::array::from_fn(|i| {
-        let mut row = [0i64; 16];
-        row[i] = 1;
-        row
-    })
-}
 
 // ─── IntScratch16 ────────────────────────────────────────────────────────────
 

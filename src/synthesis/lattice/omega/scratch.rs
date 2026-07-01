@@ -13,8 +13,8 @@ use crate::rings::MpFloat;
 // ─── Adaptive precision constants & helpers — from lattice::common ───────────
 
 pub use crate::synthesis::lattice::common::{
-    compute_lu_prec, compute_prec_q, compute_scale_bits, rfv, rfz,
-    GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
+    compute_lu_prec, compute_prec_q, compute_scale_bits, identity_basis, imat_zero,
+    rfv, rfz, rmat_zero, rvec_zero, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
 };
 
 // ─── Type aliases ────────────────────────────────────────────────────────────
@@ -180,29 +180,6 @@ pub struct IntScratch {
     pub lu_acc: MpFloat,
 }
 
-// ─── MPFR/i256 zero-fill helpers ─────────────────────────────────────────────
-
-pub fn rmat_zero(prec: u32) -> [[MpFloat; 8]; 8] {
-    std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)))
-}
-
-pub fn rvec_zero(prec: u32) -> [MpFloat; 8] {
-    std::array::from_fn(|_| rfz(prec))
-}
-
-pub fn imat_zero() -> Mat256 {
-    let z = i256::from_i64(0);
-    std::array::from_fn(|_| std::array::from_fn(|_| z))
-}
-
-pub fn identity_basis() -> IMat8 {
-    std::array::from_fn(|i| {
-        let mut row = [0i64; 8];
-        row[i] = 1;
-        row
-    })
-}
-
 // ─── Σ-derived constants (filled once per IntScratch::new) ───────────────────
 
 /// Populate Σ — the 8×8 real embedding of Z[ω,√2]² into ℝ⁸ via two Galois
@@ -317,7 +294,7 @@ impl IntScratch {
             lu_tmp: rfz(lu_prec),
             lu_acc: rfz(lu_prec),
         };
-        let mut sigma = rmat_zero(prec_q);
+        let mut sigma = rmat_zero::<8>(prec_q);
         fill_sigma(&mut sigma, prec_q);
         let half = rfv(prec_q, 0.5);
         precompute_sigma_projections(&mut s, &sigma, &half);

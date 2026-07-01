@@ -135,9 +135,44 @@ pub fn rfv(prec: u32, x: f64) -> MpFloat {
     MpFloat::with_val(prec, x)
 }
 
+// ─── Dimension-generic zero-fill / identity constructors ─────────────────────
+//
+// Shared by both backends' scratch buffers; `const D` monomorphizes to the
+// per-dimension shapes (8 for Z[ω], 16 for Z[ζ_16]). Callers usually let `D`
+// infer from the target field/binding type.
+
+/// A `D×D` matrix of zero `MpFloat`s at the given precision.
+#[inline]
+pub fn rmat_zero<const D: usize>(prec: u32) -> [[MpFloat; D]; D] {
+    std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)))
+}
+
+/// A length-`D` vector of zero `MpFloat`s at the given precision.
+#[inline]
+pub fn rvec_zero<const D: usize>(prec: u32) -> [MpFloat; D] {
+    std::array::from_fn(|_| rfz(prec))
+}
+
+/// A `D×D` matrix of i256 zeros.
+#[inline]
+pub fn imat_zero<const D: usize>() -> [[i256; D]; D] {
+    let z = i256::from_i64(0);
+    std::array::from_fn(|_| std::array::from_fn(|_| z))
+}
+
+/// The `D×D` identity basis (i64).
+#[inline]
+pub fn identity_basis<const D: usize>() -> [[i64; D]; D] {
+    std::array::from_fn(|i| {
+        let mut row = [0i64; D];
+        row[i] = 1;
+        row
+    })
+}
+
 /// `⌈log₂|v|⌉` for a nonzero i256 (returns -1 for v = 0). Used to pick the
 /// integer-Gram scale `B` via [`compute_scale_bits`].
-pub fn i256_log2_ceil(v: &i256) -> i32 {
+fn i256_log2_ceil(v: &i256) -> i32 {
     let zero = i256::from_i64(0);
     if *v == zero {
         return -1;

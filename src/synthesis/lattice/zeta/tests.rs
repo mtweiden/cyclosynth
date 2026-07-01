@@ -480,7 +480,7 @@ mod probes;
         let mut tmp = MpFloat::with_val(s.prec_q, 0.0);
         for i in 0..16 {
             for j in 0..16 {
-                q_metric::i256_to_rfloat(s.q_int[i][j], &mut tmp);
+                crate::synthesis::lattice::common::i256_to_rfloat(s.q_int[i][j], &mut tmp);
                 let recovered = if s.scale_bits >= 0 {
                     tmp.clone() >> s.scale_bits as u32
                 } else {

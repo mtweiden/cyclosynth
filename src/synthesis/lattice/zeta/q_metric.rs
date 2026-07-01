@@ -283,7 +283,7 @@ pub fn build_q_int_zeta(scratch: &mut IntScratch16) {
     }
 }
 
-pub use crate::synthesis::lattice::common::{i256_to_rfloat, rug_to_i256_scaled};
+use crate::synthesis::lattice::common::rug_to_i256_scaled;
 
 // ─── f64 sanity helper for tests ─────────────────────────────────────────────
 

@@ -27,7 +27,7 @@ use rug::Assign;
 use crate::rings::MpFloat;
 
 use super::scratch::{rfv, rfz, IntScratch16};
-use crate::synthesis::lattice::omega::cholesky_lu::i256_to_rfloat;
+use crate::synthesis::lattice::common::i256_to_rfloat;
 use crate::synthesis::lattice::common::i256_to_f64;
 
 
@@ -333,7 +333,7 @@ pub fn q_cholesky_mpfr_dual(
     });
     for i in 0..16 {
         for j in 0..16 {
-            crate::synthesis::lattice::omega::cholesky_lu::i256_to_rfloat(gram[i][j], &mut tmp);
+            i256_to_rfloat(gram[i][j], &mut tmp);
             // Divide by 2^scale_bits (exponent shift — no precision cost)
             // to recover the natural-scale Q-metric Gram.
             if scale_bits > 0 {
