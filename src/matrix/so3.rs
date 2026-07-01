@@ -327,6 +327,51 @@ impl fmt::Display for R4 {
     }
 }
 
+// ─── Sqrt2Ring trait ─────────────────────────────────────────────────────────
+
+/// The SO(3)-numerator ring layer: a ring containing √2 with an exact √2-adic
+/// valuation and division. Implemented by both `R2` (Z[√2]) and `R4` (Z[γ]).
+///
+/// This is distinct from the cyclotomic U2-layer `RingElem` in `u2.rs`; it
+/// captures only what `Ratio<R>`, `SO3<R>`, and their operations need in order
+/// to be generic over the numerator ring.
+pub trait Sqrt2Ring:
+    Copy + PartialEq + Add<Output = Self> + Mul<Output = Self> + Neg<Output = Self>
+{
+    const ZERO: Self;
+    const ONE: Self;
+    fn mul_sqrt2(self) -> Self;
+    fn div_sqrt2(self) -> Self;
+    fn sqrt2_valuation(self) -> u32;
+    fn to_f64(self) -> f64;
+}
+
+impl Sqrt2Ring for R2 {
+    const ZERO: Self = R2::ZERO;
+    const ONE: Self = R2::ONE;
+    #[inline]
+    fn mul_sqrt2(self) -> Self { R2::mul_sqrt2(self) }
+    #[inline]
+    fn div_sqrt2(self) -> Self { R2::div_sqrt2(self) }
+    #[inline]
+    fn sqrt2_valuation(self) -> u32 { R2::sqrt2_valuation(self) }
+    #[inline]
+    fn to_f64(self) -> f64 { R2::to_f64(self) }
+}
+
+impl Sqrt2Ring for R4 {
+    const ZERO: Self = R4::ZERO;
+    const ONE: Self = R4::ONE;
+    #[inline]
+    fn mul_sqrt2(self) -> Self { R4::mul_sqrt2(self) }
+    #[inline]
+    fn div_sqrt2(self) -> Self { R4::div_sqrt2(self) }
+    #[inline]
+    fn sqrt2_valuation(self) -> u32 { R4::sqrt2_valuation(self) }
+    #[inline]
+    fn to_f64(self) -> f64 { R4::to_f64(self) }
+}
+
 // ─── Ratio<R> ────────────────────────────────────────────────────────────────
 
 /// A ring element divided by the ring-specific denominator unit to the power `exp`.
@@ -344,22 +389,20 @@ pub struct Ratio<R> {
     pub exp: u32,
 }
 
-// ─── Ratio<R2> ───────────────────────────────────────────────────────────────
-
-impl Ratio<R2> {
-    pub const ZERO: Self = Ratio { num: R2::ZERO, exp: 0 };
-    pub const ONE:  Self = Ratio { num: R2::ONE,  exp: 0 };
+impl<R: Sqrt2Ring> Ratio<R> {
+    pub const ZERO: Self = Ratio { num: R::ZERO, exp: 0 };
+    pub const ONE:  Self = Ratio { num: R::ONE,  exp: 0 };
 
     /// Cancel common √2 factors between numerator and denominator.
     pub fn simplify(&mut self) {
-        if self.num == R2::ZERO { self.exp = 0; return; }
+        if self.num == R::ZERO { self.exp = 0; return; }
         let v = self.num.sqrt2_valuation().min(self.exp);
         for _ in 0..v { self.num = self.num.div_sqrt2(); }
         self.exp -= v;
     }
 
     /// Multiply numerator by √2^n (used to align exponents before addition).
-    fn lift_num(self, n: u32) -> R2 {
+    fn lift_num(self, n: u32) -> R {
         let mut x = self.num;
         for _ in 0..n { x = x.mul_sqrt2(); }
         x
@@ -370,12 +413,12 @@ impl Ratio<R2> {
     }
 }
 
-impl Neg for Ratio<R2> {
+impl<R: Sqrt2Ring> Neg for Ratio<R> {
     type Output = Self;
     fn neg(self) -> Self { Ratio { num: -self.num, exp: self.exp } }
 }
 
-impl Mul for Ratio<R2> {
+impl<R: Sqrt2Ring> Mul for Ratio<R> {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
         let mut r = Ratio { num: self.num * rhs.num, exp: self.exp + rhs.exp };
@@ -384,59 +427,7 @@ impl Mul for Ratio<R2> {
     }
 }
 
-impl Add for Ratio<R2> {
-    type Output = Self;
-    fn add(self, rhs: Self) -> Self {
-        let max_e = self.exp.max(rhs.exp);
-        let lhs_num = self.lift_num(max_e - self.exp);
-        let rhs_num = rhs.lift_num(max_e - rhs.exp);
-        let mut r = Ratio { num: lhs_num + rhs_num, exp: max_e };
-        r.simplify();
-        r
-    }
-}
-
-// ─── Ratio<R4> ───────────────────────────────────────────────────────────────
-
-impl Ratio<R4> {
-    pub const ZERO: Self = Ratio { num: R4::ZERO, exp: 0 };
-    pub const ONE:  Self = Ratio { num: R4::ONE,  exp: 0 };
-
-    /// Cancel common √2 factors between numerator and denominator.
-    pub fn simplify(&mut self) {
-        if self.num == R4::ZERO { self.exp = 0; return; }
-        let v = self.num.sqrt2_valuation().min(self.exp);
-        for _ in 0..v { self.num = self.num.div_sqrt2(); }
-        self.exp -= v;
-    }
-
-    /// Multiply numerator by √2^n (used to align exponents before addition).
-    fn lift_num(self, n: u32) -> R4 {
-        let mut x = self.num;
-        for _ in 0..n { x = x.mul_sqrt2(); }
-        x
-    }
-
-    pub fn to_f64(self) -> f64 {
-        self.num.to_f64() / SQRT_2.powi(self.exp as i32)
-    }
-}
-
-impl Neg for Ratio<R4> {
-    type Output = Self;
-    fn neg(self) -> Self { Ratio { num: -self.num, exp: self.exp } }
-}
-
-impl Mul for Ratio<R4> {
-    type Output = Self;
-    fn mul(self, rhs: Self) -> Self {
-        let mut r = Ratio { num: self.num * rhs.num, exp: self.exp + rhs.exp };
-        r.simplify();
-        r
-    }
-}
-
-impl Add for Ratio<R4> {
+impl<R: Sqrt2Ring> Add for Ratio<R> {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
         let max_e = self.exp.max(rhs.exp);
@@ -464,26 +455,26 @@ pub struct SO3<R> {
     pub e: [Ratio<R>; 9],
 }
 
-// ─── SO3<R2> ──────────────────────────────────────────────────────────────────
+// ─── Generic SO3<R> inherent methods ─────────────────────────────────────────
 
-impl SO3<R2> {
+impl<R: Sqrt2Ring> SO3<R> {
     /// Identity matrix (all entries have exp=0).
     pub fn identity() -> Self {
-        let mut e = [Ratio::<R2>::ZERO; 9];
-        e[0] = Ratio::<R2>::ONE;
-        e[4] = Ratio::<R2>::ONE;
-        e[8] = Ratio::<R2>::ONE;
+        let mut e = [Ratio::<R>::ZERO; 9];
+        e[0] = Ratio::<R>::ONE;
+        e[4] = Ratio::<R>::ONE;
+        e[8] = Ratio::<R>::ONE;
         SO3 { e }
     }
 
     #[inline]
-    pub fn get(&self, r: usize, c: usize) -> Ratio<R2> { self.e[3*r+c] }
+    pub fn get(&self, r: usize, c: usize) -> Ratio<R> { self.e[3*r+c] }
 
     /// Maximum denominator exponent across all non-zero entries.
     pub fn maximum_denominator_exponent(&self) -> u32 {
         self.e
             .iter()
-            .filter(|r| r.num != R2::ZERO)
+            .filter(|r| r.num != R::ZERO)
             .map(|r| r.exp)
             .max()
             .unwrap_or(0)
@@ -504,7 +495,11 @@ impl SO3<R2> {
         }
         out
     }
+}
 
+// ─── SO3<R2> ──────────────────────────────────────────────────────────────────
+
+impl SO3<R2> {
     /// Build SO3<R2> from a U2T matrix using exact ZOmega ring arithmetic.
     ///
     /// Works for any unitary matrix (not just SU(2)) with entries in Z[ω].
@@ -551,71 +546,9 @@ impl SO3<R2> {
     }
 }
 
-impl Mul for SO3<R2> {
-    type Output = Self;
-    fn mul(self, rhs: Self) -> Self {
-        let mut e = [Ratio::<R2>::ZERO; 9];
-        for r in 0..3 {
-            for c in 0..3 {
-                let products: [Ratio<R2>; 3] = std::array::from_fn(|k| {
-                    self.e[3*r+k] * rhs.e[3*k+c]
-                });
-                // Align exponents before summing.
-                let max_e = products.iter().map(|p| p.exp).max()
-                    .expect("3-element product array is always non-empty");
-                let sum = products.iter().fold(R2::ZERO, |acc, p| {
-                    acc + p.lift_num(max_e - p.exp)
-                });
-                let mut entry = Ratio { num: sum, exp: max_e };
-                entry.simplify();
-                e[3*r+c] = entry;
-            }
-        }
-        SO3 { e }
-    }
-}
-
 // ─── SO3<R4> ──────────────────────────────────────────────────────────────────
 
 impl SO3<R4> {
-    /// Identity matrix (all entries have exp=0).
-    pub fn identity() -> Self {
-        let mut e = [Ratio::<R4>::ZERO; 9];
-        e[0] = Ratio::<R4>::ONE;
-        e[4] = Ratio::<R4>::ONE;
-        e[8] = Ratio::<R4>::ONE;
-        SO3 { e }
-    }
-
-    #[inline]
-    pub fn get(&self, r: usize, c: usize) -> Ratio<R4> { self.e[3*r+c] }
-
-    /// Maximum denominator exponent across all non-zero entries.
-    pub fn maximum_denominator_exponent(&self) -> u32 {
-        self.e
-            .iter()
-            .filter(|r| r.num != R4::ZERO)
-            .map(|r| r.exp)
-            .max()
-            .unwrap_or(0)
-    }
-
-    /// Simplify each entry individually (cancel √2 from numerator and denominator).
-    pub fn reduce(&mut self) {
-        for entry in self.e.iter_mut() { entry.simplify(); }
-    }
-
-    /// Convert to 3×3 float matrix.
-    pub fn to_float(&self) -> [[f64; 3]; 3] {
-        let mut out = [[0.0f64; 3]; 3];
-        for r in 0..3 {
-            for c in 0..3 {
-                out[r][c] = self.e[3*r+c].to_f64();
-            }
-        }
-        out
-    }
-
     /// Build SO3<R4> from a U2Q matrix using exact ZZeta ring arithmetic.
     ///
     /// Works for any unitary matrix (not just SU(2)) with entries in Z[ζ].
@@ -693,18 +626,19 @@ impl SO3<R4> {
     }
 }
 
-impl Mul for SO3<R4> {
+impl<R: Sqrt2Ring> Mul for SO3<R> {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
-        let mut e = [Ratio::<R4>::ZERO; 9];
+        let mut e = [Ratio::<R>::ZERO; 9];
         for r in 0..3 {
             for c in 0..3 {
-                let products: [Ratio<R4>; 3] = std::array::from_fn(|k| {
+                let products: [Ratio<R>; 3] = std::array::from_fn(|k| {
                     self.e[3*r+k] * rhs.e[3*k+c]
                 });
+                // Align exponents before summing.
                 let max_e = products.iter().map(|p| p.exp).max()
                     .expect("3-element product array is always non-empty");
-                let sum = products.iter().fold(R4::ZERO, |acc, p| {
+                let sum = products.iter().fold(R::ZERO, |acc, p| {
                     acc + p.lift_num(max_e - p.exp)
                 });
                 let mut entry = Ratio { num: sum, exp: max_e };
@@ -730,23 +664,10 @@ pub type SO3Q = SO3<R4>;
 ///
 /// Each row is shown with its own `/ denom^row_exp`, where `row_exp` is the
 /// maximum entry exponent in that row. Numerators are lifted to `row_exp` for display.
-fn fmt_so3_rows_r2(e: &[Ratio<R2>; 9], f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    for row in 0..3 {
-        let row_exp = (0..3).map(|c| e[3*row+c].exp).max().unwrap_or(0);
-        write!(f, "[")?;
-        for col in 0..3 {
-            if col > 0 { write!(f, ", ")?; }
-            let lifted = e[3*row+col].lift_num(row_exp - e[3*row+col].exp);
-            write!(f, "{lifted}")?;
-        }
-        write!(f, "]")?;
-        if row_exp > 0 { write!(f, " / √2^{row_exp}")?; }
-        if row < 2 { writeln!(f)?; }
-    }
-    Ok(())
-}
-
-fn fmt_so3_rows_r4(e: &[Ratio<R4>; 9], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn fmt_so3_rows<R: Sqrt2Ring + fmt::Display>(
+    e: &[Ratio<R>; 9],
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     for row in 0..3 {
         let row_exp = (0..3).map(|c| e[3*row+c].exp).max().unwrap_or(0);
         write!(f, "[")?;
@@ -764,13 +685,13 @@ fn fmt_so3_rows_r4(e: &[Ratio<R4>; 9], f: &mut fmt::Formatter<'_>) -> fmt::Resul
 
 impl fmt::Display for SO3<R2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_so3_rows_r2(&self.e, f)
+        fmt_so3_rows(&self.e, f)
     }
 }
 
 impl fmt::Display for SO3<R4> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt_so3_rows_r4(&self.e, f)
+        fmt_so3_rows(&self.e, f)
     }
 }
 
@@ -789,12 +710,7 @@ pub trait SO3Ops: Clone + Sized + Mul<Output = Self> {
     fn left_mul(&mut self, rhs: &Self);
 }
 
-impl SO3Ops for SO3<R2> {
-    fn max_exp(&self) -> u32 { self.maximum_denominator_exponent() }
-    fn left_mul(&mut self, rhs: &Self) { *self = rhs.clone() * self.clone(); }
-}
-
-impl SO3Ops for SO3<R4> {
+impl<R: Sqrt2Ring> SO3Ops for SO3<R> {
     fn max_exp(&self) -> u32 { self.maximum_denominator_exponent() }
     fn left_mul(&mut self, rhs: &Self) { *self = rhs.clone() * self.clone(); }
 }
