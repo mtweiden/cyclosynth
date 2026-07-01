@@ -2,6 +2,11 @@
 name = "cyclosynth"
 version = "0.1.0"
 edition = "2021"
+# Floor set by our own source: `is_multiple_of` (clifford_sqrt_t/optimal.rs)
+# stabilized in 1.87 (clippy::incompatible_msrv flags anything lower). Deps
+# (rug 1.x, pyo3 0.22, rayon 1.10) are all ≤1.65; [lints] tables need 1.74.
+# Not verified with an older toolchain; installed toolchain is 1.93.
+rust-version = "1.87"
 license-file = "LICENSE"
 
 [lib]
@@ -23,8 +28,14 @@ rand = "0.9"
 # implement; iterator rewrites obscure the correspondence with the paper's
 # pseudocode. The arg-count lint is allowed per-function on the hot
 # walkers (lockstep-edit contract: do not bundle their params).
+[lints.rust]
+unused_qualifications = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
 [lints.clippy]
 needless_range_loop = "allow"
+unwrap_used = "warn"
+cast_lossless = "warn"
 
 [profile.release]
 debug = 1

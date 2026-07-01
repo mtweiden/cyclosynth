@@ -133,7 +133,7 @@ pub struct SynthesizerQ {
     /// prunes share it, and the screens poll it as a dynamic max_lde
     /// clamp (cost c̃ ⇒ lde ≤ c̃ + 1), which is what lets the parity
     /// branches run concurrently instead of serially capped.
-    global_best_cost: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    global_best_cost: Option<Arc<std::sync::atomic::AtomicUsize>>,
     /// Unrotated target + ζ₃₂ power for the odd parity branch, consulted
     /// at ε ≤ 2e-8: the f64 rotated product carries ~1e-16 error — equal
     /// to the radial cap width ε² at 1e-8 — so the deep router must
@@ -144,8 +144,8 @@ pub struct SynthesizerQ {
     /// rayon pool with frontier tasks and starve the peer's still-running
     /// screen, so frontier dispatch waits (bounded at 4× the deadline)
     /// until both screens are done.
-    my_screen_done: Option<std::sync::Arc<AtomicBool>>,
-    peer_screen_done: Option<std::sync::Arc<AtomicBool>>,
+    my_screen_done: Option<Arc<AtomicBool>>,
+    peer_screen_done: Option<Arc<AtomicBool>>,
     /// Extra lde levels enumerated above the first feasible one — the
     /// lde-vs-cost relationship is not monotone, so the cost minimum can
     /// sit above find-lde. Builder: [`Self::with_optimal_lde_window`].
@@ -496,8 +496,8 @@ impl SynthesizerQ {
 /// One in-flight walk the incumbent watcher may kill: a static cost
 /// floor plus the abort flag its SE walk polls at recurse-entry.
 pub(crate) struct PrefixWatch {
-    pub(crate) abort: std::sync::atomic::AtomicBool,
-    pub(crate) active: std::sync::atomic::AtomicBool,
+    pub(crate) abort: AtomicBool,
+    pub(crate) active: AtomicBool,
     pub(crate) floor: usize,
 }
 

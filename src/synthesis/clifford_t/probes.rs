@@ -18,7 +18,7 @@ use std::f64::consts::PI;
     /// Q-isometric-bijection argument breaks in practice.
     /// Run: `cargo test --release --lib coset_dedup_loses_solution_47 -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "forensic probe; run individually (env-var setup)"]
     fn coset_dedup_loses_solution_47() {
         // SplitMix64(0xC0FFEE) — t_identity_1e5's generator; target idx 2.
         struct Xs(u64);
@@ -43,7 +43,10 @@ use std::f64::consts::PI;
         // the Q-band model is frame-fragile; if it stays missing, the f64
         // partial-eucl norm prune (the known 1.5e-8-cliff mechanism) is
         // killing the branch.
-        std::env::set_var("CYCLOSYNTH_SE_BOUND_8D", "4.0");
+        // SAFETY: single-threaded at this point; racy if another --ignored
+        // test in the same process reads CYCLOSYNTH_* concurrently — run
+        // these probes individually.
+        unsafe { std::env::set_var("CYCLOSYNTH_SE_BOUND_8D", "4.0") };
         let mut rng = Xs(0xC0FFEE);
         let mut tri = (0.0, 0.0, 0.0);
         for _ in 0..3 {
@@ -72,9 +75,12 @@ use std::f64::consts::PI;
     /// which still drifts to 80 under coset dedup.
     /// Run: `cargo test --release --lib coset_dedup_loses_solution_1e8_78 -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "forensic probe; run individually (env-var setup)"]
     fn coset_dedup_loses_solution_1e8_78() {
-        std::env::set_var("CYCLOSYNTH_SE_BOUND_8D", "4.0");
+        // SAFETY: single-threaded at this point; racy if another --ignored
+        // test in the same process reads CYCLOSYNTH_* concurrently — run
+        // these probes individually.
+        unsafe { std::env::set_var("CYCLOSYNTH_SE_BOUND_8D", "4.0") };
         fn xorshift64(s: &mut u64) -> u64 {
             *s ^= *s << 13;
             *s ^= *s >> 7;
@@ -201,7 +207,7 @@ use std::f64::consts::PI;
                 let v_odd_r = apply_t_dag_to_uv(v_inner_r);
                 let y = uv_to_lattice_y(v_odd_r, lde_inner);
                 // x_img integer coords: (u1, u2) coefficients of img_u2t.
-                let gi = |z: &crate::rings::ZOmega| -> [f64; 4] {
+                let gi = |z: &ZOmega| -> [f64; 4] {
                     use crate::rings::types::int_to_f64;
                     [
                         int_to_f64(z.a),
@@ -400,7 +406,7 @@ use std::f64::consts::PI;
     /// predicts 4.5-8×; kill if < 2×.
     /// Run: `cargo test --release --lib prefix_count_with_vs_without_coset_dedup -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "census probe, print-only; see doc comment"]
     fn prefix_count_with_vs_without_coset_dedup() {
         eprintln!("\nM1 census: build_ma_prefix_set_reference plain phase-dedup vs right-coset dedup");
         eprintln!("  t'   |L| plain   |L| coset   ratio");
@@ -419,7 +425,7 @@ use std::f64::consts::PI;
     }
 
     /// Telemetry (ignored): geometric Q-norm² distribution of ε-close 8D
-    /// solutions, the Z[ω] mirror of the 16D `q_norm_distribution_sweep` that
+    /// solutions, the Z[ω] mirror of the 16D `q_norm_distribution_sweep_16d` that
     /// found the ζ₁₆ band [0.875, 1.25] and dropped that bound 8 → 1.5.
     /// The 8D SE bound is the empirical 1.51 (lattice/integer.rs); this
     /// measures where ε-close solutions actually sit, from the TRUE cap
@@ -439,7 +445,7 @@ use std::f64::consts::PI;
     /// Env: T8_EPS (default sweeps 3e-2 and 1e-3), T8_BUDGET (default 20M),
     /// T8_NODES (default 50M).
     #[test]
-    #[ignore]
+    #[ignore = "census probe, print-only; see doc comment"]
     fn q_norm_distribution_sweep() {
         use crate::synthesis::lattice::omega::{integer::find_aligned_lattice_points_outcome as find_aligned_lattice_points, q_metric::build_q_mpfr};
         use crate::synthesis::lattice::omega::scratch::IntScratch;
@@ -609,7 +615,7 @@ use std::f64::consts::PI;
     /// Env: WARM_N (prefix cap per level, default 400).
     /// Run: `cargo test --release --lib warm_started_lll_iteration_savings -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "census probe, print-only; see doc comment"]
     fn warm_started_lll_iteration_savings() {
         use crate::synthesis::lattice::omega::lll::{lll_l2_seeded, LllResult};
         use crate::synthesis::lattice::omega::q_metric::{build_q_int, build_q_mpfr};
@@ -718,7 +724,7 @@ use std::f64::consts::PI;
     /// `clifford_sqrt_t`'s `fgkm_prefix_split_cost_ratio`.
     /// Run: `cargo test --release --lib prefix_count_and_cost_histogram -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "census probe, print-only; see doc comment"]
     fn prefix_count_and_cost_histogram() {
         eprintln!("\n|L_{{t'}}| sizes:");
         for t_prime in 0..=10 {

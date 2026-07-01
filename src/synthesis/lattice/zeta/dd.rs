@@ -91,8 +91,8 @@ pub fn dd_from_i64(z: i64) -> (f64, f64) {
     } else {
         let neg = z < 0;
         let abs = z.unsigned_abs();
-        let hi = (abs >> 32) as u32 as f64;
-        let lo = (abs & 0xFFFFFFFF) as u32 as f64;
+        let hi = f64::from((abs >> 32) as u32);
+        let lo = f64::from((abs & 0xFFFFFFFF) as u32);
         let two32 = (1u64 << 32) as f64;
         let p = dd_mul((hi, 0.0), (two32, 0.0));
         let r = dd_add(p, (lo, 0.0));

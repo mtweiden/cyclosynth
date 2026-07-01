@@ -24,9 +24,9 @@ pub type Mat256 = [[i256; 8]; 8];
 
 // ─── In-place MPFR op macros via gmp-mpfr-sys ────────────────────────────────
 //
-// Call `mpfr::{add,sub,mul,div}` on the raw `mpfr_t` directly: the naive
-// `$dst.assign(&$a OP &$b)` allocates a `rug::Incomplete` per op, this is
-// zero-allocation. mpfr permits aliasing rop with op1/op2, so dst == a or
+// SAFETY: Call `mpfr::{add,sub,mul,div}` on the raw `mpfr_t` directly: the
+// naive `$dst.assign(&$a OP &$b)` allocates a `rug::Incomplete` per op, this
+// is zero-allocation. mpfr permits aliasing rop with op1/op2, so dst == a or
 // dst == b is safe.
 
 macro_rules! r_mul {

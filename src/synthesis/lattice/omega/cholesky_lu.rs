@@ -245,7 +245,7 @@ pub fn det_exact(m: &IMat8) -> Option<i64> {
     let det = a[7][7];
     let det_signed = if sign < 0 { -det } else { det };
     let lo = det_signed.as_i128();
-    if lo >= i64::MIN as i128 && lo <= i64::MAX as i128 {
+    if lo >= i128::from(i64::MIN) && lo <= i128::from(i64::MAX) {
         Some(lo as i64)
     } else {
         None
@@ -280,7 +280,7 @@ pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
         for j in 0..8 {
             let mut s = 0_i128;
             for k in 0..8 {
-                s += (basis[i][k] as i128) * (basis[j][k] as i128);
+                s += i128::from(basis[i][k]) * i128::from(basis[j][k]);
             }
             gram[i][j] = s;
         }

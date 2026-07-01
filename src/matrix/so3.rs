@@ -409,7 +409,7 @@ impl<R: Sqrt2Ring> Ratio<R> {
     }
 
     pub fn to_f64(self) -> f64 {
-        self.num.to_f64() / (self.exp as f64 / 2.0).exp2()
+        self.num.to_f64() / (f64::from(self.exp) / 2.0).exp2()
     }
 }
 

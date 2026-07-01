@@ -87,7 +87,7 @@ impl ZZeta {
     /// Convert to a floating-point complex number.
     pub fn to_complex(self) -> Complex64 {
         use std::f64::consts::PI;
-        let zeta = |k: u32| Complex64::from_polar(1.0, PI * k as f64 / 8.0);
+        let zeta = |k: u32| Complex64::from_polar(1.0, PI * f64::from(k) / 8.0);
         int_to_f64(self.a) * zeta(0)
             + int_to_f64(self.b) * zeta(1)
             + int_to_f64(self.c) * zeta(2)

@@ -208,7 +208,7 @@ where
     // (ε ≥ 1e-7); ε ≤ 1e-8 must call `find_aligned_lattice_points_mpfr`
     // directly to bypass the f64 ULP floor in v.
     let prec = scratch.prec_q;
-    let scale = 2.0_f64.powf(k as f64 / 2.0) / 4.0;
+    let scale = 2.0_f64.powf(f64::from(k) / 2.0) / 4.0;
     let v_mpfr: [MpFloat; 4] = [
         rfv(prec, y[0] / scale),
         rfv(prec, y[4] / scale),
@@ -467,7 +467,7 @@ where
                 return LeafAction::Skip;
             }
         } else {
-            let n: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
+            let n: i128 = x.iter().map(|&v| i128::from(v) * i128::from(v)).sum();
             if n != target_norm {
                 if trace {
                     diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed);

@@ -579,7 +579,7 @@ mod tests {
             for j in 0..16 {
                 let mut acc: i128 = 0;
                 for c in 0..16 {
-                    acc += (scratch.basis[i][c] as i128) * (scratch.basis[j][c] as i128);
+                    acc += i128::from(scratch.basis[i][c]) * i128::from(scratch.basis[j][c]);
                 }
                 let expected = i256::i256::from_i64(acc as i64);
                 assert_eq!(

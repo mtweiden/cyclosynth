@@ -39,7 +39,7 @@ pub fn compute_align_vec_zeta(v: [f64; 4]) -> [f64; 16] {
 /// σ_5/9/13); this gives ‖y‖² = 2^k/4, the 16D norm convention (the 8D
 /// flow uses 2^(k−1) — they deliberately differ).
 pub fn uv_to_lattice_y_zeta(v: [f64; 4], k: u32) -> [f64; 16] {
-    let scale = 2.0f64.powf(k as f64 / 2.0) / 4.0;
+    let scale = 2.0f64.powf(f64::from(k) / 2.0) / 4.0;
     let raw = compute_align_vec_zeta(v);
     std::array::from_fn(|i| raw[i] * scale)
 }

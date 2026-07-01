@@ -261,7 +261,7 @@ impl SynthesizerQ {
                 return None;
             }
             // (b) floor-exhaustion: sound prune, NOT truncation.
-            if best_cost.load(std::sync::atomic::Ordering::Relaxed) <= u.floor {
+            if best_cost.load(Ordering::Relaxed) <= u.floor {
                 return None;
             }
 
@@ -275,7 +275,7 @@ impl SynthesizerQ {
                 // Incumbent-abort (sound) OR deadline (anytime cutoff).
                 // Leaf hits only — a handful per walk, so the Instant
                 // read is noise.
-                best_cost.load(std::sync::atomic::Ordering::Relaxed) <= floor
+                best_cost.load(Ordering::Relaxed) <= floor
                     || start.elapsed() >= deadline
             };
             let w = &watches[idx];
@@ -290,7 +290,7 @@ impl SynthesizerQ {
             // Backstop cap, or the walk ran into the deadline (whether
             // aborted mid-tree or merely unfinished business remains
             // indistinguishable here — mark conservatively).
-            if budget_hit.load(std::sync::atomic::Ordering::Relaxed)
+            if budget_hit.load(Ordering::Relaxed)
                 || start.elapsed() >= deadline
             {
                 truncated[u.level_idx].store(true, Ordering::Relaxed);
@@ -315,7 +315,7 @@ impl SynthesizerQ {
                 }
             }
             if let Some((c, _)) = &best {
-                best_cost.fetch_min(*c, std::sync::atomic::Ordering::Relaxed);
+                best_cost.fetch_min(*c, Ordering::Relaxed);
             }
             best
         };
@@ -336,8 +336,8 @@ impl SynthesizerQ {
             || {
                 if queue_dispatch {
                     let cursor = std::sync::atomic::AtomicUsize::new(0);
-                    let merged: std::sync::Mutex<Option<(usize, SynthResultQ)>> =
-                        std::sync::Mutex::new(None);
+                    let merged: Mutex<Option<(usize, SynthResultQ)>> =
+                        Mutex::new(None);
                     let per_unit = &per_unit;
                     let make_scratch = &make_scratch;
                     let units = &units;
@@ -484,7 +484,7 @@ impl SynthesizerQ {
     ) -> Option<(usize, SynthResultQ)> {
         let mut branch_best: Option<(usize, SynthResultQ)> = None;
         let shell = brute_shell_cached(k_max);
-        let zd = Complex64::from_polar(1.0, d as f64 * PI / 8.0);
+        let zd = Complex64::from_polar(1.0, f64::from(d) * PI / 8.0);
         let thr = brute_prefilter_threshold(self.epsilon);
         for (sol, m) in shell.sols.iter().zip(&shell.mats) {
             if brute_dist_est(m, zd, t) >= thr {
@@ -541,7 +541,7 @@ impl SynthesizerQ {
         let sols = find_aligned_lattice_points_auto_prec(
             s.as_mut(), v, None, self.deep_rot_src.as_ref(), k, epsilon, budget, &budget_hit, should_stop, None, None,
         );
-        let hit = budget_hit.load(std::sync::atomic::Ordering::Relaxed);
+        let hit = budget_hit.load(Ordering::Relaxed);
         let cands = sols.iter().map(|sol| (solution_to_u2q_with_det_phase(sol, k, d), k));
         (self.pick_min_cost_result(cands, target, !cost_min), hit)
     }
@@ -643,7 +643,7 @@ impl SynthesizerQ {
         // rather than serially capped. 16 MiB stacks for the deep SE
         // recursion.
         let global_best =
-            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+            Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
         let mut even_self = self.clone();
         even_self.global_best_cost = Some(global_best.clone());
         let mut odd_self = self.clone();
@@ -651,8 +651,8 @@ impl SynthesizerQ {
         odd_self.deep_rot_src = Some((target, 1));
         // Stage-2 handshake flags (see field docs): each branch's
         // frontier dispatch waits until the peer's screen is done.
-        let even_screen_done = std::sync::Arc::new(AtomicBool::new(false));
-        let odd_screen_done = std::sync::Arc::new(AtomicBool::new(false));
+        let even_screen_done = Arc::new(AtomicBool::new(false));
+        let odd_screen_done = Arc::new(AtomicBool::new(false));
         even_self.my_screen_done = Some(even_screen_done.clone());
         even_self.peer_screen_done = Some(odd_screen_done.clone());
         odd_self.my_screen_done = Some(odd_screen_done.clone());
@@ -788,7 +788,7 @@ impl SynthesizerQ {
     /// shells (k ≤ BRUTE_LIMIT). A find here is already optimal at the
     /// smallest feasible k.
     pub(crate) fn brute_min_cost(&self, target: &Mat2, d: u32) -> Option<(usize, SynthResultQ)> {
-        let zd = Complex64::from_polar(1.0, d as f64 * PI / 8.0);
+        let zd = Complex64::from_polar(1.0, f64::from(d) * PI / 8.0);
         let thr = brute_prefilter_threshold(self.epsilon);
         for k in self.min_lde..=BRUTE_LIMIT.min(self.max_lde) {
             let shell = brute_shell_cached(k);
@@ -947,7 +947,7 @@ impl SynthesizerQ {
             // targets leave the peer branch's dynamic lde clamp unseeded
             // and its screen sweeps to max_lde for nothing.
             if let Some(g) = &self.global_best_cost {
-                g.fetch_min(c, std::sync::atomic::Ordering::Relaxed);
+                g.fetch_min(c, Ordering::Relaxed);
             }
             return Some(r);
         }
@@ -991,7 +991,7 @@ impl SynthesizerQ {
             self.global_best_cost.as_deref().unwrap_or(&local_best);
         shared_best.fetch_min(
             first_cost.min(baseline_cost),
-            std::sync::atomic::Ordering::Relaxed,
+            Ordering::Relaxed,
         );
         let mut tasks: Vec<(u32, u32)> = (0..=self.optimal_lde_window)
             .map(|i| fl + i)

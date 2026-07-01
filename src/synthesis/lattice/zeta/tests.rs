@@ -233,7 +233,7 @@ mod probes;
             let mut m = [[0.0f64; 8]; 8];
             for (k, &a) in COSET_REPS.iter().enumerate() {
                 for j in 0..8 {
-                    let theta = (a as f64) * (j as f64) * std::f64::consts::PI / 8.0;
+                    let theta = f64::from(a) * (j as f64) * PI / 8.0;
                     m[2 * k][j] = theta.cos();
                     m[2 * k + 1][j] = theta.sin();
                 }
@@ -406,7 +406,7 @@ mod probes;
         let y_norm: f64 = y.iter().map(|x| x * x).sum::<f64>().sqrt();
         let yhat: [f64; 16] = std::array::from_fn(|i| y[i] / y_norm);
         let qy = matvec(&q, &yhat);
-        let r = (k as f64).exp2().sqrt();
+        let r = f64::from(k).exp2().sqrt();
         let delta_y = r * eps * eps / (2.0 * (1.0 + (1.0 - eps * eps).sqrt()));
         let lambda_y = 1.0 / (delta_y * delta_y);
         for i in 0..16 {
@@ -423,7 +423,7 @@ mod probes;
         let k = 6;
         let eps = 1e-3;
         let q = build_q_zzeta_lattice(v, k, eps);
-        let r_sq = (k as f64).exp2();
+        let r_sq = f64::from(k).exp2();
         let r = r_sq.sqrt();
         let delta_y = r * eps * eps / (2.0 * (1.0 + (1.0 - eps * eps).sqrt()));
         let delta_perp = r * eps;

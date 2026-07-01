@@ -854,15 +854,15 @@ mod tests {
                 total_peels += 1;
 
                 // ── The exact invariant, γ-units: Nγ drops by exactly q_a. ──
-                let gamma_drop = ng_before as i64 - ng_after as i64;
+                let gamma_drop = i64::from(ng_before) - i64::from(ng_after);
                 assert_eq!(
                     gamma_drop,
-                    Q_GAMMA[(a - 1) as usize] as i64,
+                    i64::from(Q_GAMMA[(a - 1) as usize]),
                     "γ-drop ≠ q_a: a={a}, Nγ {ng_before}→{ng_after} (word {word_idx})"
                 );
 
                 // ── Derived √2-unit drop table. ──
-                let drop = n_before as i64 - n_after as i64;
+                let drop = i64::from(n_before) - i64::from(n_after);
                 let expected = match a {
                     2 => 1,                                    // T-peel: always 1
                     _ => if ng_before % 2 == 1 { 2 } else { 1 }, // Q/TQ: parity of Nγ

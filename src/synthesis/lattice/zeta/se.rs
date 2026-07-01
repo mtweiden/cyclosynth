@@ -130,7 +130,7 @@ fn resolve_prune(
     if trace {
         crate::synthesis::diag::N_PRUNE_FIRES.fetch_add(1, Ordering::Relaxed);
     }
-    let x_norm_sq: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
+    let x_norm_sq: i128 = x.iter().map(|&v| i128::from(v) * i128::from(v)).sum();
     if x_norm_sq <= target_norm_sq_i128 {
         return false;
     }
@@ -257,7 +257,7 @@ fn q_candidate_dd(
 /// three independent constraints (one per non-σ_1 Galois embedding).
 #[inline]
 pub fn beta_1(u: &[i64; 8]) -> i128 {
-    let u: [i128; 8] = std::array::from_fn(|i| u[i] as i128);
+    let u: [i128; 8] = std::array::from_fn(|i| i128::from(u[i]));
     u[0]*u[1] + u[1]*u[2] + u[2]*u[3] + u[3]*u[4]
         + u[4]*u[5] + u[5]*u[6] + u[6]*u[7]
         - u[0]*u[7]
@@ -265,7 +265,7 @@ pub fn beta_1(u: &[i64; 8]) -> i128 {
 
 #[inline]
 pub fn beta_2(u: &[i64; 8]) -> i128 {
-    let u: [i128; 8] = std::array::from_fn(|i| u[i] as i128);
+    let u: [i128; 8] = std::array::from_fn(|i| i128::from(u[i]));
     u[0]*u[2] + u[1]*u[3] + u[2]*u[4] + u[3]*u[5]
         + u[4]*u[6] + u[5]*u[7]
         - u[0]*u[6] - u[1]*u[7]
@@ -273,7 +273,7 @@ pub fn beta_2(u: &[i64; 8]) -> i128 {
 
 #[inline]
 pub fn beta_3(u: &[i64; 8]) -> i128 {
-    let u: [i128; 8] = std::array::from_fn(|i| u[i] as i128);
+    let u: [i128; 8] = std::array::from_fn(|i| i128::from(u[i]));
     u[0]*u[3] + u[1]*u[4] + u[2]*u[5] + u[3]*u[6] + u[4]*u[7]
         - u[0]*u[5] - u[1]*u[6] - u[2]*u[7]
 }
@@ -1243,8 +1243,8 @@ fn recurse_collect_norm_pruned<F>(
     basis: &[[i64; 16]; 16],
     leaf_filter: &F,
     budget: &AtomicU64,
-    aborted: &std::sync::atomic::AtomicBool,
-    external_abort: Option<&std::sync::atomic::AtomicBool>,
+    aborted: &AtomicBool,
+    external_abort: Option<&AtomicBool>,
     consumed: Option<&AtomicU64>,
     bcache: &mut BudgetCache<'_>,
     results: &mut Vec<[i64; 16]>,
@@ -1421,7 +1421,7 @@ mod par_tests {
         // Pick a z, compute ‖B·z‖² directly.
         let z: [i64; 16] = [1, -2, 3, 0, -1, 2, 1, -3, 4, 0, -1, 2, 1, -2, 3, -1];
         let x = reconstruct_x(&b, &z);
-        let xnorm_sq: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
+        let xnorm_sq: i128 = x.iter().map(|&v| i128::from(v) * i128::from(v)).sum();
         let xnorm_sq_f = xnorm_sq as f64;
 
         // Compute ‖R·z‖² as my pruning would: top-down summed squared

@@ -92,7 +92,7 @@ pub fn unitary_to_uv(v: &Mat2) -> [f64; 4] {
 fn try_unitary_to_uv(u: &Mat2) -> Option<[f64; 4]> {
     use std::f64::consts::FRAC_PI_4;
     for k in 0..8 {
-        let ph = Complex::from_polar(1.0, k as f64 * FRAC_PI_4);
+        let ph = Complex::from_polar(1.0, f64::from(k) * FRAC_PI_4);
         let m00 = ph * u[0][0];
         let m01 = ph * u[0][1];
         let m10 = ph * u[1][0];
@@ -337,7 +337,7 @@ fn trace_dump_pass(
         "[trace] lde={:>2} pass{} t'={:>2} prefixes={:>6} mat_uv_rej={:>6} \
          se_cb={:>9} se_nodes={:>11} (max/walk {:>9}) dist_rej={} budget={} {:>9.1}ms result={}",
         t, pass, t_prime, s.prefixes, s.uv_extract_rejected, s.se_callbacks,
-        s.se_nodes, s.se_nodes_max, s.dist_rejected, budget_hit as u8, pass_ms,
+        s.se_nodes, s.se_nodes_max, s.dist_rejected, u8::from(budget_hit), pass_ms,
         if found { "FOUND" } else { "none" }
     );
     let phase_total = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
@@ -376,7 +376,7 @@ fn trace_dump_pass(
 /// satisfying `‖y‖² = 2^(k-1)`. Uses `powf` (not bit-shift) so `k ≥ 64`
 /// stays well-defined.
 pub fn uv_to_lattice_y(v: [f64; 4], k: u32) -> [f64; 8] {
-    let scale = 2.0_f64.powf(k as f64 / 2.0 - 1.0);
+    let scale = 2.0_f64.powf(f64::from(k) / 2.0 - 1.0);
     compute_align_vec(v).map(|x| x * scale)
 }
 
@@ -468,10 +468,10 @@ fn optimal_t_prime(t: u32, eps: f64) -> u32 {
         return 0;
     }
     let threshold = (5.0 / 2.0) * (1.0 / eps).log2();
-    if t as f64 <= threshold {
+    if f64::from(t) <= threshold {
         0
     } else {
-        (t as f64 - threshold).ceil() as u32
+        (f64::from(t) - threshold).ceil() as u32
     }
 }
 

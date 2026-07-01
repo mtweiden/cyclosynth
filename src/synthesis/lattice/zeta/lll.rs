@@ -345,7 +345,7 @@ mod tests {
         let det = a[15][15];
         let det_signed = if sign < 0 { -det } else { det };
         let lo = det_signed.as_i128();
-        if lo >= i64::MIN as i128 && lo <= i64::MAX as i128 {
+        if lo >= i128::from(i64::MIN) && lo <= i128::from(i64::MAX) {
             Some(lo as i64)
         } else {
             None

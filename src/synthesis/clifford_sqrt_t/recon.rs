@@ -56,7 +56,7 @@ pub fn solution_to_u2q_with_det_phase(sol: &[i64; 16], k: u32, det_phase: u32) -
 /// max_lde finding nothing.
 pub fn project_det_to_zeta_coset(target: &Mat2) -> Mat2 {
     let det = target[0][0] * target[1][1] - target[0][1] * target[1][0];
-    let d = det_phase_of(target) as f64;
+    let d = f64::from(det_phase_of(target));
     let mut residual = det.arg() - d * PI / 8.0;
     while residual > PI {
         residual -= 2.0 * PI;

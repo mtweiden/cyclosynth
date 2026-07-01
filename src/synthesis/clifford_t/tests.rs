@@ -42,7 +42,7 @@ mod probes;
     }
 
     /// Re-build a U2T from the synthesized gate string by parsing left-to-right.
-    fn gates_to_u2t_verify(gate_str: &str) -> crate::matrix::U2T {
+    fn gates_to_u2t_verify(gate_str: &str) -> U2T {
         use crate::matrix::U2T;
         let mut u = U2T::eye();
         for ch in gate_str.chars() {
@@ -450,7 +450,7 @@ mod probes;
                 let threshold = (5.0 / 2.0) * (1.0 / eps).log2();
                 // t_inner should be <= threshold (direct_search is cheap enough).
                 assert!(
-                    t_inner as f64 <= threshold + 1.0,
+                    f64::from(t_inner) <= threshold + 1.0,
                     "t={t}, eps={eps}: t_inner={t_inner} > threshold={threshold:.1}"
                 );
             }
@@ -475,9 +475,9 @@ mod probes;
         let mut rng = StdRng::seed_from_u64(42);
         let eps = 0.001_f64;
 
-        let theta: f64 = rng.random::<f64>() * (2.0 * std::f64::consts::PI);
-        let phi: f64 = rng.random::<f64>() * (2.0 * std::f64::consts::PI);
-        let lambda: f64 = rng.random::<f64>() * (2.0 * std::f64::consts::PI);
+        let theta: f64 = rng.random::<f64>() * (2.0 * PI);
+        let phi: f64 = rng.random::<f64>() * (2.0 * PI);
+        let lambda: f64 = rng.random::<f64>() * (2.0 * PI);
         
         let ct = (theta / 2.0).cos();
         let st = (theta / 2.0).sin();

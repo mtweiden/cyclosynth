@@ -23,7 +23,7 @@ pub(crate) fn prefix_residual_uv_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [M
     });
     // (re, im) of a ZZeta numerator at prec. Prefix coefficients are
     // far inside i64 at any production lde; debug-guarded.
-    let zz = |z: &crate::rings::ZZeta| -> (MpFloat, MpFloat) {
+    let zz = |z: &ZZeta| -> (MpFloat, MpFloat) {
         let mut re = MpFloat::with_val(prec, 0.0);
         let mut im = MpFloat::with_val(prec, 0.0);
         for i in 0..8 {
@@ -122,9 +122,9 @@ pub(crate) fn find_aligned_lattice_points_auto_prec<F>(
     k: u32,
     eps: f64,
     max_leaf_checks: u64,
-    budget_hit: &std::sync::atomic::AtomicBool,
+    budget_hit: &AtomicBool,
     should_stop: F,
-    external_abort: Option<&std::sync::atomic::AtomicBool>,
+    external_abort: Option<&AtomicBool>,
     consumed: Option<&std::sync::atomic::AtomicU64>,
 ) -> Vec<[i64; 16]>
 where
@@ -235,8 +235,8 @@ pub(crate) const OPTIMAL_PREFIX_INTERLEAVE: bool = true;
 /// the started-set a scheduling draw — the main source of anytime-cost
 /// variance; the queue makes it a deterministic prefix of the floor
 /// order. `CYCLOSYNTH_FRONTIER_QUEUE=0` restores chunked dispatch.
-pub(crate) static FRONTIER_QUEUE_DISPATCH: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| {
+pub(crate) static FRONTIER_QUEUE_DISPATCH: LazyLock<bool> =
+    LazyLock::new(|| {
         !matches!(std::env::var("CYCLOSYNTH_FRONTIER_QUEUE").as_deref(), Ok("0"))
     });
 
@@ -292,8 +292,8 @@ fn wait_for_predecessor_gate(
     i: usize,
     trigger_nodes: u64,
     abort_ref: &AtomicBool,
-    predecessor_consumed: Option<&std::sync::Arc<std::sync::atomic::AtomicU64>>,
-    predecessor_finished: Option<&std::sync::Arc<AtomicBool>>,
+    predecessor_consumed: Option<&Arc<std::sync::atomic::AtomicU64>>,
+    predecessor_finished: Option<&Arc<AtomicBool>>,
 ) -> bool {
     if i > 0 && trigger_nodes > 0 {
         let pred = predecessor_consumed.expect("predecessor set for i>0");
@@ -387,12 +387,12 @@ impl SynthesizerQ {
             }
             let t_window = std::time::Instant::now();
 
-            let consumed_counters: Vec<std::sync::Arc<std::sync::atomic::AtomicU64>> =
+            let consumed_counters: Vec<Arc<std::sync::atomic::AtomicU64>> =
                 (0..lde_window.len())
-                    .map(|_| std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)))
+                    .map(|_| Arc::new(std::sync::atomic::AtomicU64::new(0)))
                     .collect();
-            let finished_flags: Vec<std::sync::Arc<AtomicBool>> = (0..lde_window.len())
-                .map(|_| std::sync::Arc::new(AtomicBool::new(false)))
+            let finished_flags: Vec<Arc<AtomicBool>> = (0..lde_window.len())
+                .map(|_| Arc::new(AtomicBool::new(false)))
                 .collect();
             let results: Mutex<Vec<(u32, Option<SynthResultQ>, bool)>> =
                 Mutex::new(Vec::new());
@@ -411,7 +411,7 @@ impl SynthesizerQ {
                         // RAII: mark finished on EVERY exit path (normal,
                         // abort, panic) so a successor's gate can never
                         // be stranded.
-                        struct FinishedGuard(std::sync::Arc<AtomicBool>);
+                        struct FinishedGuard(Arc<AtomicBool>);
                         impl Drop for FinishedGuard {
                             fn drop(&mut self) {
                                 self.0.store(true, Ordering::Release);
@@ -548,7 +548,7 @@ impl SynthesizerQ {
     pub(crate) fn effective_max_lde(&self) -> u32 {
         let mut m = self.max_lde;
         if let Some(best) = &self.global_best_cost {
-            let c = best.load(std::sync::atomic::Ordering::Relaxed);
+            let c = best.load(Ordering::Relaxed);
             if c != usize::MAX {
                 let c32 = c.min(u32::MAX as usize - 1) as u32;
                 m = m.min(c32.saturating_add(1));
@@ -687,7 +687,7 @@ impl SynthesizerQ {
             let sols = find_aligned_lattice_points_auto_prec(
                 s.as_mut(), v, None, self.deep_rot_src.as_ref(), k, epsilon, budget, &budget_hit, should_stop, None, None,
             );
-            (sols, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
+            (sols, budget_hit.load(Ordering::Relaxed))
         };
 
         let check_sols = |sols: &[[i64; 16]], k: u32| -> Option<SynthResultQ> {
@@ -696,7 +696,7 @@ impl SynthesizerQ {
         };
 
         // Brute regime: iterate every k for exact small-T Clifford+√T finds.
-        let zd = Complex64::from_polar(1.0, d as f64 * PI / 8.0);
+        let zd = Complex64::from_polar(1.0, f64::from(d) * PI / 8.0);
         for k in self.min_lde..=BRUTE_LIMIT.min(self.max_lde) {
             let t_k = std::time::Instant::now();
             let shell = brute_shell_cached(k);
@@ -1014,7 +1014,7 @@ impl SynthesizerQ {
             // Heuristic prune: U_R can cancel parts of U_L, so this can in
             // principle miss the optimum.
             if optimize_cost {
-                let cur_best = best_cost.load(std::sync::atomic::Ordering::Relaxed);
+                let cur_best = best_cost.load(Ordering::Relaxed);
                 // Sound because syllable costs are additive in normal
                 // form: any U cheaper than `best` is reachable through
                 // its canonical prefix with cost ≤ best − LB(suffix).
@@ -1042,7 +1042,7 @@ impl SynthesizerQ {
                     // Stop the walk once the incumbent reaches this
                     // prefix's floor — only skips candidates costing ≥
                     // the incumbent (checked at leaf hits, free).
-                    return best_cost.load(std::sync::atomic::Ordering::Relaxed)
+                    return best_cost.load(Ordering::Relaxed)
                         <= u_l_cost.saturating_add(suffix_floor);
                 }
                 let u_r = solution_to_u2q_with_det_phase(x, lde_inner, d_r);
@@ -1071,8 +1071,8 @@ impl SynthesizerQ {
                 watches[idx].active.store(false, Ordering::Relaxed);
             }
 
-            if budget_hit.load(std::sync::atomic::Ordering::Relaxed) {
-                any_budget_hit.store(true, std::sync::atomic::Ordering::Relaxed);
+            if budget_hit.load(Ordering::Relaxed) {
+                any_budget_hit.store(true, Ordering::Relaxed);
             }
 
             // First-hit returns the first ε-close sol; optimal keeps the
@@ -1084,7 +1084,7 @@ impl SynthesizerQ {
             if optimize_cost {
                 if let Some((c, _)) = &best {
                     // Relaxed is enough: the prune is a heuristic.
-                    best_cost.fetch_min(*c, std::sync::atomic::Ordering::Relaxed);
+                    best_cost.fetch_min(*c, Ordering::Relaxed);
                 }
             }
             best
@@ -1134,7 +1134,7 @@ impl SynthesizerQ {
         };
         let result = result_pair.map(|(_, r)| r);
 
-        let budget_hit = any_budget_hit.load(std::sync::atomic::Ordering::Relaxed);
+        let budget_hit = any_budget_hit.load(Ordering::Relaxed);
         (result, budget_hit)
     }
 

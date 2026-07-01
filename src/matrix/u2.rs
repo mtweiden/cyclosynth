@@ -83,7 +83,7 @@ impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
 
     /// Convert to 2×2 complex float matrix (row-major [[a,b],[c,d]]).
     pub fn to_float(&self) -> [[Complex64; 2]; 2] {
-        let scale = 1.0 / (self.k as f64 / 2.0).exp2();  // 1 / √2^k = 2^{-k/2}
+        let scale = 1.0 / (f64::from(self.k) / 2.0).exp2();  // 1 / √2^k = 2^{-k/2}
         [
             [self.u11.to_complex() * scale, self.u12.to_complex() * scale],
             [self.u21.to_complex() * scale, self.u22.to_complex() * scale],

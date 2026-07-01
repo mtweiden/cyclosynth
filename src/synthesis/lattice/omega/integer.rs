@@ -316,7 +316,7 @@ pub fn find_aligned_outcome_mpfr(
             // Norm check: most SE candidates fail here, so it's the hottest
             // test. i128 squares can't wrap, so a non-solution never spuriously
             // matches the shell target.
-            let n: i128 = x.iter().map(|&v| (v as i128) * (v as i128)).sum();
+            let n: i128 = x.iter().map(|&v| i128::from(v) * i128::from(v)).sum();
             if n != target_norm {
                 return None;
             }
@@ -450,7 +450,7 @@ mod tests {
         for &b in mag_bytes.iter().rev() {
             hex.push_str(&format!("{:02x}", b));
         }
-        int.assign(rug::Integer::parse_radix(&hex, 16).unwrap());
+        int.assign(rug::Integer::parse_radix(&hex, 16).expect("internally-built hex"));
         let mut f = MpFloat::with_val(256, &int);
         if shift_bits >= 0 {
             f >>= shift_bits as u32;

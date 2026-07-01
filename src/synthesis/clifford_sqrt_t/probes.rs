@@ -16,7 +16,7 @@ use std::f64::consts::PI;
     /// D&C wins at m when S(m, α) < 1.
     /// Census probe (no assertions): run with `-- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "census probe, print-only; see doc comment"]
     fn fgkm_prefix_split_cost_ratio() {
         // Coarse k → count map per m, then evaluate S(m, α) for several α.
         for m in 1..=5 {
@@ -75,7 +75,7 @@ use std::f64::consts::PI;
     /// k for the inner LLL+SE search.
     /// Census probe (no assertions): run with `-- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "census probe, print-only; see doc comment"]
     fn fgkm_prefix_k_distribution() {
         for m in 1..=5 {
             let l = build_fgkm_prefix_set(m);
@@ -191,7 +191,7 @@ use std::f64::consts::PI;
     /// test name. Prints the enum trace for diffing.
     /// Run: cargo test --release --lib coset_mode_off_target0 -- --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "one mode per process (LazyLock); run individually"]
     fn coset_mode_off_target0() {
         probe_zeta_coset_target(0, 1e-6, "0");
     }
@@ -200,7 +200,7 @@ use std::f64::consts::PI;
     /// ε=1e-6): expected to drift from cost 52.5 up to the T baseline 53.
     /// Run: cargo test --release --lib coset_mode_on_target0 -- --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "one mode per process (LazyLock); run individually"]
     fn coset_mode_on_target0() {
         probe_zeta_coset_target(0, 1e-6, "1");
     }
@@ -209,7 +209,7 @@ use std::f64::consts::PI;
     /// — coset-off screen finds lde=24 (cost 73.5), coset-on drifts to
     /// the lde-78 fallback (cost 78).
     #[test]
-    #[ignore]
+    #[ignore = "one mode per process (LazyLock); run individually"]
     fn coset_mode_off_1e8_target6() {
         probe_zeta_coset_target(6, 1e-8, "0");
     }
@@ -218,12 +218,15 @@ use std::f64::consts::PI;
     /// ε=1e-8): expected to drift from the lde=24 hit (cost 73.5) to the
     /// lde-78 fallback (cost 78).
     #[test]
-    #[ignore]
+    #[ignore = "one mode per process (LazyLock); run individually"]
     fn coset_mode_on_1e8_target6() {
         probe_zeta_coset_target(6, 1e-8, "1");
     }
 
     fn probe_zeta_coset_target(index: usize, eps: f64, coset: &str) {
+        // SAFETY: single-threaded at this point; racy if another --ignored
+        // test in the same process reads CYCLOSYNTH_* concurrently — run
+        // these probes individually.
         unsafe {
             std::env::set_var("CYCLOSYNTH_ZETA_COSET", coset);
             std::env::set_var("CYCLOSYNTH_TRACE", "1");
@@ -289,7 +292,7 @@ use std::f64::consts::PI;
     /// collapse first-hit lde if so.
     /// Run: cargo test --release --lib strict_filter_misses_other_det_classes -- --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "forensic probe, print-only; see doc comment"]
     fn strict_filter_misses_other_det_classes() {
         fn xorshift64(s: &mut u64) -> u64 { *s ^= *s << 13; *s ^= *s >> 7; *s ^= *s << 17; *s }
         fn rand_angle(s: &mut u64) -> f64 {
@@ -342,7 +345,7 @@ use std::f64::consts::PI;
     // ---- relocated from tests.rs (timing-comparison probes, not unit tests) ----
 
     #[test]
-    #[ignore]
+    #[ignore = "slow timing probe"]
     fn times_prefix_split_strategies() {
         use rand::{Rng, SeedableRng};
         use rand::rngs::StdRng;

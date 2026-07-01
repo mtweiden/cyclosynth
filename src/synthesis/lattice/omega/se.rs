@@ -75,7 +75,7 @@ impl ShellFilter {
         let mut x_rest = [0i128; 8];
         for i in 1..8 {
             for j in 0..8 {
-                let t = z[i].checked_mul(self.basis[i][j] as i128)?;
+                let t = z[i].checked_mul(i128::from(self.basis[i][j]))?;
                 x_rest[j] = x_rest[j].checked_add(t)?;
             }
         }
@@ -443,7 +443,7 @@ pub fn reconstruct_x(b_lll: &IMat8, z: &[i128; 8]) -> [i64; 8] {
     let mut x = [0i128; 8];
     for i in 0..8 {
         for j in 0..8 {
-            x[j] += z[i] * b_lll[i][j] as i128;
+            x[j] += z[i] * i128::from(b_lll[i][j]);
         }
     }
     std::array::from_fn(|j| x[j] as i64)
@@ -458,7 +458,7 @@ pub fn reconstruct_x(b_lll: &IMat8, z: &[i128; 8]) -> [i64; 8] {
 /// ~2^41 and pairwise products hit ~2^82.
 #[inline]
 pub fn bilinear_b(x: &[i64; 8]) -> i128 {
-    let (a1, b1, c1, d1) = (x[0] as i128, x[1] as i128, x[2] as i128, x[3] as i128);
-    let (a2, b2, c2, d2) = (x[4] as i128, x[5] as i128, x[6] as i128, x[7] as i128);
+    let (a1, b1, c1, d1) = (i128::from(x[0]), i128::from(x[1]), i128::from(x[2]), i128::from(x[3]));
+    let (a2, b2, c2, d2) = (i128::from(x[4]), i128::from(x[5]), i128::from(x[6]), i128::from(x[7]));
     a1 * b1 - a1 * d1 + b1 * c1 + c1 * d1 + a2 * b2 - a2 * d2 + b2 * c2 + c2 * d2
 }

@@ -229,7 +229,7 @@ pub fn cholesky_f64(scratch: &mut IntScratch16) -> bool {
 /// pathological inputs.
 pub fn det_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
     let mut a: [[i128; 16]; 16] =
-        std::array::from_fn(|i| std::array::from_fn(|j| m[i][j] as i128));
+        std::array::from_fn(|i| std::array::from_fn(|j| i128::from(m[i][j])));
     let mut sign: i128 = 1;
     let mut prev: i128 = 1;
 
@@ -262,7 +262,7 @@ pub fn det_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
         prev = pivot;
     }
     let det = a[15][15].checked_mul(sign)?;
-    if det >= i64::MIN as i128 && det <= i64::MAX as i128 {
+    if det >= i128::from(i64::MIN) && det <= i128::from(i64::MAX) {
         Some(det as i64)
     } else {
         None
@@ -291,7 +291,7 @@ pub fn euclidean_cholesky_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyD
         for j in 0..16 {
             let mut s = 0_i128;
             for k in 0..16 {
-                s += (basis[i][k] as i128) * (basis[j][k] as i128);
+                s += i128::from(basis[i][k]) * i128::from(basis[j][k]);
             }
             gram[i][j] = s;
         }
@@ -419,7 +419,7 @@ pub fn euclidean_cholesky(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]> {
         for j in 0..16 {
             let mut s = 0_i128;
             for k in 0..16 {
-                s += (basis[i][k] as i128) * (basis[j][k] as i128);
+                s += i128::from(basis[i][k]) * i128::from(basis[j][k]);
             }
             gram[i][j] = s;
         }

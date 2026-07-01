@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
     /// Run: cargo test --release --lib probe_f64_entry_radial_error -- \
     ///      --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "census probe, print-only; see doc comment"]
     fn probe_f64_entry_radial_error() {
         use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta_mpfr;
 
@@ -138,10 +138,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
     /// match geometric to ~1e-6). The rounded center inflates Q and forces a
     /// generous bound; geometric Q ≤ 1.25. Run with --ignored --nocapture.
     #[test]
-    #[ignore]
+    #[ignore = "forensic probe; run individually (env-var setup)"]
     fn q_norm_center_source_breakdown() {
         use crate::matrix::u2::U2Q;
 
+        // SAFETY: single-threaded at this point; racy if another --ignored
+        // test in the same process reads CYCLOSYNTH_* concurrently — run
+        // these probes individually.
         unsafe { std::env::set_var("CYCLOSYNTH_BOUND_SQ", "8") };
         let qhq: U2Q = U2Q::q() * U2Q::h() * U2Q::q();
         let target = qhq.to_float();
@@ -153,10 +156,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
         let mut s = IntScratch16::new(eps);
         let abort = AtomicBool::new(false);
         let sols = find_aligned_lattice_points(&mut s, &y, k, eps, 100_000_000, &abort);
+        // SAFETY: single-threaded at this point; racy if another --ignored
+        // test in the same process reads CYCLOSYNTH_* concurrently — run
+        // these probes individually.
         unsafe { std::env::remove_var("CYCLOSYNTH_BOUND_SQ") };
         assert!(!sols.is_empty(), "find_aligned_lattice_points@bound8 must find QHQ");
 
-        let q = crate::synthesis::lattice::zeta::q_metric::build_q_zzeta_lattice(v, k, eps);
+        let q = build_q_zzeta_lattice(v, k, eps);
         // True cap center (ambient), rounded-z_c effective center, and the
         // fractional SE center (int + frac pair) the walk uses.
         let c_true: [f64; 16] = std::array::from_fn(|i| s.c[i].to_f64());
@@ -203,20 +209,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
     /// solutions across a θ × ε × k grid, enumerated at a wide bound to
     /// observe the full distribution. The geometric band is [0.875, 1.25];
     /// this sweep is how that was measured.
-    /// Run with --ignored --nocapture.
+    /// Run: `cargo test --release --lib q_norm_distribution_sweep_16d -- --ignored --nocapture`
     #[test]
-    #[ignore]
-    fn q_norm_distribution_sweep() {
+    #[ignore = "forensic probe; run individually (env-var setup)"]
+    fn q_norm_distribution_sweep_16d() {
         use crate::synthesis::distance::diamond_distance_float;
         use num_complex::Complex;
 
+        // SAFETY: single-threaded at this point; racy if another --ignored
+        // test in the same process reads CYCLOSYNTH_* concurrently — run
+        // these probes individually.
         unsafe { std::env::set_var("CYCLOSYNTH_BOUND_SQ", "4") };
         let mut global_max_close = 0.0f64;
         let mut global_max_all = 0.0f64;
         let mut total_close = 0usize;
 
         for &theta in &[0.3f64, 0.55, 0.8, 1.05, 1.3] {
-            let target: crate::synthesis::Mat2 = [
+            let target: Mat2 = [
                 [Complex::from_polar(1.0, -theta / 2.0), Complex::new(0.0, 0.0)],
                 [Complex::new(0.0, 0.0), Complex::from_polar(1.0, theta / 2.0)],
             ];
@@ -231,7 +240,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
                     if sols.is_empty() {
                         continue;
                     }
-                    let q = crate::synthesis::lattice::zeta::q_metric::build_q_zzeta_lattice(
+                    let q = build_q_zzeta_lattice(
                         v, k, eps,
                     );
                     let c: [f64; 16] = std::array::from_fn(|i| s.c[i].to_f64());
@@ -266,6 +275,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
                 }
             }
         }
+        // SAFETY: single-threaded at this point; racy if another --ignored
+        // test in the same process reads CYCLOSYNTH_* concurrently — run
+        // these probes individually.
         unsafe { std::env::remove_var("CYCLOSYNTH_BOUND_SQ") };
         eprintln!(
             "GLOBAL: eps-close sols={total_close}  maxQ_close={global_max_close:.4}  maxQ_all={global_max_all:.4}"
@@ -279,16 +291,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
     /// Behind `#[ignore]`: `cargo test --release --lib sqrt_t_depth_vs_clifford_t_baseline --
     /// --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "slow diagnostic probe; see doc comment"]
     fn sqrt_t_depth_vs_clifford_t_baseline() {
         use crate::synthesis::distance::diamond_distance_float;
         use crate::synthesis::clifford_t::SynthesizerT;
         let theta = 0.3_f64;
-        let target: crate::synthesis::distance::Mat2 = [
-            [num_complex::Complex64::from_polar(1.0, -theta / 2.0),
-             num_complex::Complex64::new(0.0, 0.0)],
-            [num_complex::Complex64::new(0.0, 0.0),
-             num_complex::Complex64::from_polar(1.0, theta / 2.0)],
+        let target: Mat2 = [
+            [Complex64::from_polar(1.0, -theta / 2.0),
+             Complex64::new(0.0, 0.0)],
+            [Complex64::new(0.0, 0.0),
+             Complex64::from_polar(1.0, theta / 2.0)],
         ];
         let eps = 1e-3_f64;
 
