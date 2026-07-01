@@ -1,5 +1,4 @@
-//! M0 attribution driver for the 8D Z[ω] prefix-sweep rework
-//! (stage 0).
+//! M0 attribution driver for the 8D Z[ω] prefix sweep.
 //!
 //! Self-sets `CYCLOSYNTH_TRACE=1` (env-prefixed invocations are not always
 //! possible in the sandboxed harness), then synthesizes the SAME targets as

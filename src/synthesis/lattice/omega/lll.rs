@@ -11,7 +11,7 @@
 use super::scratch::IntScratch;
 use crate::synthesis::lattice::common;
 
-// ─── L²-LLL parameters & result type — moved to lattice::common ───────────────
+// ─── L²-LLL parameters & result type — in lattice::common ────────────────────
 
 pub use crate::synthesis::lattice::common::{
     L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,

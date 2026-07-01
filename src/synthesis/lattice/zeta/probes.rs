@@ -135,9 +135,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
     /// Diagnostic (ignored): decompose the QHQ@k=1 solution's Q-norm into
     /// geometric Q (true fractional cap center), Q from the i64-rounded
     /// center, and Q from the fractional SeCenter16 the walk uses (should
-    /// match geometric to ~1e-6). The rounded center is why a generous bound
-    /// was once needed; geometric Q ≤ 1.25. Run
-    /// with --ignored --nocapture.
+    /// match geometric to ~1e-6). The rounded center inflates Q and forces a
+    /// generous bound; geometric Q ≤ 1.25. Run with --ignored --nocapture.
     #[test]
     #[ignore]
     fn q_norm_center_source_breakdown() {
@@ -158,8 +157,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
         assert!(!sols.is_empty(), "find_aligned_lattice_points@bound8 must find QHQ");
 
         let q = crate::synthesis::lattice::zeta::q_metric::build_q_zzeta_lattice(v, k, eps);
-        // True cap center (ambient), legacy rounded-z_c effective center,
-        // and the fractional SE center (int + frac pair) the walk now uses.
+        // True cap center (ambient), rounded-z_c effective center, and the
+        // fractional SE center (int + frac pair) the walk uses.
         let c_true: [f64; 16] = std::array::from_fn(|i| s.c[i].to_f64());
         let mut c_rounded = [0.0f64; 16];
         for i in 0..16 {

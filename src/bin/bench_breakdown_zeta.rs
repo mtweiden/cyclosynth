@@ -1,7 +1,7 @@
 //! Print the per-phase time breakdown (build/LLL/cholesky/LU/SE) for
 //! Clifford+√T optimal-mode synthesis. Decides whether per-prefix setup
 //! amortization (warm-LLL) is worth building: if t_lll + t_build ≪ t_se,
-//! it is not (debate item 2; prediction t_se ≥ 90%).
+//! it is not (prediction: t_se ≥ 90% of the critical path).
 //!
 //! Args: [eps] [n] [seed]   (defaults 1e-5, 4, 0xC0FFEEBAADD0E)
 //! Note: CYCLOSYNTH_TRACE inflates SE walls (per-leaf counters), which

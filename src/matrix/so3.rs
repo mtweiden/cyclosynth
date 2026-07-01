@@ -558,11 +558,10 @@ impl Mul for SO3<R2> {
         let mut e = [Ratio::<R2>::ZERO; 9];
         for r in 0..3 {
             for c in 0..3 {
-                // Compute three products a_rk * b_kc
                 let products: [Ratio<R2>; 3] = std::array::from_fn(|k| {
                     self.e[3*r+k] * rhs.e[3*k+c]
                 });
-                // Find max exponent to align before summing
+                // Align exponents before summing.
                 let max_e = products.iter().map(|p| p.exp).max().unwrap();
                 let sum = products.iter().fold(R2::ZERO, |acc, p| {
                     acc + p.lift_num(max_e - p.exp)
@@ -861,7 +860,7 @@ pub fn ry_neg() -> SO3<R2> {
 
 // ─── Rotation factories for SO3<R4> (π/8 steps) ──────────────────────────────
 //
-// SO3 entries in the new √2-denominator convention:
+// SO3 entries in the √2-denominator convention:
 //   cos(π/8) = γ/2 = R4(0,0,1,0) / √2²
 //   sin(π/8) = (γ√2−γ)/2 = R4(0,0,−1,1) / √2²
 //   −sin(π/8) = R4(0,0,1,−1) / √2²

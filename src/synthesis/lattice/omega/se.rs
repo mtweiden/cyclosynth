@@ -72,9 +72,9 @@ impl SharedTemps {
 /// distance-from-center order, invoking `callback(&z)` at each leaf. Returns
 /// the first non-`None` callback result, or `None` if the search exhausts.
 ///
-/// All distance arithmetic uses MPFR `MpFloat` at 128-bit precision — the
-/// f64-only version was insufficient at extreme ε (Cholesky-diagonal
-/// ratios > 10¹⁰ caused "ghost-node" SE blowup from squared-norm noise).
+/// All distance arithmetic uses MPFR `MpFloat` at 128-bit precision: at
+/// extreme ε (Cholesky-diagonal ratios > 10¹⁰) f64 squared-norm noise
+/// causes "ghost-node" SE blowup.
 ///
 /// `r_chol_eucl` is an optional Euclidean-Cholesky factor for an additional
 /// norm-shell prune; pass `None` to disable it. With it, branches whose
@@ -86,9 +86,8 @@ impl SharedTemps {
 ///
 /// `node_budget` is a TRUE node budget: decremented once per recurse-entry
 /// (interior nodes AND leaves — the 16D walker's semantics). When it runs
-/// out, `budget_exhausted` is set and the walk unwinds. This is the fix for
-/// the "empty level walks unbudgeted to region exhaustion" failure mode:
-/// the leaf-callback budget never binds on a no-solution level because
+/// out, `budget_exhausted` is set and the walk unwinds. It bounds
+/// no-solution levels, where the leaf-callback budget never binds because
 /// almost nothing reaches a leaf. The walk is single-threaded, so a plain
 /// decrementing atomic (no chunked reservation à la 16D `BudgetCache`) is
 /// contention-free; the per-entry `fetch_sub` is noise against the ~10 MPFR
@@ -226,12 +225,10 @@ fn recurse<F>(
     let rem_sqrt_f = shared.tmp.to_f64().sqrt();
 
     // Iteration bounds. The CENTER must be computed and rounded in MPFR:
-    // with |z| beyond f64's exact-integer range the old f64 center
-    // (`z_c[d].to_f64() − tail/r_dd`) was off by ±2 ulps ≈ ±4 units while
+    // with |z| beyond f64's exact-integer range an f64 center
+    // (`z_c[d].to_f64() − tail/r_dd`) is off by ±2 ulps ≈ ±4 units while
     // the per-level span is O(1), so the branch holding a TRUE solution
-    // could fall outside [z_low, z_high] — observed live at ε=1e-8
-    // (frame-dependent FOUND→none flips that
-    // build_ma_prefix_set's coset-mate redundancy used to mask). The span itself is
+    // could fall outside [z_low, z_high] at ε=1e-8. The span itself is
     // O(1) and stays f64.
     let r_dd_f = r_dd.to_f64();
     let span = rem_sqrt_f / r_dd_f.abs();

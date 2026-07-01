@@ -16,26 +16,24 @@ use super::types::{Int, Float, INT_ZERO, INT_ONE, INT_NEG_ONE, int_to_f64};
 /// Represented as integer coefficients of the basis {1, ζ, ζ², ζ³, ζ⁴, ζ⁵, ζ⁶, ζ⁷}.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct ZZeta {
-    pub a: Int, // coefficient of 1   = ζ⁰
-    pub b: Int, // coefficient of ζ
-    pub c: Int, // coefficient of ζ²  = ω
-    pub d: Int, // coefficient of ζ³
-    pub e: Int, // coefficient of ζ⁴  = i
-    pub f: Int, // coefficient of ζ⁵
-    pub g: Int, // coefficient of ζ⁶
-    pub h: Int, // coefficient of ζ⁷
+    pub a: Int,
+    pub b: Int,
+    pub c: Int, // ζ² = ω
+    pub d: Int,
+    pub e: Int, // ζ⁴ = i
+    pub f: Int,
+    pub g: Int,
+    pub h: Int,
 }
 
 impl ZZeta {
     pub const ZERO: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
     pub const ONE:  Self = Self { a: INT_ONE,  b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
-    /// ζ itself
     pub const ZETA: Self = Self { a: INT_ZERO, b: INT_ONE,  c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
     /// ζ² = ω (the Clifford+T generator)
     pub const OMEGA: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ONE,  d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
     /// i = ζ⁴
     pub const I: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ONE,  f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
-    /// −1
     pub const NEG_ONE: Self = Self { a: INT_NEG_ONE, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
     /// -i = -ζ⁴
     pub const NEG_I: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_NEG_ONE, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
@@ -117,7 +115,6 @@ impl ZZeta {
 
     /// Multiply by √2 = ζ² − ζ⁶  (since e^{iπ/4} − e^{6iπ/8} = (1+i)/√2 − (−1+i)/√2 = √2).
     pub fn mul_sqrt2(self) -> Self {
-        // self * (0 + 0·ζ + 1·ζ² + 0·ζ³ + 0·ζ⁴ + 0·ζ⁵ + (−1)·ζ⁶ + 0·ζ⁷)
         let rhs = Self::from_i32(0, 0, 1, 0, 0, 0, -1, 0);
         self * rhs
     }
@@ -173,12 +170,10 @@ impl Mul for ZZeta {
     type Output = Self;
     #[inline]
     fn mul(self, q: Self) -> Self {
-        // Inline all 64 terms (p = self, q = rhs) for maximum clarity and speed.
-        // Convolution mod ζ^8=−1: out[k] = Σ_{i+j=k} p_i·q_j − Σ_{i+j=k+8} p_i·q_j
+        // Inline all 64 terms (p = self, q = rhs) — faster than a convolution loop.
         let (p0,p1,p2,p3,p4,p5,p6,p7) = (self.a,self.b,self.c,self.d,self.e,self.f,self.g,self.h);
         let (q0,q1,q2,q3,q4,q5,q6,q7) = (q.a, q.b, q.c, q.d, q.e, q.f, q.g, q.h);
 
-        // Contributions to each output degree, with sign flip for deg ≥ 8:
         Self {
             a: p0*q0 - p1*q7 - p2*q6 - p3*q5 - p4*q4 - p5*q3 - p6*q2 - p7*q1,
             b: p0*q1 + p1*q0 - p2*q7 - p3*q6 - p4*q5 - p5*q4 - p6*q3 - p7*q2,

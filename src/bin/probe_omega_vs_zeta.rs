@@ -17,7 +17,7 @@
 //! → use auto-default `default_optimal_m_sweep(eps)`.
 //!
 //! 7th arg: anytime-frontier deadline override — integer ms, or "none"
-//! to force the legacy per-arm-budget task grid. Empty/unset → builder
+//! to force the per-arm-budget task grid. Empty/unset → builder
 //! default. (Also settable via env CYCLOSYNTH_DEADLINE_MS.)
 //!
 //! 8th arg: ζ right-coset prefix dedup A/B — "0" or "1", forwarded to

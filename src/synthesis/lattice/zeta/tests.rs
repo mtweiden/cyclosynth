@@ -20,7 +20,7 @@ mod probes;
 
     #[test]
     fn norm_shell_enum_at_k_2_finds_solutions() {
-        // At k=2 (norm² = 4), there should be 2848 solutions per Phase 3 data.
+        // At k=2 (norm² = 4) the norm shell holds 2848 valid solutions.
         let sols = enumerate_unitary_norm_shell(2);
         assert_eq!(sols.len(), 2848, "expected 2848 valid solutions at k=2");
     }
@@ -131,7 +131,7 @@ mod probes;
         assert!(tested > 0, "test sampled zero circuits — increase loop range");
     }
 
-    // ── Phase 5a regression tests ─────────────────────────────────────────────
+    // ── Regression tests ─────────────────────────────────────────────────────
 
     #[test]
     fn zomega_subset_at_k_2() {
@@ -226,9 +226,8 @@ mod probes;
 
     #[test]
     fn y_lattice_image_matches_y_real() {
-        // Inlined from the retired sigma.rs module: the Galois coset
-        // reps and the Σ_8 Minkowski embedding, kept ONLY to pin the
-        // production y convention against an independent construction.
+        // Independent construction of the Galois coset reps and the Σ_8
+        // Minkowski embedding, kept ONLY to pin the production y convention.
         const COSET_REPS: [u32; 4] = [1, 5, 9, 13];
         fn sigma() -> [[f64; 8]; 8] {
             let mut m = [[0.0f64; 8]; 8];
@@ -370,7 +369,7 @@ mod probes;
             "HQH SU(2) limitation: min dist = {min_dist:.6}, expected ≈ {expected:.6} (sin(π/16))");
     }
 
-    // ── M1 (lattice-coord Q-metric) tests ─────────────────────────────────────
+    // ── Lattice-coord Q-metric tests ─────────────────────────────────────────
 
     fn matvec(m: &[[f64; 16]; 16], v: &[f64; 16]) -> [f64; 16] {
         let mut out = [0.0; 16];
@@ -468,7 +467,7 @@ mod probes;
         assert!(tested > 0);
     }
 
-    // ── M3 (Q-metric MPFR / i256 snapshot) tests ─────────────────────────────
+    // ── Q-metric MPFR / i256 snapshot tests ──────────────────────────────────
 
     #[test]
     fn q_int_zeta_matches_q_mpfr_zeta() {

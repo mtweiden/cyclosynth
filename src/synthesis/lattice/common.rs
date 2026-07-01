@@ -155,7 +155,7 @@ pub fn i256_log2_ceil(v: &i256) -> i32 {
 // floats), so they are identical for d=8 (Z[ω]) and d=16 (Z[ζ_16]) modulo
 // the dimension. Each backend's `lll` module keeps a thin wrapper that pulls
 // the relevant scratch fields and calls these; `const D` monomorphizes to
-// the same code the hand-written per-dimension versions emitted. The
+// per-dimension code. The
 // Cholesky/size-reduce routines are NOT here — they diverge (f64 GS at d=8,
 // MPFR GS at d=16).
 
@@ -369,8 +369,8 @@ pub fn i256_to_rfloat(v: i256, dst: &mut MpFloat) {
 mod overflow_tests {
     use super::*;
 
-    /// The pre-optimization `i256_log2_ceil` (byte-loop) as a reference
-    /// oracle for the `leading_zeros` and direct-comparison rewrites.
+    /// Byte-loop `i256_log2_ceil` as a reference oracle for the
+    /// `leading_zeros` and direct-comparison implementations.
     fn ref_log2(v: &i256) -> i32 {
         let zero = i256::from_i64(0);
         if *v == zero {

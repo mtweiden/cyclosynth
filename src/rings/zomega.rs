@@ -16,20 +16,18 @@ use super::types::{Int, INT_ZERO, INT_ONE, INT_NEG_ONE, int_to_f64};
 /// Represented as integer coefficients of the basis {1, ω, ω², ω³}.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct ZOmega {
-    pub a: Int, // coefficient of 1
-    pub b: Int, // coefficient of ω
-    pub c: Int, // coefficient of ω² = i
-    pub d: Int, // coefficient of ω³
+    pub a: Int,
+    pub b: Int,
+    pub c: Int, // ω² = i
+    pub d: Int,
 }
 
 impl ZOmega {
     pub const ZERO: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO };
     pub const ONE: Self = Self { a: INT_ONE, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO };
-    /// ω itself
     pub const OMEGA: Self = Self { a: INT_ZERO, b: INT_ONE, c: INT_ZERO, d: INT_ZERO };
     /// i = ω²
     pub const I: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ONE, d: INT_ZERO };
-    /// −1
     pub const NEG_ONE: Self = Self { a: INT_NEG_ONE, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO };
     /// -i = -ω²
     pub const NEG_I: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_NEG_ONE, d: INT_ZERO };
@@ -89,7 +87,6 @@ impl ZOmega {
     /// Multiply by √2 in Z[ω], using √2 = ω − ω³
     /// (= (1+i)/√2 − (−1+i)/√2 = 2/√2 = √2).
     pub fn mul_sqrt2(self) -> Self {
-        // self * (0 + 1·ω + 0·ω² + (−1)·ω³)
         let rhs = Self { a: INT_ZERO, b: INT_ONE, c: INT_ZERO, d: INT_NEG_ONE };
         self * rhs
     }

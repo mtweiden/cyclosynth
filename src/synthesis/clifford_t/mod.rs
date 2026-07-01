@@ -198,8 +198,8 @@ static L_COSET_DEDUP: LazyLock<Option<bool>> = LazyLock::new(|| {
 /// half-width ≈ ε²/4 falls under the f64 alignment chain's noise: cap
 /// centers are misplaced by several half-widths and only the 8× coset-
 /// mate redundancy lets SOME frame land inside the walk bound — dedup
-/// there flips FOUND→none. Stays off until the 8D y chain is rebuilt
-/// above f64 (the sibling of the 16D MPFR fix).
+/// there flips FOUND→none. Gated off until the 8D y chain runs above
+/// f64 precision.
 const COSET_EPS_FLOOR: Float = 1e-7;
 
 /// Resolve the dedup mode for a given ε (env override first).
@@ -373,7 +373,7 @@ fn trace_dump_pass(
 
 /// Scale a 4-element alignment vector `v` to the 8-element y vector used by
 /// the lattice pipeline. `y = compute_align_vec(v) · sqrt(2^k) / 2`,
-/// satisfying `‖y‖² = 2^(k-1)`. Used `powf` (not bit-shift) so `k ≥ 64`
+/// satisfying `‖y‖² = 2^(k-1)`. Uses `powf` (not bit-shift) so `k ≥ 64`
 /// stays well-defined.
 pub fn uv_to_lattice_y(v: [Float; 4], k: u32) -> [Float; 8] {
     let scale = 2.0_f64.powf(k as f64 / 2.0 - 1.0);
@@ -413,8 +413,8 @@ const DC_WALK_MAX_SOLUTIONS: usize = 8;
 /// matching the alignment vector `v`. Finds integer 8-vectors satisfying
 /// the norm-shell, bilinear-form, and alignment constraints.
 ///
-/// `max_solutions` caps how many candidates are returned (1 = historical
-/// first-hit walk). `max_leaf_checks` caps the per-prefix SE leaf budget
+/// `max_solutions` caps how many candidates are returned (1 = first-hit
+/// walk). `max_leaf_checks` caps the per-prefix SE leaf budget
 /// and `max_nodes` the per-prefix SE NODE budget; if either is reached,
 /// `budget_hit` is set so the caller can retry with a larger budget.
 /// `external_abort` is the cross-branch winner signal (checked at every SE

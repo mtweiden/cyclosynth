@@ -19,9 +19,8 @@ use super::dd::{dd_add, dd_from_i64, dd_mul, dd_sub};
 
 
 /// W1 kill-switch: `CYCLOSYNTH_FLAT_WALK=0` disables the multi-level
-/// frontier flattening in [`schnorr_euchner`],
-/// restoring the legacy per-z[15]-only parallel sharding. Default ON.
-/// Read once (A/B benchmarking aid; not a hot-path read).
+/// frontier flattening in [`schnorr_euchner`], falling back to
+/// per-z[15]-only parallel sharding. Default ON. Read once.
 static FLAT_WALK_DISABLED: OnceLock<bool> = OnceLock::new();
 
 fn flat_walk_disabled() -> bool {
@@ -42,9 +41,8 @@ fn predictive_trunc_disabled() -> bool {
 }
 
 /// dd Q-bracket kill-switch: `CYCLOSYNTH_QBRACKET_DD=0` disables the
-/// deep-ε double-double Q-bracket (integer.rs then falls back to the
-/// legacy f64 factor + bound 3.0 at ε ≤ 2e-8 — the pre-dd behavior).
-/// A/B benchmarking + retention-reference aid. Read once.
+/// deep-ε double-double Q-bracket (integer.rs falls back to the f64
+/// factor + bound 3.0 at ε ≤ 2e-8). Read once.
 static QBRACKET_DD_DISABLED: OnceLock<bool> = OnceLock::new();
 
 pub fn qbracket_dd_disabled() -> bool {
@@ -102,7 +100,6 @@ pub fn verify_partial_dd_exceeds(
         let sq = dd_mul(row, row);
         total = dd_add(total, sq);
     }
-    // total > threshold (compare hi + lo to threshold)
     total.0 + total.1 > threshold
 }
 
@@ -195,14 +192,13 @@ fn center_relative_seed(
 //
 // Double-double companion of the SE walk's incremental f64 partial-Q,
 // active only when an `l_q_dd` factor is supplied (deep-ε regime — see
-// `q_cholesky_mpfr_dual` and integer.rs's gating). The f64 partial-Q
-// historically overshot truth by up to ~1.8× at the ε=1.5e-8 cliff, which
-// forced the deep-ε `bound_sq` default to 3.0 against a geometric solution
-// band of [0.875, 1.25]. With the dd
-// companion, every Q-prune decision on the boundary is made on a value
-// accurate to ~1e-32 — both overshoot (lost solutions) and undershoot
-// (spurious subtrees) are eliminated — so the bound default drops to the
-// tight 1.5 wherever the dd factor is attached (still 3.0 when it is not).
+// `q_cholesky_mpfr_dual` and integer.rs's gating). The f64 partial-Q can
+// overshoot truth by up to ~1.8× at the ε=1.5e-8 cliff, against a geometric
+// solution band of [0.875, 1.25]. With the dd companion, every Q-prune
+// decision on the boundary is made on a value accurate to ~1e-32 — both
+// overshoot (lost solutions) and undershoot (spurious subtrees) are
+// eliminated — so the bound default can be the tight 1.5 wherever the dd
+// factor is attached (3.0 when it is not).
 //
 // Cost model: one dd tail per node (O(16−d) dd mul/adds, replacing the
 // f64 tail loop) + ~4 dd ops per bracket candidate. Zero cost when
@@ -323,20 +319,16 @@ pub fn reconstruct_x(b_lll: &[[i64; 16]; 16], z: &[i64; 16]) -> [i64; 16] {
 ///
 ///   - `int[i]`: MPFR `round_mut` → `to_integer` of the LU solution
 ///     `lu_x[i]`. Magnitudes can exceed 2^53 at deep ε (observed 5e16 at
-///     ε=1e-8, lde≥18); i64 carries them exactly. This is precisely the
-///     legacy rounded `z_c`.
+///     ε=1e-8, lde≥18); i64 carries them exactly.
 ///   - `frac[i]`: `lu_x[i] − int[i]` computed in MPFR (exact at full
 ///     precision) then extracted to f64. |frac| ≤ 0.5, so the f64
 ///     extraction is precise regardless of |lu_x| — unlike `lu_x.to_f64()`,
-///     which quantizes with ULP up to 2 lattice units at deep ε (the
-///     original center bug).
+///     which quantizes with ULP up to 2 lattice units at deep ε.
 ///
 /// The walk's true per-coordinate center is `int[i] + frac[i]`; all walker
 /// arithmetic keeps the integer part separate so deltas stay small-magnitude
-/// f64. Measuring Q from this true center (instead of the rounded one)
-/// removes the center-rounding inflation: a valid solution's measured Q
-/// now equals its
-/// geometric Q (band [0.875, 1.25]) at every k.
+/// f64. Measuring Q from this true center keeps a valid solution's measured Q
+/// equal to its geometric Q (band [0.875, 1.25]) at every k.
 #[derive(Clone, Copy, Debug)]
 pub struct SeCenter16 {
     pub int: [i64; 16],
@@ -344,8 +336,8 @@ pub struct SeCenter16 {
 }
 
 impl SeCenter16 {
-    /// Center with zero fractional part (the legacy rounded-center
-    /// convention; used by tests with integer centers).
+    /// Center with zero fractional part (used by tests with integer
+    /// centers).
     pub fn from_int(int: [i64; 16]) -> Self {
         Self { int, frac: [0.0; 16] }
     }
@@ -355,7 +347,7 @@ impl SeCenter16 {
     /// `to_f64()`, which quantizes above 2^53); `frac` = `lu_x − int`
     /// computed in MPFR then extracted to f64 (|frac| ≤ 0.5, always
     /// f64-precise). NaN/∞ coordinates map to (0, 0.0) — the SE walk will
-    /// return empty, matching the legacy convention.
+    /// return empty.
     pub fn from_lu_x(lu_x: &[MpFloat; 16]) -> Self {
         let mut int = [0i64; 16];
         let mut frac = [0.0f64; 16];
@@ -482,9 +474,6 @@ fn recurse<F>(
     // search range. Compute the ranged offsets in f64 (small magnitude:
     // frac + span) then add to the i64 integer part — exact whenever
     // |center_off ± span| < 2^53 (always for our bound_sq).
-    // Offset of the true center from int[d]: the level value at integer
-    // offset Δ = zd − int[d] is l_dd·(Δ − frac[d]) + tail, minimized at
-    // Δ = frac[d] − tail/l_dd.
     let center_off = z_c.frac[d] - tail / l_dd;
     let span = rem_sqrt / l_dd.abs();
     let z_low = z_c.int[d].saturating_add((center_off - span).ceil() as i64);
@@ -601,8 +590,7 @@ fn report_parallel_walk_skew(
 /// `Fn + Sync`. Returns a [`LeafAction`]: `Take`/`Skip`/`TakeAndStop`.
 ///
 /// Returns `(solutions, budget_hit)`.
-/// Budget-pool chunk size. Also the `consumed`-counter flush granularity,
-/// matching the legacy `budget_prior & 4095` batching.
+/// Budget-pool chunk size. Also the `consumed`-counter flush granularity.
 const BUDGET_CHUNK: u64 = 4096;
 
 /// Per-worker budget cache: a per-node fetch_sub on the shared atomic
@@ -615,9 +603,9 @@ const BUDGET_CHUNK: u64 = 4096;
 struct BudgetCache<'a> {
     remaining: u64,
     used_since_flush: u64,
-    /// Predictive-truncation context (None for unbudgeted walks, the legacy
-    /// z15-sharded path, the frontier-expansion stage, and when disabled
-    /// via `CYCLOSYNTH_PREDICTIVE_TRUNC=0`).
+    /// Predictive-truncation context (None for unbudgeted walks, the
+    /// z15-sharded fallback path, the frontier-expansion stage, and when
+    /// disabled via `CYCLOSYNTH_PREDICTIVE_TRUNC=0`).
     pred: Option<&'a PredictiveTrunc>,
 }
 
@@ -628,9 +616,8 @@ impl<'a> BudgetCache<'a> {
     }
 
     /// Charge `n` (≤ BUDGET_CHUNK) budget units. Returns `false` iff the
-    /// walk must stop — shared pool exhausted (mirroring the legacy
-    /// `budget_prior <= 1` path) or predictive truncation projected the
-    /// budget infeasible. Either way `aborted` has been set; the caller
+    /// walk must stop — shared pool exhausted or predictive truncation
+    /// projected the budget infeasible. Either way `aborted` has been set; the caller
     /// just unwinds, so both causes surface identically as a budget hit.
     #[inline]
     fn charge(
@@ -655,9 +642,8 @@ impl<'a> BudgetCache<'a> {
         let prior = budget.fetch_sub(BUDGET_CHUNK, Ordering::Relaxed);
         if prior <= BUDGET_CHUNK {
             // Pool exhausted. Don't bother restoring the pool value: the
-            // `aborted` flag is what stops all workers, exactly as in the
-            // legacy per-node scheme. Count the walk's plain budget-burn
-            // once (the worker that flips `aborted` wins).
+            // `aborted` flag is what stops all workers. Count the walk's
+            // plain budget-burn once (the worker that flips `aborted` wins).
             if !aborted.swap(true, Ordering::Relaxed)
                 && crate::synthesis::diag::trace_enabled()
             {
@@ -710,7 +696,7 @@ const PREDICTIVE_TRUNC_MIN_FRAC: f64 = 0.10;
 /// so project infeasibility from item-completion progress and abort
 /// early through the normal `aborted` plumbing. Never attached when
 /// budget = u64::MAX (exhaustive runs must stay exhaustive) or on the
-/// legacy z15-sharded path (1-3 item frontier — too coarse to project).
+/// z15-sharded fallback path (1-3 item frontier — too coarse to project).
 struct PredictiveTrunc {
     /// Flat-frontier length at stage-3 launch.
     items_total: usize,
@@ -764,8 +750,8 @@ impl PredictiveTrunc {
 /// One sequential work item for the parallel norm-pruned SE walk: a fixed
 /// coordinate prefix `z[start_depth+1 ..= 15]` together with the incremental
 /// `(x, w, partial_q, partial_eucl)` state [`recurse_collect_norm_pruned`]
-/// expects on entry at `start_depth`. Mirrors the per-thread state the old
-/// per-z[15] closure built, generalized to prefixes of arbitrary length.
+/// expects on entry at `start_depth`. Mirrors the per-thread state of a
+/// per-z[15] shard, generalized to prefixes of arbitrary length.
 #[derive(Clone)]
 struct SePrefixItem {
     z: [i64; 16],
@@ -780,7 +766,7 @@ struct SePrefixItem {
 }
 
 /// Expand one frontier item at coordinate depth `d` into its surviving
-/// depth-`d−1` children (W1 parallel-utilization fix). This is an exact
+/// depth-`d−1` children (W1 parallel-utilization). This is an exact
 /// replica of the depth-`d` node body of [`recurse_collect_norm_pruned`]
 /// — node-entry budget consumption (`fetch_sub` + abort on exhaustion),
 /// batched `consumed` counter flush, trace counters, degenerate-diagonal
@@ -967,33 +953,32 @@ where
     // projection; u64::MAX marks the walk unbudgeted.
     let initial_budget = budget.load(Ordering::Relaxed);
     let l_15 = l[15][15];
-    // Exact for 2^k at any k ≤ 126. The old i64 form saturated at k ≥ 63,
-    // disabling the shell prune in the deep-ε regime this walk serves.
+    // Exact for 2^k at any k ≤ 126 (i128 avoids the k ≥ 63 saturation that
+    // would disable the shell prune in the deep-ε regime this walk serves).
     let target_norm_sq_i128 = target_norm_sq as i128;
     if l_15.abs() < 1e-30 {
         return (Vec::new(), false);
     }
 
-    // Center-relative seeding state (precision-audit ranked fix 2): the
-    // walk's implied baseline is z = z_c.int, not z = 0, so the f64
-    // Euclidean accumulator w never passes through the M ≈ 30·√T·2^53
-    // intermediates of the old `z_15_f · R[i][15]` seeding. One-time
-    // per-walk cost.
+    // Center-relative seeding state: the walk's implied baseline is
+    // z = z_c.int, not z = 0, so the f64 Euclidean accumulator w never
+    // passes through the M ≈ 30·√T·2^53 intermediates that an absolute
+    // `z_15_f · R[i][15]` seeding would. One-time per-walk cost.
     let (x_base, u_eucl_dd, u_eucl) = center_relative_seed(basis, r_eucl_dd, z_c);
     let u_eucl_dd = &u_eucl_dd;
 
     // z[15] range from the Q-bound. Keep the integer part as i64 to avoid
-    // the deep-ε f64 quantization issue (same fix as recurse); the
-    // fractional part shifts the bracket onto the true center.
+    // the deep-ε f64 quantization issue (as in recurse); the fractional
+    // part shifts the bracket onto the true center.
     let span_q = bound_sq.sqrt() / l_15.abs();
     let z_low = z_c.int[15].saturating_add((z_c.frac[15] - span_q).ceil() as i64);
     let z_high = z_c.int[15].saturating_add((z_c.frac[15] + span_q).floor() as i64);
     let z_mid = z_c.int[15].saturating_add(z_c.frac[15].round() as i64);
 
-    // S3 measurement: per-level span product is minimized when |l_ii|
-    // is largest at the outermost level (15). Dump the diagonal +
-    // implied span so we can see whether LLL already orders it well
-    // before building a permutation. Gated, one line per walk.
+    // Diagnostic: per-level span product is minimized when |l_ii| is
+    // largest at the outermost level (15). Dump the diagonal + implied
+    // span to see whether LLL already orders it well. Gated, one line
+    // per walk.
     if std::env::var("CYCLOSYNTH_SE_ORDER_DIAG").as_deref() == Ok("1") {
         let mut diag = [0.0f64; 16];
         let mut span_prod = 1.0f64;
@@ -1013,9 +998,8 @@ where
     prefixes.sort_by_key(|&z| (z - z_mid).abs());
 
     // ── Stage 1: seed the work-item frontier from the z[15] candidates ──
-    // Same checks the old per-z[15] closure made; no budget consumption at
-    // this level (matching the old code, where the depth-15 loop lived
-    // outside the budgeted recursion).
+    // No budget consumption at this level: the depth-15 loop lives outside
+    // the budgeted recursion.
     let mut frontier: Vec<SePrefixItem> = Vec::with_capacity(prefixes.len());
     for z_15 in prefixes {
         // Q-bound contribution at depth 15 (measured from the true center).
@@ -1066,23 +1050,22 @@ where
     }
 
     // ── Stage 2: flatten more coordinate levels into the frontier ──
-    // W1 fix: at fine ε the z[15] bracket holds only 1-3 values, so
-    // single-level sharding serialized the whole walk (measured util
-    // 1.08× on 14 threads at ε=1e-5). Expand the frontier one coordinate
-    // at a time — (z15) → (z15,z14) → … — until there are enough
-    // independent items to keep every worker busy. Each expansion step
-    // replicates the recursion's depth-d node semantics exactly (see
-    // `expand_se_prefix_node`), so the visited node set, budget
-    // consumption, and trace counters are identical to the recursive
-    // walk's. The earlier (z15,z14) sharding attempt failed on a bad
-    // sort key (per-z[14] |offset| ignores the z[15]-dependent center);
-    // sorting by accumulated partial_q — the true SE distance — fixes
-    // that. The budget guard keeps tiny-budget walks from spending a
-    // meaningful budget fraction on breadth-first frontier expansion
-    // before any leaf is reached (sequential semantics are depth-first).
+    // At fine ε the z[15] bracket holds only 1-3 values, so single-level
+    // sharding would serialize the whole walk (util ~1.08× on 14 threads
+    // at ε=1e-5). Expand the frontier one coordinate at a time — (z15) →
+    // (z15,z14) → … — until there are enough independent items to keep
+    // every worker busy. Each expansion step replicates the recursion's
+    // depth-d node semantics exactly (see `expand_se_prefix_node`), so the
+    // visited node set, budget consumption, and trace counters match the
+    // recursive walk's. Items are sorted by accumulated partial_q — the
+    // true SE distance — since a per-z[14] |offset| key ignores the
+    // z[15]-dependent center. The budget guard keeps tiny-budget walks from
+    // spending a meaningful budget fraction on breadth-first frontier
+    // expansion before any leaf is reached (sequential semantics are
+    // depth-first).
     let threads = rayon::current_num_threads().max(1);
     let frontier_target: usize = if flat_walk_disabled() {
-        0 // legacy behavior: shard on z[15] only
+        0 // fallback: shard on z[15] only
     } else {
         (threads * 128).min((budget.load(Ordering::Relaxed) / 256).max(1) as usize)
     };
@@ -1127,12 +1110,12 @@ where
     // Closest-first ordering generalized to multi-coordinate prefixes:
     // ascending accumulated Q-distance. For the unbudgeted exhaustive walk
     // this only affects scheduling; under a budget it preserves the SE
-    // "most promising subtree first" preference of the old per-z[15] sort.
+    // "most promising subtree first" preference.
     frontier.sort_by(|a, b| a.partial_q.total_cmp(&b.partial_q));
 
     // Predictive-truncation context — budget-capped flat walks only (see
     // [`PredictiveTrunc`]). The guards: unbudgeted walks (certificates'
-    // coverage-complete runs + probes) and the legacy z15-sharded path
+    // coverage-complete runs + probes) and the z15-sharded fallback path
     // must never fire; `CYCLOSYNTH_PREDICTIVE_TRUNC=0` is the kill switch.
     let pred_ctx: Option<PredictiveTrunc> = if initial_budget != u64::MAX
         && !flat_walk_disabled()
@@ -1157,9 +1140,8 @@ where
     // `with_max_len(1)` lets idle workers steal single items: rayon's
     // default split budget (~2 splits/thread) otherwise freezes the vec
     // into ~64 fixed chunks, and the head chunk — the fattest, given the
-    // closest-first sort — pinned one thread for 1.0 s of a 1.27 s walk
-    // (measured at ε=1e-5, k=13). Splits stay steal-driven, so this adds
-    // no overhead while all workers are busy.
+    // closest-first sort — can pin one thread for most of the walk. Splits
+    // stay steal-driven, so this adds no overhead while all workers are busy.
     let solutions: Vec<[i64; 16]> = frontier
         .into_par_iter()
         .with_max_len(1)
@@ -1341,10 +1323,6 @@ fn recurse_collect_norm_pruned<F>(
     let z_mid = z_c.int[d].saturating_add(center_off.round() as i64);
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
-    // NOTE: solving the depth-0 shell quadratic for z[d] in closed form (vs
-    // the bracket sweep below) was tried and regresses — fewer depth-0 leaves
-    // just buys more full-depth recursions under the same budget.
-
     for raw in 0..=(2 * max_off + 1) {
         if aborted.load(Ordering::Relaxed) {
             return;
@@ -1397,14 +1375,6 @@ fn recurse_collect_norm_pruned<F>(
         ) {
             continue;
         }
-        // NOTE: a depth-0 integer-exact early-out (`if d==0 && Σx[i]² ≠ 2^k:
-        // continue;`) was tried here and regressed cliff wall-time **20×**
-        // (41.6s → 840.7s). Same root cause as the analytical depth-0
-        // candidate filter: under per-leaf budget the walk just consumes
-        // budget through more depth-0 enters when individual leaves are
-        // cheaper, multiplying tree-traversal cost. The integer check is
-        // already inside `leaf_filter`'s first stage; replicating it here
-        // is pure overhead without budget-model changes.
         recurse_collect_norm_pruned(
             depth - 1, l, l_q_dd, z_c, bound_sq, r_eucl, r_eucl_dd,
             u_eucl_dd, target_norm_sq, target_norm_sq_i128,

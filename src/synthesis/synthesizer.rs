@@ -9,7 +9,7 @@
 //!
 //! ## Why two backends behind one type
 //!
-//! The two flows currently use *different algorithms* (Z[ω]: 8D MA-prefix
+//! The two flows use *different algorithms* (Z[ω]: 8D MA-prefix
 //! divide-and-conquer; Z[ζ_16]: 16D LLL+SE with a brute-force small-k mode
 //! and an FGKM-prefix divide-and-conquer mode for deep k), so they can't be
 //! expressed cleanly as a single generic `Synthesizer<R: GateRing>`. This

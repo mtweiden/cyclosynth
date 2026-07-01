@@ -6,8 +6,8 @@
 //! scratch type. The ring-specific pieces (building the anisotropic Q-metric
 //! from a target, and the prefix/enumeration strategy) stay in each backend:
 //! their signatures genuinely differ — the target is a 4-vector for √T and an
-//! 8-vector for T — and an earlier attempt to unify them produced a leaky
-//! abstraction. This trait's job is narrower: turn the "parallel function
+//! 8-vector for T — and unifying them produces a leaky abstraction. This
+//! trait's job is narrower: turn the "parallel function
 //! names" convention into a contract the compiler checks, and give a third ring
 //! a concrete checklist (implement this, then supply Q-build + enumeration).
 

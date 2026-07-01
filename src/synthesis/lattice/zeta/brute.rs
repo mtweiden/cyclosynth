@@ -68,8 +68,7 @@ pub fn uv_to_lattice_y_zeta_mpfr(v: &[MpFloat; 4], k: u32, prec: u32) -> [MpFloa
         raw_norm_sq += MpFloat::with_val(prec, &raw[8 + j] * &raw[8 + j]);
     }
     if raw_norm_sq.is_zero() {
-        // Degenerate v: keep the legacy convention (zero y → SE walk
-        // returns empty downstream).
+        // Degenerate v: zero y, so the SE walk returns empty downstream.
         return raw;
     }
     // ρ = 2^(k/2) / 2 in MPFR (exact shift; √2 at prec for odd k).

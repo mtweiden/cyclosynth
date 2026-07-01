@@ -8,8 +8,7 @@
 //! from the `CYCLOSYNTH_TRACE=1` diag counters.
 //!
 //! The walk is rebuilt here from public APIs (the internal helper
-//! `direct_lattice_search_at` is private and clifford_sqrt_t.rs is owned by
-//! another workstream right now): project the target det onto the ζ₁₆
+//! `direct_lattice_search_at` is private): project the target det onto the ζ₁₆
 //! grid, take d = det_phase_of, v = unitary_to_uv_zeta, y =
 //! uv_to_lattice_y_zeta(v, k), then `find_aligned_lattice_points_with_stop(..., u64::MAX, ...)`
 //! with a no-op stop predicate (cost-min mode never early-exits), and
@@ -22,8 +21,8 @@
 //!   bound_sq = optional SE bound override (sets CYCLOSYNTH_BOUND_SQ —
 //!   convenience for retention sweeps; same effect as the env var).
 //!   dd       = optional dd Q-bracket switch; 0 sets
-//!   CYCLOSYNTH_QBRACKET_DD=0 (legacy deep-ε mode: f64 factor, no dd
-//!   verification — pair with bound 3.0 for the pre-dd reference).
+//!   CYCLOSYNTH_QBRACKET_DD=0 (deep-ε mode: f64 factor, no dd
+//!   verification — pair with bound 3.0 as the no-dd reference).
 
 use cyclosynth::matrix::U2Q;
 use cyclosynth::synthesis::clifford_sqrt_t::{

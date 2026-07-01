@@ -41,8 +41,7 @@ pub mod synthesizer;
 /// lazy default init. The optimal-mode pipeline runs two parity
 /// branches concurrently; their par_iters' stolen jobs nest per-prefix
 /// `map_init` scratch frames on pool workers, overflowing rayon's 2 MiB
-/// default stacks (the `OPTIMAL_PAR_MIN_LEN = 1` abort family, and the
-/// intermittent full-suite SIGABRT flake). If the pool was already
+/// default stacks. If the pool was already
 /// initialised elsewhere (a binary setting num_threads, or a racing
 /// par_iter), `build_global` errs and this is a no-op — callers get
 /// whatever stacks that pool was built with.

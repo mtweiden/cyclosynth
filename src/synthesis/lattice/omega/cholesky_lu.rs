@@ -264,7 +264,7 @@ pub fn det_exact(m: &IMat8) -> Option<i64> {
 ///   dedup by the 8× coset-mate redundancy).
 pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
     // Exact integer Gram = B·Bᵀ in i128 (basis entries can reach ~2^33 in
-    // Euclid-pathological frames; i64 products overflowed there).
+    // Euclid-pathological frames, where i64 products would overflow).
     let mut gram = [[0_i128; 8]; 8];
     for i in 0..8 {
         for j in 0..8 {

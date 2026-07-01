@@ -103,7 +103,7 @@ impl SynthesizerQ {
     /// its units was deadline-skipped, deadline-aborted, or hit the
     /// backstop cap. Conservative over-marking (a walk that finished
     /// cleanly right at the deadline may be marked) keeps the ledger
-    /// honest; sound floor-kills are NOT truncation, as today.
+    /// honest; sound floor-kills are NOT truncation.
     pub(crate) fn min_cost_frontier_search(
         &self,
         target: &Mat2,
@@ -725,7 +725,7 @@ impl SynthesizerQ {
 
     /// Scan ε-close candidates, decompose each, and keep the min-cost
     /// one — or return the FIRST ε-close one when `first_hit` (the
-    /// legacy non-optimal semantics, which must stay order-sensitive).
+    /// non-optimal semantics, which must stay order-sensitive).
     pub(crate) fn pick_min_cost_result<I>(
         &self,
         cands: I,
@@ -942,7 +942,7 @@ impl SynthesizerQ {
         // With a deadline configured and certify off, all (k, m ≥ 1)
         // arms run as ONE floor-ordered prefix frontier under a wall
         // deadline instead of per-arm node budgets (see
-        // `min_cost_frontier_search`). The legacy task grid below remains the
+        // `min_cost_frontier_search`). The task grid below remains the
         // certify path (honest budget-truncation semantics) and the
         // deep-ε path (deadline default None), and still handles
         // m = 0 arms (single-shot probes are not prefix work-units).

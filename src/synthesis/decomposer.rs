@@ -227,8 +227,8 @@ fn translate(raw: &str, magic: &str) -> String {
 
 /// Core peel-off loop and Clifford identification, generic over ring.
 ///
-/// Uses negative rotation generators applied to SO3(target), matching the Python
-/// reference implementation. This guarantees max_exp decreases by ≥1 each step.
+/// Uses negative rotation generators applied to SO3(target), which
+/// guarantees max_exp decreases by ≥1 each step.
 ///
 /// Mathematical invariant after N steps:
 ///   rx_neg_N × … × rx_neg_1 × SO3(target) = C  (Clifford SO3)
@@ -720,7 +720,7 @@ mod tests {
         }
     }
 
-    // ── Translation tests (moved from translation.rs) ─────────────────────────
+    // ── Translation tests ─────────────────────────────────────────────────────
 
     fn gate_to_mat(gates: &str) -> [[Complex64; 2]; 2] {
         use std::f64::consts::PI;
@@ -898,7 +898,7 @@ mod tests {
     // In the code's √2-units the drop is NOT a constant per syllable type:
     // a T-peel always drops N by 1, while a Q- or TQ-peel drops N by 2 when
     // the pre-peel Nγ is odd and by 1 when it is even (ceiling division).
-    // The originally claimed table δ = {T:1, Q:2, TQ:3} is therefore false
+    // The table δ = {T:1, Q:2, TQ:3} is therefore false
     // for TQ (drop 3 is impossible) and only half-true for Q. Cost-per-peel
     // still dominates the drop: T = 1 ≥ 1, Q = 3 ≥ 2, TQ = 4 ≥ 2
     // (T-units), and the drops telescope to N(U), so cost ≥ N survives.

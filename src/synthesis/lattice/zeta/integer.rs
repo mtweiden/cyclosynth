@@ -86,8 +86,7 @@ fn warm_seed_q_base(scratch: &mut IntScratch16, k: u32, eps: Float) -> bool {
     false
 }
 
-/// L²-LLL at MPFR-80 Gram-Schmidt precision (the single GS path: an f64-GS
-/// fast path was measured to give no speedup at any reachable ε and removed).
+/// L²-LLL at MPFR-80 Gram-Schmidt precision.
 /// GramOverflow (i256 saturation, unhelped by precision) → None; a
 /// non-unimodular det → None; det = None (Bareiss i128 overflow) is an
 /// inconclusive-success. Returns `None` when the basis is unusable.
@@ -385,10 +384,9 @@ where
     // Q = 1.25.
     //
     // Default 1.5 = tight 1.25 + 20% slack, sound at every ε once the Q
-    // bracket is computed on the MPFR factor (q_chol_dual above). 3.0
-    // survives only as the defensive fallback when the MPFR Q-Cholesky
-    // itself fails at deep ε, where the f64 partial-Q can overshoot.
-    // Override via env var.
+    // bracket is computed on the MPFR factor (q_chol_dual above). 3.0 is the
+    // defensive fallback when the MPFR Q-Cholesky itself fails at deep ε,
+    // where the f64 partial-Q can overshoot. Override via env var.
     let bound_sq = std::env::var("CYCLOSYNTH_BOUND_SQ")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())

@@ -34,9 +34,7 @@ use crate::rings::MpFloat;
 use super::scratch::IntScratch16;
 use crate::synthesis::lattice::common;
 
-// ─── L²-LLL parameters ───────────────────────────────────────────────────────
-
-// ─── L²-LLL parameters & result type — moved to lattice::common ──────────────
+// ─── L²-LLL parameters & result type — defined in lattice::common ────────────
 
 pub use crate::synthesis::lattice::common::{
     L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
@@ -477,9 +475,8 @@ mod tests {
 
     /// Performance smoke: at k=8 (where brute-force k=8 is intractable —
     /// the norm-shell `r_16(2^8) ~ 10¹³` points), the LLL+CFA pass should
-    /// finish in well under a second. Together with the upcoming M4 SE
-    /// (Q-bound pruned walk) the full pipeline should complete in low
-    /// seconds at moderate ε.
+    /// finish in well under a second. Together with the SE (Q-bound pruned
+    /// walk) the full pipeline should complete in low seconds at moderate ε.
     #[test]
     fn lll16_perf_at_k_8_completes() {
         let start = std::time::Instant::now();

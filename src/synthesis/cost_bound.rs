@@ -6,7 +6,7 @@
 //! with reduced denominator exponent (lde) `k`. It powers the certified
 //! search cutoff and the sound prefix prune. Monotone non-decreasing in
 //! `k`, which the cutoff relies on. The derivation lives on
-//! [`cost_lb_half_units`]. The bound is unchanged from the old per-gate
+//! [`cost_lb_half_units`]. The bound coincides with the per-gate
 //! `2t+6q` model: both rest on `cost ≥ 2N`, and the syllable model removes
 //! only slack above `2N` (absorbing a T into a √T syllable).
 
@@ -39,7 +39,7 @@ const MIN_SYLLABLE_COST_HALF_UNITS: usize = 2;
 ///   * `N ≥ 2k − 3` — adjugate argument + √2/λ conversion lemma, tight
 ///     with deficit 3 at every k ≥ 3.
 ///
-/// This is the same bound as the old per-gate `2t+6q` model: both reduce
+/// This coincides with the per-gate `2t+6q` model: both reduce
 /// to c̃ ≥ 2N. A √T-class syllable costs 6 ≥ 2·N(=2), a T-class syllable 2 = 2·N(=1),
 /// so absorbing a T into a √T syllable (T^{3/2}) removes only slack above 2N.
 /// The syllable-count floor (≈ k − 1, the `max` arm) only binds at k ≤ 2.

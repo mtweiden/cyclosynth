@@ -441,7 +441,7 @@ impl SynthesizerQ {
         self
     }
 
-    /// Set the optimal-mode lde-window (default 3 at ε ≤ 1e-7, else 2).
+    /// Set the optimal-mode lde-window (default 2).
     /// 0 = strict min-lde-first. N > 0 = after finding at lde `f`, also
     /// search lde `f+1..=f+N` and return the global min-cost candidate.
     pub fn with_optimal_lde_window(mut self, window: u32) -> Self {

@@ -9,8 +9,8 @@
 //!
 //! The walk is rebuilt from public APIs: v = normalize4(unitary_to_uv(target)),
 //! y = uv_to_lattice_y(v, k), then `find_aligned_lattice_points(..., u64::MAX, ...)`,
-//! and reconstruct/score every returned solution. (Supersedes the old
-//! `w1_telemetry_8d` probe; the 16D analog is `probe_walk_bench_zeta`.)
+//! and reconstruct/score every returned solution. (The 16D analog is
+//! `probe_walk_bench_zeta`.)
 //!
 //! Args: probe_walk_bench_omega <theta> <eps> <k>
 

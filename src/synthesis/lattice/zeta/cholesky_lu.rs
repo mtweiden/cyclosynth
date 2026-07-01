@@ -280,9 +280,10 @@ pub type CholeskyDual16 = ([[f64; 16]; 16], [[(f64, f64); 16]; 16]);
 /// gated by [`super::se::set_verify_prune_mpfr`]). The factorization runs at MPFR-128 so
 /// the per-leaf `‖R·z‖²` accumulator drifts only by f64 round-off, not by
 /// f64-Cholesky error — which at deep k (Gram ~2^34+) reaches 0.1%+ and
-/// corrupts the prune threshold. 106-bit was tried but gave rank-deficient
-/// false alarms at small lde where `s -= l[i][k]*l[j][k]` cancellation is
-/// tight. `None` if the Gram is not PD (rank-deficient basis = upstream bug).
+/// corrupts the prune threshold. 106-bit precision gives rank-deficient false
+/// alarms at small lde where `s -= l[i][k]*l[j][k]` cancellation is tight, so
+/// 128 is the floor. `None` if the Gram is not PD (rank-deficient basis =
+/// upstream bug).
 pub fn euclidean_cholesky_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyDual16> {
     const PREC: u32 = 128;
     let mut gram = [[0_i128; 16]; 16];
@@ -313,10 +314,9 @@ pub fn euclidean_cholesky_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyD
 ///
 /// Consumed by the deep-ε dd-verified Q bracket: the f64 snapshot replaces
 /// the `cholesky_f64` factor as the SE walk's `l_upper` (strictly more
-/// accurate — the f64 Cholesky factorization error was one of the channels
-/// behind the ε=1.5e-8 partial-Q overshoot), and the dd projection drives
-/// the incremental dd partial-Q that makes the bound-1.5 prune decisions
-/// sound.
+/// accurate, avoiding the f64-Cholesky partial-Q overshoot at deep ε), and
+/// the dd projection drives the incremental dd partial-Q that makes the
+/// bound-1.5 prune decisions sound.
 ///
 /// The i256 Gram is exact through both LLL and BKZ (gram-update
 /// invariant), so this factors the same matrix `cholesky_f64` reads —

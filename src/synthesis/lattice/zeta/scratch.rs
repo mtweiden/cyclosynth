@@ -21,8 +21,8 @@ pub use crate::synthesis::lattice::common::{
 
 /// MPFR Gram-Schmidt precision. d=16 is outside the NS09 f64 proof (d ≤ 11),
 /// and fplll's `l2_min_prec` needs ~42 bits at ε=1e-7; 80 leaves ~40-bit
-/// headroom and was the fastest in a sweep. Per-construction override:
-/// [`IntScratch16::with_gs_prec`].
+/// headroom while staying the fastest precision in practice. Per-construction
+/// override: [`IntScratch16::with_gs_prec`].
 pub const GS_PREC: u32 = 80;
 
 // ─── Type aliases ────────────────────────────────────────────────────────────

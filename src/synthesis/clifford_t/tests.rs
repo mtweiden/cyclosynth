@@ -179,7 +179,7 @@ mod probes;
     }
 
     /// Round-trip at ε=1e-7. Validates the L²-LLL backend at deeper ε.
-    /// Fast (~40 ms) on `Rz(0.30)` after the post-Frobenius perf fixes.
+    /// Fast (~40 ms) on `Rz(0.30)`.
     #[test]
     fn verify_correctness_at_1e_7_rz_03() {
         verify_synthesis_round_trip(&rz(0.30), 1e-7, "Rz(0.30) @ 1e-7");
@@ -187,9 +187,8 @@ mod probes;
 
     /// Round-trip at ε=1e-7 on `Rz(π/7)` — the worst-case 1e-7 target in
     /// the bench (lde=70 vs typical 66). Slowest test in the suite (~2 s),
-    /// kept in the default run because it's the only direct guard for the
-    /// "outlier-target at deep ε" failure mode that motivated the
-    /// MPFR-alignment / Frobenius-distance fixes.
+    /// kept in the default run as the only direct guard for the
+    /// "outlier-target at deep ε" failure mode.
     #[test]
     fn verify_correctness_at_1e_7_rz_pi7() {
         verify_synthesis_round_trip(&rz(PI / 7.0), 1e-7, "Rz(π/7) @ 1e-7");
@@ -385,7 +384,6 @@ mod probes;
         let result = synth.synthesize(target).expect("Should find a solution");
         check_result(&result, &target, eps);
         // Verify that a solution was found via DC (lde > direct_limit)
-        //println!("lde={}, dist={:.4e}", result.lde, result.distance);
     }
 
     /// Test that optimal_t_prime gives correct thresholds (Proposition 3.13).

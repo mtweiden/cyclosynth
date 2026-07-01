@@ -6,19 +6,12 @@
 //! synthesizes each at every ε level. Same targets reused across ε so
 //! timings are directly comparable.
 //!
-//! ## Backend status
+//! ## Backend
 //!
-//! The current `Synthesizer (sqrt_t=true)` uses a brute-force backend
-//! (`enumerate_unitary_norm_shell`) which is exponential in k. Practical operating
-//! range:
-//!   - max_lde = 0..2: very fast (milliseconds), tight-ε targets
-//!     unreachable.
-//!   - max_lde = 3:   ~ms-s, ε ≥ 0.05 typically reachable.
-//!   - max_lde = 4:   ~10 s/call, ε ≥ 0.02 typically reachable.
-//!   - max_lde ≥ 5:   intractable.
-//!
-//! When Phase 5b M4-M5 land (16D LLL+SE), max_lde can be lifted to
-//! ~30+ and ε down to 1e-7 becomes feasible.
+//! `Synthesizer (sqrt_t=true)` runs a hybrid backend: brute-force norm-shell
+//! enumeration (`enumerate_unitary_norm_shell`) for k ≤ 3, and 16D LLL+SE for
+//! k ≥ 4. The brute tier is exponential in k, so at small max_lde only loose ε
+//! is reachable; the LLL+SE tier reaches deeper k and tighter ε.
 //!
 //! Usage:
 //!   time_synthesis_zeta [--max-lde N] [--trials N] [--n-targets N]

@@ -70,8 +70,7 @@ use std::f64::consts::PI;
 
     /// Same forensic probe at the bench-suite 1e-8 flip: time_synthesis_omega
     /// target_00 (xorshift64, seed 0xC0FFEEBAADD0E|1), lde 78 (t'=12),
-    /// which still drifts to 80 under coset dedup after the
-    /// euclidean_cholesky trust guards.
+    /// which still drifts to 80 under coset dedup.
     /// Run: `cargo test --release --lib coset_dedup_loses_solution_1e8_78 -- --ignored --nocapture`
     #[test]
     #[ignore]
@@ -429,15 +428,14 @@ use std::f64::consts::PI;
     /// ≈ geometric — no rounding-inflation step needed). If the max pins
     /// well below 1.51, a tightened bound buys (1.51/max)⁴ fewer nodes.
     ///
-    /// 2026-06-11: collects ALL in-region solutions per level
-    /// (`max_solutions = usize::MAX`) — the earlier first-hit numbers
-    /// ([0.75, 0.94]) were maximally center-biased because find_aligned_lattice_points stopped
-    /// at the first hit of a distance-ordered walk. Walks are bounded by
-    /// the new node budget (T8_NODES, default 50M per branch walk), which
-    /// is what makes ε=1e-3 runnable at all (empty/slow branches used to
-    /// walk unbudgeted for tens of minutes). Optionally widen the walk
-    /// region via CYCLOSYNTH_SE_BOUND_8D (e.g. 2.5) to check for
-    /// solutions ABOVE the production bound.
+    /// Collects ALL in-region solutions per level (`max_solutions =
+    /// usize::MAX`) rather than first-hit: a first-hit, distance-ordered
+    /// walk is maximally center-biased. Walks are bounded by the node
+    /// budget (T8_NODES, default 50M per branch walk), which makes ε=1e-3
+    /// runnable (an unbudgeted walk on empty/slow branches runs for tens
+    /// of minutes). Optionally widen the walk region via
+    /// CYCLOSYNTH_SE_BOUND_8D (e.g. 2.5) to check for solutions ABOVE the
+    /// production bound.
     /// Run: `cargo test --release --lib q_norm_distribution_sweep -- --ignored --nocapture`
     /// Env: T8_EPS (default sweeps 3e-2 and 1e-3), T8_BUDGET (default 20M),
     /// T8_NODES (default 50M).
@@ -456,12 +454,12 @@ use std::f64::consts::PI;
         let mut global_min_close = f64::INFINITY;
         let mut total_close = 0usize;
 
-        // t (lde) scan ranges per ε. CAUTION (learned the 46-minute way,
-        // twice): `max_leaf_checks` caps CANDIDATE COMPLETIONS, not raw
-        // nodes — on a no-solution level almost nothing reaches
-        // candidacy, so the walk runs effectively unbudgeted and a
-        // single below-first-hit level burns tens of minutes on one
-        // core. Per-θ first-hit levels can't be reliably guessed, so
+        // t (lde) scan ranges per ε. CAUTION: `max_leaf_checks` caps
+        // CANDIDATE COMPLETIONS, not raw nodes — on a no-solution level
+        // almost nothing reaches candidacy, so the walk runs effectively
+        // unbudgeted and a single below-first-hit level burns tens of
+        // minutes on one core. Per-θ first-hit levels can't be reliably
+        // guessed, so
         // scan DOWNWARD from t_hi: every level at-or-above first-hit is
         // solution-dense and returns fast, and the two-level early-stop
         // fires before the scan can descend into empty territory.
@@ -490,7 +488,7 @@ use std::f64::consts::PI;
                     // 1.51 bound actually governs. (Direct full-lde
                     // probing at ε ≤ 1e-3 is hopeless: the t=27..34 region
                     // is so large that a 50M-node budgeted walk finds
-                    // nothing — the pre-fix 46-minute deadlock geometry.)
+                    // nothing.)
                     // Q/c are built in each frame's own (y, k); find_aligned_lattice_points
                     // sols have already passed the alignment-cap leaf
                     // check, which is exactly the in-cap criterion the

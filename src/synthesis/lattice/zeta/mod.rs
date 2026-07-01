@@ -4,8 +4,7 @@
 //! Z[ω] / Clifford+T). The two modules are deliberately kept separate to
 //! isolate the precision and integer-width choices: f64 Gram-Schmidt is
 //! provably sufficient at d=8 (Theorem 2 of Nguyen-Stehlé 2009) but not at
-//! d=16, so the 16D GS runs in MPFR throughout. (An f64-GS fast path with
-//! MPFR escalation existed but was measured to give no speedup and removed.)
+//! d=16, so the 16D GS runs in MPFR throughout.
 //!
 //! Pipeline and module layout mirror [`super::omega`]; see
 //! [`integer`] for the per-call stage breakdown. Brute force and
@@ -37,7 +36,7 @@ pub use integer::{find_aligned_lattice_points_with_stop, find_aligned_lattice_po
 pub use scratch::IntScratch16;
 pub use se::{set_verify_prune_mpfr, verify_prune_mpfr};
 
-// ─── Tests preserving the previous flat-module test suite ────────────────────
+// ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests;
