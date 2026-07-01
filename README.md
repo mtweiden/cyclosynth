@@ -172,7 +172,7 @@ src/
 examples/               Python usage, verification, and comparison
 ```
 
-Advanced/internal tuning is exposed through `CYCLOSYNTH_*` environment variables; the names are frozen and documented inline at their use sites in `src/synthesis/`.
+Advanced/internal tuning is exposed through `CYCLOSYNTH_*` environment variables; see the table in [AGENTS.md](AGENTS.md#environment-variables) (each is also documented inline at its use site in `src/synthesis/`).
 
 ## Testing
 

@@ -40,8 +40,7 @@ use super::lll::{run_lll, LllResult};
 use super::q_metric::build_q_int_zeta;
 use super::scratch::{rfv, IntScratch16};
 use super::se::{
-    bilinear_forms,
-    qbracket_dd_disabled, schnorr_euchner,
+    bilinear_forms, schnorr_euchner,
     verify_prune_mpfr, LeafAction, SeCenter16,
 };
 use crate::synthesis::diag;
@@ -50,40 +49,6 @@ use crate::synthesis::diag;
 /// `super::super::omega::se::SE_PREC` — 128 bits gives ~38 digits of
 /// headroom past the precision walls in the f64 formula at ε ≲ √(machine_eps).
 const ALIGN_PREC: u32 = 128;
-
-/// Per-(k, ε) Q_base warm seed (CYCLOSYNTH_WARM_LLL16): only the rank-1
-/// ŷŷᵀ term of the metric varies per prefix, so one Q_base reduction
-/// per scratch per (k, ε) hands every prefix's LLL the shared work
-/// pre-done. Always sound (any LLL-output basis is unimodular) — only
-/// effectiveness varies. Returns whether the caller must clear
-/// `warm_lll` after its own LLL step.
-fn warm_seed_q_base(scratch: &mut IntScratch16, k: u32, eps: f64) -> bool {
-    if !warm_lll16_enabled() || scratch.warm_lll {
-        return false;
-    }
-    let seed_key = (k, eps.to_bits());
-    if scratch.q_base_seed_key != Some(seed_key) {
-        super::q_metric::build_q_base_mpfr_zeta(scratch, k, eps);
-        build_q_int_zeta(scratch);
-        let r = run_lll(scratch);
-        let det_ok = matches!(
-            super::cholesky_lu::det_exact(&scratch.basis),
-            Some(1) | Some(-1) | None
-        );
-        scratch.q_base_seed = if matches!(r, LllResult::Converged) && det_ok {
-            Some(scratch.basis)
-        } else {
-            None // overflow/cap: cold starts at this key
-        };
-        scratch.q_base_seed_key = Some(seed_key);
-    }
-    if let Some(seed) = scratch.q_base_seed {
-        scratch.basis = seed;
-        scratch.warm_lll = true; // cleared right after the LLL step
-        return true;
-    }
-    false
-}
 
 /// L²-LLL at MPFR-80 Gram-Schmidt precision.
 /// GramOverflow (i256 saturation, unhelped by precision) → None; a
@@ -147,15 +112,6 @@ fn run_bkz_postpass(scratch: &mut IntScratch16, k: u32, eps: f64) -> Option<()> 
     }
 
     Some(())
-}
-
-/// CYCLOSYNTH_WARM_LLL16=1 enables the per-(k, ε) Q_base warm-LLL seed
-/// (default off).
-fn warm_lll16_enabled() -> bool {
-    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
-        std::env::var("CYCLOSYNTH_WARM_LLL16").as_deref() == Ok("1")
-    });
-    *ON
 }
 
 #[cfg(test)]
@@ -250,14 +206,9 @@ where
         diag::N_LATTICE_SEARCH_CALLS.fetch_add(1, Ordering::Relaxed);
     }
 
-    let warm_seeded = warm_seed_q_base(scratch, k, eps);
-
-    // Step 1: build Q in MPFR + i256 snapshot. Reset basis unless the
-    // caller requested warm_lll or the Q_base seed is installed.
+    // Step 1: build Q in MPFR + i256 snapshot.
     let t_build = if trace { Some(std::time::Instant::now()) } else { None };
-    if !scratch.warm_lll {
-        scratch.reset_basis();
-    }
+    scratch.reset_basis();
     super::q_metric::build_q_mpfr_zeta_from_mpfr_v(scratch, v, k, eps);
     build_q_int_zeta(scratch);
 
@@ -279,15 +230,7 @@ where
     }
 
     if run_lll_ladder(scratch, k, eps).is_none() {
-        if warm_seeded {
-            scratch.warm_lll = false;
-        }
         return Vec::new();
-    }
-    if warm_seeded {
-        // The seed's warm_lll is per-call; a persisting flag would make
-        // the NEXT call (possibly a different k) skip its basis reset.
-        scratch.warm_lll = false;
     }
 
     if run_bkz_postpass(scratch, k, eps).is_none() {
@@ -296,11 +239,10 @@ where
 
     // Deep-ε bound: an MPFR-128 Cholesky projected to an f64 snapshot +
     // double-double factor makes every Q-prune decision sound at the tight
-    // bound. Gated so moderate-ε hot paths pay nothing
-    // (CYCLOSYNTH_QBRACKET_DD=0 restores f64 + bound 3.0). Computed BEFORE
+    // bound. Gated so moderate-ε hot paths pay nothing. Computed BEFORE
     // the f64 Cholesky so an f64 Cholesky failure can't bail a search
     // whose MPFR factorization is healthy.
-    let q_chol_dual = if (eps <= 2e-8 || verify_prune_mpfr()) && !qbracket_dd_disabled() {
+    let q_chol_dual = if eps <= 2e-8 || verify_prune_mpfr() {
         let dual = q_cholesky_mpfr_dual(&scratch.gram, scratch.scale_bits);
         if dual.is_none() {
             eprintln!(

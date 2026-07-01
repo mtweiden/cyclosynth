@@ -84,18 +84,6 @@ pub struct IntScratch16 {
     pub lu_tmp: MpFloat,
     pub lu_acc: MpFloat,
 
-    /// When true, the LLL warm-starts from the previous call's reduced
-    /// basis instead of resetting to identity. The caller sets it after
-    /// the first call (which needs a clean start). Default false.
-    pub warm_lll: bool,
-
-    /// Per-(k, ε) warm-LLL seed: the LLL-reduced basis of the
-    /// prefix-independent part of the metric (everything but the rank-1
-    /// per-prefix term). Computed lazily once per (k, ε) and reused via
-    /// `warm_lll`; `None` after a non-converged seed reduction.
-    pub q_base_seed: Option<IMat16>,
-    pub q_base_seed_key: Option<(u32, u64)>,
-
     /// BKZ block size (0 = off, 3..=8 = β-block SVP tours after LLL,
     /// strengthening the basis most at deep ε). β=2 is LLL-equivalent.
     pub bkz_block_size: u32,
@@ -133,9 +121,6 @@ impl IntScratch16 {
             lu_x: std::array::from_fn(|_| rfz(lu_prec)),
             lu_tmp: rfz(lu_prec),
             lu_acc: rfz(lu_prec),
-            warm_lll: false,
-            q_base_seed: None,
-            q_base_seed_key: None,
             bkz_block_size: 0,
         }
     }

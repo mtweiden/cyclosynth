@@ -147,7 +147,7 @@ pub static T_VERIFY_DD_NS: AtomicU64 = AtomicU64::new(0);
 
 
 
-// ─── Stage walls (always-on; once per optimal synthesize call) ───────────────
+// ─── Stage walls (trace-gated; once per optimal synthesize call) ─────────────
 //
 // Wall-clock per pipeline stage, summed across parity branches and
 // targets between resets. The screen wall overlaps the baseline thread
@@ -161,8 +161,8 @@ pub static T_STAGE_BASELINE_NS: AtomicU64 = AtomicU64::new(0);
 /// One-line machine-parseable counter snapshot (`key=value` pairs).
 /// The probe prints it per synthesis call as `[profile] ...`;
 /// `scripts/profile_summary.py` parses it into the campaign scoreboard.
-/// Timing keys are zero unless CYCLOSYNTH_TRACE=1 (phase timers are
-/// trace-gated); stage walls and walk-outcome counters are always-on.
+/// Timing keys are zero unless CYCLOSYNTH_TRACE=1 (phase timers and
+/// stage walls are trace-gated, like the walk-outcome counters).
 pub fn profile_line() -> String {
     let ms = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e6;
     let n = |c: &AtomicU64| c.load(Ordering::Relaxed);
@@ -374,9 +374,57 @@ pub fn snapshot() -> Snapshot {
     }
 }
 
+/// Emit one pass of the per-lde diagnostic block on stderr. Called at the
+/// end of each `prefix_split_search` invocation when `CYCLOSYNTH_TRACE=1` is set.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn trace_dump_pass(
+    t: u32,
+    t_prime: u32,
+    pass: u8,
+    s: &Snapshot,
+    budget_hit: bool,
+    pass_ms: f64,
+    found: bool,
+) {
+    eprintln!(
+        "[trace] lde={:>2} pass{} t'={:>2} prefixes={:>6} mat_uv_rej={:>6} \
+         se_cb={:>9} se_nodes={:>11} (max/walk {:>9}) dist_rej={} budget={} {:>9.1}ms result={}",
+        t, pass, t_prime, s.prefixes, s.uv_extract_rejected, s.se_callbacks,
+        s.se_nodes, s.se_nodes_max, s.dist_rejected, u8::from(budget_hit), pass_ms,
+        if found { "FOUND" } else { "none" }
+    );
+    let phase_total = s.t_build_ms + s.t_lll_ms + s.t_cholesky_ms + s.t_lu_ms + s.t_se_ms;
+    if phase_total > 0.0 {
+        eprintln!(
+            "[trace]            phase_ms (cpu-summed) build={:>7.1} lll={:>7.1} \
+             chol={:>7.1} lu={:>7.1} se={:>7.1} sum={:>7.1}",
+            s.t_build_ms, s.t_lll_ms, s.t_cholesky_ms, s.t_lu_ms, s.t_se_ms, phase_total
+        );
+        let n_lll_calls = s.prefixes.saturating_sub(s.uv_extract_rejected);
+        let lll_avg = if n_lll_calls > 0 {
+            s.lll_iters_total as f64 / n_lll_calls as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[trace]            lll_iters total={} avg={:.0} max={} at_cap={} (cap=10000)",
+            s.lll_iters_total, lll_avg, s.lll_iters_max, s.lll_at_cap
+        );
+        let lazy_avg = if s.lazy_calls_total > 0 {
+            s.lazy_passes_total as f64 / s.lazy_calls_total as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "[trace]            lazy_passes total={} calls={} avg={:.2} max={}",
+            s.lazy_passes_total, s.lazy_calls_total, lazy_avg, s.lazy_passes_max
+        );
+    }
+}
+
 // ─── prefix_split_search branch-win telemetry ───────────────────────────────
 //
-// Always-on and CUMULATIVE across the process — deliberately NOT in
+// Trace-gated; CUMULATIVE across the process — deliberately NOT in
 // `reset_all`: they fire at most once per prefix_split_search find (cold
 // path), and the per-pass reset_all would otherwise wipe them before a
 // suite can aggregate. Read at end-of-run by probes; a per-win stderr

@@ -61,10 +61,31 @@ Rust: `synthesis::Synthesizer::new(epsilon, sqrt_t)`, then `synthesize_with_exac
   ε=1e-10 (where √κ(Q)≈2^68 crosses the f64/i128 boundary) silently *misses*
   solutions and reads as slowness, not an error. The canary asserts a
   known target finds at its exact minimum lde; a miss trips it loudly.
-- `CYCLOSYNTH_*` env vars are A/B kill-switches; some (e.g.
-  `CYCLOSYNTH_BOUND_SQ`) change search *results*, not just performance.
 - For work *inside* the code, read the domain glossary at the top of
   `src/synthesis/mod.rs` first. The two lattice backends (`src/synthesis/lattice/omega/`
   — 8D, f64; `zeta/` — 16D, MPFR) are deliberately kept parallel but separate;
   don't try to merge them.
 - `docs/`, `scripts/`, `bench_logs/`, `target/` are gitignored.
+
+## Environment variables
+
+Two kinds: **kill-switch** (production default stays on; the var restores the
+pre-change behavior for A/B bisection) and **probe** (experiment instrument;
+some change search *results*, not just performance — never set in production).
+
+| Variable | Default | Effect | Kind |
+| --- | --- | --- | --- |
+| `CYCLOSYNTH_TRACE` | off | `=1` enables telemetry counters + stderr trace (needs a `--features trace` build; must be set before first synthesis) | probe |
+| `CYCLOSYNTH_SHELL_FILTER` | on | `=0` disables the 8D norm-shell discriminant prune (~1.4× at ε=1e-10) | kill-switch |
+| `CYCLOSYNTH_CHUNK` | 64 | rayon `with_max_len` chunk size for the 8D prefix sweep | probe |
+| `CYCLOSYNTH_PREDICTIVE_TRUNC` | on | `=0` disables the projected-infeasibility abort in budget-capped 16D flat walks | kill-switch |
+| `CYCLOSYNTH_OMEGA_FORCE_EXACT` | off | `=1` forces the deep-ε exact MPFR alignment path (8D) at any ε (exact-vs-f64 equivalence checks) | probe |
+| `CYCLOSYNTH_BOUND_SQ` | 1.5 (3.0 on MPFR-Cholesky fallback) | overrides the 16D SE Q-bound; read per call; changes results | probe |
+| `CYCLOSYNTH_SE_BOUND_8D` | 1.51 | overrides the 8D SE bound; LazyLock — must be set before the first synthesis; changes results | probe |
+| `CYCLOSYNTH_L_COSET` | ε rule | `=0`/`=1` force plain phase-dedup / coset dedup of 8D MA prefixes | kill-switch |
+| `CYCLOSYNTH_ZETA_COSET` | on | `=0` disables 16D prefix right-coset dedup | kill-switch |
+| `CYCLOSYNTH_BKZ` | 0 (off) | ambient BKZ-β post-pass block size for the √T backend; the `with_bkz` builder overrides it | probe |
+| `CYCLOSYNTH_FRONTIER_QUEUE` | on | `=0` restores chunked frontier dispatch (vs floor-priority pull-queue) | kill-switch |
+
+These names are frozen; new experiment toggles get removed (var + losing code
+arm) once the experiment concludes.

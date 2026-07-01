@@ -13,6 +13,19 @@ license-file = "LICENSE"
 name = "cyclosynth"
 crate-type = ["cdylib", "rlib"]
 
+# Walk-bench probes runtime-assert `diag::trace_enabled()`; gate them at
+# compile time so a featureless `cargo build --bins` skips them. The other
+# bins in src/bin are auto-discovered as usual.
+[[bin]]
+name = "probe_walk_bench_omega"
+path = "src/bin/probe_walk_bench_omega.rs"
+required-features = ["trace"]
+
+[[bin]]
+name = "probe_walk_bench_zeta"
+path = "src/bin/probe_walk_bench_zeta.rs"
+required-features = ["trace"]
+
 [dependencies]
 num-complex = "0.4"
 i256 = "0.2.3"

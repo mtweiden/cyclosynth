@@ -11,8 +11,7 @@ impl SynthesizerQ {
     /// fan-out starve the deep m=1 units that hold the decisive finds; the
     /// incumbent carries forward as each phase's prune floor); interleaved
     /// above. A phase whose frontier finishes early donates its leftover
-    /// deadline to later phases. Env: CYCLOSYNTH_SEQ_M, CYCLOSYNTH_SEQ_M_SPLIT,
-    /// CYCLOSYNTH_SEQ_ROLLFWD.
+    /// deadline to later phases.
     pub(crate) fn run_frontier_grouped_by_m(
         &self,
         target: &Mat2,
@@ -20,11 +19,7 @@ impl SynthesizerQ {
         deadline_ms: u64,
         shared_best: &std::sync::atomic::AtomicUsize,
     ) -> (Option<(usize, SynthResultQ)>, Vec<bool>) {
-        let seq_m = match std::env::var("CYCLOSYNTH_SEQ_M").as_deref() {
-            Ok("1") => true,
-            Ok("0") => false,
-            _ => self.epsilon < 1e-7,
-        };
+        let seq_m = self.epsilon < 1e-7;
         let mut m_groups: Vec<u32> = tasks.iter().map(|&(_, m)| m).collect();
         m_groups.sort_unstable();
         m_groups.dedup();
@@ -37,29 +32,15 @@ impl SynthesizerQ {
             );
         }
 
-        let split: Vec<u64> = std::env::var("CYCLOSYNTH_SEQ_M_SPLIT")
-            .ok()
-            .map(|s| s.split(',').filter_map(|p| p.trim().parse().ok()).collect())
-            .unwrap_or_default();
-        let equal_share = (deadline_ms / m_groups.len() as u64).max(1);
-        let rollfwd = split.is_empty()
-            && std::env::var("CYCLOSYNTH_SEQ_ROLLFWD").as_deref() != Ok("0");
         let t_phases = std::time::Instant::now();
         let mut best_fr: Option<(usize, SynthResultQ)> = None;
         let mut trunc_by_task: Vec<((u32, u32), bool)> = Vec::new();
         for (gi, &mg) in m_groups.iter().enumerate() {
-            let share = if rollfwd {
-                let left = deadline_ms
-                    .saturating_sub(t_phases.elapsed().as_millis() as u64);
-                (left / (m_groups.len() - gi) as u64).max(1)
-            } else {
-                split
-                    .get(gi)
-                    .or(split.last())
-                    .copied()
-                    .unwrap_or(equal_share)
-                    .max(1)
-            };
+            // Roll-forward share: a phase that finishes early donates its
+            // leftover deadline to the remaining phases.
+            let left = deadline_ms
+                .saturating_sub(t_phases.elapsed().as_millis() as u64);
+            let share = (left / (m_groups.len() - gi) as u64).max(1);
             let group: Vec<(u32, u32)> =
                 tasks.iter().copied().filter(|&(_, m)| m == mg).collect();
             let (g_fr, g_tr) = self.min_cost_frontier_search(
@@ -663,12 +644,9 @@ impl SynthesizerQ {
         let t_branches = std::time::Instant::now();
         // At deep ε each branch saturates the pool alone, so concurrent
         // parities dilute both (~2× wall for slightly lower cost); run
-        // them sequentially. CYCLOSYNTH_SEQ_PARITY=0 forces concurrency.
+        // them sequentially (`with_seq_parity` overrides the ε rule).
         // The shared incumbent flows identically either way.
-        let force_sequential = self.seq_parity.unwrap_or_else(|| {
-            self.epsilon < 2.5e-8
-                && std::env::var("CYCLOSYNTH_SEQ_PARITY").as_deref() != Ok("0")
-        });
+        let force_sequential = self.seq_parity.unwrap_or(self.epsilon < 2.5e-8);
         if force_sequential {
             // No peer exists in sequential mode — pre-set BOTH handshake
             // flags or the frontier dead-sleeps its full 4×deadline
@@ -831,8 +809,10 @@ impl SynthesizerQ {
                             let t0 = std::time::Instant::now();
                             let r = crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
                                 .synthesize(target);
-                            crate::synthesis::diag::T_STAGE_BASELINE_NS
-                                .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                            if crate::synthesis::diag::trace_enabled() {
+                                crate::synthesis::diag::T_STAGE_BASELINE_NS
+                                    .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                            }
                             r
                         })
                         .expect("spawn clifford_t baseline thread"),
@@ -890,9 +870,9 @@ impl SynthesizerQ {
         let t_w = std::time::Instant::now();
         let (fr, level_truncated) =
             self.run_frontier_grouped_by_m(target, tasks, deadline_ms, shared_best);
-        diag::T_STAGE_FRONTIER_NS
-            .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);
         if trace {
+            diag::T_STAGE_FRONTIER_NS
+                .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);
             eprintln!(
                 "[zeta] optimal frontier {:?} deadline={}ms t={:.0}ms truncated={:?}",
                 tasks, deadline_ms,
@@ -955,8 +935,10 @@ impl SynthesizerQ {
         let t_s = std::time::Instant::now();
         let (first, mut screen_unclear, baseline) =
             self.screen_and_baseline(target, with_baseline);
-        diag::T_STAGE_SCREEN_NS
-            .fetch_add(t_s.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if trace {
+            diag::T_STAGE_SCREEN_NS
+                .fetch_add(t_s.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
         // Signal screen completion to the peer parity branch; the
         // matching wait sits just before the frontier dispatch below.
         if let Some(flag) = &self.my_screen_done {
@@ -1073,9 +1055,9 @@ impl SynthesizerQ {
             });
         // The grid is the frontier stage's deep-ε/certify form — same
         // scoreboard column.
-        diag::T_STAGE_FRONTIER_NS
-            .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);
         if trace {
+            diag::T_STAGE_FRONTIER_NS
+                .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);
             eprintln!("[zeta] optimal enum {:?} parallel t={:.0}ms",
                 tasks, t_w.elapsed().as_secs_f64() * 1000.0);
         }

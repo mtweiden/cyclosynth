@@ -18,17 +18,6 @@ use std::sync::OnceLock;
 use super::dd::{dd_add, dd_from_i64, dd_mul, dd_sub};
 
 
-/// W1 kill-switch: `CYCLOSYNTH_FLAT_WALK=0` disables the multi-level
-/// frontier flattening in [`schnorr_euchner`], falling back to
-/// per-z[15]-only parallel sharding. Default ON. Read once.
-static FLAT_WALK_DISABLED: OnceLock<bool> = OnceLock::new();
-
-fn flat_walk_disabled() -> bool {
-    *FLAT_WALK_DISABLED.get_or_init(|| {
-        std::env::var("CYCLOSYNTH_FLAT_WALK").ok().as_deref() == Some("0")
-    })
-}
-
 /// Predictive-budget-truncation kill-switch: `CYCLOSYNTH_PREDICTIVE_TRUNC=0`
 /// disables the projected-infeasibility abort in budget-capped flat walks
 /// (see [`PredictiveTrunc`]). Default ON. Read once.
@@ -37,17 +26,6 @@ static PREDICTIVE_TRUNC_DISABLED: OnceLock<bool> = OnceLock::new();
 fn predictive_trunc_disabled() -> bool {
     *PREDICTIVE_TRUNC_DISABLED.get_or_init(|| {
         std::env::var("CYCLOSYNTH_PREDICTIVE_TRUNC").ok().as_deref() == Some("0")
-    })
-}
-
-/// dd Q-bracket kill-switch: `CYCLOSYNTH_QBRACKET_DD=0` disables the
-/// deep-ε double-double Q-bracket (integer.rs falls back to the f64
-/// factor + bound 3.0 at ε ≤ 2e-8). Read once.
-static QBRACKET_DD_DISABLED: OnceLock<bool> = OnceLock::new();
-
-pub fn qbracket_dd_disabled() -> bool {
-    *QBRACKET_DD_DISABLED.get_or_init(|| {
-        std::env::var("CYCLOSYNTH_QBRACKET_DD").ok().as_deref() == Some("0")
     })
 }
 
@@ -568,38 +546,6 @@ pub enum LeafAction {
     TakeAndStop,
 }
 
-/// CYCLOSYNTH_W1_DEBUG=2 work-skew report: per-item walk times and
-/// per-thread load for the flat-frontier stage. Diagnostics only —
-/// unreachable in production runs.
-#[cold]
-fn report_parallel_walk_skew(
-    item_times: std::sync::Mutex<Vec<(f64, i64)>>,
-    stage3_wall_s: f64,
-) {
-    let mut times = item_times.into_inner().expect("W1 skew mutex poisoned");
-    times.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let total: f64 = times.iter().map(|t| t.0).sum();
-    let top: Vec<String> = times.iter().take(10).map(|t| format!("{:.3}", t.0)).collect();
-    let mut per_thread: std::collections::HashMap<i64, (f64, usize)> =
-        std::collections::HashMap::new();
-    for &(t, tid) in &times {
-        let e = per_thread.entry(tid).or_insert((0.0, 0));
-        e.0 += t;
-        e.1 += 1;
-    }
-    let mut pt: Vec<_> = per_thread.into_iter().collect();
-    pt.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
-    let pts: Vec<String> = pt.iter()
-        .map(|(tid, (t, n))| format!("t{tid}:{t:.2}s/{n}"))
-        .collect();
-    eprintln!(
-        "[w1] skew: {} items, Σ {:.3} s, stage3 wall {:.3} s, top10 [{}]\n[w1] threads: {}",
-        times.len(), total, stage3_wall_s,
-        top.join(", "),
-        pts.join(" ")
-    );
-}
-
 /// Parallel + norm-shell-pruned + incremental-x SE walker. This is the
 /// production workhorse used by [`super::find_aligned_lattice_points_with_stop`].
 ///
@@ -631,8 +577,8 @@ struct BudgetCache<'a> {
     remaining: u64,
     used_since_flush: u64,
     /// Predictive-truncation context (None for unbudgeted walks, the
-    /// z15-sharded fallback path, the frontier-expansion stage, and when
-    /// disabled via `CYCLOSYNTH_PREDICTIVE_TRUNC=0`).
+    /// frontier-expansion stage, and when disabled via
+    /// `CYCLOSYNTH_PREDICTIVE_TRUNC=0`).
     pred: Option<&'a PredictiveTrunc>,
 }
 
@@ -995,24 +941,6 @@ where
     let z_high = z_c.int[15].saturating_add((z_c.frac[15] + span_q).floor() as i64);
     let z_mid = z_c.int[15].saturating_add(z_c.frac[15].round() as i64);
 
-    // Diagnostic: per-level span product is minimized when |l_ii| is
-    // largest at the outermost level (15). Dump the diagonal + implied
-    // span to see whether LLL already orders it well. Gated, one line
-    // per walk.
-    if std::env::var("CYCLOSYNTH_SE_ORDER_DIAG").as_deref() == Ok("1") {
-        let mut diag = [0.0f64; 16];
-        let mut span_prod = 1.0f64;
-        for i in 0..16 {
-            diag[i] = l[i][i].abs();
-            if diag[i] > 1e-30 {
-                span_prod *= (bound_sq.sqrt() / diag[i]).max(1.0);
-            }
-        }
-        eprintln!("[se_order] diag(|l_ii|, 0..15)=[{}] span_prod={:.3e}",
-            diag.iter().map(|d| format!("{:.3}", d)).collect::<Vec<_>>().join(","),
-            span_prod);
-    }
-
     // Closest-to-center first ordering at the outermost level.
     let mut prefixes: Vec<i64> = (z_low..=z_high).collect();
     prefixes.sort_by_key(|&z| (z - z_mid).abs());
@@ -1084,11 +1012,8 @@ where
     // expansion before any leaf is reached (sequential semantics are
     // depth-first).
     let threads = rayon::current_num_threads().max(1);
-    let frontier_target: usize = if flat_walk_disabled() {
-        0 // fallback: shard on z[15] only
-    } else {
-        (threads * 128).min((budget.load(Ordering::Relaxed) / 256).max(1) as usize)
-    };
+    let frontier_target: usize =
+        (threads * 128).min((budget.load(Ordering::Relaxed) / 256).max(1) as usize);
     let mut start_depth: i32 = 14;
     {
         // Frontier expansion runs before items_total is known — no
@@ -1117,12 +1042,6 @@ where
                 );
             }
             start_depth -= 1;
-            if std::env::var("CYCLOSYNTH_W1_DEBUG").ok().as_deref() == Some("1") {
-                eprintln!(
-                    "[w1] frontier at start_depth {}: {} items (target {})",
-                    start_depth, frontier.len(), frontier_target
-                );
-            }
         }
         bcache.finish(budget, consumed);
     }
@@ -1134,11 +1053,10 @@ where
     frontier.sort_by(|a, b| a.partial_q.total_cmp(&b.partial_q));
 
     // Predictive-truncation context — budget-capped flat walks only (see
-    // [`PredictiveTrunc`]). The guards: unbudgeted walks (certificates'
-    // coverage-complete runs + probes) and the z15-sharded fallback path
-    // must never fire; `CYCLOSYNTH_PREDICTIVE_TRUNC=0` is the kill switch.
+    // [`PredictiveTrunc`]). The guard: unbudgeted walks (certificates'
+    // coverage-complete runs + probes) must never fire;
+    // `CYCLOSYNTH_PREDICTIVE_TRUNC=0` is the kill switch.
     let pred_ctx: Option<PredictiveTrunc> = if initial_budget != u64::MAX
-        && !flat_walk_disabled()
         && !predictive_trunc_disabled()
         && !frontier.is_empty()
     {
@@ -1154,9 +1072,6 @@ where
     let pred = pred_ctx.as_ref();
 
     // ── Stage 3: walk the items in parallel ──
-    let w1_debug_skew = std::env::var("CYCLOSYNTH_W1_DEBUG").ok().as_deref() == Some("2");
-    let t_stage3 = if w1_debug_skew { Some(std::time::Instant::now()) } else { None };
-    let item_times: std::sync::Mutex<Vec<(f64, i64)>> = std::sync::Mutex::new(Vec::new());
     // `with_max_len(1)` lets idle workers steal single items: rayon's
     // default split budget (~2 splits/thread) otherwise freezes the vec
     // into ~64 fixed chunks, and the head chunk — the fattest, given the
@@ -1173,7 +1088,6 @@ where
                 aborted.store(true, Ordering::Relaxed);
                 return Vec::new().into_iter();
             }
-            let t0 = if w1_debug_skew { Some(std::time::Instant::now()) } else { None };
             let mut local: Vec<[i64; 16]> = Vec::new();
             let mut bcache = BudgetCache::new(pred);
             recurse_collect_norm_pruned(
@@ -1191,34 +1105,11 @@ where
             if let Some(p) = pred {
                 p.items_done.fetch_add(1, Ordering::Relaxed);
             }
-            if let Some(t) = t0 {
-                let tid = rayon::current_thread_index().map(|i| i as i64).unwrap_or(-1);
-                item_times.lock().expect("W1 skew mutex poisoned").push((t.elapsed().as_secs_f64(), tid));
-            }
             local.into_iter()
         })
         .collect();
-    if w1_debug_skew {
-        report_parallel_walk_skew(
-            item_times,
-            t_stage3.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0),
-        );
-    }
 
     let budget_hit = aborted.load(Ordering::Relaxed);
-    if let Some(p) = pred {
-        if std::env::var("CYCLOSYNTH_W1_DEBUG").ok().as_deref() == Some("1") {
-            eprintln!(
-                "[w1] predictive: items {}/{} consumed {}/{} fired={} budget_hit={}",
-                p.items_done.load(Ordering::Relaxed),
-                p.items_total,
-                initial_budget.saturating_sub(budget.load(Ordering::Relaxed)),
-                initial_budget,
-                p.fired.load(Ordering::Relaxed),
-                budget_hit
-            );
-        }
-    }
     (solutions, budget_hit)
 }
 

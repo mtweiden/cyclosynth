@@ -126,49 +126,9 @@ pub fn build_q_mpfr_zeta_from_mpfr_v(
     }
 }
 
-/// Q_base only — the prefix-independent part of the anisotropic metric
-/// (`coef_p_sigma1 · P_Σ1 + coef_id · I`), i.e.
-/// [`build_q_mpfr_zeta_from_mpfr_v`] without the rank-1 `coef_yy · ŷŷᵀ`
-/// term (the only part that varies with the prefix direction v). Used to
-/// compute the per-(k, ε) warm-LLL seed.
-pub fn build_q_base_mpfr_zeta(scratch: &mut IntScratch16, k: u32, eps: f64) {
-    let prec = scratch.prec_q;
-    let one = rfv(prec, 1.0);
-
-    let r_sq_f = 2.0_f64.powi(k as i32);
-    let r_sq = rfv(prec, r_sq_f);
-    let r = r_sq.clone().sqrt();
-    let eps_rf = rfv(prec, eps);
-
-    let delta_perp = MpFloat::with_val(prec, &r * &eps_rf);
-    let dp_sq = MpFloat::with_val(prec, &delta_perp * &delta_perp);
-    let inv_dp_sq = MpFloat::with_val(prec, &one / &dp_sq);
-    let inv_r_sq = MpFloat::with_val(prec, &one / &r_sq);
-
-    let coef_p_sigma1 = MpFloat::with_val(prec, &inv_dp_sq - &inv_r_sq);
-    let coef_id = inv_r_sq;
-
-    for i in 0..16 {
-        for j in 0..16 {
-            let mut qij = rfz(prec);
-            let same_block = (i < 8 && j < 8) || (i >= 8 && j >= 8);
-            if same_block {
-                let m = (i % 8) as f64 - (j % 8) as f64;
-                let p_sigma1 = 0.25 * (m * PI / 8.0).cos();
-                let p = rfv(prec, p_sigma1);
-                qij += MpFloat::with_val(prec, &coef_p_sigma1 * &p);
-            }
-            if i == j {
-                qij += &coef_id;
-            }
-            scratch.q_mpfr[i][j].assign(&qij);
-        }
-    }
-}
-
 /// Build Q from an f64 `v`. Test-only entry point (production uses
-/// `build_q_mpfr_zeta_from_mpfr_v` per prefix and `build_q_base_mpfr_zeta`
-/// for the seed); kept as the oracle for `build_q_zzeta_lattice`.
+/// `build_q_mpfr_zeta_from_mpfr_v` per prefix); kept as the oracle for
+/// `build_q_zzeta_lattice`.
 pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: f64) {
     let prec = scratch.prec_q;
     let one = rfv(prec, 1.0);
