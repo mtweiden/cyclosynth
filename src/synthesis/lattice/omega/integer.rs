@@ -144,6 +144,15 @@ pub fn find_aligned_lattice_points_outcome(
     )
 }
 
+/// Cold pipeline bail-out: log why the per-prefix search aborted and return an
+/// empty, non-escalating outcome. (The `GramOverflow` case escalates, so it
+/// stays inline.)
+#[cold]
+fn bail(eps: Float, k: u32, msg: std::fmt::Arguments) -> LatticeSearchOutcome {
+    eprintln!("[lattice] {msg} at eps={eps:e}, k={k}; bailing.");
+    LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false }
+}
+
 /// MPFR-`y` core of [`find_aligned_lattice_points_outcome`]: the alignment
 /// vector carries full precision, so the cap center and the SE alignment dot
 /// stay exact below the f64 ULP. `y_q` is at `scratch.prec_q`.
@@ -215,20 +224,8 @@ pub fn find_aligned_outcome_mpfr(
     let basis = scratch.basis;
     match crate::synthesis::lattice::omega::cholesky_lu::det_exact(&basis) {
         Some(1) | Some(-1) => {}
-        Some(d) => {
-            eprintln!(
-                "[lattice] LLL non-unimodular (det={}) at eps={:e}, k={}; bailing.",
-                d, eps, k
-            );
-            return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false };
-        }
-        None => {
-            eprintln!(
-                "[lattice] det_exact overflow at eps={:e}, k={}; bailing.",
-                eps, k
-            );
-            return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false };
-        }
+        Some(d) => return bail(eps, k, format_args!("LLL non-unimodular (det={d})")),
+        None => return bail(eps, k, format_args!("det_exact overflow")),
     }
 
     // Step 4: f64 Cholesky on the i256 Gram (natural-scale via 2^-scale_bits
@@ -240,11 +237,7 @@ pub fn find_aligned_outcome_mpfr(
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     if !chol_ok {
-        eprintln!(
-            "[lattice] Cholesky (f64) failed at eps={:e}, k={}; bailing.",
-            eps, k
-        );
-        return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false };
+        return bail(eps, k, format_args!("Cholesky (f64) failed"));
     }
 
     // Build R = Lᵀ at SE working precision (128-bit MPFR).
@@ -267,8 +260,7 @@ pub fn find_aligned_outcome_mpfr(
             .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
     if !lu_ok {
-        eprintln!("[lattice] LU solve failed at eps={:e}, k={}; bailing.", eps, k);
-        return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: false };
+        return bail(eps, k, format_args!("LU solve failed"));
     }
     let z_c_se: [MpFloat; 8] = std::array::from_fn(|i| {
         super::se::rfloat_to_se(&scratch.lu_x[i])
