@@ -49,6 +49,13 @@ builder options (`with_optimize_cost`, `with_q_cost`, `with_max_lde`, …).
 - **Deep ε is slow** (≤1e-7 is seconds-to-minutes per target); iterate and test
   at coarse ε (1e-2/1e-3). `#[ignore]` tests are diagnostic probes, not the
   default suite.
+- **Changes to the lattice / Schnorr-Euchner / precision hot path
+  (`src/synthesis/lattice/`, `clifford_t/mod.rs`) MUST pass the deep-ε canary
+  before commit:** `cargo test --release -- --ignored deep_eps_canary` (~5s).
+  Shallow-ε (≤1e-8) tests are **not** sufficient — deep-ε mis-pruning at
+  ε=1e-10 (where √κ(Q)≈2^68 crosses the f64/i128 boundary) silently *misses*
+  solutions and reads as slowness, not an error. The canary asserts a
+  known target finds at its exact minimum lde; a miss trips it loudly.
 - `CYCLOSYNTH_*` env vars are A/B kill-switches; some (e.g.
   `CYCLOSYNTH_BOUND_SQ`) change search *results*, not just performance.
 - For work *inside* the code, read the domain glossary at the top of

@@ -30,6 +30,12 @@ jobs:
       # Several diag-counter tests only do anything under `trace`.
       - name: Test (trace feature)
         run: cargo test --release --lib --features trace
+      # Deep-ε canary (#[ignore]d out of the default suite). Guards against
+      # silent deep-ε misses — a mis-prune at ε=1e-10 that shallow-ε tests
+      # can't see. Machine-independent invariant (find-lde), just slower on
+      # weaker runners; bounded by the test's own max_lde(99).
+      - name: Deep-ε canary
+        run: cargo test --release --lib -- --ignored deep_eps_canary
 
   clippy:
     name: clippy

@@ -250,6 +250,53 @@ mod probes;
         check_result(&result, &target, 0.01);
     }
 
+    /// Deep-ε canary — GUARDS AGAINST SILENT deep-ε MISSES.
+    ///
+    /// Rz(π/64) at ε=1e-10 has its minimum-cost solution at lde 97 (levels
+    /// 93 and 95 are empty). A change to the lattice / Schnorr-Euchner /
+    /// precision hot path that mis-prunes at deep ε — where √κ(Q) ≈ 2^68
+    /// crosses the f64/i128 boundary — silently MISSES this solution and
+    /// grinds up through empty levels. That looks like slowness, not an
+    /// error, and it passes every shallow-ε (≤ 1e-8) test (this is exactly
+    /// how a 2026-07 f64-bound change regressed: green at 1e-8/1e-9, broken
+    /// at 1e-10).
+    ///
+    /// The assertion is on `lde` because it is the deterministic minimum-cost
+    /// level: nothing correct finds Rz(π/64)@1e-10 below lde 97, so a miss →
+    /// higher lde or None, and a false positive → lower lde. `lde` is
+    /// race-proof (the outer t-loop is sequential; only the T-count *within*
+    /// a level varies under multithreading), so this holds without pinning
+    /// threads. `max_lde(99)` bounds a broken build to fail fast rather than
+    /// grind to the default ~105.
+    ///
+    /// `#[ignore]`d out of the fast default suite (~10 s). Run it as the
+    /// commit gate for ANY hot-path change:
+    ///   `cargo test --release -- --ignored deep_eps_canary`
+    #[test]
+    #[ignore = "deep-ε canary (~10s); run for hot-path changes: -- --ignored deep_eps_canary"]
+    fn deep_eps_canary_rz_pi_64() {
+        use crate::synthesis::angle::{su2_col_mpfr, Angle};
+        let eps = 1e-10;
+        let target = rz(PI as Float / 64.0);
+        // Exact MPFR column — deep ε aligns to this, not the f64 chain.
+        let col = su2_col_mpfr(Angle::PiRatio(1, 64), Angle::Rad(0.0), Angle::Rad(0.0), 384);
+        let result = SynthesizerT::new(eps)
+            .with_max_lde(99)
+            .synthesize_with_exact_col(target, &col)
+            .expect(
+                "Rz(π/64)@1e-10 MUST find a solution by lde 99 — None here is a \
+                 SILENT deep-ε MISS regression in the lattice/SE/precision path",
+            );
+        assert_eq!(
+            result.lde, 97,
+            "Rz(π/64)@1e-10 must find at lde 97 (got {}). Higher = silent deep-ε \
+             miss (the lde-97 solution was mis-pruned); lower = false positive. \
+             Either is a correctness regression in the deep-ε hot path.",
+            result.lde,
+        );
+        check_result(&result, &target, eps);
+    }
+
     #[test]
     fn test_synthesize_non_su2_input() {
         // U(2) target: an SU(2) rotation scaled by a global phase (det ≠ 1).
