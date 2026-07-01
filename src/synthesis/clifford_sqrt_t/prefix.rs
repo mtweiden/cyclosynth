@@ -25,6 +25,8 @@ pub(crate) static FGKM_PREFIX_CACHE: CacheByM<U2Q> =
 /// phase. Mirrors `clifford_t::canonical_key`: rotates the flattened
 /// matrix so the largest-magnitude entry is real-positive, then rounds to
 /// 6 decimals. Used for O(n)-average dedup in `build_fgkm_prefix_set_inner`.
+// Unitary entries have |c| ≤ 1, so |x·10⁶| ≤ ~10⁶ — exact and well inside i64.
+#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn canonical_key_q(u: &U2Q) -> [i64; 8] {
     let m = u.to_float();
     let flat = [m[0][0], m[0][1], m[1][0], m[1][1]];

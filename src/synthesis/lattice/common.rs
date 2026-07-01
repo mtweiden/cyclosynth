@@ -85,6 +85,8 @@ pub fn i256_to_f64(v: i256) -> f64 {
     // assumption).
     let bytes = abs.to_le_bytes();
     let limb = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().expect("8-byte little-endian limb"));
+    // Per-limb rounding is ≤ 2^-53 relative to the total; f64 output is approximate by contract.
+    #[allow(clippy::cast_precision_loss)]
     let r = (limb(0) as f64)
         + (limb(1) as f64) * SCALE_64
         + (limb(2) as f64) * SCALE_128
@@ -104,6 +106,8 @@ use std::ptr::NonNull;
 /// for moderate ε where the formula otherwise underflows.
 pub fn compute_prec_q(eps: f64) -> u32 {
     let log_recip = (1.0 / eps).log2().max(1.0);
+    // log₂(1/ε) ≤ 1074 for any positive f64 ε — bit counts fit u32.
+    #[allow(clippy::cast_possible_truncation)]
     let bits = (8.0 * log_recip).ceil() as u32;
     bits.max(100)
 }
@@ -119,6 +123,7 @@ pub fn compute_prec_q(eps: f64) -> u32 {
 /// `prec_q`, so each MPFR op in the LU is ~1.3× cheaper).
 pub fn compute_lu_prec(eps: f64) -> u32 {
     let log_recip = (1.0 / eps).log2().max(1.0);
+    #[allow(clippy::cast_possible_truncation)] // same u32 bound as compute_prec_q
     let bits = (6.0 * log_recip).ceil() as u32;
     bits.max(96)
 }

@@ -192,6 +192,8 @@ fn lattice_lde_estimate(epsilon: f64) -> u32 {
     if !(epsilon > 0.0 && epsilon < 1.0) {
         return 0;
     }
+    // −log₂ε ≤ 1074 for any positive f64 ε — fits i32/u32.
+    #[allow(clippy::cast_possible_truncation)]
     let raw = (-epsilon.log2()).ceil() as i32 - 3;
     raw.max(0) as u32
 }
@@ -309,11 +311,14 @@ impl SynthesizerQ {
         let log2_recip = if epsilon > 0.0 && epsilon < 1.0 {
             (1.0 / epsilon).log2()
         } else { 0.0 };
+        // log₂(1/ε) ≤ 1074 for any positive f64 ε — the lde formulas fit u32.
+        #[allow(clippy::cast_possible_truncation)]
         let min_lde = if epsilon <= 1e-8 {
             (0.7 * log2_recip).floor() as u32
         } else {
             0
         };
+        #[allow(clippy::cast_possible_truncation)] // same u32 bound as min_lde above
         let max_lde_override = if epsilon <= 1e-8 {
             (1.7 * log2_recip).ceil() as u32
         } else {
@@ -490,7 +495,11 @@ impl SynthesizerQ {
     /// rounded to the nearest 0.5.
     pub fn with_q_cost(mut self, weight: f64) -> Self {
         debug_assert!(weight > 0.0 && weight.is_finite());
-        self.q_cost_x2 = (2.0 * weight).round().max(1.0) as usize;
+        // f64→usize saturates; weight is a small user knob (debug-asserted finite).
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            self.q_cost_x2 = (2.0 * weight).round().max(1.0) as usize;
+        }
         self
     }
 

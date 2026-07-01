@@ -159,6 +159,8 @@ fn prefix_dag_times_target(u_l: &U2T, target: &Mat2) -> Mat2 {
 
 /// Phase-invariant canonical key for dedup: rotate so the
 /// largest-magnitude entry is real-positive, then round to 6 decimals.
+// Unitary entries have |c| ≤ 1, so |x·10⁶| ≤ ~10⁶ — exact and well inside i64.
+#[allow(clippy::cast_possible_truncation)]
 fn canonical_key(u: &U2T) -> [i64; 8] {
     let m = u.to_float();
     let flat = [m[0][0], m[0][1], m[1][0], m[1][1]];
@@ -414,6 +416,8 @@ fn lll_aligned_search(
 /// growth `|L_{t'}| ≈ 2^{t'}` against the inner search cost and is a sharp
 /// optimum — smaller explodes the prefix count, larger explodes the inner
 /// Schnorr-Euchner walk.
+// t ≤ max_lde ≈ 120 and threshold ≥ 0, so the ceil fits u32.
+#[allow(clippy::cast_possible_truncation)]
 fn optimal_t_prime(t: u32, eps: f64) -> u32 {
     if eps >= 1.0 {
         return 0;
@@ -679,7 +683,10 @@ impl SynthesizerT {
                 // Linear in log10(1/ε): 1.5 at decade 4, 2.8 at decade 6.
                 1.5 + 0.65 * (log10_recip - 4.0)
             };
+            // log₂(1/ε) ≤ 1074 for any positive f64 ε — the lde formulas fit u32.
+            #[allow(clippy::cast_possible_truncation)]
             let min_lde = (coef * log2_recip).floor() as u32;
+            #[allow(clippy::cast_possible_truncation)] // same u32 bound
             let max_lde = ((3.1 * log2_recip).ceil() as u32 + 2).max(50);
             (min_lde, max_lde)
         } else {
@@ -755,7 +762,10 @@ impl SynthesizerT {
         // tiny and the inner search is cheap anyway.
         let t_dc_start = if self.epsilon < 1.0 {
             let raw = (5.0 / 2.0) * (1.0 / self.epsilon).log2();
-            (raw.ceil() as u32).max(self.direct_limit + 1)
+            // log₂(1/ε) ≤ 1074 for any positive f64 ε — fits u32.
+            #[allow(clippy::cast_possible_truncation)]
+            let t_dc = (raw.ceil() as u32).max(self.direct_limit + 1);
+            t_dc
         } else {
             self.direct_limit + 1
         };
@@ -986,7 +996,8 @@ impl SynthesizerT {
         // build_ma_prefix_set order correlates position with structure, so
         // contiguous chunks concentrate similar prefixes on one worker;
         // dealing lowers time-to-first-hit under find_any.
-        let indices: Vec<u32> = (0..n as u32).collect();
+        let indices: Vec<u32> =
+            (0..u32::try_from(n).expect("prefix count fits u32")).collect();
         let order = crate::synthesis::stride_interleave(&indices, n_threads);
 
         // Algebraic parity pre-filter (see the det-parity gate in `run`): skip

@@ -78,6 +78,8 @@ pub fn det_phase_of(target: &Mat2) -> u32 {
     let det = target[0][0] * target[1][1] - target[0][1] * target[1][0];
     let arg = det.arg();
     let d_float = arg * 16.0 / (2.0 * PI);
+    // arg ∈ [−π, π] ⇒ d_float ∈ [−8, 8].
+    #[allow(clippy::cast_possible_truncation)]
     let d_int = d_float.round() as i32;
     (((d_int % 16) + 16) % 16) as u32
 }

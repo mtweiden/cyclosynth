@@ -201,7 +201,7 @@ pub fn find_aligned_outcome_mpfr(
     build_q_int(scratch);
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_BUILD_NS
-            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            .fetch_add(crate::synthesis::diag::elapsed_ns(t0), Ordering::Relaxed);
     }
 
     warm_seed_q_base(scratch, y_q, k, eps);
@@ -213,7 +213,7 @@ pub fn find_aligned_outcome_mpfr(
     let (lll_result, _) = super::lll::lll_l2_seeded(scratch, seed.as_ref());
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_LLL_NS
-            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            .fetch_add(crate::synthesis::diag::elapsed_ns(t0), Ordering::Relaxed);
     }
     if let LllResult::GramOverflow = lll_result {
         return LatticeSearchOutcome { solutions: Vec::new(), should_escalate: true };
@@ -233,7 +233,7 @@ pub fn find_aligned_outcome_mpfr(
     let chol_ok = cholesky_f64(scratch);
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_CHOLESKY_NS
-            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            .fetch_add(crate::synthesis::diag::elapsed_ns(t0), Ordering::Relaxed);
     }
     if !chol_ok {
         return bail(eps, k, format_args!("Cholesky (f64) failed"));
@@ -247,6 +247,8 @@ pub fn find_aligned_outcome_mpfr(
     // Step 5: solve B_LLLᵀ · z_c = c for the cap-center in lattice coords,
     // in MPFR at lu_prec (≈ 6·log₂(1/ε) bits).
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
+    // LLL-reduced basis entries stay ≪ 2^53 (≤ ~2^41 at deep ε) — exact in f64.
+    #[allow(clippy::cast_precision_loss)]
     for i in 0..8 {
         for j in 0..8 {
             scratch.lu_a[i][j].assign(rfv(scratch.prec_q, basis[j][i] as f64));
@@ -256,7 +258,7 @@ pub fn find_aligned_outcome_mpfr(
     let lu_ok = lu_solve_int_inplace(scratch);
     if let Some(t0) = t_phase {
         crate::synthesis::diag::T_LU_NS
-            .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            .fetch_add(crate::synthesis::diag::elapsed_ns(t0), Ordering::Relaxed);
     }
     if !lu_ok {
         return bail(eps, k, format_args!("LU solve failed"));
@@ -280,6 +282,8 @@ pub fn find_aligned_outcome_mpfr(
     } else {
         super::cholesky_lu::euclidean_cholesky(&basis)
     };
+    // target_norm = 2^k is exactly representable in f64 for any k < 64.
+    #[allow(clippy::cast_precision_loss)]
     let target_norm_f = target_norm as f64;
     let count = AtomicU64::new(0);
     let no_abort = AtomicBool::new(false);
@@ -357,7 +361,7 @@ pub fn find_aligned_outcome_mpfr(
     if trace {
         if let Some(t0) = t_phase {
             crate::synthesis::diag::T_SE_NS
-                .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                .fetch_add(crate::synthesis::diag::elapsed_ns(t0), Ordering::Relaxed);
         }
         crate::synthesis::diag::N_SE_CALLBACKS
             .fetch_add(count.load(Ordering::Relaxed), Ordering::Relaxed);

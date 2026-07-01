@@ -212,11 +212,15 @@ pub fn normalize4(v: [f64; 4]) -> Option<[f64; 4]> {
 // ─── Integer square root ──────────────────────────────────────────────────────
 
 /// Floor of √n for non-negative n.
+// f64 seed is exact for n < 2^53 and off by ≤ a few ULPs up to 2^62 (the
+// correction loops absorb that); (s+1)² overflows i64 only for n ≥ 2^62.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 #[inline]
 pub fn integer_sqrt(n: i64) -> i64 {
     if n <= 0 {
         return 0;
     }
+    debug_assert!(n < (1i64 << 62), "integer_sqrt: n = {n} risks (s+1)^2 overflow");
     let mut s = (n as f64).sqrt() as i64;
     // Correct for floating-point rounding (at most a few steps).
     while s > 0 && s * s > n {
@@ -233,6 +237,8 @@ pub fn integer_sqrt(n: i64) -> i64 {
 /// Record a candidate if it passes the alignment threshold.
 ///
 /// threshold_sq = 2^k · (1 − ε²). A solution passes if (x · av)² ≥ threshold_sq.
+// Brute path: Σ coords² = 2^k with k ≤ direct_limit (=8), so |coord| ≤ 2^4 — exact in f64.
+#[allow(clippy::cast_precision_loss)]
 #[inline]
 fn record_if_aligned(
     a1: i64, b1: i64, c1: i64, d1: i64,
@@ -425,7 +431,8 @@ use rayon::prelude::*;
 /// enumerate u2 and solve u1's pair, or enumerate u1 and solve u2's —
 /// chosen by where the alignment energy sits). Parallelised over the
 /// outer (I0, I1) pairs via rayon.
-#[allow(clippy::too_many_arguments)]
+// Brute path: rem ≤ 2^k, |coord| ≤ 2^(k/2) with k ≤ direct_limit (=8) — exact in f64.
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
 fn brute_enum<
     const I0: usize, const I1: usize, const I2: usize,
     const I3: usize, const I4: usize, const I5: usize,
@@ -491,7 +498,8 @@ fn brute_enum<
 }
 
 /// Inner 4-level nest of [`brute_enum`] for one fixed (I0, I1) pair.
-#[allow(clippy::too_many_arguments)]
+// Brute path: rem ≤ 2^k, |coord| ≤ 2^(k/2) with k ≤ direct_limit (=8) — exact in f64.
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
 fn brute_enum_inner<
     const I0: usize, const I1: usize, const I2: usize,
     const I3: usize, const I4: usize, const I5: usize,
@@ -589,6 +597,8 @@ pub fn brute_aligned_search(
     let target_norm: i64 = 1i64 << k;
     let av = compute_align_vec(v);
 
+    // target_norm = 2^k is exactly representable in f64 for any k < 64.
+    #[allow(clippy::cast_precision_loss)]
     let thresh_sq = if epsilon > 0.0 {
         target_norm as f64 * (1.0 - epsilon * epsilon)
     } else {
@@ -612,6 +622,7 @@ pub fn brute_aligned_search(
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::cast_precision_loss)] // test coords are tiny
 mod tests {
     use super::*;
 

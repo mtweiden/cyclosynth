@@ -85,6 +85,8 @@ pub fn dd_sqrt(s: (f64, f64)) -> (f64, f64) {
 /// Convert i64 → dd. Exact for any i64 (since |z| ≤ 2^63 fits in dd's
 /// 2^106 range; two-piece split if |z| > 2^53).
 #[inline]
+// Guarded: the fast arm requires |z| ≤ 2^53 (exact); split limbs are < 2^32; 2^32 is f64-exact.
+#[allow(clippy::cast_precision_loss)]
 pub fn dd_from_i64(z: i64) -> (f64, f64) {
     if z.unsigned_abs() <= (1u64 << 53) {
         (z as f64, 0.0)

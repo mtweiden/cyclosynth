@@ -90,6 +90,9 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
         }
 
         // X_i = round(μ̄_{κ,i}) descending from κ-1, shrinking μ̄_{κ,j} as we go.
+        // Lazy size-reduce: per-pass rounding of the f64 μ̄ is corrected on the
+        // next pass (L² invariant); xi round-trips f64 exactly by construction.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
         for i in (0..kappa).rev() {
             let xi = scratch.mu_bar[kappa][i].round() as i64;
             x[i] = xi;

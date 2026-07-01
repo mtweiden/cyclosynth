@@ -71,7 +71,10 @@ pub fn svp_enum_block(
     let mut x = vec![0i64; block_size];
 
     enumerate_recursive(
-        block_size as i32 - 1,
+        #[allow(clippy::cast_possible_truncation)] // block_size ≤ 16
+        {
+            block_size as i32 - 1
+        },
         block_size,
         &r,
         &mu,
@@ -109,10 +112,14 @@ fn enumerate_recursive(
     }
     let i = depth as usize;
     // Centre: c = -Σ_{j > i} μ[j][i] · x[j].
+    // SVP block coeffs x[j] and the centre stay O(1)-small (block ≤ 4 in prod).
+    #[allow(clippy::cast_precision_loss)]
     let mut c = 0.0_f64;
+    #[allow(clippy::cast_precision_loss)]
     for j in (i + 1)..block_size {
         c -= mu[j][i] * (x[j] as f64);
     }
+    #[allow(clippy::cast_possible_truncation)] // centre is O(1)-small (see above)
     let c_round = c.round() as i64;
 
     // Schnorr-Euchner ordering: try c_round, c_round+1, c_round-1,
@@ -128,6 +135,7 @@ fn enumerate_recursive(
             -(step / 2)
         };
         let candidate = c_round + offset;
+        #[allow(clippy::cast_precision_loss)] // candidate is O(1)-small (see centre)
         let delta = candidate as f64 - c;
         let inc = delta * delta * r[i];
         let new_partial = partial_dist + inc;
@@ -494,6 +502,7 @@ pub fn bkz_tours(
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // test values are tiny/checked
 mod tests {
     use super::*;
 

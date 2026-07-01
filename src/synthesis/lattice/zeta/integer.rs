@@ -62,7 +62,7 @@ fn run_lll_ladder(scratch: &mut IntScratch16, k: u32, eps: f64) -> Option<()> {
     let det_check = super::cholesky_lu::det_exact(&scratch.basis);
 
     if let Some(t) = t_lll {
-        diag::T_LLL_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        diag::T_LLL_NS.fetch_add(diag::elapsed_ns(t), Ordering::Relaxed);
     }
     if let LllResult::GramOverflow = lll_result {
         return None;
@@ -226,7 +226,7 @@ where
         scratch.c[i].assign(MpFloat::with_val(prec, &y[i] * &cap_mid));
     }
     if let Some(t) = t_build {
-        diag::T_BUILD_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        diag::T_BUILD_NS.fetch_add(diag::elapsed_ns(t), Ordering::Relaxed);
     }
 
     if run_lll_ladder(scratch, k, eps).is_none() {
@@ -263,7 +263,7 @@ where
         let t_chol = if trace { Some(std::time::Instant::now()) } else { None };
         let chol_ok = cholesky_f64(scratch);
         if let Some(t) = t_chol {
-            diag::T_CHOLESKY_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            diag::T_CHOLESKY_NS.fetch_add(diag::elapsed_ns(t), Ordering::Relaxed);
         }
         if !chol_ok {
             eprintln!(
@@ -278,7 +278,7 @@ where
     let t_lu = if trace { Some(std::time::Instant::now()) } else { None };
     let lu_ok = lu_solve_int_inplace(scratch);
     if let Some(t) = t_lu {
-        diag::T_LU_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        diag::T_LU_NS.fetch_add(diag::elapsed_ns(t), Ordering::Relaxed);
     }
     if !lu_ok {
         eprintln!(
@@ -298,6 +298,7 @@ where
     if trace {
         // Trace-only: MPFR-direct round vs the f64 path (zero at moderate
         // ε; up to ULP at deep ε).
+        #[allow(clippy::cast_possible_truncation)] // trace-only diagnostic delta
         let max_diff = (0..16).fold(0i64, |acc, i| {
             let f64_path = scratch.lu_x[i].to_f64().round() as i64;
             (f64_path - z_c.int[i]).abs().max(acc)
@@ -402,7 +403,7 @@ where
                 if trace {
                     diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed);
                     diag::T_LEAF_CHECK_NS.fetch_add(
-                        t_leaf.expect("leaf timer set when trace on").elapsed().as_nanos() as u64,
+                        diag::elapsed_ns(t_leaf.expect("leaf timer set when trace on")),
                         Ordering::Relaxed,
                     );
                 }
@@ -414,7 +415,7 @@ where
                 if trace {
                     diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed);
                     diag::T_LEAF_CHECK_NS.fetch_add(
-                        t_leaf.expect("leaf timer set when trace on").elapsed().as_nanos() as u64,
+                        diag::elapsed_ns(t_leaf.expect("leaf timer set when trace on")),
                         Ordering::Relaxed,
                     );
                 }
@@ -427,7 +428,7 @@ where
             if trace {
                 diag::N_BILINEAR_REJECTED.fetch_add(1, Ordering::Relaxed);
                 diag::T_LEAF_CHECK_NS.fetch_add(
-                    t_leaf.expect("leaf timer set when trace on").elapsed().as_nanos() as u64,
+                    diag::elapsed_ns(t_leaf.expect("leaf timer set when trace on")),
                     Ordering::Relaxed,
                 );
             }
@@ -447,7 +448,7 @@ where
             if trace {
                 diag::N_ALIGN_REJECTED.fetch_add(1, Ordering::Relaxed);
                 diag::T_LEAF_CHECK_NS.fetch_add(
-                    t_leaf.expect("leaf timer set when trace on").elapsed().as_nanos() as u64,
+                    diag::elapsed_ns(t_leaf.expect("leaf timer set when trace on")),
                     Ordering::Relaxed,
                 );
             }
@@ -456,7 +457,7 @@ where
         if trace {
             diag::N_SOLS_RETURNED.fetch_add(1, Ordering::Relaxed);
             diag::T_LEAF_CHECK_NS.fetch_add(
-                t_leaf.expect("leaf timer set when trace on").elapsed().as_nanos() as u64,
+                diag::elapsed_ns(t_leaf.expect("leaf timer set when trace on")),
                 Ordering::Relaxed,
             );
         }
@@ -480,7 +481,7 @@ where
     }
 
     if let Some(t) = t_se {
-        diag::T_SE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        diag::T_SE_NS.fetch_add(diag::elapsed_ns(t), Ordering::Relaxed);
     }
 
     solutions

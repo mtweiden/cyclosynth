@@ -363,6 +363,9 @@ fn recurse<F>(
     };
     let max_off = (z_high - z_mid).max(z_mid - z_low).max(0);
 
+    // Euclidean prune channel stays f64 by design: |z| > 2^53 rounding is
+    // absorbed by the 1e-9 relative slack + exact leaf filter (cf. zeta 1.5e-8 cliff).
+    #[allow(clippy::cast_precision_loss)]
     let tail_eucl = if let Some(re) = r_chol_eucl {
         let mut t = 0.0_f64;
         for j in (d + 1)..8 {
@@ -405,6 +408,8 @@ fn recurse<F>(
             continue;
         }
 
+        // f64 Euclidean channel: same slack argument as tail_eucl above.
+        #[allow(clippy::cast_precision_loss)]
         let new_partial_eucl = if let Some(re) = r_chol_eucl {
             let level_eucl = re[d][d] * (zd as f64) + tail_eucl;
             let p = partial_eucl + level_eucl * level_eucl;
@@ -446,7 +451,18 @@ pub fn reconstruct_x(b_lll: &IMat8, z: &[i128; 8]) -> [i64; 8] {
             x[j] += z[i] * i128::from(b_lll[i][j]);
         }
     }
-    std::array::from_fn(|j| x[j] as i64)
+    std::array::from_fn(|j| {
+        debug_assert!(
+            i64::try_from(x[j]).is_ok(),
+            "reconstruct_x: x[{j}] = {} exceeds i64 (Theorem 2 bound violated)",
+            x[j]
+        );
+        // Fits i64 per the doc bound above; debug-guarded, release keeps the raw cast.
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            x[j] as i64
+        }
+    })
 }
 
 /// Evaluate the bilinear form `B(x) = a₁b₁ − a₁d₁ + b₁c₁ + c₁d₁ + a₂b₂ −

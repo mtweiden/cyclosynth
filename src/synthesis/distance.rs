@@ -172,6 +172,7 @@ pub fn diamond_distance_u2q_float(u: &U2Q, target: &Mat2) -> f64 {
     }
 
     // Precompute (cos(kπ/8), sin(kπ/8)) for k = 0..7 in MPFR from f64 sin/cos.
+    #[allow(clippy::cast_precision_loss)] // k < 8, exact in f64
     let basis: [(MpFloat, MpFloat); 8] = std::array::from_fn(|k| {
         let theta = (k as f64) * PI / 8.0;
         (

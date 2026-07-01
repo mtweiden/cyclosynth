@@ -25,6 +25,8 @@ pub const INT_NEG_ONE: Int = Int::from_i8(-1);
 
 
 /// Convert an `Int` to `f64`.
+// Per-limb rounding is ≤ 2^-53 relative to the total; f64 output is approximate by contract.
+#[allow(clippy::cast_precision_loss)]
 #[inline]
 pub fn int_to_f64(x: Int) -> f64 {
     const SCALE_64: f64 = 18446744073709551616.0; // 2^64

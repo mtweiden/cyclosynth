@@ -21,6 +21,8 @@ pub enum Angle {
 
 impl Angle {
     /// Evaluate to f64 radians.
+    // f64 evaluation is the approximate path by contract (exact path: to_radians_mpfr).
+    #[allow(clippy::cast_precision_loss)]
     pub fn to_radians_f64(self) -> f64 {
         match self {
             Angle::Rad(x) => x,
@@ -71,7 +73,7 @@ fn parse_decimal_ratio(s: &str) -> Option<(i64, i64)> {
             if frac.is_empty() || frac.len() > 18 {
                 return None;
             }
-            let den = 10i64.checked_pow(frac.len() as u32)?;
+            let den = 10i64.checked_pow(u32::try_from(frac.len()).ok()?)?;
             let int_v: i64 = if int_part.is_empty() { 0 } else { int_part.parse().ok()? };
             let frac_v: i64 = frac.parse().ok()?;
             (int_v.checked_mul(den)?.checked_add(frac_v)?, den)

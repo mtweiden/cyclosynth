@@ -106,6 +106,8 @@ pub fn lu_solve_int_inplace(scratch: &mut IntScratch16) -> bool {
     // basis entry post-LLL is well within f64's 53-bit exact range — the
     // basis stays under 2^41 even at deep ε, and at moderate ε ≤ 2^15).
     let prec = scratch.lu_prec;
+    // Basis entries ≪ 2^53 (≤ 2^41 at deep ε, doc above) — exact in f64.
+    #[allow(clippy::cast_precision_loss)]
     for i in 0..16 {
         for j in 0..16 {
             scratch.lu_a[i][j].assign(rfv(prec, scratch.basis[j][i] as f64));
@@ -263,6 +265,7 @@ pub fn det_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
     }
     let det = a[15][15].checked_mul(sign)?;
     if det >= i128::from(i64::MIN) && det <= i128::from(i64::MAX) {
+        #[allow(clippy::cast_possible_truncation)] // range-checked above
         Some(det as i64)
     } else {
         None
@@ -400,6 +403,7 @@ fn i128_to_mpfr(v: i128, prec: u32) -> MpFloat {
     let neg = v < 0;
     let abs = if neg { -v } else { v } as u128;
     let hi = (abs >> 64) as u64;
+    #[allow(clippy::cast_possible_truncation)] // deliberate low-limb extraction
     let lo = abs as u64;
     let mut f = MpFloat::with_val(prec, hi);
     f <<= 64u32;
@@ -426,6 +430,9 @@ pub fn euclidean_cholesky(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]> {
     }
     // f64 Cholesky on the (lower) triangular factor L such that L·Lᵀ = G.
     let mut l = [[0.0_f64; 16]; 16];
+    // f64 GS is the designed approximate channel: SE brackets carry 1e-9
+    // relative slack and the dd/exact filters arbitrate (diag_inner_cap probe).
+    #[allow(clippy::cast_precision_loss)]
     for i in 0..16 {
         for j in 0..=i {
             let mut s = gram[i][j] as f64;
@@ -456,6 +463,7 @@ pub fn euclidean_cholesky(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]> {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // test values are tiny/checked
 mod tests {
     use super::*;
 

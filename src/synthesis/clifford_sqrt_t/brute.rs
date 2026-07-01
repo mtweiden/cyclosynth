@@ -18,6 +18,8 @@ pub(crate) struct BruteShell {
     pub(crate) mats: Vec<[Complex64; 4]>,
 }
 
+// Brute shell: k ≤ BRUTE_LIMIT (=3), so j < 8 and |coord| ≤ 2^1.5 — exact in f64.
+#[allow(clippy::cast_precision_loss)]
 pub(crate) fn brute_shell_cached(k: u32) -> &'static BruteShell {
     use std::sync::OnceLock;
     // Array-of-OnceLock init idiom: `CELL` is the repeat element, so each

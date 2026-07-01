@@ -1,3 +1,6 @@
+// Test/assertion tolerances: cast values are small counts or verified separately.
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+
 #[path = "probes.rs"]
 mod probes;
 

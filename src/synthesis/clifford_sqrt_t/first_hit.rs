@@ -11,6 +11,8 @@ use super::*;
 /// and displaces the constructed cap, and no enumeration bound recovers
 /// a solution the cap no longer contains. `U_L` is exact ring data and
 /// `target` exact f64 data, so the product carries full `prec` bits.
+// i < 8 in the ζ-power tables — fits u32.
+#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn prefix_residual_uv_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [MpFloat; 4] {
     use rug::ops::Pow;
     // ζ^i = e^{iπ/8}: cos/sin tables at prec.
@@ -550,6 +552,7 @@ impl SynthesizerQ {
         if let Some(best) = &self.global_best_cost {
             let c = best.load(Ordering::Relaxed);
             if c != usize::MAX {
+                #[allow(clippy::cast_possible_truncation)] // clamped to < u32::MAX above
                 let c32 = c.min(u32::MAX as usize - 1) as u32;
                 m = m.min(c32.saturating_add(1));
             }

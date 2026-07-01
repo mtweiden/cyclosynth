@@ -38,6 +38,8 @@ impl SynthesizerQ {
         for (gi, &mg) in m_groups.iter().enumerate() {
             // Roll-forward share: a phase that finishes early donates its
             // leftover deadline to the remaining phases.
+            // as_millis u128→u64 wraps only after ~584M years of wall time.
+            #[allow(clippy::cast_possible_truncation)]
             let left = deadline_ms
                 .saturating_sub(t_phases.elapsed().as_millis() as u64);
             let share = (left / (m_groups.len() - gi) as u64).max(1);
@@ -811,7 +813,7 @@ impl SynthesizerQ {
                                 .synthesize(target);
                             if crate::synthesis::diag::trace_enabled() {
                                 crate::synthesis::diag::T_STAGE_BASELINE_NS
-                                    .fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                                    .fetch_add(crate::synthesis::diag::elapsed_ns(t0), Ordering::Relaxed);
                             }
                             r
                         })
@@ -872,7 +874,7 @@ impl SynthesizerQ {
             self.run_frontier_grouped_by_m(target, tasks, deadline_ms, shared_best);
         if trace {
             diag::T_STAGE_FRONTIER_NS
-                .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                .fetch_add(diag::elapsed_ns(t_w), Ordering::Relaxed);
             eprintln!(
                 "[zeta] optimal frontier {:?} deadline={}ms t={:.0}ms truncated={:?}",
                 tasks, deadline_ms,
@@ -937,7 +939,7 @@ impl SynthesizerQ {
             self.screen_and_baseline(target, with_baseline);
         if trace {
             diag::T_STAGE_SCREEN_NS
-                .fetch_add(t_s.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                .fetch_add(diag::elapsed_ns(t_s), Ordering::Relaxed);
         }
         // Signal screen completion to the peer parity branch; the
         // matching wait sits just before the frontier dispatch below.
@@ -1057,7 +1059,7 @@ impl SynthesizerQ {
         // scoreboard column.
         if trace {
             diag::T_STAGE_FRONTIER_NS
-                .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                .fetch_add(diag::elapsed_ns(t_w), Ordering::Relaxed);
             eprintln!("[zeta] optimal enum {:?} parallel t={:.0}ms",
                 tasks, t_w.elapsed().as_secs_f64() * 1000.0);
         }
@@ -1090,6 +1092,8 @@ impl SynthesizerQ {
         if self.certify && self.certify_extra_ms > 0 {
             let t_ext = std::time::Instant::now();
             let mut k = fl + self.optimal_lde_window + 1;
+            // as_millis u128→u64 wraps only after ~584M years of wall time.
+            #[allow(clippy::cast_possible_truncation)]
             while k <= self.max_lde
                 && crate::synthesis::cost_bound::cost_lb_half_units(k) < best.0
                 && (t_ext.elapsed().as_millis() as u64) < self.certify_extra_ms

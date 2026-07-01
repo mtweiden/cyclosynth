@@ -119,7 +119,7 @@ fn resolve_prune(
     let dd_prune = verify_partial_dd_exceeds(r_eucl_dd, z, z_c, u_eucl_dd, depth, threshold);
     if let Some(t) = t_v {
         crate::synthesis::diag::T_VERIFY_DD_NS
-            .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            .fetch_add(crate::synthesis::diag::elapsed_ns(t), Ordering::Relaxed);
         if !dd_prune {
             crate::synthesis::diag::N_VERIFY_PRUNE_CORRECTED.fetch_add(1, Ordering::Relaxed);
         }
@@ -389,6 +389,8 @@ where
 /// f64 tail `Σ_{j>d} l[d][j]·((z[j] − z_c.int[j]) − z_c.frac[j])` for coord
 /// `d` — the Schnorr-Euchner level's contribution from already-fixed
 /// coordinates. (The deep-ε dd variant is [`q_tail_dd`].)
+// SE center-relative offsets/deltas are bracket-sized: |z − z_c.int| ≤ 2·max_off ≪ 2^53 (se_bracket doc).
+#[allow(clippy::cast_precision_loss)]
 #[inline]
 fn se_tail_f64(l: &[[f64; 16]; 16], d: usize, z: &[i64; 16], z_c: &SeCenter16) -> f64 {
     let mut t = 0.0_f64;
@@ -413,6 +415,8 @@ fn se_tail_f64(l: &[[f64; 16]; 16], d: usize, z: &[i64; 16], z_c: &SeCenter16) -
 /// fixed by widening SE coords to i128 (b387ad5). Zeta runs only at ε ≥ 1e-8
 /// today (base ≲ 2^55), so this must never fire; a future zeta exact-column
 /// deep path must widen z to i128 rather than reach this panic.
+// `off as i64` truncation is the intended floor/ceil-to-integer bracket edge (doc above).
+#[allow(clippy::cast_possible_truncation)]
 #[inline]
 fn se_bracket(base: i64, center_off: f64, span: f64) -> (i64, i64, i64, i64) {
     let add = |off: f64| -> i64 {
@@ -427,7 +431,8 @@ fn se_bracket(base: i64, center_off: f64, span: f64) -> (i64, i64, i64, i64) {
     (z_low, z_high, z_mid, max_off)
 }
 
-#[allow(clippy::too_many_arguments)]
+// SE center-relative offsets/deltas are bracket-sized: |z − z_c.int| ≤ 2·max_off ≪ 2^53 (se_bracket doc).
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
 fn recurse<F>(
     depth: i32,
     l: &[[f64; 16]; 16],
@@ -687,6 +692,8 @@ impl PredictiveTrunc {
     /// Projection check, called from the [`BudgetCache`] refill slow path
     /// (~once per worker per BUDGET_CHUNK nodes). Returns `true` when the
     /// walk is projected infeasible and must abort.
+    // Budget projection is a heuristic; count-to-f64 rounding is immaterial.
+    #[allow(clippy::cast_precision_loss)]
     fn should_abort(&self, budget: &AtomicU64) -> bool {
         if self.fired.load(Ordering::Relaxed) {
             return true;
@@ -748,7 +755,8 @@ struct SePrefixItem {
 /// short-circuit and the dd verify — except that surviving children are
 /// pushed as new work items instead of recursed into. Only used at
 /// d ≥ 4, so the depth-1 Q-filter and leaf handling never apply here.
-#[allow(clippy::too_many_arguments)]
+// SE center-relative offsets/deltas are bracket-sized: |z − z_c.int| ≤ 2·max_off ≪ 2^53 (se_bracket doc).
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
 fn expand_se_prefix_node(
     d: usize,
     mut item: SePrefixItem,
@@ -893,6 +901,9 @@ fn expand_se_prefix_node(
 /// triggered LDE-stagger dispatcher to observe search progress. Pass
 /// `None, None` if you don't need either.
 #[allow(clippy::too_many_arguments)]
+// SE center-relative offsets/deltas are bracket-sized: |z − z_c.int| ≤ 2·max_off ≪ 2^53 (se_bracket doc).
+// f64→i128/i64: target_norm_sq = 2^k is f64-exact for k ≤ 126; bracket edges are floor/ceil ints.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub fn schnorr_euchner<F>(
     l: &[[f64; 16]; 16],
     l_q_dd: Option<&[[(f64, f64); 16]; 16]>,
@@ -1113,7 +1124,8 @@ where
     (solutions, budget_hit)
 }
 
-#[allow(clippy::too_many_arguments)]
+// SE center-relative offsets/deltas are bracket-sized: |z − z_c.int| ≤ 2·max_off ≪ 2^53 (se_bracket doc).
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
 fn recurse_collect_norm_pruned<F>(
     depth: i32,
     l: &[[f64; 16]; 16],
@@ -1290,6 +1302,7 @@ fn recurse_collect_norm_pruned<F>(
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // test values are tiny
 mod par_tests {
     use super::*;
 
@@ -1334,6 +1347,7 @@ mod par_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // test values are tiny/checked
 mod tests {
     use super::*;
     use super::super::cholesky_lu::{cholesky_f64, lu_solve_int_inplace};

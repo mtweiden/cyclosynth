@@ -12,9 +12,19 @@
 //! start and dumped at the end, showing per-lde where time and prefix count
 //! went.
 
+// Telemetry values are approximate by nature; counter-to-f64 casts are display-only.
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "trace")]
 use std::sync::OnceLock;
+
+/// Elapsed nanoseconds as `u64` for the phase-timer counters (u64 ns wraps
+/// after ~584 years; telemetry-only).
+#[inline]
+pub fn elapsed_ns(t: std::time::Instant) -> u64 {
+    t.elapsed().as_nanos() as u64
+}
 
 #[cfg(all(feature = "python", feature = "trace"))]
 use pyo3::prelude::*;

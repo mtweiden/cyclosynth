@@ -177,6 +177,9 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch16, kappa: usize) -> usize {
 
         // Steps 4-5: compute X_i descending from κ-1 to 0, predictively
         // shrinking μ̄_{κ,j} as we go.
+        // Lazy size-reduce: per-pass rounding of the f64 μ̄ is corrected on the
+        // next pass (L² invariant); xi round-trips f64 exactly by construction.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
         for i in (0..kappa).rev() {
             let xi = scratch.mu_bar[kappa][i].to_f64().round() as i64;
             x[i] = xi;
@@ -297,6 +300,7 @@ pub fn run_lll(scratch: &mut IntScratch16) -> LllResult {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // test values are tiny/checked
 mod tests {
     use super::*;
     use super::super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};

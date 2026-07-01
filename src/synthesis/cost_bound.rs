@@ -41,6 +41,7 @@ pub fn class_cost_lb_half_units(d: u32, q_cost_x2: usize) -> usize {
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // test values are tiny/checked
 mod tests {
     use super::*;
     use crate::matrix::u2::U2Q;

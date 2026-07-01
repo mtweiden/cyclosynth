@@ -219,6 +219,8 @@ impl Synthesizer {
     pub fn q_weight(&self) -> f64 {
         match &self.inner {
             Backend::T(_) => 3.0,
+            // q_cost_x2 is a small user knob (default 7; set from 2·weight).
+            #[allow(clippy::cast_precision_loss)]
             Backend::Q(s) => s.q_cost_x2 as f64 / 2.0,
         }
     }

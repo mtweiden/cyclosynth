@@ -220,6 +220,8 @@ struct CanonicalCandidate {
     u2_pos: U2Q,
 }
 
+// axis_idx enumerates the 3 rotation axes — fits u8.
+#[allow(clippy::cast_possible_truncation)]
 fn canonical_candidates() -> Vec<CanonicalCandidate> {
     let mut out = Vec::with_capacity(9);
     let so3_axis_neg = [rx_neg_q(), ry_neg_q(), rz_neg_q()];
@@ -396,7 +398,7 @@ impl PyBlochDecomposer {
 
     /// Decompose a unitary into a gate string.
     /// Accepts U2(ZOmega) → {H, S, T} or U2(ZZeta) → {H, S, T, Q}.
-    fn decompose(&self, u: pyo3::PyRef<'_, PyU2>) -> String {
+    fn decompose(&self, u: PyRef<'_, PyU2>) -> String {
         match u.to_inner() {
             U2Variant::Omega(u2t) => BlochDecomposer.decompose(u2t),
             U2Variant::Zeta(u2q)  => BlochDecomposer.decompose(u2q),

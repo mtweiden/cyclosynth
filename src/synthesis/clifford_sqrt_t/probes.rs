@@ -2,6 +2,9 @@
 //! runnable but out of the unit-test file. Run individually, e.g.
 //! `cargo test --release --lib fgkm_prefix_split_cost_ratio -- --ignored --nocapture`.
 
+
+// Probe telemetry: counter/coordinate casts are diagnostic output, approximate by nature.
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 #![allow(unused_imports)]
 use super::*; // the tests module
 use super::super::*; // clifford_sqrt_t internals

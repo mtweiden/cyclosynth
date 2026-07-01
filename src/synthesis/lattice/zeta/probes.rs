@@ -6,6 +6,9 @@
 //! module's private helpers) live inline in that module's `#[cfg(test)]`
 //! block instead.
 
+
+// Probe telemetry: counter/coordinate casts are diagnostic output, approximate by nature.
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 #![allow(unused_imports)]
 use crate::rings::MpFloat;
 use super::*; // the tests module

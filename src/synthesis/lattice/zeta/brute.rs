@@ -21,6 +21,8 @@ use super::se::bilinear_forms;
 /// orthogonality the Σ-image of y is `4·target` on σ_1, zero elsewhere:
 ///   `y[j]   = cos(jπ/8)·v[0] + sin(jπ/8)·v[1]`  (u_1 block)
 ///   `y[8+j] = cos(jπ/8)·v[2] + sin(jπ/8)·v[3]`  (u_2 block)
+// j < 8 — exact in f64.
+#[allow(clippy::cast_precision_loss)]
 pub fn compute_align_vec_zeta(v: [f64; 4]) -> [f64; 16] {
     let mut y = [0.0f64; 16];
     for j in 0..8 {
@@ -55,6 +57,7 @@ pub fn uv_to_lattice_y_zeta_mpfr(v: &[MpFloat; 4], k: u32, prec: u32) -> [MpFloa
     let mut raw: [MpFloat; 16] = std::array::from_fn(|_| MpFloat::with_val(prec, 0.0));
     let mut raw_norm_sq = MpFloat::with_val(prec, 0.0);
     for j in 0..8 {
+        #[allow(clippy::cast_possible_truncation)] // j < 8
         let theta = MpFloat::with_val(prec, &pi * (j as u32)) / 8u32;
         let c = theta.clone().cos();
         let s = theta.sin();
@@ -104,6 +107,8 @@ fn enumerate<F: FnMut(&[i64; 16])>(
         }
         return;
     }
+    // Exact for remaining < 2^53; shells run at k ≤ BRUTE_LIMIT (=3), remaining ≤ 8.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     let bound = (remaining as f64).sqrt().floor() as i64;
     for v in -bound..=bound {
         let v2 = v * v;

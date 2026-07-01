@@ -74,6 +74,7 @@ pub fn build_q_mpfr_zeta_from_mpfr_v(
     // points. The multiplication and sum are MPFR-exact at `prec` bits, so
     // y[j]'s precision matches v's.
     let mut y: [MpFloat; 16] = std::array::from_fn(|_| rfz(prec));
+    #[allow(clippy::cast_precision_loss)] // j < 8, exact in f64
     for j in 0..8 {
         let theta = (j as f64) * PI / 8.0;
         let c_f = theta.cos();
@@ -111,6 +112,7 @@ pub fn build_q_mpfr_zeta_from_mpfr_v(
 
             let same_block = (i < 8 && j < 8) || (i >= 8 && j >= 8);
             if same_block {
+                #[allow(clippy::cast_precision_loss)] // i%8, j%8 < 8, exact in f64
                 let m = (i % 8) as f64 - (j % 8) as f64;
                 let p_sigma1 = 0.25 * (m * PI / 8.0).cos();
                 let p = rfv(prec, p_sigma1);
@@ -164,6 +166,7 @@ pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: f
     // f64 cos/sin (the angles are j·π/8 for j=0..7, so the f64 cos/sin
     // values are exact-ish to ~1e-16; that's enough at the prec_q scale).
     let mut y: [MpFloat; 16] = std::array::from_fn(|_| rfz(prec));
+    #[allow(clippy::cast_precision_loss)] // j < 8, exact in f64
     for j in 0..8 {
         let theta = (j as f64) * PI / 8.0;
         let c = theta.cos();
@@ -195,6 +198,7 @@ pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: f
             // Term 2: coef_p_sigma1 · P_σ1[i][j]. Block-diagonal.
             let same_block = (i < 8 && j < 8) || (i >= 8 && j >= 8);
             if same_block {
+                #[allow(clippy::cast_precision_loss)] // i%8, j%8 < 8, exact in f64
                 let m = (i % 8) as f64 - (j % 8) as f64;
                 let p_sigma1 = 0.25 * (m * PI / 8.0).cos();
                 let p = rfv(prec, p_sigma1);
@@ -285,6 +289,7 @@ pub fn build_q_zzeta_lattice(v: [f64; 4], k: u32, eps: f64) -> [[f64; 16]; 16] {
             // Term 2: coef_p_sigma1 · P_σ1[i][j]. Block-diagonal.
             let same_block = (i < 8 && j < 8) || (i >= 8 && j >= 8);
             if same_block {
+                #[allow(clippy::cast_precision_loss)] // i%8, j%8 < 8, exact in f64
                 let m = (i % 8) as f64 - (j % 8) as f64;
                 let p_sigma1 = 0.25 * (m * PI / 8.0).cos();
                 q[i][j] += coef_p_sigma1 * p_sigma1;

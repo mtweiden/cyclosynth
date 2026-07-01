@@ -28,6 +28,7 @@ pub mod se;
 pub use integer::{find_aligned_lattice_points, find_aligned_lattice_points_exact};
 
 #[cfg(test)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // test values are tiny/checked
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;

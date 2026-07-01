@@ -2,6 +2,9 @@
 //! kept runnable but out of the unit-test file. Run individually, e.g.
 //! `cargo test --release --lib prefix_count_with_vs_without_coset_dedup -- --ignored --nocapture`.
 
+
+// Probe telemetry: counter/coordinate casts are diagnostic output, approximate by nature.
+#![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 #![allow(unused_imports)]
 use crate::rings::MpFloat;
 use super::*; // the tests module: shared helpers (u3, rz, …)

@@ -246,6 +246,7 @@ pub fn det_exact(m: &IMat8) -> Option<i64> {
     let det_signed = if sign < 0 { -det } else { det };
     let lo = det_signed.as_i128();
     if lo >= i128::from(i64::MIN) && lo <= i128::from(i64::MAX) {
+        #[allow(clippy::cast_possible_truncation)] // range-checked above
         Some(lo as i64)
     } else {
         None
@@ -294,6 +295,9 @@ pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
         }
     }
     let mut l = [[0.0_f64; 8]; 8];
+    // f64 GS is the designed approximate channel: SE brackets carry 1e-9
+    // relative slack and the exact leaf filter arbitrates (diag_inner_cap probe).
+    #[allow(clippy::cast_precision_loss)]
     for i in 0..8 {
         for j in 0..=i {
             let mut s = gram[i][j] as f64;
