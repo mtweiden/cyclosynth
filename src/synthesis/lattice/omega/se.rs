@@ -61,7 +61,7 @@ impl ShellFilter {
         for j in 0..8 {
             let b0 = i256::from_i64(basis[0][j]);
             // ‖b₀‖² ≤ 8·(2^33)² = 2^69, cannot overflow i256.
-            a = a.checked_add(b0.checked_mul(b0).unwrap()).unwrap();
+            a = a.checked_add(b0.checked_mul(b0).expect("‖b₀‖² ≤ 2^69, cannot overflow i256")).expect("‖b₀‖² ≤ 2^69, cannot overflow i256");
         }
         ShellFilter { basis: *basis, a, target_norm: i256::from_i128(target_norm) }
     }

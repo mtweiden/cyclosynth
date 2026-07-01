@@ -342,8 +342,8 @@ impl SynthesizerQ {
                         }
                         let _finished_guard = FinishedGuard(my_finished);
                         if i > 0 && trigger_nodes > 0 {
-                            let pred = predecessor_consumed.as_ref().unwrap();
-                            let pred_done = predecessor_finished.as_ref().unwrap();
+                            let pred = predecessor_consumed.as_ref().expect("predecessor set for i>0");
+                            let pred_done = predecessor_finished.as_ref().expect("predecessor set for i>0");
                             loop {
                                 if abort_ref.load(Ordering::Relaxed) { return; }
                                 if pred.load(Ordering::Relaxed) >= trigger_nodes { break; }
@@ -386,16 +386,16 @@ impl SynthesizerQ {
                                 my_consumed.load(Ordering::Relaxed));
                         }
                         if result.is_none() && budget_hit {
-                            pass2_ref.lock().unwrap().push(k);
+                            pass2_ref.lock().expect("pass2 collector poisoned").push(k);
                         }
-                        results_ref.lock().unwrap().push((k, result, budget_hit));
+                        results_ref.lock().expect("results collector poisoned").push((k, result, budget_hit));
                     });
                 }
             });
             // Lowest-lde finder wins (minimum-circuit semantics).
             let mut found_results: Vec<(u32, SynthResultQ)> = results
                 .into_inner()
-                .unwrap()
+                .expect("results collector poisoned")
                 .into_iter()
                 .filter_map(|(k, r, _)| r.map(|x| (k, x)))
                 .collect();
@@ -406,7 +406,7 @@ impl SynthesizerQ {
                     eprintln!("[zeta] dc parallel-lde window wall  t={:.0}ms",
                         t_window.elapsed().as_secs_f64() * 1000.0);
                 }
-                let queue = pass2_queue.into_inner().unwrap();
+                let queue = pass2_queue.into_inner().expect("pass2 collector poisoned");
                 let unclear_below: Vec<u32> = queue
                     .iter()
                     .copied()
@@ -417,7 +417,7 @@ impl SynthesizerQ {
             }
             k_cursor = window_end + 1;
         }
-        (None, pass2_queue.into_inner().unwrap(), Vec::new())
+        (None, pass2_queue.into_inner().expect("pass2 collector poisoned"), Vec::new())
     }
 
     /// Pass-2 retries for the dc dispatcher: only levels where pass 1
@@ -656,7 +656,7 @@ impl SynthesizerQ {
                         // unverified — report it for the enum grid.
                         if let Some(out) = unclear_out.as_deref_mut() {
                             out.extend(unverified_small.iter().copied());
-                            out.extend(pass2_collector.lock().unwrap().iter().copied());
+                            out.extend(pass2_collector.lock().expect("pass2 collector poisoned").iter().copied());
                         }
                         return Some(r);
                     }
@@ -665,10 +665,10 @@ impl SynthesizerQ {
                             if budget_hit { " (budget hit)" } else { "" },
                             t_k.elapsed().as_secs_f64() * 1000.0);
                     }
-                    if budget_hit { pass2_collector.lock().unwrap().push(k); }
+                    if budget_hit { pass2_collector.lock().expect("pass2 collector poisoned").push(k); }
                 }
                 let (found, still_truncated) = self.retry_budget_truncated_levels(
-                    &target, m_split, pass2_collector.into_inner().unwrap(),
+                    &target, m_split, pass2_collector.into_inner().expect("pass2 collector poisoned"),
                 );
                 if let Some(r) = found {
                     if let Some(out) = unclear_out.as_deref_mut() {
@@ -849,7 +849,7 @@ impl SynthesizerQ {
             let keys = build_fgkm_prefix_coset_keys(m_split);
             let mask = coset_keep_mask(&cand_idx, &keys);
             let mut it = mask.iter();
-            cand_idx.retain(|_| *it.next().unwrap());
+            cand_idx.retain(|_| *it.next().expect("mask parallel to cand_idx"));
             let post = cand_idx.len().max(1);
             let ratio = (pre.div_ceil(post)) as u64;
             per_prefix_cap = per_prefix_cap.saturating_mul(ratio.max(1));

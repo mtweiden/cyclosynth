@@ -32,8 +32,8 @@ pub(crate) fn canonical_key_q(u: &U2Q) -> [i64; 8] {
     let (idx, _) = flat
         .iter()
         .enumerate()
-        .max_by(|(_, a), (_, b)| a.norm_sqr().partial_cmp(&b.norm_sqr()).unwrap())
-        .unwrap();
+        .max_by(|(_, a), (_, b)| a.norm_sqr().total_cmp(&b.norm_sqr()))
+        .expect("flat has 4 entries");
     let piv = flat[idx];
 
     let rot: Vec<f64> = if piv.norm() < 1e-12 {
@@ -52,14 +52,14 @@ pub(crate) fn canonical_key_q(u: &U2Q) -> [i64; 8] {
         .map(|x| (x * 1_000_000.0).round() as i64)
         .collect::<Vec<_>>()
         .try_into()
-        .unwrap()
+        .expect("8-element rotated key")
 }
 
 /// Build `L_m^Q`: the FGKM canonical-form prefix set with Clifford suffix,
 /// at syllable count `m`. Cached by `m` (Arc-cloned on hit).
 pub fn build_fgkm_prefix_set(m: u32) -> Arc<Vec<U2Q>> {
     {
-        let cache = FGKM_PREFIX_CACHE.lock().unwrap();
+        let cache = FGKM_PREFIX_CACHE.lock().expect("FGKM prefix cache poisoned");
         if let Some(v) = cache.get(&m) {
             return Arc::clone(v);
         }
@@ -67,7 +67,7 @@ pub fn build_fgkm_prefix_set(m: u32) -> Arc<Vec<U2Q>> {
     let result = Arc::new(build_fgkm_prefix_set_inner(m));
     FGKM_PREFIX_CACHE
         .lock()
-        .unwrap()
+        .expect("FGKM prefix cache poisoned")
         .insert(m, Arc::clone(&result));
     result
 }
@@ -84,7 +84,7 @@ pub(crate) static BUILD_L_Q_TQ_CACHE: CacheByM<(usize, usize)> =
 /// heuristic ranking + prune, not a sound bound.
 pub fn build_fgkm_prefix_gate_counts(m: u32) -> Arc<Vec<(usize, usize)>> {
     {
-        let cache = BUILD_L_Q_TQ_CACHE.lock().unwrap();
+        let cache = BUILD_L_Q_TQ_CACHE.lock().expect("build L Q TQ cache poisoned");
         if let Some(v) = cache.get(&m) {
             return Arc::clone(v);
         }
@@ -97,7 +97,7 @@ pub fn build_fgkm_prefix_gate_counts(m: u32) -> Arc<Vec<(usize, usize)>> {
     let arc = Arc::new(counts);
     BUILD_L_Q_TQ_CACHE
         .lock()
-        .unwrap()
+        .expect("build L Q TQ cache poisoned")
         .insert(m, Arc::clone(&arc));
     arc
 }
@@ -147,7 +147,7 @@ pub(crate) static FGKM_PREFIX_ORBIT_CACHE: CacheByM<usize> =
 /// partners (pinned by `zeta_coset_orbits_sound`).
 pub fn build_fgkm_prefix_orbits(m: u32) -> Arc<Vec<usize>> {
     {
-        let cache = FGKM_PREFIX_ORBIT_CACHE.lock().unwrap();
+        let cache = FGKM_PREFIX_ORBIT_CACHE.lock().expect("FGKM prefix orbit cache poisoned");
         if let Some(v) = cache.get(&m) {
             return Arc::clone(v);
         }
@@ -173,7 +173,7 @@ pub fn build_fgkm_prefix_orbits(m: u32) -> Arc<Vec<usize>> {
     let arc = Arc::new(orbit);
     FGKM_PREFIX_ORBIT_CACHE
         .lock()
-        .unwrap()
+        .expect("FGKM prefix orbit cache poisoned")
         .insert(m, Arc::clone(&arc));
     arc
 }
@@ -218,7 +218,7 @@ pub(crate) static BUILD_L_Q_COSET_KEY_CACHE: CacheByM<(usize, u32)> =
 /// `build_fgkm_prefix_set(m)` — the key [`coset_keep_mask`] groups by.
 pub fn build_fgkm_prefix_coset_keys(m: u32) -> Arc<Vec<(usize, u32)>> {
     {
-        let cache = BUILD_L_Q_COSET_KEY_CACHE.lock().unwrap();
+        let cache = BUILD_L_Q_COSET_KEY_CACHE.lock().expect("build L Q coset key cache poisoned");
         if let Some(v) = cache.get(&m) {
             return Arc::clone(v);
         }
@@ -233,7 +233,7 @@ pub fn build_fgkm_prefix_coset_keys(m: u32) -> Arc<Vec<(usize, u32)>> {
     let arc = Arc::new(keys);
     BUILD_L_Q_COSET_KEY_CACHE
         .lock()
-        .unwrap()
+        .expect("build L Q coset key cache poisoned")
         .insert(m, Arc::clone(&arc));
     arc
 }

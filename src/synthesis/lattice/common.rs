@@ -84,7 +84,7 @@ pub fn i256_to_f64(v: i256) -> f64 {
     // explicit endianness of the i256↔rug helpers below (no native-endian
     // assumption).
     let bytes = abs.to_le_bytes();
-    let limb = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().unwrap());
+    let limb = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().expect("8-byte little-endian limb"));
     let r = (limb(0) as f64)
         + (limb(1) as f64) * SCALE_64
         + (limb(2) as f64) * SCALE_128

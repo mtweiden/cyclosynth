@@ -461,7 +461,7 @@ where
                 if trace {
                     diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed);
                     diag::T_LEAF_CHECK_NS.fetch_add(
-                        t_leaf.unwrap().elapsed().as_nanos() as u64,
+                        t_leaf.expect("leaf timer set when trace on").elapsed().as_nanos() as u64,
                         Ordering::Relaxed,
                     );
                 }
@@ -473,7 +473,7 @@ where
                 if trace {
                     diag::N_NORM_REJECTED.fetch_add(1, Ordering::Relaxed);
                     diag::T_LEAF_CHECK_NS.fetch_add(
-                        t_leaf.unwrap().elapsed().as_nanos() as u64,
+                        t_leaf.expect("leaf timer set when trace on").elapsed().as_nanos() as u64,
                         Ordering::Relaxed,
                     );
                 }
@@ -486,7 +486,7 @@ where
             if trace {
                 diag::N_BILINEAR_REJECTED.fetch_add(1, Ordering::Relaxed);
                 diag::T_LEAF_CHECK_NS.fetch_add(
-                    t_leaf.unwrap().elapsed().as_nanos() as u64,
+                    t_leaf.expect("leaf timer set when trace on").elapsed().as_nanos() as u64,
                     Ordering::Relaxed,
                 );
             }
@@ -506,7 +506,7 @@ where
             if trace {
                 diag::N_ALIGN_REJECTED.fetch_add(1, Ordering::Relaxed);
                 diag::T_LEAF_CHECK_NS.fetch_add(
-                    t_leaf.unwrap().elapsed().as_nanos() as u64,
+                    t_leaf.expect("leaf timer set when trace on").elapsed().as_nanos() as u64,
                     Ordering::Relaxed,
                 );
             }
@@ -515,7 +515,7 @@ where
         if trace {
             diag::N_SOLS_RETURNED.fetch_add(1, Ordering::Relaxed);
             diag::T_LEAF_CHECK_NS.fetch_add(
-                t_leaf.unwrap().elapsed().as_nanos() as u64,
+                t_leaf.expect("leaf timer set when trace on").elapsed().as_nanos() as u64,
                 Ordering::Relaxed,
             );
         }

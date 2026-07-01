@@ -190,7 +190,7 @@ impl SynthesizerQ {
                     cands.iter().map(|&(pi, _, f)| (pi, f)).collect();
                 let mask = coset_keep_mask(&iw, &keys);
                 let mut it = mask.iter();
-                cands.retain(|_| *it.next().unwrap());
+                cands.retain(|_| *it.next().expect("mask parallel to cands"));
             }
             for (pi, d_r, floor) in cands {
                 units.push(PrefixWorkUnit {
@@ -343,7 +343,7 @@ impl SynthesizerQ {
                                     }
                                 }
                                 if let Some(r) = local {
-                                    let mut g = merged_ref.lock().unwrap();
+                                    let mut g = merged_ref.lock().expect("frontier merge collector poisoned");
                                     if g.as_ref().is_none_or(|b| r.0 < b.0) {
                                         *g = Some(r);
                                     }
@@ -351,7 +351,7 @@ impl SynthesizerQ {
                             });
                         }
                     });
-                    merged.into_inner().unwrap()
+                    merged.into_inner().expect("frontier merge collector poisoned")
                 } else {
                     units
                         .par_iter()
@@ -689,8 +689,8 @@ impl SynthesizerQ {
                     (r, t0.elapsed())
                 })
                 .expect("spawn odd parity branch");
-            let (r_even, dt_even) = h_even.join().unwrap();
-            let (r_odd, dt_odd) = h_odd.join().unwrap();
+            let (r_even, dt_even) = h_even.join().expect("even parity branch panicked");
+            let (r_odd, dt_odd) = h_odd.join().expect("odd parity branch panicked");
             if trace {
                 eprintln!(
                     "[zeta] optimal branches even={:.0}ms odd={:.0}ms scope={:.0}ms",
@@ -819,7 +819,7 @@ impl SynthesizerQ {
             // reach the enum grid or the window silently misses them.
             let mut unclear = Vec::new();
             let first = first_hit.synthesize_with_unverified_levels(target, Some(&mut unclear));
-            (first, unclear, baseline_handle.and_then(|h| h.join().unwrap()))
+            (first, unclear, baseline_handle.and_then(|h| h.join().expect("baseline branch panicked")))
         });
         let baseline: Option<(usize, SynthResultQ)> =
             t_baseline.and_then(|r| self.t_result_to_candidate(r));
@@ -1018,7 +1018,7 @@ impl SynthesizerQ {
                             .expect("spawn lde-window thread")
                     })
                     .collect();
-                handles.into_iter().map(|h| h.join().unwrap()).collect()
+                handles.into_iter().map(|h| h.join().expect("lde-window branch panicked")).collect()
             });
         // The grid is the frontier stage's deep-ε/certify form — same
         // scoreboard column.

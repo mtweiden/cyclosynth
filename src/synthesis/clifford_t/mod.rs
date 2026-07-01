@@ -164,8 +164,8 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
     let flat = [m[0][0], m[0][1], m[1][0], m[1][1]];
 
     let (idx, _) = flat.iter().enumerate()
-        .max_by(|(_, a), (_, b)| a.norm_sqr().partial_cmp(&b.norm_sqr()).unwrap())
-        .unwrap();
+        .max_by(|(_, a), (_, b)| a.norm_sqr().total_cmp(&b.norm_sqr()))
+        .expect("flat has 4 entries");
     let piv = flat[idx];
 
     let rot: Vec<_> = if piv.norm() < 1e-12 {
@@ -179,7 +179,7 @@ fn canonical_key(u: &U2T) -> [i64; 8] {
     };
 
     rot.iter().map(|x| (x * 1_000_000.0).round() as i64).collect::<Vec<_>>()
-        .try_into().unwrap()
+        .try_into().expect("8 reals from 4 complex entries")
 }
 
 /// Right-coset dedup gate for `build_ma_prefix_set`. Tri-state:
@@ -219,7 +219,7 @@ pub(crate) fn build_ma_prefix_set_reference(t_prime: u32) -> Arc<Vec<U2T>> {
 pub fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
     let key = (t_prime, coset_dedup);
     {
-        let cache = MA_PREFIX_CACHE.lock().unwrap();
+        let cache = MA_PREFIX_CACHE.lock().expect("MA prefix cache poisoned");
         if let Some(v) = cache.get(&key) {
             return Arc::clone(v);
         }
@@ -228,7 +228,7 @@ pub fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
     // A racing thread may have inserted an identical copy; overwrite is harmless.
     MA_PREFIX_CACHE
         .lock()
-        .unwrap()
+        .expect("MA prefix cache poisoned")
         .insert(key, Arc::clone(&result));
     result
 }

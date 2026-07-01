@@ -561,7 +561,7 @@ impl Mul for SO3<R2> {
                     self.e[3*r+k] * rhs.e[3*k+c]
                 });
                 // Align exponents before summing.
-                let max_e = products.iter().map(|p| p.exp).max().unwrap();
+                let max_e = products.iter().map(|p| p.exp).max().expect("3-element product array is always non-empty");
                 let sum = products.iter().fold(R2::ZERO, |acc, p| {
                     acc + p.lift_num(max_e - p.exp)
                 });
@@ -701,7 +701,7 @@ impl Mul for SO3<R4> {
                 let products: [Ratio<R4>; 3] = std::array::from_fn(|k| {
                     self.e[3*r+k] * rhs.e[3*k+c]
                 });
-                let max_e = products.iter().map(|p| p.exp).max().unwrap();
+                let max_e = products.iter().map(|p| p.exp).max().expect("3-element product array is always non-empty");
                 let sum = products.iter().fold(R4::ZERO, |acc, p| {
                     acc + p.lift_num(max_e - p.exp)
                 });

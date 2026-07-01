@@ -283,8 +283,8 @@ pub fn beta_3(u: &[i64; 8]) -> i128 {
 /// candidate (the totally-real-subring decomposition of unitarity).
 #[inline]
 pub fn bilinear_forms(x: &[i64; 16]) -> (i128, i128, i128) {
-    let u1: [i64; 8] = x[0..8].try_into().unwrap();
-    let u2: [i64; 8] = x[8..16].try_into().unwrap();
+    let u1: [i64; 8] = x[0..8].try_into().expect("8-of-16 slice");
+    let u2: [i64; 8] = x[8..16].try_into().expect("8-of-16 slice");
     (
         beta_1(&u1) + beta_1(&u2),
         beta_2(&u1) + beta_2(&u2),
@@ -575,7 +575,7 @@ fn report_parallel_walk_skew(
     item_times: std::sync::Mutex<Vec<(f64, i64)>>,
     stage3_wall_s: f64,
 ) {
-    let mut times = item_times.into_inner().unwrap();
+    let mut times = item_times.into_inner().expect("W1 skew mutex poisoned");
     times.sort_by(|a, b| b.0.total_cmp(&a.0));
     let total: f64 = times.iter().map(|t| t.0).sum();
     let top: Vec<String> = times.iter().take(10).map(|t| format!("{:.3}", t.0)).collect();
@@ -1192,7 +1192,7 @@ where
             }
             if let Some(t) = t0 {
                 let tid = rayon::current_thread_index().map(|i| i as i64).unwrap_or(-1);
-                item_times.lock().unwrap().push((t.elapsed().as_secs_f64(), tid));
+                item_times.lock().expect("W1 skew mutex poisoned").push((t.elapsed().as_secs_f64(), tid));
             }
             local.into_iter()
         })

@@ -82,7 +82,7 @@ pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self>{
                 });
                 (*name, gate_u.diamond_distance(u))
             })
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
             .filter(|(_, d)| *d < 1e-3)
             .map(|(name, _)| name)
     }
@@ -460,7 +460,7 @@ fn canonical_segment_string(axis: u8, a: u8) -> String {
         0 => format!("H{q_run}H"),       // x: R_x(a·π/8) = H · Q^a · H
         1 => format!("SH{q_run}HSSS"),   // y: R_y(a·π/8) = S · H · Q^a · H · S†
         2 => q_run,                       // z: R_z(a·π/8) = Q^a
-        _ => unreachable!(),
+        _ => unreachable!("axis is 0/1/2 by construction"),
     }
 }
 
