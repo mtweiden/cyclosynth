@@ -408,18 +408,7 @@ impl SynthesizerQ {
         let baseline: Option<(usize, SynthResultQ)> = if !d_even { None } else {
             crate::synthesis::clifford_t::SynthesizerT::new(self.epsilon)
                 .synthesize(target)
-                .and_then(|r| {
-                    // NaN-safe reject: `!(d < eps)` also rejects a NaN distance,
-                    // unlike `d >= eps`.
-                    #[allow(clippy::neg_cmp_op_on_partial_ord)]
-                    if !(r.distance < self.epsilon) {
-                        return None;
-                    }
-                    r.gates.map(|gs| {
-                        let c = gates_cost(&gs, self.q_cost_x2);
-                        (c, SynthResultQ { gates: Some(gs), lde: r.lde, distance: r.distance })
-                    })
-                })
+                .and_then(|r| self.t_result_to_candidate(r))
         };
 
         // One full enumeration per parity branch at shell k_max. The
@@ -589,6 +578,18 @@ impl SynthesizerQ {
             };
             (r, cert)
         };
+        // Merge the two parity results: keep the cheaper when both hit, else
+        // whichever exists; then finish (attach the cost certificate).
+        let pick_finish = |a: Option<SynthResultQ>, b: Option<SynthResultQ>, horizon: u32| {
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    let ca = gates_cost(a.gates.as_deref().unwrap_or(""), self.q_cost_x2);
+                    let cb = gates_cost(b.gates.as_deref().unwrap_or(""), self.q_cost_x2);
+                    Some(finish(if cb < ca { b } else { a }, horizon, self.q_cost_x2))
+                }
+                (a, b) => a.or(b).map(|r| finish(r, horizon, self.q_cost_x2)),
+            }
+        };
 
         if !self.odd_parity_branch {
             let mut ledger = Vec::new();
@@ -655,16 +656,7 @@ impl SynthesizerQ {
             );
             let horizon =
                 branch_horizon(&ledger_even).min(branch_horizon(&ledger_odd));
-            return match (r_e, r_o) {
-                (Some(a), Some(b)) => {
-                    let ca =
-                        gates_cost(a.gates.as_deref().unwrap_or(""), self.q_cost_x2);
-                    let cb =
-                        gates_cost(b.gates.as_deref().unwrap_or(""), self.q_cost_x2);
-                    Some(finish(if cb < ca { b } else { a }, horizon, self.q_cost_x2))
-                }
-                (a, b) => a.or(b).map(|r| finish(r, horizon, self.q_cost_x2)),
-            };
+            return pick_finish(r_e, r_o, horizon);
         }
         let (r_even, r_odd) = std::thread::scope(|s| {
             let even_ledger = &mut ledger_even;
@@ -713,14 +705,25 @@ impl SynthesizerQ {
         // Coverage holds only up to the SMALLER branch horizon: a level
         // is closed only when both parity worlds enumerated it fully.
         let horizon = branch_horizon(&ledger_even).min(branch_horizon(&ledger_odd));
-        match (r_even, r_odd) {
-            (Some(a), Some(b)) => {
-                let ca = gates_cost(a.gates.as_deref().unwrap_or(""), self.q_cost_x2);
-                let cb = gates_cost(b.gates.as_deref().unwrap_or(""), self.q_cost_x2);
-                Some(finish(if cb < ca { b } else { a }, horizon, self.q_cost_x2))
-            }
-            (a, b) => a.or(b).map(|r| finish(r, horizon, self.q_cost_x2)),
+        pick_finish(r_even, r_odd, horizon)
+    }
+
+    /// Convert a Clifford+T baseline result into a √T candidate `(cost, result)`,
+    /// or `None` if it doesn't reach ε. NaN-safe: `!(d < eps)` also rejects a NaN
+    /// distance (unlike `d >= eps`). The T circuit has no Q gates, so its cost is
+    /// exactly 2·T_count half-units.
+    fn t_result_to_candidate(
+        &self,
+        r: crate::synthesis::clifford_t::SynthResultT,
+    ) -> Option<(usize, SynthResultQ)> {
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(r.distance < self.epsilon) {
+            return None;
         }
+        r.gates.map(|g| {
+            let c = gates_cost(&g, self.q_cost_x2);
+            (c, SynthResultQ { gates: Some(g), lde: r.lde, distance: r.distance })
+        })
     }
 
     /// Scan ε-close candidates, decompose each, and keep the min-cost
@@ -819,20 +822,8 @@ impl SynthesizerQ {
             let first = first_hit.synthesize_with_unverified_levels(target, Some(&mut unclear));
             (first, unclear, baseline_handle.and_then(|h| h.join().unwrap()))
         });
-        // The baseline's gate string contains no Q, so its cost is
-        // exactly 2·T_count half-units.
-        let baseline: Option<(usize, SynthResultQ)> = t_baseline.and_then(|r| {
-            let dist = r.distance;
-            // NaN-safe reject (see the screen_and_baseline note).
-            #[allow(clippy::neg_cmp_op_on_partial_ord)]
-            if !(dist < self.epsilon) {
-                return None;
-            }
-            r.gates.map(|g| {
-                let c = gates_cost(&g, self.q_cost_x2);
-                (c, SynthResultQ { gates: Some(g), lde: r.lde, distance: dist })
-            })
-        });
+        let baseline: Option<(usize, SynthResultQ)> =
+            t_baseline.and_then(|r| self.t_result_to_candidate(r));
         (first, unclear, baseline)
     }
 
