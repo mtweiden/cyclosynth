@@ -799,7 +799,6 @@ impl SynthesizerQ {
             shared_best_cost,
         } = opts;
         use rayon::prelude::*;
-        use crate::synthesis::diag;
 
         let prefixes = build_fgkm_prefix_set(m_split);
         let q_cost_x2 = self.q_cost_x2;
@@ -951,7 +950,6 @@ impl SynthesizerQ {
             let budget_hit = AtomicBool::new(false);
             let u_l_local = *u_l;
             let target_local = *target;
-            let capture = diag::capture_enabled();
             let suffix_floor =
                 crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2);
             let should_stop = |x: &[i64; 16]| -> bool {
@@ -964,13 +962,7 @@ impl SynthesizerQ {
                 }
                 let u_r = solution_to_u2q_with_det_phase(x, lde_inner, d_r);
                 let u_full = u_l_local * u_r;
-                let hit = diamond_distance_u2q_float(&u_full, &target_local) < epsilon;
-                if hit && capture {
-                    diag::try_capture(diag::CapturedFind {
-                        x_inner: *x, lde_inner, lde_total, d_r, d_l,
-                    });
-                }
-                hit
+                diamond_distance_u2q_float(&u_full, &target_local) < epsilon
             };
 
             // Optimize mode routes the walker's abort signal through this
