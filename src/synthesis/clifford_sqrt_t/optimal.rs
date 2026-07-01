@@ -88,6 +88,54 @@ impl SynthesizerQ {
         (best_fr, truncated)
     }
 
+    /// Post-filter + coset-dedup prefix candidates `(pi, d_r, floor)` for one
+    /// frontier level.
+    fn frontier_level_candidates(
+        &self,
+        prefixes: &[U2Q],
+        costs: &[(usize, usize)],
+        lde_total: u32,
+        m: u32,
+        d_target: u32,
+    ) -> Vec<(usize, u32, usize)> {
+        let q_cost_x2 = self.q_cost_x2;
+        // Same filter the task grid uses: open at ε ≤ 1e-5, else
+        // the per-m first-hit defaults.
+        let filter = if self.optimal_open_dr_filter {
+            Vec::new()
+        } else {
+            default_inner_det_phase_filter(m)
+        };
+        let mut cands: Vec<(usize, u32, usize)> = Vec::new();
+        for (pi, (u_l, &(t, q))) in prefixes.iter().zip(costs.iter()).enumerate() {
+            if u_l.k >= lde_total {
+                continue;
+            }
+            let d_r = inner_d_r(d_target, u_l);
+            if !filter.is_empty() && !filter.contains(&d_r) {
+                continue;
+            }
+            let u_l_cost = 2 * t + q_cost_x2 * q;
+            let floor = u_l_cost.saturating_add(
+                crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
+            );
+            cands.push((pi, d_r, floor));
+        }
+        // Right-coset dedup of this arm's post-filter set: one rep
+        // per (orbit, k) class ∩ usable, the min-floor member (the
+        // floor is the frontier's sort/prune currency).
+        // CYCLOSYNTH_ZETA_COSET=0 disables. See `coset_keep_mask`.
+        if *ZETA_COSET_DEDUP && cands.len() > 1 {
+            let keys = build_fgkm_prefix_coset_keys(m);
+            let iw: Vec<(usize, usize)> =
+                cands.iter().map(|&(pi, _, f)| (pi, f)).collect();
+            let mask = coset_keep_mask(&iw, &keys);
+            let mut it = mask.iter();
+            cands.retain(|_| *it.next().expect("mask parallel to cands"));
+        }
+        cands
+    }
+
     /// Anytime merged-frontier enum stage (fast path, certify off): the
     /// prefix work-units of every (k, m) arm, tagged with the sound
     /// floor `cost(U_L) + class_cost_lb(d_R)` (one currency across
@@ -154,44 +202,13 @@ impl SynthesizerQ {
             if m == 0 || m >= lde_total {
                 continue;
             }
-            // Same filter the task grid uses: open at ε ≤ 1e-5, else
-            // the per-m first-hit defaults.
-            let filter = if self.optimal_open_dr_filter {
-                Vec::new()
-            } else {
-                default_inner_det_phase_filter(m)
-            };
-            let mut cands: Vec<(usize, u32, usize)> = Vec::new();
-            for (pi, (u_l, &(t, q))) in level_prefixes[li]
-                .iter()
-                .zip(level_costs[li].iter())
-                .enumerate()
-            {
-                if u_l.k >= lde_total {
-                    continue;
-                }
-                let d_r = inner_d_r(d_target, u_l);
-                if !filter.is_empty() && !filter.contains(&d_r) {
-                    continue;
-                }
-                let u_l_cost = 2 * t + q_cost_x2 * q;
-                let floor = u_l_cost.saturating_add(
-                    crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
-                );
-                cands.push((pi, d_r, floor));
-            }
-            // Right-coset dedup of this arm's post-filter set: one rep
-            // per (orbit, k) class ∩ usable, the min-floor member (the
-            // floor is the frontier's sort/prune currency).
-            // CYCLOSYNTH_ZETA_COSET=0 disables. See `coset_keep_mask`.
-            if *ZETA_COSET_DEDUP && cands.len() > 1 {
-                let keys = build_fgkm_prefix_coset_keys(m);
-                let iw: Vec<(usize, usize)> =
-                    cands.iter().map(|&(pi, _, f)| (pi, f)).collect();
-                let mask = coset_keep_mask(&iw, &keys);
-                let mut it = mask.iter();
-                cands.retain(|_| *it.next().expect("mask parallel to cands"));
-            }
+            let cands = self.frontier_level_candidates(
+                &level_prefixes[li],
+                &level_costs[li],
+                lde_total,
+                m,
+                d_target,
+            );
             for (pi, d_r, floor) in cands {
                 units.push(PrefixWorkUnit {
                     u_l: &level_prefixes[li][pi],
@@ -421,32 +438,7 @@ impl SynthesizerQ {
             let t_branch = std::time::Instant::now();
             let d = det_phase_of(t);
             let found: Option<(usize, SynthResultQ)> = if k_max <= BRUTE_LIMIT {
-                let mut branch_best: Option<(usize, SynthResultQ)> = None;
-                let shell = brute_shell_cached(k_max);
-                let zd = Complex64::from_polar(1.0, d as f64 * PI / 8.0);
-                let thr = brute_prefilter_threshold(self.epsilon);
-                for (sol, m) in shell.sols.iter().zip(&shell.mats) {
-                    if brute_dist_est(m, zd, t) >= thr {
-                        continue;
-                    }
-                    // Shells above the minimum contain √2-scaled images
-                    // of lower-lde circuits (that's the covering
-                    // mechanism); reduce before decomposing — the
-                    // decomposer expects primitive denominators.
-                    let cand: U2Q = solution_to_u2q_with_det_phase(sol, k_max, d).reduced();
-                    let dist = diamond_distance_u2q_float(&cand, t);
-                    if dist < self.epsilon {
-                        let gates = BlochDecomposer.decompose(&cand);
-                        let c = gates_cost(&gates, self.q_cost_x2);
-                        match &branch_best {
-                            Some((bc, _)) if *bc <= c => {}
-                            _ => branch_best = Some((c, SynthResultQ {
-                                gates: Some(gates), lde: k_max, distance: dist,
-                            })),
-                        }
-                    }
-                }
-                branch_best
+                self.certified_brute_branch(t, d, k_max)
             } else {
                 let v = unitary_to_uv_zeta(t);
                 let mut scratch: Option<Box<IntScratch16>> = None;
@@ -480,6 +472,42 @@ impl SynthesizerQ {
             certified_optimal: upper <= beyond,
         };
         Some((result, cert))
+    }
+
+    /// One certified parity branch at small shells (`k_max ≤ BRUTE_LIMIT`):
+    /// exact norm-shell brute enumeration, min-cost over ε-close reps.
+    fn certified_brute_branch(
+        &self,
+        t: &Mat2,
+        d: u32,
+        k_max: u32,
+    ) -> Option<(usize, SynthResultQ)> {
+        let mut branch_best: Option<(usize, SynthResultQ)> = None;
+        let shell = brute_shell_cached(k_max);
+        let zd = Complex64::from_polar(1.0, d as f64 * PI / 8.0);
+        let thr = brute_prefilter_threshold(self.epsilon);
+        for (sol, m) in shell.sols.iter().zip(&shell.mats) {
+            if brute_dist_est(m, zd, t) >= thr {
+                continue;
+            }
+            // Shells above the minimum contain √2-scaled images
+            // of lower-lde circuits (that's the covering
+            // mechanism); reduce before decomposing — the
+            // decomposer expects primitive denominators.
+            let cand: U2Q = solution_to_u2q_with_det_phase(sol, k_max, d).reduced();
+            let dist = diamond_distance_u2q_float(&cand, t);
+            if dist < self.epsilon {
+                let gates = BlochDecomposer.decompose(&cand);
+                let c = gates_cost(&gates, self.q_cost_x2);
+                match &branch_best {
+                    Some((bc, _)) if *bc <= c => {}
+                    _ => branch_best = Some((c, SynthResultQ {
+                        gates: Some(gates), lde: k_max, distance: dist,
+                    })),
+                }
+            }
+        }
+        branch_best
     }
 
     /// Single-search lattice probe at lde `k` for one `(d, m)` arm, returning
@@ -826,6 +854,77 @@ impl SynthesizerQ {
         (first, unclear, baseline)
     }
 
+    /// Anytime frontier fast path: run the merged frontier under the wall
+    /// deadline, fold its find into the screen/baseline incumbent, record
+    /// the truncation ledger, and return the min-cost result.
+    #[allow(clippy::too_many_arguments)]
+    fn run_frontier_fast_path(
+        &self,
+        target: &Mat2,
+        tasks: &[(u32, u32)],
+        deadline_ms: u64,
+        shared_best: &std::sync::atomic::AtomicUsize,
+        first: SynthResultQ,
+        first_cost: usize,
+        baseline: Option<(usize, SynthResultQ)>,
+        trace: bool,
+        ledger_out: &mut Vec<(u32, u32, bool)>,
+    ) -> SynthResultQ {
+        use crate::synthesis::diag;
+        // Wait for the peer's screen before flooding the pool (a
+        // frontier starves a running screen badly); bounded, and
+        // the peer's branch-return store guarantees progress on
+        // early exits.
+        if let Some(peer) = &self.peer_screen_done {
+            let t_wait = std::time::Instant::now();
+            let cap = std::time::Duration::from_millis(4 * deadline_ms.max(100));
+            while !peer.load(Ordering::Acquire) && t_wait.elapsed() < cap {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            if trace {
+                eprintln!(
+                    "[zeta] optimal frontier handshake wait={:.0}ms",
+                    t_wait.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        let t_w = std::time::Instant::now();
+        let (fr, level_truncated) =
+            self.run_frontier_grouped_by_m(target, tasks, deadline_ms, shared_best);
+        diag::T_STAGE_FRONTIER_NS
+            .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if trace {
+            eprintln!(
+                "[zeta] optimal frontier {:?} deadline={}ms t={:.0}ms truncated={:?}",
+                tasks, deadline_ms,
+                t_w.elapsed().as_secs_f64() * 1000.0,
+                tasks.iter().zip(level_truncated.iter())
+                    .filter(|(_, &tr)| tr).map(|(t, _)| *t)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let mut best: (usize, SynthResultQ) = (first_cost, first);
+        if let Some((bc, br)) = baseline {
+            if bc < best.0 {
+                best = (bc, br);
+            }
+        }
+        if let Some((c, res)) = fr {
+            if trace {
+                eprintln!("[zeta]   frontier best lde={:>2} cost={c} dist={:.3e}",
+                    res.lde, res.distance);
+            }
+            if c < best.0 {
+                best = (c, res);
+            }
+        }
+        *ledger_out = tasks
+            .iter()
+            .zip(level_truncated)
+            .map(|(&(k, m), tr)| (k, m, tr))
+            .collect();
+        best.1
+    }
+
     pub(crate) fn synthesize_optimal_inner(
         &self,
         target: Mat2,
@@ -941,58 +1040,10 @@ impl SynthesizerQ {
             && tasks.iter().all(|&(_, m)| m >= 1)
         {
             if let Some(deadline_ms) = self.optimal_deadline_ms {
-                // Wait for the peer's screen before flooding the pool (a
-                // frontier starves a running screen badly); bounded, and
-                // the peer's branch-return store guarantees progress on
-                // early exits.
-                if let Some(peer) = &self.peer_screen_done {
-                    let t_wait = std::time::Instant::now();
-                    let cap = std::time::Duration::from_millis(4 * deadline_ms.max(100));
-                    while !peer.load(Ordering::Acquire) && t_wait.elapsed() < cap {
-                        std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
-                    if trace {
-                        eprintln!(
-                            "[zeta] optimal frontier handshake wait={:.0}ms",
-                            t_wait.elapsed().as_secs_f64() * 1000.0);
-                    }
-                }
-                let t_w = std::time::Instant::now();
-                let (fr, level_truncated) =
-                    self.run_frontier_grouped_by_m(&target, &tasks, deadline_ms, shared_best);
-                diag::T_STAGE_FRONTIER_NS
-                    .fetch_add(t_w.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                if trace {
-                    eprintln!(
-                        "[zeta] optimal frontier {:?} deadline={}ms t={:.0}ms truncated={:?}",
-                        tasks, deadline_ms,
-                        t_w.elapsed().as_secs_f64() * 1000.0,
-                        tasks.iter().zip(level_truncated.iter())
-                            .filter(|(_, &tr)| tr).map(|(t, _)| *t)
-                            .collect::<Vec<_>>(),
-                    );
-                }
-                let mut best: (usize, SynthResultQ) = (first_cost, first);
-                if let Some((bc, br)) = baseline {
-                    if bc < best.0 {
-                        best = (bc, br);
-                    }
-                }
-                if let Some((c, res)) = fr {
-                    if trace {
-                        eprintln!("[zeta]   frontier best lde={:>2} cost={c} dist={:.3e}",
-                            res.lde, res.distance);
-                    }
-                    if c < best.0 {
-                        best = (c, res);
-                    }
-                }
-                *ledger_out = tasks
-                    .iter()
-                    .zip(level_truncated)
-                    .map(|(&(k, m), tr)| (k, m, tr))
-                    .collect();
-                return Some(best.1);
+                return Some(self.run_frontier_fast_path(
+                    &target, &tasks, deadline_ms, shared_best,
+                    first, first_cost, baseline, trace, ledger_out,
+                ));
             }
         }
 

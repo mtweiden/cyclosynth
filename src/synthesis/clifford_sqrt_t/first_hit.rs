@@ -80,6 +80,33 @@ pub(crate) fn rotate_uv_by_zeta32_mpfr(v: [MpFloat; 4], j: u32, prec: u32) -> [M
     ]
 }
 
+/// Build the deep-ε MPFR alignment vector from the most exact source: a
+/// prefix product (optionally exact-rotated), an exact rotation of the
+/// original column, or the f64 `v` promoted to MPFR.
+fn deep_v_mpfr(
+    deep_v_src: Option<(&U2Q, &Mat2)>,
+    rot_src: Option<&(Mat2, u32)>,
+    v: [f64; 4],
+    prec: u32,
+) -> [MpFloat; 4] {
+    match (deep_v_src, rot_src) {
+        (Some((u_l, _rotated)), Some((orig, j))) => {
+            rotate_uv_by_zeta32_mpfr(prefix_residual_uv_mpfr(u_l, orig, prec), *j, prec)
+        }
+        (Some((u_l, target)), None) => prefix_residual_uv_mpfr(u_l, target, prec),
+        (None, Some((orig, j))) => {
+            let base: [MpFloat; 4] = [
+                MpFloat::with_val(prec, orig[0][0].re),
+                MpFloat::with_val(prec, orig[0][0].im),
+                MpFloat::with_val(prec, orig[1][0].re),
+                MpFloat::with_val(prec, orig[1][0].im),
+            ];
+            rotate_uv_by_zeta32_mpfr(base, *j, prec)
+        }
+        (None, None) => std::array::from_fn(|i| MpFloat::with_val(prec, v[i])),
+    }
+}
+
 /// Deep-ε-aware find_aligned_lattice_points router. At ε ≤ 2e-8 the radial cap width ε²/4
 /// sits under the f64 ULP at unit scale, so an f64 y-chain corrupts Q,
 /// the cap center, and the Cholesky factor — and an f64 prefix product
@@ -109,22 +136,7 @@ where
         // rot_src present, the caller's f64 `v` and `target` are the
         // ROTATED (f64-corrupted) forms — rebuild from the unrotated
         // original and rotate exactly in MPFR.
-        let v_mpfr: [MpFloat; 4] = match (deep_v_src, rot_src) {
-            (Some((u_l, _rotated)), Some((orig, j))) => {
-                rotate_uv_by_zeta32_mpfr(prefix_residual_uv_mpfr(u_l, orig, prec), *j, prec)
-            }
-            (Some((u_l, target)), None) => prefix_residual_uv_mpfr(u_l, target, prec),
-            (None, Some((orig, j))) => {
-                let base: [MpFloat; 4] = [
-                    MpFloat::with_val(prec, orig[0][0].re),
-                    MpFloat::with_val(prec, orig[0][0].im),
-                    MpFloat::with_val(prec, orig[1][0].re),
-                    MpFloat::with_val(prec, orig[1][0].im),
-                ];
-                rotate_uv_by_zeta32_mpfr(base, *j, prec)
-            }
-            (None, None) => std::array::from_fn(|i| MpFloat::with_val(prec, v[i])),
-        };
+        let v_mpfr = deep_v_mpfr(deep_v_src, rot_src, v, prec);
         let y_mpfr = uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, prec);
         find_aligned_lattice_points_mpfr(
             scratch, &y_mpfr, &v_mpfr, k, eps, max_leaf_checks, budget_hit,
@@ -271,6 +283,71 @@ pub(crate) struct PrefixSplitOpts<'a> {
     pub(crate) shared_best_cost: Option<&'a std::sync::atomic::AtomicUsize>,
 }
 
+/// Gate a window task `i>0` on its predecessor burning `trigger_nodes`
+/// (0 = launch immediately) OR finishing; returns true if the sweep
+/// aborted while waiting, so the caller must return early. The finished
+/// check is the deadlock guard: a level can complete below the trigger,
+/// and a successor polling a permanently-stopped counter would hang.
+fn wait_for_predecessor_gate(
+    i: usize,
+    trigger_nodes: u64,
+    abort_ref: &AtomicBool,
+    predecessor_consumed: Option<&std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    predecessor_finished: Option<&std::sync::Arc<AtomicBool>>,
+) -> bool {
+    if i > 0 && trigger_nodes > 0 {
+        let pred = predecessor_consumed.expect("predecessor set for i>0");
+        let pred_done = predecessor_finished.expect("predecessor set for i>0");
+        loop {
+            if abort_ref.load(Ordering::Relaxed) { return true; }
+            if pred.load(Ordering::Relaxed) >= trigger_nodes { break; }
+            if pred_done.load(Ordering::Acquire) { break; }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if abort_ref.load(Ordering::Relaxed) { return true; }
+    }
+    false
+}
+
+/// Scan `sols` for ε-close full unitaries `U_L · U_R`: first-hit returns
+/// the first, optimize-cost returns the min-cost one (as `(cost, result)`).
+#[allow(clippy::too_many_arguments)]
+fn best_solution_over_sols(
+    sols: &[[i64; 16]],
+    lde_inner: u32,
+    d_r: u32,
+    u_l_local: &U2Q,
+    target: &Mat2,
+    epsilon: f64,
+    lde_total: u32,
+    q_cost_x2: usize,
+    optimize_cost: bool,
+) -> Option<(usize, SynthResultQ)> {
+    let mut best: Option<(usize, SynthResultQ)> = None;
+    for sol in sols {
+        let u_r = solution_to_u2q_with_det_phase(sol, lde_inner, d_r);
+        let u_full = *u_l_local * u_r;
+        let dist = diamond_distance_u2q_float(&u_full, target);
+        if dist < epsilon {
+            let gates = BlochDecomposer.decompose(&u_full);
+            let cost = gates_cost(&gates, q_cost_x2);
+            let result = SynthResultQ {
+                gates: Some(gates),
+                lde: lde_total,
+                distance: dist,
+            };
+            if !optimize_cost {
+                return Some((cost, result));
+            }
+            match &best {
+                Some((bcost, _)) if *bcost <= cost => {}
+                _ => best = Some((cost, result)),
+            }
+        }
+    }
+    best
+}
+
 impl SynthesizerQ {
     /// Run windows of `parallel_lde_window` lde levels concurrently from
     /// `start_k` upward; the first find aborts in-flight peers. This drops
@@ -341,16 +418,11 @@ impl SynthesizerQ {
                             }
                         }
                         let _finished_guard = FinishedGuard(my_finished);
-                        if i > 0 && trigger_nodes > 0 {
-                            let pred = predecessor_consumed.as_ref().expect("predecessor set for i>0");
-                            let pred_done = predecessor_finished.as_ref().expect("predecessor set for i>0");
-                            loop {
-                                if abort_ref.load(Ordering::Relaxed) { return; }
-                                if pred.load(Ordering::Relaxed) >= trigger_nodes { break; }
-                                if pred_done.load(Ordering::Acquire) { break; }
-                                std::thread::sleep(std::time::Duration::from_millis(50));
-                            }
-                            if abort_ref.load(Ordering::Relaxed) { return; }
+                        if wait_for_predecessor_gate(
+                            i, trigger_nodes, abort_ref,
+                            predecessor_consumed.as_ref(), predecessor_finished.as_ref(),
+                        ) {
+                            return;
                         }
                         let t_k = std::time::Instant::now();
                         // Pass shared signals only when they can fire:
@@ -483,6 +555,69 @@ impl SynthesizerQ {
             }
         }
         m
+    }
+
+    /// Sequential dc dispatch (`parallel_lde_window ≤ 1`): pass-1 sweep
+    /// then pass-2 retry of budget-hit levels. `unverified_small` and
+    /// still-truncated levels below a find are reported via `unclear_out`.
+    fn dc_sequential_pass(
+        &self,
+        target: &Mat2,
+        m_split: u32,
+        lattice_start: u32,
+        unverified_small: &[u32],
+        mut unclear_out: Option<&mut Vec<u32>>,
+    ) -> Option<SynthResultQ> {
+        let trace = crate::synthesis::diag::trace_enabled();
+        let pass2_collector: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+        for k in (m_split + 1).max(lattice_start)..=self.max_lde {
+            if k > self.effective_max_lde() {
+                break;
+            }
+            let t_k = std::time::Instant::now();
+            let (result, budget_hit) = self.prefix_split_search_q(
+                target, k, m_split,
+                PrefixSplitOpts {
+                    dr_filter_override: None,
+                    per_prefix_cap: pass1_prefix_leaf_cap_for(self.epsilon),
+                    external_abort: None,
+                    consumed: None,
+                    cost_min_override: None,
+                    shared_best_cost: None,
+                },
+            );
+            if let Some(r) = result {
+                if trace {
+                    eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
+                        r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
+                }
+                // Find at k short-circuits the pass-2 retries:
+                // every queued (budget-hit) level < k stays
+                // unverified — report it for the enum grid.
+                if let Some(out) = unclear_out.as_deref_mut() {
+                    out.extend(unverified_small.iter().copied());
+                    out.extend(pass2_collector.lock().expect("pass2 collector poisoned").iter().copied());
+                }
+                return Some(r);
+            }
+            if trace {
+                eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
+                    if budget_hit { " (budget hit)" } else { "" },
+                    t_k.elapsed().as_secs_f64() * 1000.0);
+            }
+            if budget_hit { pass2_collector.lock().expect("pass2 collector poisoned").push(k); }
+        }
+        let (found, still_truncated) = self.retry_budget_truncated_levels(
+            target, m_split, pass2_collector.into_inner().expect("pass2 collector poisoned"),
+        );
+        if let Some(r) = found {
+            if let Some(out) = unclear_out {
+                out.extend(unverified_small.iter().copied());
+                out.extend(still_truncated.iter().copied());
+            }
+            return Some(r);
+        }
+        None
     }
 
     /// [`Self::synthesize`] with an optional truncation out-param: a find
@@ -622,62 +757,15 @@ impl SynthesizerQ {
                 }
             }
 
-            use std::sync::Mutex;
-            let pass2_collector: Mutex<Vec<u32>> = Mutex::new(Vec::new());
-
             // window == 1 uses a plain sequential loop: the shared
             // consumed-counter alone costs a large fraction of wall on
             // shallow-ε million-node walks, and concurrent-lde dispatch
             // only pays where no-solution levels burn seconds (deep ε).
             if self.parallel_lde_window <= 1 {
-                for k in (m_split + 1).max(lattice_start)..=self.max_lde {
-                    if k > self.effective_max_lde() {
-                        break;
-                    }
-                    let t_k = std::time::Instant::now();
-                    let (result, budget_hit) = self.prefix_split_search_q(
-                        &target, k, m_split,
-                        PrefixSplitOpts {
-                            dr_filter_override: None,
-                            per_prefix_cap: pass1_prefix_leaf_cap_for(self.epsilon),
-                            external_abort: None,
-                            consumed: None,
-                            cost_min_override: None,
-                            shared_best_cost: None,
-                        },
-                    );
-                    if let Some(r) = result {
-                        if trace {
-                            eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  FOUND  dist={:.3e}  t={:.0}ms",
-                                r.distance, t_k.elapsed().as_secs_f64() * 1000.0);
-                        }
-                        // Find at k short-circuits the pass-2 retries:
-                        // every queued (budget-hit) level < k stays
-                        // unverified — report it for the enum grid.
-                        if let Some(out) = unclear_out.as_deref_mut() {
-                            out.extend(unverified_small.iter().copied());
-                            out.extend(pass2_collector.lock().expect("pass2 collector poisoned").iter().copied());
-                        }
-                        return Some(r);
-                    }
-                    if trace {
-                        eprintln!("[zeta] dc lde={k:>2} m={m_split} pass1  none{}  t={:.0}ms",
-                            if budget_hit { " (budget hit)" } else { "" },
-                            t_k.elapsed().as_secs_f64() * 1000.0);
-                    }
-                    if budget_hit { pass2_collector.lock().expect("pass2 collector poisoned").push(k); }
-                }
-                let (found, still_truncated) = self.retry_budget_truncated_levels(
-                    &target, m_split, pass2_collector.into_inner().expect("pass2 collector poisoned"),
+                return self.dc_sequential_pass(
+                    &target, m_split, lattice_start, &unverified_small,
+                    unclear_out.as_deref_mut(),
                 );
-                if let Some(r) = found {
-                    if let Some(out) = unclear_out.as_deref_mut() {
-                        out.extend(unverified_small.iter().copied());
-                        out.extend(still_truncated.iter().copied());
-                    }
-                    return Some(r);
-                }
-                return None;
             }
 
             let start_k = (m_split + 1).max(lattice_start);
@@ -989,28 +1077,10 @@ impl SynthesizerQ {
 
             // First-hit returns the first ε-close sol; optimal keeps the
             // min-cost one and publishes it for the prefix prune.
-            let mut best: Option<(usize, SynthResultQ)> = None;
-            for sol in &sols {
-                let u_r = solution_to_u2q_with_det_phase(sol, lde_inner, d_r);
-                let u_full = u_l_local * u_r;
-                let dist = diamond_distance_u2q_float(&u_full, target);
-                if dist < epsilon {
-                    let gates = BlochDecomposer.decompose(&u_full);
-                    let cost = gates_cost(&gates, q_cost_x2);
-                    let result = SynthResultQ {
-                        gates: Some(gates),
-                        lde: lde_total,
-                        distance: dist,
-                    };
-                    if !optimize_cost {
-                        return Some((cost, result));
-                    }
-                    match &best {
-                        Some((bcost, _)) if *bcost <= cost => {}
-                        _ => best = Some((cost, result)),
-                    }
-                }
-            }
+            let best = best_solution_over_sols(
+                &sols, lde_inner, d_r, &u_l_local, target, epsilon, lde_total,
+                q_cost_x2, optimize_cost,
+            );
             if optimize_cost {
                 if let Some((c, _)) = &best {
                     // Relaxed is enough: the prune is a heuristic.
