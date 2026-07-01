@@ -29,20 +29,6 @@ fn predictive_trunc_disabled() -> bool {
     })
 }
 
-/// Re-check every f64 prune-fire at MPFR-128; MPFR's verdict wins.
-/// Necessary at ε ≤ 1.5e-8 where the f64 dot product suffers
-/// catastrophic cancellation; pure overhead at shallower ε.
-static VERIFY_PRUNE_MPFR: AtomicBool = AtomicBool::new(false);
-
-#[inline]
-pub fn verify_prune_mpfr() -> bool {
-    VERIFY_PRUNE_MPFR.load(Ordering::Relaxed)
-}
-
-pub fn set_verify_prune_mpfr(value: bool) {
-    VERIFY_PRUNE_MPFR.store(value, Ordering::Release);
-}
-
 // ─── Center-relative dd partial-norm verification ────────────────────────────
 
 /// Compute `Σ_{i ≥ depth} (R · z)[i]²` in inline double-double (~106 bits)
@@ -112,7 +98,7 @@ fn resolve_prune(
     if x_norm_sq <= target_norm_sq_i128 {
         return false;
     }
-    if !verify_prune_mpfr() {
+    if !z_c.verify_prune_mpfr {
         return true;
     }
     let t_v = if trace { Some(std::time::Instant::now()) } else { None };
@@ -311,13 +297,22 @@ pub fn reconstruct_x(b_lll: &[[i64; 16]; 16], z: &[i64; 16]) -> [i64; 16] {
 pub struct SeCenter16 {
     pub int: [i64; 16],
     pub frac: [f64; 16],
+    /// Re-check every f64 prune-fire at dd precision; the dd verdict wins.
+    /// Necessary at ε ≤ 1.5e-8 where the f64 dot product suffers
+    /// catastrophic cancellation; pure overhead at shallower ε. Per-walk
+    /// config riding on the center struct (already threaded through every
+    /// hot recursion frame down to [`resolve_prune`]) so enabling it never
+    /// perturbs the recursion cores' signatures. Set from
+    /// `IntScratch16::verify_prune_mpfr` by `find_aligned_lattice_points_mpfr`;
+    /// constructors default it to `false`.
+    pub verify_prune_mpfr: bool,
 }
 
 impl SeCenter16 {
     /// Center with zero fractional part (used by tests with integer
     /// centers).
     pub fn from_int(int: [i64; 16]) -> Self {
-        Self { int, frac: [0.0; 16] }
+        Self { int, frac: [0.0; 16], verify_prune_mpfr: false }
     }
 
     /// Build the center from the MPFR LU solution `lu_x` (`Bᵀ·z_c = c`).
@@ -338,7 +333,7 @@ impl SeCenter16 {
                 frac[i] = diff.to_f64();
             }
         }
-        Self { int, frac }
+        Self { int, frac, verify_prune_mpfr: false }
     }
 }
 

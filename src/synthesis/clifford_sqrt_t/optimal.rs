@@ -306,6 +306,7 @@ impl SynthesizerQ {
         let make_scratch = || {
             let mut s = Box::new(IntScratch16::new(epsilon));
             s.bkz_block_size = bkz_block_size;
+            s.verify_prune_mpfr = verify_prune_mpfr_for(epsilon);
             s
         };
 
@@ -427,6 +428,7 @@ impl SynthesizerQ {
                 let mut scratch: Option<Box<IntScratch16>> = None;
                 self.direct_lattice_search_at(
                     t, d, v, k_max, u64::MAX, &mut scratch, /*cost_min=*/true,
+                    /*verify_prune_mpfr=*/false,
                 )
                 .0
             };
@@ -498,6 +500,10 @@ impl SynthesizerQ {
     /// Mirrors the `try_lattice_k`/`check_sols` closures in
     /// `first_hit::synthesize_with_unverified_levels`. Called both sequentially
     /// (the certified m-sweep) and concurrently (per-parity `thread::scope`).
+    ///
+    /// `verify_prune_mpfr` is the deep-ε SE prune-verification flag for this
+    /// search's scratch; the production enum path passes
+    /// [`verify_prune_mpfr_for`]`(self.epsilon)`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn direct_lattice_search_at(
         &self,
@@ -508,6 +514,7 @@ impl SynthesizerQ {
         budget: u64,
         scratch: &mut Option<Box<IntScratch16>>,
         cost_min: bool,
+        verify_prune_mpfr: bool,
     ) -> (Option<(usize, SynthResultQ)>, bool) {
         let epsilon = self.epsilon;
         let s = scratch.get_or_insert_with(|| {
@@ -515,6 +522,7 @@ impl SynthesizerQ {
             sb.bkz_block_size = self.bkz_block_size;
             sb
         });
+        s.verify_prune_mpfr = verify_prune_mpfr;
         let budget_hit = AtomicBool::new(false);
         let should_stop = |x: &[i64; 16]| -> bool {
             if cost_min { return false; }
@@ -916,10 +924,6 @@ impl SynthesizerQ {
         use crate::synthesis::diag;
         let trace = diag::trace_enabled();
 
-        // The enum stage runs SE walks of its own, so the guard must
-        // span both stages.
-        let _verify_guard = VerifyGuard::enable_for(self.epsilon);
-
         let d = det_phase_of(&target);
         let v = unitary_to_uv_zeta(&target);
 
@@ -1146,8 +1150,10 @@ impl SynthesizerQ {
                 .saturating_mul(budget_mult)
                 .saturating_mul(cert_boost);
             let mut local_scratch: Option<Box<IntScratch16>> = None;
-            let (r, hit) =
-                self.direct_lattice_search_at(&target, d, v, k, cap, &mut local_scratch, cost_min);
+            let (r, hit) = self.direct_lattice_search_at(
+                &target, d, v, k, cap, &mut local_scratch, cost_min,
+                verify_prune_mpfr_for(self.epsilon),
+            );
             if hit && crate::synthesis::diag::trace_enabled() {
                 eprintln!("[zeta]   enum (k={k}, m=0) BUDGET-HIT — coverage lost");
             }

@@ -39,10 +39,7 @@ use super::cholesky_lu::{
 use super::lll::{run_lll, LllResult};
 use super::q_metric::build_q_int_zeta;
 use super::scratch::{rfv, IntScratch16};
-use super::se::{
-    bilinear_forms, schnorr_euchner,
-    verify_prune_mpfr, LeafAction, SeCenter16,
-};
+use super::se::{bilinear_forms, schnorr_euchner, LeafAction, SeCenter16};
 use crate::synthesis::diag;
 
 /// MPFR precision used by the alignment-threshold dot product. Same as 8D
@@ -242,7 +239,7 @@ where
     // bound. Gated so moderate-ε hot paths pay nothing. Computed BEFORE
     // the f64 Cholesky so an f64 Cholesky failure can't bail a search
     // whose MPFR factorization is healthy.
-    let q_chol_dual = if eps <= 2e-8 || verify_prune_mpfr() {
+    let q_chol_dual = if eps <= 2e-8 || scratch.verify_prune_mpfr {
         let dual = q_cholesky_mpfr_dual(&scratch.gram, scratch.scale_bits);
         if dual.is_none() {
             eprintln!(
@@ -293,7 +290,10 @@ where
     // quantization shifts the SE center by ~10⁴ Q-units — the cap then
     // looks empty even when solutions exist. Measuring Q from the true
     // center int + frac also removes the rounded-center inflation.
-    let z_c = SeCenter16::from_lu_x(&scratch.lu_x);
+    let mut z_c = SeCenter16::from_lu_x(&scratch.lu_x);
+    // Per-walk deep-ε prune-verification flag: rides on the center struct
+    // so the SE recursion cores need no extra parameter.
+    z_c.verify_prune_mpfr = scratch.verify_prune_mpfr;
 
     if trace {
         // Trace-only: MPFR-direct round vs the f64 path (zero at moderate

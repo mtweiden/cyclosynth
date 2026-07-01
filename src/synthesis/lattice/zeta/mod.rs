@@ -34,7 +34,6 @@ pub mod se;
 
 pub use integer::{find_aligned_lattice_points_with_stop, find_aligned_lattice_points_mpfr};
 pub use scratch::IntScratch16;
-pub use se::{set_verify_prune_mpfr, verify_prune_mpfr};
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 

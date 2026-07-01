@@ -159,34 +159,13 @@ where
 pub(crate) const PASS1_CAP: u64 = 100_000_000;
 pub(crate) const PASS2_CAP: u64 = 4_000_000_000;
 
-/// RAII enabler for MPFR prune verification, needed below 2e-8 where
-/// the f64 partial-Euclidean prune suffers catastrophic cancellation
-/// and silently drops valid candidates. Restores the prior global flag
-/// on drop (even on early returns / panics) so other paths are
-/// unaffected.
-pub(crate) struct VerifyGuard {
-    restore_to: bool,
-    changed: bool,
-}
-
-impl VerifyGuard {
-    pub(crate) fn enable_for(epsilon: f64) -> Self {
-        use crate::synthesis::lattice::zeta::{set_verify_prune_mpfr, verify_prune_mpfr};
-        let was_on = verify_prune_mpfr();
-        let need = epsilon < 2e-8;
-        if need && !was_on {
-            set_verify_prune_mpfr(true);
-        }
-        VerifyGuard { restore_to: was_on, changed: need && !was_on }
-    }
-}
-
-impl Drop for VerifyGuard {
-    fn drop(&mut self) {
-        if self.changed {
-            crate::synthesis::lattice::zeta::set_verify_prune_mpfr(self.restore_to);
-        }
-    }
+/// Deep-ε predicate for the SE walk's dd prune verification: below 2e-8
+/// the f64 partial-Euclidean prune suffers catastrophic cancellation and
+/// silently drops valid candidates. Set on each `IntScratch16` at
+/// construction (scoped per synthesize call — no global state, so
+/// concurrent calls at different ε can't contaminate each other).
+pub(crate) fn verify_prune_mpfr_for(epsilon: f64) -> bool {
+    epsilon < 2e-8
 }
 
 /// Per-prefix pass-1 leaf budget; scaled with ε since the post-LLL
@@ -653,8 +632,6 @@ impl SynthesizerQ {
             diag::reset_all();
         }
 
-        let _verify_guard = VerifyGuard::enable_for(self.epsilon);
-
         let d = det_phase_of(&target);
         let v = unitary_to_uv_zeta(&target);
 
@@ -679,6 +656,7 @@ impl SynthesizerQ {
                 .get_or_insert_with(|| {
                     let mut sb = Box::new(IntScratch16::new(epsilon));
                     sb.bkz_block_size = bkz_block_size;
+                    sb.verify_prune_mpfr = verify_prune_mpfr_for(epsilon);
                     sb
                 });
             let budget_hit = AtomicBool::new(false);
@@ -1099,6 +1077,7 @@ impl SynthesizerQ {
         let make_scratch = || {
             let mut s = Box::new(IntScratch16::new(epsilon));
             s.bkz_block_size = bkz_block_size;
+            s.verify_prune_mpfr = verify_prune_mpfr_for(epsilon);
             s
         };
 

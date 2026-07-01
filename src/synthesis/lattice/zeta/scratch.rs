@@ -87,6 +87,16 @@ pub struct IntScratch16 {
     /// BKZ block size (0 = off, 3..=8 = β-block SVP tours after LLL,
     /// strengthening the basis most at deep ε). β=2 is LLL-equivalent.
     pub bkz_block_size: u32,
+
+    /// Re-check every f64 prune-fire of the SE walk's Euclidean partial-norm
+    /// prune at dd precision (the dd verdict wins). Needed at ε < 2e-8 where
+    /// the f64 dot product suffers catastrophic cancellation and silently
+    /// drops valid candidates; pure overhead at shallower ε. Defaults to
+    /// `false`; the `clifford_sqrt_t` synthesize drivers set it per scratch
+    /// (see `first_hit::verify_prune_mpfr_for`), and
+    /// `find_aligned_lattice_points_mpfr` copies it onto the walk's
+    /// `SeCenter16`.
+    pub(crate) verify_prune_mpfr: bool,
 }
 
 impl IntScratch16 {
@@ -122,6 +132,7 @@ impl IntScratch16 {
             lu_tmp: rfz(lu_prec),
             lu_acc: rfz(lu_prec),
             bkz_block_size: 0,
+            verify_prune_mpfr: false,
         }
     }
 
