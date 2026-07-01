@@ -21,12 +21,110 @@
 #![allow(clippy::needless_range_loop)]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::LazyLock;
 
+use i256::i256;
 use rug::Assign;
 use crate::rings::MpFloat;
 
 
 type IMat8 = [[i64; 8]; 8];
+
+/// Opt-in norm-shell discriminant prune at the innermost SE coordinate
+/// (`CYCLOSYNTH_SHELL_FILTER=1`). Cached once per process.
+static SHELL_FILTER: LazyLock<bool> =
+    LazyLock::new(|| std::env::var("CYCLOSYNTH_SHELL_FILTER").as_deref() == Ok("1"));
+
+/// Whether the depth-0 norm-shell prune is enabled (env-gated, default off).
+pub fn shell_filter_enabled() -> bool {
+    *SHELL_FILTER
+}
+
+/// Depth-0 norm-shell reachability test. With `z[1..8]` fixed, the shell
+/// equation `‖x‖² = 2^k` (x = B·z) is quadratic in `z[0]`:
+///   a·z[0]² + b·z[0] + c = 0,  a = ‖b₀‖²,  b = 2⟨x_rest, b₀⟩,  c = ‖x_rest‖² − 2^k
+/// where `x_rest = Σ_{i≥1} z[i]·bᵢ`. An integer z[0] on the shell needs
+/// `D = b² − 4ac ≥ 0` and a perfect square, so a non-square `D` proves the
+/// whole z[0] range misses the shell — every leaf below would fail the norm
+/// check. Discriminant math is checked i256 (partial norms reach ~2^205); any
+/// overflow yields `None` and the caller falls back to full enumeration.
+pub struct ShellFilter {
+    basis: IMat8,
+    a: i256,
+    target_norm: i256,
+}
+
+impl ShellFilter {
+    pub fn new(basis: &IMat8, target_norm: i128) -> Self {
+        let mut a = i256::from_i64(0);
+        for j in 0..8 {
+            let b0 = i256::from_i64(basis[0][j]);
+            // ‖b₀‖² ≤ 8·(2^33)² = 2^69, cannot overflow i256.
+            a = a.checked_add(b0.checked_mul(b0).unwrap()).unwrap();
+        }
+        ShellFilter { basis: *basis, a, target_norm: i256::from_i128(target_norm) }
+    }
+
+    /// `Some(false)`: no integer z[0] lands on the shell → skip the whole
+    /// z[0] enumeration. `Some(true)`: a shell-hitting z[0] may exist →
+    /// enumerate normally. `None`: an i256 step overflowed → enumerate
+    /// normally (never skips a real candidate).
+    #[inline]
+    fn shell_reachable(&self, z: &[i128; 8]) -> Option<bool> {
+        let mut x_rest = [0i128; 8];
+        for i in 1..8 {
+            for j in 0..8 {
+                let t = z[i].checked_mul(self.basis[i][j] as i128)?;
+                x_rest[j] = x_rest[j].checked_add(t)?;
+            }
+        }
+        let mut dot = i256::from_i64(0);
+        let mut xr_sq = i256::from_i64(0);
+        for j in 0..8 {
+            let xr = i256::from_i128(x_rest[j]);
+            let b0 = i256::from_i64(self.basis[0][j]);
+            dot = dot.checked_add(xr.checked_mul(b0)?)?;
+            xr_sq = xr_sq.checked_add(xr.checked_mul(xr)?)?;
+        }
+        let b = dot.checked_mul(i256::from_i64(2))?;
+        let c = xr_sq.checked_sub(self.target_norm)?;
+        let b2 = b.checked_mul(b)?;
+        let four_ac = self.a.checked_mul(c)?.checked_mul(i256::from_i64(4))?;
+        let d = b2.checked_sub(four_ac)?;
+        if d.is_negative() {
+            return Some(false);
+        }
+        let s = isqrt_i256(d);
+        Some(s.checked_mul(s)? == d)
+    }
+}
+
+/// `floor(√n)` for `n ≥ 0`, bit-by-bit (the i256 crate has no division/isqrt).
+fn isqrt_i256(mut n: i256) -> i256 {
+    let one = i256::from_i64(1);
+    let mut x = i256::from_i64(0);
+    let nbits = 256u32 - n.leading_zeros();
+    if nbits == 0 {
+        return x;
+    }
+    let mut shift = (nbits - 1) & !1u32; // largest even ≤ nbits−1
+    let mut bit = one << shift;
+    loop {
+        let xb = x + bit;
+        if n >= xb {
+            n = n - xb;
+            x = (x >> 1u32) + bit;
+        } else {
+            x = x >> 1u32;
+        }
+        if shift == 0 {
+            break;
+        }
+        shift -= 2;
+        bit = bit >> 2u32;
+    }
+    x
+}
 
 /// MPFR precision used by SE. 128 bits gives enough margin for SE's
 /// 10⁻⁹ bound-check tolerance at all supported ε; f64-only SE breaks at
@@ -105,6 +203,7 @@ pub fn schnorr_euchner<F>(
     abort: &AtomicBool,
     node_budget: &AtomicU64,
     budget_exhausted: &AtomicBool,
+    shell: Option<&ShellFilter>,
     mut callback: F,
 ) -> Option<[i64; 8]>
 where
@@ -132,6 +231,7 @@ where
         abort,
         node_budget,
         budget_exhausted,
+        shell,
         &mut callback,
         &result,
         &mut shared,
@@ -153,6 +253,7 @@ fn recurse<F>(
     abort: &AtomicBool,
     node_budget: &AtomicU64,
     budget_exhausted: &AtomicBool,
+    shell: Option<&ShellFilter>,
     callback: &mut F,
     result: &std::cell::RefCell<Option<[i64; 8]>>,
     shared: &mut SharedTemps,
@@ -200,9 +301,19 @@ fn recurse<F>(
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             partial_eucl, z, partial, abort, node_budget, budget_exhausted,
-            callback, result, shared,
+            shell, callback, result, shared,
         );
         return;
+    }
+
+    // Depth-0 norm-shell prune: if no integer z[0] can land on ‖x‖²=2^k, every
+    // leaf below fails the norm check — skip the whole z[0] enumeration.
+    if depth == 0 {
+        if let Some(f) = shell {
+            if f.shell_reachable(z) == Some(false) {
+                return;
+            }
+        }
     }
 
     // tail = Σ_{j > d} R[d][j] · (z[j] − z_c[j])
@@ -313,7 +424,7 @@ fn recurse<F>(
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             new_partial_eucl, z, &new_partial, abort, node_budget,
-            budget_exhausted, callback, result, shared,
+            budget_exhausted, shell, callback, result, shared,
         );
     }
 }

@@ -300,6 +300,8 @@ pub fn find_aligned_outcome_mpfr(
     let t_phase = if trace { Some(std::time::Instant::now()) } else { None };
 
     let mut solutions: Vec<[i64; 8]> = Vec::new();
+    let shell = super::se::shell_filter_enabled()
+        .then(|| super::se::ShellFilter::new(&basis, target_norm));
     let result = super::se::schnorr_euchner(
         &r_chol_se,
         &z_c_se,
@@ -309,6 +311,7 @@ pub fn find_aligned_outcome_mpfr(
         abort,
         &node_budget,
         &truncated,
+        shell.as_ref(),
         |z: &[i128; 8]| {
             let n_so_far = count.load(Ordering::Relaxed);
             if n_so_far >= max_leaf_checks {
