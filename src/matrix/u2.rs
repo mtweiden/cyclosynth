@@ -144,6 +144,38 @@ impl <R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
     }
 }
 
+impl U2<ZOmega> {
+    /// Fully reduce the denominator exponent (sde) for a Z[ω] unitary by
+    /// repeatedly dividing every entry by √2 = ω − ω³ while all four stay in
+    /// Z[ω]. `Mul` accumulates `k` without reducing, so this recovers the true
+    /// lde of a product. Mirror of the ZZeta `reduced()`.
+    pub fn reduced(self) -> Self {
+        let sqrt2 = ZOmega::OMEGA - ZOmega::OMEGA * ZOmega::OMEGA * ZOmega::OMEGA;
+        let mut m = self;
+        while m.k > 0 {
+            let y11 = m.u11 * sqrt2;
+            let y12 = m.u12 * sqrt2;
+            let y21 = m.u21 * sqrt2;
+            let y22 = m.u22 * sqrt2;
+            let divisible = y11.gcd_power_of_2() >= 1
+                && y12.gcd_power_of_2() >= 1
+                && y21.gcd_power_of_2() >= 1
+                && y22.gcd_power_of_2() >= 1;
+            if !divisible {
+                break;
+            }
+            m = Self {
+                u11: y11.div2(1),
+                u12: y12.div2(1),
+                u21: y21.div2(1),
+                u22: y22.div2(1),
+                k: m.k - 1,
+            };
+        }
+        m
+    }
+}
+
 impl U2<ZZeta> {
     /// Q gate: [[1,0],[0,ζ]] / √2^0 (for U2Q)
     pub fn q() -> Self {
@@ -188,7 +220,7 @@ impl U2<ZZeta> {
 // ─── Multiplication (matrix product) ─────────────────────────────────────────
 
 /// Matrix product. `k` accumulates (`self.k + rhs.k`) without reduction;
-/// call `reduced()` (ZZeta only) to recover the true lde.
+/// call `reduced()` to recover the true lde.
 impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> Mul for U2<R> {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
