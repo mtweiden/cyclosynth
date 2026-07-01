@@ -331,8 +331,7 @@ impl fmt::Display for R4 {
 
 /// A ring element divided by the ring-specific denominator unit to the power `exp`.
 ///
-/// - For `Ratio<R2>`: actual value = `num / √2^exp`
-/// - For `Ratio<R4>`: actual value = `num / √2^exp`
+/// Actual value = `num / √2^exp` for both `Ratio<R2>` and `Ratio<R4>`.
 ///
 /// Note: `Ratio<R4>` uses √2 as the denominator base (same as `Ratio<R2>`),
 /// not γ. This is because SO3 entries from a U2 with k denominator have
@@ -804,6 +803,17 @@ impl SO3Ops for SO3<R4> {
 //                   = [[1,-1,0],[1,1,0],[0,0,√2]] / √2
 // with exp=1.
 
+impl<R> SO3<R> {
+    /// Transpose (the inverse, for a rotation). The `*_neg` factories are
+    /// `*_pos().transposed()`; the swaps are the 3×3 row-major transpose.
+    pub fn transposed(mut self) -> Self {
+        self.e.swap(1, 3);
+        self.e.swap(2, 6);
+        self.e.swap(5, 7);
+        self
+    }
+}
+
 /// Rz(+π/4) as SO3<R2>.
 pub fn rz_pos() -> SO3<R2> {
     let mut e = [Ratio::<R2>::ZERO; 9];
@@ -817,9 +827,7 @@ pub fn rz_pos() -> SO3<R2> {
 
 /// Rz(-π/4) = Rz(+π/4)ᵀ.
 pub fn rz_neg() -> SO3<R2> {
-    let mut m = rz_pos();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
-    m
+    rz_pos().transposed()
 }
 
 /// Rx(+π/4) as SO3<R2>.
@@ -835,9 +843,7 @@ pub fn rx_pos() -> SO3<R2> {
 
 /// Rx(-π/4) = Rx(+π/4)ᵀ.
 pub fn rx_neg() -> SO3<R2> {
-    let mut m = rx_pos();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
-    m
+    rx_pos().transposed()
 }
 
 /// Ry(+π/4) as SO3<R2>.
@@ -853,9 +859,7 @@ pub fn ry_pos() -> SO3<R2> {
 
 /// Ry(-π/4) = Ry(+π/4)ᵀ.
 pub fn ry_neg() -> SO3<R2> {
-    let mut m = ry_pos();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
-    m
+    ry_pos().transposed()
 }
 
 // ─── Rotation factories for SO3<R4> (π/8 steps) ──────────────────────────────
@@ -883,9 +887,7 @@ pub fn rz_pos_q() -> SO3<R4> {
 
 /// Rz(-π/8) = Rz(+π/8)ᵀ.
 pub fn rz_neg_q() -> SO3<R4> {
-    let mut m = rz_pos_q();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
-    m
+    rz_pos_q().transposed()
 }
 
 /// Rx(+π/8) as SO3<R4>.
@@ -902,9 +904,7 @@ pub fn rx_pos_q() -> SO3<R4> {
 
 /// Rx(-π/8) = Rx(+π/8)ᵀ.
 pub fn rx_neg_q() -> SO3<R4> {
-    let mut m = rx_pos_q();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
-    m
+    rx_pos_q().transposed()
 }
 
 /// Ry(+π/8) as SO3<R4>.
@@ -921,9 +921,7 @@ pub fn ry_pos_q() -> SO3<R4> {
 
 /// Ry(-π/8) = Ry(+π/8)ᵀ.
 pub fn ry_neg_q() -> SO3<R4> {
-    let mut m = ry_pos_q();
-    m.e.swap(1, 3); m.e.swap(2, 6); m.e.swap(5, 7);
-    m
+    ry_pos_q().transposed()
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
