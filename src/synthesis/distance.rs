@@ -58,44 +58,6 @@ pub fn diamond_distance_float(a: &Mat2, b: &Mat2) -> f64 {
     d_sq.max(0.0).sqrt()
 }
 
-/// MPFR-precision diamond distance via the trace formula `1 − |tr|²/4`, at `prec`
-/// bits (128 recommended). High-precision reference for the `diamond_bench`.
-pub fn diamond_distance_float_mpfr(a: &Mat2, b: &Mat2, prec: u32) -> f64 {
-    let mut tr_re = MpFloat::with_val(prec, 0.0);
-    let mut tr_im = MpFloat::with_val(prec, 0.0);
-    let mut tmp = MpFloat::with_val(prec, 0.0);
-    let mut tmp2 = MpFloat::with_val(prec, 0.0);
-    // tr = Σ A_ij · conj(B_ij)
-    for i in 0..2 {
-        for j in 0..2 {
-            let a_re = MpFloat::with_val(prec, a[i][j].re);
-            let a_im = MpFloat::with_val(prec, a[i][j].im);
-            let b_re = MpFloat::with_val(prec, b[i][j].re);
-            let b_im = MpFloat::with_val(prec, b[i][j].im);
-            tmp.assign(&a_re * &b_re);
-            tr_re += &tmp;
-            tmp.assign(&a_im * &b_im);
-            tr_re += &tmp;
-            tmp.assign(&a_im * &b_re);
-            tmp2.assign(&a_re * &b_im);
-            tr_im += &tmp;
-            tr_im -= &tmp2;
-        }
-    }
-    // |tr|² = tr_re² + tr_im²
-    tmp.assign(&tr_re * &tr_re);
-    tmp2.assign(&tr_im * &tr_im);
-    tmp += &tmp2;
-    // d² = 1 − |tr|²/4
-    let one = MpFloat::with_val(prec, 1.0);
-    let four = MpFloat::with_val(prec, 4.0);
-    let d_sq = one - tmp / four;
-    if d_sq.is_sign_negative() {
-        return 0.0;
-    }
-    d_sq.sqrt().to_f64()
-}
-
 /// Diamond distance between an exact U2T and an f64 target at MPFR-128, evaluating
 /// each ZOmega entry directly (bypassing `to_float()`, whose f64 quantization can
 /// hide a precision violation at deep k) with the `D² = q(8−q)/16` reformulation.

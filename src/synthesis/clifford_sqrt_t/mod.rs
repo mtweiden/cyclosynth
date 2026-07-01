@@ -106,7 +106,7 @@ pub struct SynthesizerQ {
     /// Allowed `(d_target − d_L) mod 16` offsets for a prefix to be
     /// processed; empty = no filter. Builder: [`Self::with_inner_det_phase_filter`].
     pub inner_det_phase_filter: Vec<u32>,
-    /// BKZ-β post-pass syllable size (0 = off). Builder: [`Self::with_bkz`].
+    /// BKZ-β post-pass syllable size (0 = off; set via `CYCLOSYNTH_BKZ` env).
     pub bkz_block_size: u32,
     /// Number of lde levels the dc path dispatches concurrently, with a
     /// cross-LDE abort so the first finder cancels its peers. ε-tuned in
@@ -411,16 +411,6 @@ impl SynthesizerQ {
     /// more cases.
     pub fn with_inner_det_phase_filter(mut self, allowed_offsets: Vec<u32>) -> Self {
         self.inner_det_phase_filter = allowed_offsets;
-        self
-    }
-
-    /// Run a BKZ-β post-pass after LLL inside `find_aligned_lattice_points_with_stop`. β=0
-    /// disables (the default). β=2 is LLL-equivalent — use β≥3 to see
-    /// any improvement. Empirically helpful at deep ε where the
-    /// post-LLL SE region is large.
-    pub fn with_bkz(mut self, block_size: u32) -> Self {
-        debug_assert!(block_size == 0 || (3..=8).contains(&block_size));
-        self.bkz_block_size = block_size;
         self
     }
 
