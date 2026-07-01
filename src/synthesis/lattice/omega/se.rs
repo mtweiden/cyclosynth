@@ -30,12 +30,13 @@ use crate::rings::MpFloat;
 
 type IMat8 = [[i64; 8]; 8];
 
-/// Opt-in norm-shell discriminant prune at the innermost SE coordinate
-/// (`CYCLOSYNTH_SHELL_FILTER=1`). Cached once per process.
+/// Norm-shell discriminant prune at the innermost SE coordinate. On by
+/// default (neutral at shallow ε, ~1.4× at ε=1e-10); `CYCLOSYNTH_SHELL_FILTER=0`
+/// is the kill-switch. Cached once per process.
 static SHELL_FILTER: LazyLock<bool> =
-    LazyLock::new(|| std::env::var("CYCLOSYNTH_SHELL_FILTER").as_deref() == Ok("1"));
+    LazyLock::new(|| std::env::var("CYCLOSYNTH_SHELL_FILTER").as_deref() != Ok("0"));
 
-/// Whether the depth-0 norm-shell prune is enabled (env-gated, default off).
+/// Whether the depth-0 norm-shell prune is enabled (default on; `=0` disables).
 pub fn shell_filter_enabled() -> bool {
     *SHELL_FILTER
 }
