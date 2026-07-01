@@ -33,3 +33,6 @@ pgo/cyclosynth.profdata
 bench_logs/
 scripts/data/
 docs/
+
+# Dev/benchmark binaries — kept locally, out of git (not production).
+/src/bin/
