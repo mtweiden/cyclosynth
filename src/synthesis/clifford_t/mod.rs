@@ -420,7 +420,6 @@ const DC_WALK_MAX_SOLUTIONS: usize = 8;
 /// `external_abort` is the cross-branch winner signal (checked at every SE
 /// recurse-entry; does not set `budget_hit`).
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn lll_aligned_search(
     scratch: &mut crate::synthesis::lattice::omega::scratch::IntScratch,
     v: [Float; 4],
@@ -598,7 +597,7 @@ impl SynthesizerT {
         let target_parity = det_zeta_parity(&target);
         let parity_ok = |t_prime: u32| {
             t_prime == 0
-                || target_parity.map_or(true, |par| (t_prime % 2) as u8 == par)
+                || target_parity.is_none_or(|par| (t_prime % 2) as u8 == par)
         };
 
         // Direct search starts at min_lde, not 0: no generic rotation
@@ -878,14 +877,10 @@ impl SynthesizerT {
         let indices: Vec<u32> = (0..n as u32).collect();
         let order = crate::synthesis::stride_interleave(&indices, n_threads);
 
-        // Algebraic parity pre-filter: `try_unitary_to_uv(U_L† · target)` succeeds
-        // iff `parity(det(U_L)) == parity(det(target))`. Skipping prefixes
-        // with mismatched parity short-circuits before `prefix_dag_times_target`
-        // and saves the per-prefix float matmul + 8-phase trial. Provably
-        // equivalent to try_unitary_to_uv's rejection condition; no completeness loss.
-        // `None` = target det not on the 8th-root-of-unity circle (e.g. an
-        // arbitrary unitary), in which case we fall through to the original
-        // try_unitary_to_uv check.
+        // Algebraic parity pre-filter (see the det-parity gate in `run`): skip
+        // prefixes whose det ζ-parity mismatches the target before the per-prefix
+        // float matmul + 8-phase trial. `None` = target det off the 8th-root-of-
+        // unity circle → fall through to the try_unitary_to_uv check.
         let target_parity = det_zeta_parity(target);
 
         // Inner branches (`odd` flags) run per prefix: even (U_L·U_R) and,
