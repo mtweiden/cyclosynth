@@ -435,6 +435,20 @@ impl PySynthesizer {
                 off.sqrt()
             )));
         }
+        // A raw f64 matrix carries its column entries (cos/sin) already rounded
+        // to ~2^-53, coarser than the inner SE cap needs below ε ≈ 1e-8: the
+        // aligned lattice point is missed and the search grinds every lde level
+        // to exhaustion. Enough input precision only comes from the exact angle
+        // (cos/sin evaluated to the search precision), so require it there.
+        // (Empirically the f64 column still resolves at ε = 1e-8.)
+        if self.inner.epsilon() < 1e-8 {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "matrix synthesis needs ε ≥ 1e-8; a raw f64 matrix lacks the \
+                 precision for deeper ε. Pass the exact rotation via \
+                 synthesize_u3(theta, phi, lambda) or synthesize_zyz(alpha, \
+                 beta, gamma) (angles accept exact 'pi'-strings).",
+            ));
+        }
         let q_weight = self.inner.q_weight();
         Ok(self.inner.synthesize(mat).map(|r| PySynthResult {
             gates: r.gates,
