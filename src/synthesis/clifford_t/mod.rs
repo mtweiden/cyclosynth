@@ -499,6 +499,63 @@ enum DirectBranch {
     ClifTdg(usize),
 }
 
+/// The 72-direction branch list for `direct_search`: 3 top-level
+/// (U, U·T, U·T†) plus 3 per non-identity left-Clifford.
+fn build_direct_branches(v: [f64; 4]) -> Vec<([f64; 4], DirectBranch)> {
+    let clif_vs: Vec<[f64; 4]> = CLIFFORD_TABLE_T.iter()
+        .map(|(_, c_u2t)| apply_u2t_dag_to_uv(c_u2t, v))
+        .collect();
+
+    // 3 top-level + 23 Cliffords × 3 (index 0 = "I", already covered).
+    let mut branches: Vec<([f64; 4], DirectBranch)> = Vec::with_capacity(75);
+    branches.push((v, DirectBranch::Plain));
+    branches.push((apply_t_dag_to_uv(v), DirectBranch::T));
+    branches.push((apply_t_to_uv(v), DirectBranch::Tdg));
+    for i in 1..CLIFFORD_TABLE_T.len() {
+        let vi = clif_vs[i];
+        branches.push((vi, DirectBranch::ClifEven(i)));
+        branches.push((apply_t_dag_to_uv(vi), DirectBranch::ClifT(i)));
+        branches.push((apply_t_to_uv(vi), DirectBranch::ClifTdg(i)));
+    }
+    branches
+}
+
+/// Compose `(U2T, gate string)` for one direct-search branch tag + solution.
+fn direct_branch_gate(tag: &DirectBranch, sol: &[i64; 8], t: u32) -> (U2T, String) {
+    match tag {
+        DirectBranch::Plain => (
+            solution_to_u2t(sol, t),
+            solution_to_gates(sol, t),
+        ),
+        DirectBranch::T => (
+            solution_to_u2t(sol, t) * U2T::t(),
+            solution_to_gates(sol, t) + "T",
+        ),
+        DirectBranch::Tdg => (
+            solution_to_u2t(sol, t) * U2T::t().dagger(),
+            solution_to_gates(sol, t) + "SSST",
+        ),
+        DirectBranch::ClifEven(i) => {
+            let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
+            (*c_u2t * solution_to_u2t(sol, t), solution_to_gates(sol, t) + c_str)
+        }
+        DirectBranch::ClifT(i) => {
+            let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
+            (
+                *c_u2t * solution_to_u2t(sol, t) * U2T::t(),
+                solution_to_gates(sol, t) + "T" + c_str,
+            )
+        }
+        DirectBranch::ClifTdg(i) => {
+            let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
+            (
+                *c_u2t * solution_to_u2t(sol, t) * U2T::t().dagger(),
+                solution_to_gates(sol, t) + "SSST" + c_str,
+            )
+        }
+    }
+}
+
 // ─── Synthesizer ──────────────────────────────────────────────────────────────
 
 /// Clifford+T synthesis backend (Algorithm 3.14 of arXiv:2510.05816).
@@ -515,6 +572,140 @@ pub struct SynthesizerT {
     /// Max lde for direct_search; above it, skip straight to
     /// prefix_split_search since brute_aligned_search becomes O(2^4ᵗ).
     pub direct_limit: u32,
+}
+
+/// Read-only context for one `prefix_split_search` sweep, threaded into the
+/// per-prefix worker so the rayon closure stays a thin call. `budget_hit` and
+/// `found_abort` are the shared atomics (ORed / winner-set across sweeps).
+struct PrefixSweepCtx<'a> {
+    target: &'a Mat2,
+    exact_col: Option<&'a [MpFloat; 4]>,
+    plan: &'a [bool],
+    lde_inner: u32,
+    eps: f64,
+    t: u32,
+    n: usize,
+    target_parity: Option<u8>,
+    max_leaf_checks: u64,
+    max_nodes: u64,
+    budget_hit: &'a std::sync::atomic::AtomicBool,
+    found_abort: &'a std::sync::atomic::AtomicBool,
+}
+
+impl PrefixSweepCtx<'_> {
+    /// One MA prefix `u_l`: det-parity gate → uv extract → even/odd inner
+    /// branches × two inner shells → ε-distance accept. First hit sets
+    /// `found_abort` and returns `Some`; otherwise `None`.
+    fn search_prefix(
+        &self,
+        scratch: &mut crate::synthesis::lattice::omega::scratch::IntScratch,
+        pos: usize,
+        u_l: &U2T,
+    ) -> Option<SynthResultT> {
+        if let Some(tp) = self.target_parity {
+            if det_zeta_parity(&u_l.to_float()) != Some(tp) {
+                if crate::synthesis::diag::trace_enabled() {
+                    crate::synthesis::diag::N_UV_EXTRACT_REJECTED
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                return None;
+            }
+        }
+        let m_inner = prefix_dag_times_target(u_l, self.target);
+        let v_inner = match try_unitary_to_uv(&m_inner) {
+            Some(v) => v,
+            None => {
+                if crate::synthesis::diag::trace_enabled() {
+                    crate::synthesis::diag::N_UV_EXTRACT_REJECTED
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                return None;
+            }
+        };
+        // Exact MPFR residual for the deep-ε alignment vector
+        // (same √det-normalized column as v_inner, kept exact).
+        let v_inner_mpfr: Option<[MpFloat; 4]> =
+            self.exact_col.map(|col| apply_u2t_dag_to_uv_mpfr(u_l, col, scratch.prec_q));
+
+        for &odd in self.plan {
+            if let Some(r) =
+                self.try_inner_branch(scratch, odd, v_inner, v_inner_mpfr.as_ref(), u_l, pos)
+            {
+                return Some(r);
+            }
+        }
+
+        None
+    }
+
+    /// One inner branch (even `U_L·U_R` or odd `U_L·U_R·T`) of `search_prefix`:
+    /// build the branch alignment vector, search both inner shells, accept the
+    /// first ε-close candidate. Sets `found_abort` on a hit.
+    fn try_inner_branch(
+        &self,
+        scratch: &mut crate::synthesis::lattice::omega::scratch::IntScratch,
+        odd: bool,
+        v_inner: [f64; 4],
+        v_inner_mpfr: Option<&[MpFloat; 4]>,
+        u_l: &U2T,
+        pos: usize,
+    ) -> Option<SynthResultT> {
+        // Even inner branch: U_L · U_R ≈ target
+        // Odd  inner branch: U_L · U_R · T ≈ target
+        let v_branch = if odd {
+            apply_t_dag_to_uv(v_inner)
+        } else {
+            v_inner
+        };
+        let v_branch_mpfr: Option<[MpFloat; 4]> =
+            v_inner_mpfr.map(|vm| {
+                if odd {
+                    apply_t_dag_to_uv_mpfr(vm, scratch.prec_q)
+                } else {
+                    vm.clone()
+                }
+            });
+        // Shell window: `t_inner = t − optimal_t_prime(t)` is
+        // constant across the whole sweep (optimal_t_prime
+        // increments 1:1 with t), so `lde_inner` is pinned to a
+        // single shell. But an odd `t_inner`'s inner factor can
+        // live on shell 2^lde_inner OR 2^(lde_inner+1)
+        // (`⌊t_inner/2⌋+1` drops the half), so search both —
+        // else factors at the higher shell are unreachable
+        // (e.g. the 84-T suffix of Rz(π/64) at 1e-10).
+        for cur_lde in [self.lde_inner, self.lde_inner + 1] {
+            for sol in lll_aligned_search(
+                scratch, v_branch, v_branch_mpfr.as_ref(), cur_lde, self.eps,
+                DC_WALK_MAX_SOLUTIONS, self.max_leaf_checks,
+                self.max_nodes, self.budget_hit, Some(self.found_abort),
+            ) {
+                let u2t = if odd {
+                    *u_l * solution_to_u2t(&sol, cur_lde) * U2T::t()
+                } else {
+                    *u_l * solution_to_u2t(&sol, cur_lde)
+                };
+                let dist = diamond_distance_u2t_float(&u2t, self.target);
+                if dist < self.eps {
+                    self.found_abort
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    crate::synthesis::diag::record_branch_win(
+                        odd, pos, self.n, self.t,
+                    );
+                    return Some(SynthResultT {
+                        gates: Some(BlochDecomposer.decompose(&u2t)),
+                        lde: self.t,
+                        distance: dist,
+                    });
+                }
+                if crate::synthesis::diag::trace_enabled() {
+                    crate::synthesis::diag::N_DIST_REJECTED
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+
+        None
+    }
 }
 
 impl SynthesizerT {
@@ -667,8 +858,8 @@ impl SynthesizerT {
         exact_col: Option<&[MpFloat; 4]>,
         t: u32,
     ) -> Option<SynthResultT> {
-        let trace = crate::synthesis::diag::trace_enabled();
         if t <= self.direct_limit {
+            let trace = crate::synthesis::diag::trace_enabled();
             let t_start = std::time::Instant::now();
             let result = self.direct_search(target, v, t);
             if trace {
@@ -681,41 +872,55 @@ impl SynthesizerT {
             }
             result
         } else {
-            if trace {
-                crate::synthesis::diag::reset_all();
-            }
-            let t_start = std::time::Instant::now();
-            let (result, budget_hit) =
-                self.prefix_split_search(target, v, exact_col, t, PASS1_CAP, PASS1_NODE_CAP);
-            let pass1_ms = t_start.elapsed().as_secs_f64() * 1000.0;
-            if trace {
-                let s = crate::synthesis::diag::snapshot();
-                trace_dump_pass(t, optimal_t_prime(t, self.epsilon), 1, &s, budget_hit, pass1_ms, result.is_some());
-            }
-            if result.is_some() {
-                return result;
-            }
-            if !budget_hit {
-                // Search was exhaustive at PASS1_CAP — no solution exists at this lde.
-                return None;
-            }
-            // Some prefix's budget was exhausted; the solution might be deeper.
-            if trace {
-                crate::synthesis::diag::reset_all();
-            }
-            let t_start2 = std::time::Instant::now();
-            let (result2, budget_hit2) =
-                self.prefix_split_search(target, v, exact_col, t, PASS2_CAP, PASS2_NODE_CAP);
-            if trace {
-                let s = crate::synthesis::diag::snapshot();
-                trace_dump_pass(
-                    t, optimal_t_prime(t, self.epsilon), 2, &s, budget_hit2,
-                    t_start2.elapsed().as_secs_f64() * 1000.0,
-                    result2.is_some(),
-                );
-            }
-            result2
+            self.prefix_split_two_pass(target, v, exact_col, t)
         }
+    }
+
+    /// Large-k arm of `try_at_lde`: adaptive 2-pass prefix-split. PASS1 bails
+    /// unproductive prefixes fast; PASS2's full budget runs only if PASS1
+    /// actually tripped a budget (else PASS1 was exhaustive → no solution here).
+    fn prefix_split_two_pass(
+        &self,
+        target: &Mat2,
+        v: [f64; 4],
+        exact_col: Option<&[MpFloat; 4]>,
+        t: u32,
+    ) -> Option<SynthResultT> {
+        let trace = crate::synthesis::diag::trace_enabled();
+        if trace {
+            crate::synthesis::diag::reset_all();
+        }
+        let t_start = std::time::Instant::now();
+        let (result, budget_hit) =
+            self.prefix_split_search(target, v, exact_col, t, PASS1_CAP, PASS1_NODE_CAP);
+        let pass1_ms = t_start.elapsed().as_secs_f64() * 1000.0;
+        if trace {
+            let s = crate::synthesis::diag::snapshot();
+            trace_dump_pass(t, optimal_t_prime(t, self.epsilon), 1, &s, budget_hit, pass1_ms, result.is_some());
+        }
+        if result.is_some() {
+            return result;
+        }
+        if !budget_hit {
+            // Search was exhaustive at PASS1_CAP — no solution exists at this lde.
+            return None;
+        }
+        // Some prefix's budget was exhausted; the solution might be deeper.
+        if trace {
+            crate::synthesis::diag::reset_all();
+        }
+        let t_start2 = std::time::Instant::now();
+        let (result2, budget_hit2) =
+            self.prefix_split_search(target, v, exact_col, t, PASS2_CAP, PASS2_NODE_CAP);
+        if trace {
+            let s = crate::synthesis::diag::snapshot();
+            trace_dump_pass(
+                t, optimal_t_prime(t, self.epsilon), 2, &s, budget_hit2,
+                t_start2.elapsed().as_secs_f64() * 1000.0,
+                result2.is_some(),
+            );
+        }
+        result2
     }
 
     /// Direct search at lde `t` (Algorithm 3.6): `brute_aligned_search`
@@ -725,57 +930,11 @@ impl SynthesizerT {
     /// the D&C path where the inner lde is large.
     fn direct_search(&self, target: &Mat2, v: [f64; 4], t: u32) -> Option<SynthResultT> {
         let eps = self.epsilon;
-
-        let clif_vs: Vec<[f64; 4]> = CLIFFORD_TABLE_T.iter()
-            .map(|(_, c_u2t)| apply_u2t_dag_to_uv(c_u2t, v))
-            .collect();
-
-        // 3 top-level + 23 Cliffords × 3 (index 0 = "I", already covered).
-        let mut branches: Vec<([f64; 4], DirectBranch)> = Vec::with_capacity(75);
-        branches.push((v, DirectBranch::Plain));
-        branches.push((apply_t_dag_to_uv(v), DirectBranch::T));
-        branches.push((apply_t_to_uv(v), DirectBranch::Tdg));
-        for i in 1..CLIFFORD_TABLE_T.len() {
-            let vi = clif_vs[i];
-            branches.push((vi, DirectBranch::ClifEven(i)));
-            branches.push((apply_t_dag_to_uv(vi), DirectBranch::ClifT(i)));
-            branches.push((apply_t_to_uv(vi), DirectBranch::ClifTdg(i)));
-        }
+        let branches = build_direct_branches(v);
 
         branches.par_iter().find_map_any(|(v_s, tag)| {
             for sol in brute_aligned_search(*v_s, t, eps, 1) {
-                let (u2t, gates) = match tag {
-                    DirectBranch::Plain => (
-                        solution_to_u2t(&sol, t),
-                        solution_to_gates(&sol, t),
-                    ),
-                    DirectBranch::T => (
-                        solution_to_u2t(&sol, t) * U2T::t(),
-                        solution_to_gates(&sol, t) + "T",
-                    ),
-                    DirectBranch::Tdg => (
-                        solution_to_u2t(&sol, t) * U2T::t().dagger(),
-                        solution_to_gates(&sol, t) + "SSST",
-                    ),
-                    DirectBranch::ClifEven(i) => {
-                        let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
-                        (*c_u2t * solution_to_u2t(&sol, t), solution_to_gates(&sol, t) + c_str)
-                    },
-                    DirectBranch::ClifT(i) => {
-                        let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
-                        (
-                            *c_u2t * solution_to_u2t(&sol, t) * U2T::t(),
-                            solution_to_gates(&sol, t) + "T" + c_str,
-                        )
-                    },
-                    DirectBranch::ClifTdg(i) => {
-                        let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
-                        (
-                            *c_u2t * solution_to_u2t(&sol, t) * U2T::t().dagger(),
-                            solution_to_gates(&sol, t) + "SSST" + c_str,
-                        )
-                    },
-                };
+                let (u2t, gates) = direct_branch_gate(tag, &sol, t);
                 let dist = diamond_distance_u2t_float(&u2t, target);
                 if dist < eps {
                     return Some(SynthResultT { gates: Some(gates), lde: t, distance: dist });
@@ -906,97 +1065,27 @@ impl SynthesizerT {
         // sweep loop anyway.
         let mut result: Option<SynthResultT> = None;
         for plan in &plans {
+            let ctx = PrefixSweepCtx {
+                target,
+                exact_col,
+                plan,
+                lde_inner,
+                eps,
+                t,
+                n,
+                target_parity,
+                max_leaf_checks,
+                max_nodes,
+                budget_hit: &budget_hit,
+                found_abort: &found_abort,
+            };
             result = order
                 .par_iter()
                 .enumerate()
                 .with_max_len(max_len)
                 .map_init(
                     || crate::synthesis::lattice::omega::scratch::IntScratch::new(eps),
-                    |scratch, (pos, &pi)| -> Option<SynthResultT> {
-                        let u_l = &prefixes[pi as usize];
-                        if let Some(tp) = target_parity {
-                            if det_zeta_parity(&u_l.to_float()) != Some(tp) {
-                                if crate::synthesis::diag::trace_enabled() {
-                                    crate::synthesis::diag::N_UV_EXTRACT_REJECTED
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                return None;
-                            }
-                        }
-                        let m_inner = prefix_dag_times_target(u_l, target);
-                        let v_inner = match try_unitary_to_uv(&m_inner) {
-                            Some(v) => v,
-                            None => {
-                                if crate::synthesis::diag::trace_enabled() {
-                                    crate::synthesis::diag::N_UV_EXTRACT_REJECTED
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                }
-                                return None;
-                            }
-                        };
-                        // Exact MPFR residual for the deep-ε alignment vector
-                        // (same √det-normalized column as v_inner, kept exact).
-                        let v_inner_mpfr: Option<[MpFloat; 4]> =
-                            exact_col.map(|col| apply_u2t_dag_to_uv_mpfr(u_l, col, scratch.prec_q));
-
-                        for &odd in plan {
-                            // Even inner branch: U_L · U_R ≈ target
-                            // Odd  inner branch: U_L · U_R · T ≈ target
-                            let v_branch = if odd {
-                                apply_t_dag_to_uv(v_inner)
-                            } else {
-                                v_inner
-                            };
-                            let v_branch_mpfr: Option<[MpFloat; 4]> =
-                                v_inner_mpfr.as_ref().map(|vm| {
-                                    if odd {
-                                        apply_t_dag_to_uv_mpfr(vm, scratch.prec_q)
-                                    } else {
-                                        vm.clone()
-                                    }
-                                });
-                            // Shell window: `t_inner = t − optimal_t_prime(t)` is
-                            // constant across the whole sweep (optimal_t_prime
-                            // increments 1:1 with t), so `lde_inner` is pinned to a
-                            // single shell. But an odd `t_inner`'s inner factor can
-                            // live on shell 2^lde_inner OR 2^(lde_inner+1)
-                            // (`⌊t_inner/2⌋+1` drops the half), so search both —
-                            // else factors at the higher shell are unreachable
-                            // (e.g. the 84-T suffix of Rz(π/64) at 1e-10).
-                            for cur_lde in [lde_inner, lde_inner + 1] {
-                                for sol in lll_aligned_search(
-                                    scratch, v_branch, v_branch_mpfr.as_ref(), cur_lde, eps,
-                                    DC_WALK_MAX_SOLUTIONS, max_leaf_checks,
-                                    max_nodes, &budget_hit, Some(&found_abort),
-                                ) {
-                                    let u2t = if odd {
-                                        *u_l * solution_to_u2t(&sol, cur_lde) * U2T::t()
-                                    } else {
-                                        *u_l * solution_to_u2t(&sol, cur_lde)
-                                    };
-                                    let dist = diamond_distance_u2t_float(&u2t, target);
-                                    if dist < eps {
-                                        found_abort
-                                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                                        crate::synthesis::diag::record_branch_win(
-                                            odd, pos, n, t,
-                                        );
-                                        return Some(SynthResultT {
-                                            gates: Some(BlochDecomposer.decompose(&u2t)),
-                                            lde: t,
-                                            distance: dist,
-                                        });
-                                    }
-                                    if crate::synthesis::diag::trace_enabled() {
-                                        crate::synthesis::diag::N_DIST_REJECTED
-                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    }
-                                }
-                            }
-                        }
-
-                        None
-                    },
+                    |scratch, (pos, &pi)| ctx.search_prefix(scratch, pos, &prefixes[pi as usize]),
                 )
                 .find_any(|r| r.is_some())
                 .flatten();

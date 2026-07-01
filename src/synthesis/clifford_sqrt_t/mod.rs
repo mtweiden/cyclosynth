@@ -501,6 +501,33 @@ pub(crate) struct PrefixWatch {
     pub(crate) floor: usize,
 }
 
+/// Watcher poll loop: until `walks_done`, sweep active walks every ~20 ms
+/// and abort those the incumbent (or `extra_kill`) has condemned.
+fn incumbent_watcher_loop(
+    walks_done: &AtomicBool,
+    watches: &[PrefixWatch],
+    best_cost: &std::sync::atomic::AtomicUsize,
+    extra_kill: impl Fn() -> bool,
+    on_extra_kill: impl Fn(usize),
+) {
+    while !walks_done.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let cur_best = best_cost.load(Ordering::Relaxed);
+        let extra = extra_kill();
+        for (i, w) in watches.iter().enumerate() {
+            if !w.active.load(Ordering::Relaxed) {
+                continue;
+            }
+            if cur_best <= w.floor {
+                w.abort.store(true, Ordering::Relaxed);
+            } else if extra {
+                w.abort.store(true, Ordering::Relaxed);
+                on_extra_kill(i);
+            }
+        }
+    }
+}
+
 /// Run `body` under a scoped incumbent watcher (shared by the two
 /// cost-pruned search drivers). Every ~20 ms the watcher kills active
 /// walks whose floor can no longer beat the incumbent — sound: only
@@ -517,7 +544,6 @@ pub(crate) fn with_incumbent_watcher<R: Send>(
     on_extra_kill: impl Fn(usize) + Sync,
     body: impl FnOnce() -> R + Send,
 ) -> R {
-    use std::sync::atomic::{AtomicBool, Ordering};
     let walks_done = AtomicBool::new(false);
     struct DoneGuard<'a>(&'a AtomicBool);
     impl Drop for DoneGuard<'_> {
@@ -532,22 +558,13 @@ pub(crate) fn with_incumbent_watcher<R: Send>(
         let extra_kill = &extra_kill;
         let on_extra_kill = &on_extra_kill;
         wscope.spawn(move || {
-            while !walks_done_ref.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                let cur_best = best_cost.load(Ordering::Relaxed);
-                let extra = extra_kill();
-                for (i, w) in watches_ref.iter().enumerate() {
-                    if !w.active.load(Ordering::Relaxed) {
-                        continue;
-                    }
-                    if cur_best <= w.floor {
-                        w.abort.store(true, Ordering::Relaxed);
-                    } else if extra {
-                        w.abort.store(true, Ordering::Relaxed);
-                        on_extra_kill(i);
-                    }
-                }
-            }
+            incumbent_watcher_loop(
+                walks_done_ref,
+                watches_ref,
+                best_cost,
+                extra_kill,
+                on_extra_kill,
+            );
         });
         let r = body();
         walks_done.store(true, Ordering::Relaxed);
