@@ -33,27 +33,38 @@ maturin develop --release
 
 ## Usage (Python)
 
+Targets are given by their rotation ANGLES, not a matrix: deep-ε synthesis needs more than f64 precision, which only the angles carry (cos/sin are evaluated to the search precision).
+Angles are floats (radians) or exact-π strings (`"pi/64"`, `"3*pi/4"`, `"-2pi/3"`).
+
+Three module-level functions cover the qiskit U-gate family — each returns a result (`None` if no circuit was found within `epsilon`) and takes `sqrt_t=True` to synthesize over Clifford+√T instead of Clifford+T:
+
+- `synthesize_u1(lam, epsilon, *, sqrt_t=False)` — `U1(λ) ≅ Rz(λ)` up to global phase
+- `synthesize_u2(phi, lam, epsilon, *, sqrt_t=False)` — `U2(φ,λ) = U3(π/2, φ, λ)`
+- `synthesize_u3(theta, phi, lam, epsilon, *, sqrt_t=False)` — general single-qubit gate
+
 ```python
 import cyclosynth
 
-# Targets are given by their rotation ANGLES, not a matrix: deep-ε synthesis
-# needs more than f64 precision, which only the angles carry (cos/sin are
-# evaluated to the search precision). Angles are floats (radians) or exact
-# 'pi'-strings like "pi/64".
-result = cyclosynth.synthesize_u3(1.047198, 2.757718, 5.394728, epsilon=1e-5)
-result = cyclosynth.synthesize_u1("pi/64", 1e-10)   # U1(λ) ≅ Rz(λ); exact-π string
+r = cyclosynth.synthesize_u1("pi/64", 1e-10)         # exact-π string angle
+r = cyclosynth.synthesize_u2(0.3, "pi/8", 1e-5)      # float + string mix
+r = cyclosynth.synthesize_u3(1.0472, 2.7577, 5.3947, 1e-5, sqrt_t=True)
 
-if result:                        # None if no circuit was found within epsilon
-    print(result.gates)           # gate string over {H, S, s, T, t, X, Y, Z}
-                                  #   * lower case means dagger (i.e t = Tdg)
-    print(result.t_count)         # T-count (also .q_count, .cost, .lde)
-    print(result.distance)        # diamond distance, < epsilon
+if r:
+    print(r.gates)       # gate string over {H, S, T, Q(=√T), X, Y, Z};
+                         #   lowercase = dagger (t = T†, q = Q†)
+    print(r.t_count)     # also .q_count, .cost, .lde
+    print(r.distance)    # diamond distance, < epsilon
 ```
 
-`synthesize_u1(lam, ε)`, `synthesize_u2(phi, lam, ε)` (= `U3(π/2, φ, λ)`), and `synthesize_u3(theta, phi, lam, ε)` cover the qiskit U-gate family; each takes `sqrt_t=True` to synthesize over Clifford+√T instead of Clifford+T.
 The composition convention is *leftmost gate is the leftmost matrix factor*: for `"ABC"` the unitary is `A·B·C`.
+[`examples/u1_u2_u3.py`](examples/u1_u2_u3.py) is a runnable demo of all three functions and the ε policies.
 
-Supported `epsilon` ranges: Clifford+√T (`sqrt_t=True`) requires `ε ≥ 1e-8` (`ValueError` below — the Z[ζ16] backend's validated precision range); Clifford+T accepts any `ε` but warns below `1e-10` (outside the oracle-validated range; runtimes grow ~10× per decade).
+### Supported `epsilon` ranges
+
+| gate set | supported range | outside it |
+| --- | --- | --- |
+| Clifford+T (`sqrt_t=False`) | validated to `1e-10` | below: `UserWarning`, proceeds — runtimes grow ~10×/decade and T-optimality is unverified |
+| Clifford+√T (`sqrt_t=True`) | `ε ≥ 1e-8` | below: `ValueError` — the Z[ζ16] backend's validated precision floor |
 
 ### Advanced: the `Synthesizer` class
 
@@ -64,6 +75,8 @@ synth = cyclosynth.Synthesizer(epsilon=1e-5)          # sqrt_t=True for Clifford
 result = synth.synthesize_zyz(4.863069, 2.757718, 5.394728)   # Rz(α)·Ry(β)·Rz(γ)
 # synthesize_u1 / synthesize_u2 / synthesize_u3 also available as methods
 ```
+
+The constructor enforces the same ε ranges as the module functions.
 
 ### Choosing Clifford+√T settings
 
@@ -95,6 +108,7 @@ After `maturin develop --release`, the [`examples/`](examples/) directory shows 
 
 | example | what it does |
 |---|---|
+| [`u1_u2_u3.py`](examples/u1_u2_u3.py) | One-shot `synthesize_u1`/`u2`/`u3` calls (float and π-string angles, `sqrt_t=True`) and the ε-range policies. |
 | [`compare_t_vs_sqrtt.py`](examples/compare_t_vs_sqrtt.py) | Clifford+T vs Clifford+√T cost (`T + 3·Q`) on the same Haar-random targets. |
 | [`compare_t_vs_sqrtt_gates.py`](examples/compare_t_vs_sqrtt_gates.py) | Interactive: enter U3 angles, see both gate sets' circuits side by side. |
 
@@ -102,18 +116,15 @@ After `maturin develop --release`, the [`examples/`](examples/) directory shows 
 
 ```rust
 use cyclosynth::synthesis::Synthesizer;
-use num_complex::Complex;
-
-let theta = 0.3_f64;                         // Rz(0.3)
-let target = [
-    [Complex::from_polar(1.0, -theta / 2.0), Complex::new(0.0, 0.0)],
-    [Complex::new(0.0, 0.0), Complex::from_polar(1.0, theta / 2.0)],
-];
+use cyclosynth::synthesis::angle::Angle;
 
 let synth = Synthesizer::new(1e-5, /* sqrt_t = */ false);
-let result = synth.synthesize(target).unwrap();
+// Angle targets only (same reason as Python): Angle::Rad(f64) or exact Angle::PiRatio(p, q).
+let result = synth.synthesize_u1(Angle::PiRatio(1, 64)).unwrap();  // U1(π/64) ≅ Rz(π/64)
+// also synthesize_u2(phi, lam), synthesize_u3(theta, phi, lam), synthesize_zyz(alpha, beta, gamma)
 let gates = result.gates.unwrap();
-println!("T-count = {}, gates = {}", gates.matches('T').count(), gates);
+let t_count = gates.matches(['T', 't']).count(); // t = T† costs a T state too
+println!("T-count = {t_count}, gates = {gates}");
 ```
 
 The `time_synthesis_omega` / `time_synthesis_zeta` binaries run the benchmark suites:
@@ -178,7 +189,7 @@ src/
         ├── omega/              8-D pipeline (Clifford+T)
         ├── zeta/               16-D pipeline (Clifford+√T)
         └── common.rs           shared L²-LLL helpers
-examples/               Python usage, verification, and comparison
+examples/               Python usage and comparison examples
 ```
 
 Advanced/internal tuning is exposed through `CYCLOSYNTH_*` environment variables; see the table in [AGENTS.md](AGENTS.md#environment-variables) (each is also documented inline at its use site in `src/synthesis/`).
