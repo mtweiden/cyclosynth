@@ -59,7 +59,7 @@ pub(crate) fn canonical_key_q(u: &U2Q) -> [i64; 8] {
 
 /// Build `L_m^Q`: the canonical-form (arXiv:1501.04944 §4) prefix set with
 /// Clifford suffix, at syllable count `m`. Cached by `m` (Arc-cloned on hit).
-pub fn build_fgkm_prefix_set(m: u32) -> Arc<Vec<U2Q>> {
+pub(crate) fn build_fgkm_prefix_set(m: u32) -> Arc<Vec<U2Q>> {
     {
         let cache = FGKM_PREFIX_CACHE.lock().expect("FGKM prefix cache poisoned");
         if let Some(v) = cache.get(&m) {
@@ -84,7 +84,7 @@ pub(crate) static BUILD_L_Q_TQ_CACHE: CacheByM<(usize, usize)> =
 /// weight. NB: the weighted cost is **not a lower bound** on
 /// `cost(U_L · U_R)` — U_R can cancel parts of U_L. It is used as a
 /// heuristic ranking + prune, not a sound bound.
-pub fn build_fgkm_prefix_gate_counts(m: u32) -> Arc<Vec<(usize, usize)>> {
+pub(crate) fn build_fgkm_prefix_gate_counts(m: u32) -> Arc<Vec<(usize, usize)>> {
     {
         let cache = BUILD_L_Q_TQ_CACHE.lock().expect("build L Q TQ cache poisoned");
         if let Some(v) = cache.get(&m) {
@@ -147,7 +147,7 @@ pub(crate) static FGKM_PREFIX_ORBIT_CACHE: CacheByM<usize> =
 /// peel-depth k, so an orbit can span several k; production dedup
 /// groups by (orbit, k), within which mates are exact ring-unit coset
 /// partners (pinned by `zeta_coset_orbits_sound`).
-pub fn build_fgkm_prefix_orbits(m: u32) -> Arc<Vec<usize>> {
+pub(crate) fn build_fgkm_prefix_orbits(m: u32) -> Arc<Vec<usize>> {
     {
         let cache = FGKM_PREFIX_ORBIT_CACHE.lock().expect("FGKM prefix orbit cache poisoned");
         if let Some(v) = cache.get(&m) {
@@ -218,7 +218,7 @@ pub(crate) static BUILD_L_Q_COSET_KEY_CACHE: CacheByM<(usize, u32)> =
 
 /// The `(orbit id, unreduced k)` dedup class per prefix of
 /// `build_fgkm_prefix_set(m)` — the key [`coset_keep_mask`] groups by.
-pub fn build_fgkm_prefix_coset_keys(m: u32) -> Arc<Vec<(usize, u32)>> {
+pub(crate) fn build_fgkm_prefix_coset_keys(m: u32) -> Arc<Vec<(usize, u32)>> {
     {
         let cache = BUILD_L_Q_COSET_KEY_CACHE.lock().expect("build L Q coset key cache poisoned");
         if let Some(v) = cache.get(&m) {

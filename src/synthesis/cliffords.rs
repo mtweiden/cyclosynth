@@ -12,7 +12,7 @@ use crate::rings::ZOmega;
 /// All 24 single-qubit Clifford gates as (gate_string, U2T) pairs, SU(2)
 /// representatives (global phase is irrelevant — diamond distance is
 /// phase-invariant).
-pub static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
+pub(crate) static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
     //         u11                     u12                     u21                     u22                     k
     ("I",    U2T::new(ZOmega::from_i32( 1, 0, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 0, 0, 0, 0), ZOmega::from_i32( 1, 0, 0, 0), 0)),
     ("H",    U2T::new(ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0,-1, 0), ZOmega::from_i32( 0, 0, 1, 0), 1)),
@@ -44,7 +44,7 @@ pub static CLIFFORD_TABLE_T: &[(&str, U2T)] = &[
 /// ⟨S, X⟩ mod phase (units of Z[ω], no 1/√2). `build_ma_prefix_set`'s
 /// right-coset dedup keeps one rep per coset `U_L·⟨S,X⟩` (the 24 Cliffords fall
 /// into 3 cosets), since `U_L·C·U_R = U_L·(C·U_R)` shares shell and lde.
-pub static CLIFFORD_LDE0_IDX: [usize; 8] = [0, 2, 3, 4, 5, 9, 10, 11];
+pub(crate) static CLIFFORD_LDE0_IDX: [usize; 8] = [0, 2, 3, 4, 5, 9, 10, 11];
 
 // T = Rz(π/4) has phase e^{iπ/8} ∉ Z[ω], so it can't be a U2T value. We
 // never need it as one: the "T branch" applies T as a right-factor on the

@@ -219,7 +219,7 @@ pub(crate) fn build_ma_prefix_set_reference(t_prime: u32) -> Arc<Vec<U2T>> {
 
 /// The Matsumoto–Amano prefix set L_{t'} with Clifford postmultiplication,
 /// cached per `(t_prime, coset_dedup)`.
-pub fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
+pub(crate) fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2T>> {
     let key = (t_prime, coset_dedup);
     {
         let cache = MA_PREFIX_CACHE.lock().expect("MA prefix cache poisoned");
@@ -518,16 +518,16 @@ fn direct_branch_gate(tag: &DirectBranch, sol: &[i64; 8], t: u32) -> (U2T, Strin
 /// Prefer the unified [`crate::synthesis::Synthesizer`]; public for tests.
 pub struct SynthesizerT {
     /// Approximation precision in diamond distance.
-    pub epsilon: f64,
-    pub max_lde: u32,
+    pub(crate) epsilon: f64,
+    pub(crate) max_lde: u32,
     /// Defaults to floor(coef·log₂(1/ε)) with coef ramping 1.5 → 2.8 over
     /// ε (see [`Self::new`]); ~the information-theoretic T-count lower bound
     /// for a generic SU(2) rotation. Set 0 for exact low-T-count solutions
     /// of Cliffords and other special gates.
-    pub min_lde: u32,
+    pub(crate) min_lde: u32,
     /// Max lde for direct_search; above it, skip straight to
     /// prefix_split_search since brute_aligned_search becomes O(2^4ᵗ).
-    pub direct_limit: u32,
+    pub(crate) direct_limit: u32,
 }
 
 /// Read-only context for one `prefix_split_search` sweep, threaded into the
@@ -730,7 +730,7 @@ impl SynthesizerT {
     /// route through the Lenstra 8D pipeline (L²-LLL over an exact i256
     /// Gram + f64 GS + MPFR-128 Schnorr-Euchner + MPFR LU for the
     /// cap-center), with MPFR precision scaled to ε.
-    pub fn synthesize(&self, target: Mat2) -> Option<SynthResultT> {
+    pub(crate) fn synthesize(&self, target: Mat2) -> Option<SynthResultT> {
         self.run(target, None)
     }
 
@@ -758,7 +758,7 @@ impl SynthesizerT {
     ///
     /// Prefer [`Self::synthesize_zyz`]/[`Self::synthesize_u3`] — building the
     /// target and exact column separately risks a convention mismatch.
-    pub fn synthesize_with_exact_col(
+    pub(crate) fn synthesize_with_exact_col(
         &self,
         target: Mat2,
         exact_col: &[MpFloat; 4],

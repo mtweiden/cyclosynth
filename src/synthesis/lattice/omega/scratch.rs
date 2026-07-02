@@ -12,15 +12,15 @@ use crate::rings::MpFloat;
 
 // ─── Adaptive precision constants & helpers — from lattice::common ───────────
 
-pub use crate::synthesis::lattice::common::{
+pub(crate) use crate::synthesis::lattice::common::{
     compute_lu_prec, compute_prec_q, compute_scale_bits, identity_basis, imat_zero,
-    rfv, rfz, rmat_zero, rvec_zero, GRAM_OVERFLOW_THRESHOLD_BITS, TARGET_BITS,
+    rfv, rfz, rmat_zero, rvec_zero, TARGET_BITS,
 };
 
 // ─── Type aliases ────────────────────────────────────────────────────────────
 
-pub type IMat8 = [[i64; 8]; 8];
-pub type Mat256 = [[i256; 8]; 8];
+pub(crate) type IMat8 = [[i64; 8]; 8];
+pub(crate) type Mat256 = [[i256; 8]; 8];
 
 // ─── In-place MPFR op macros via gmp-mpfr-sys ────────────────────────────────
 //
@@ -91,63 +91,63 @@ pub(crate) use r_sub;
 /// allocation happens inside the LLL inner loop.
 pub struct IntScratch {
     /// MPFR precision used for build_q + Cholesky + LU (post-LLL phases).
-    pub prec_q: u32,
+    pub(crate) prec_q: u32,
     /// Adaptive scale `B` such that `Q_int[i][j] ≈ 2^B · Q[i][j]`. Picked
     /// per find_aligned_lattice_points call so `max(|Q_int|) ≈ 2^TARGET_BITS`.
-    pub scale_bits: i32,
+    pub(crate) scale_bits: i32,
 
     // ── MPFR buffers for build_q (constants + per-call working values) ──
-    pub q_mpfr: [[MpFloat; 8]; 8],
-    pub c: [MpFloat; 8],
-    pub one: MpFloat,
-    pub two: MpFloat,
-    pub tmp: MpFloat,
-    pub tmp2: MpFloat,
-    pub tmp3: MpFloat,
-    pub acc: MpFloat,
-    pub p_u: [[MpFloat; 8]; 8],
-    pub p_ub: [[MpFloat; 8]; 8],
-    pub y_rf: [MpFloat; 8],
-    pub eps_rf: MpFloat,
-    pub r: MpFloat,
-    pub r_sq: MpFloat,
-    pub delta_y: MpFloat,
-    pub delta_perp: MpFloat,
-    pub inv_dy_sq: MpFloat,
-    pub inv_dp_sq: MpFloat,
-    pub inv_r_sq: MpFloat,
-    pub y_norm_sq: MpFloat,
-    pub inv_y_norm_sq: MpFloat,
-    pub cap_mid: MpFloat,
+    pub(crate) q_mpfr: [[MpFloat; 8]; 8],
+    pub(crate) c: [MpFloat; 8],
+    pub(crate) one: MpFloat,
+    pub(crate) two: MpFloat,
+    pub(crate) tmp: MpFloat,
+    pub(crate) tmp2: MpFloat,
+    pub(crate) tmp3: MpFloat,
+    pub(crate) acc: MpFloat,
+    pub(crate) p_u: [[MpFloat; 8]; 8],
+    pub(crate) p_ub: [[MpFloat; 8]; 8],
+    pub(crate) y_rf: [MpFloat; 8],
+    pub(crate) eps_rf: MpFloat,
+    pub(crate) r: MpFloat,
+    pub(crate) r_sq: MpFloat,
+    pub(crate) delta_y: MpFloat,
+    pub(crate) delta_perp: MpFloat,
+    pub(crate) inv_dy_sq: MpFloat,
+    pub(crate) inv_dp_sq: MpFloat,
+    pub(crate) inv_r_sq: MpFloat,
+    pub(crate) y_norm_sq: MpFloat,
+    pub(crate) inv_y_norm_sq: MpFloat,
+    pub(crate) cap_mid: MpFloat,
 
     // ── Q_base hoist ──
     /// Prefix-independent part of the Q metric:
     /// `q_base[i][j] = inv_dp_sq·p_u[i][j] + inv_r_sq·p_ub[i][j]`.
     /// Valid for the `(k, eps)` recorded in `q_base_key`; rebuilt by
     /// `build_q_base` (via `build_q_mpfr`) only when the key changes.
-    pub q_base: [[MpFloat; 8]; 8],
+    pub(crate) q_base: [[MpFloat; 8]; 8],
     /// Scalar weight of the prefix-dependent rank-1 term:
     /// `coef_y = inv_dy_sq − inv_dp_sq` (no cancellation — the terms
     /// differ by a factor ≈ (4/ε)²), so
     /// `Q = q_base + (coef_y/‖y‖²)·y·yᵀ`.
-    pub coef_y: MpFloat,
+    pub(crate) coef_y: MpFloat,
     /// `(k, eps.to_bits())` the cached q_base/coef_y/cap_mid were built
     /// for; `None` until the first build_q_mpfr call.
-    pub q_base_key: Option<(u32, u64)>,
+    pub(crate) q_base_key: Option<(u32, u64)>,
     /// LLL-reduced unimodular basis of `q_base` alone, used to warm-seed
     /// every per-prefix LLL at the same `(k, ε)`: the prefix-dependent
     /// rank-1 term carries ~half the anisotropy bits, so the q_base
     /// reduction is most of the shared work. Keyed separately from
     /// `q_base_key`: computed lazily by `find_aligned_lattice_points` (it
     /// needs an LLL run, which `build_q_mpfr` must not recurse into).
-    pub q_base_seed: Option<IMat8>,
-    pub q_base_seed_key: Option<(u32, u64)>,
+    pub(crate) q_base_seed: Option<IMat8>,
+    pub(crate) q_base_seed_key: Option<(u32, u64)>,
 
     // ── Integer LLL buffers ──
-    pub q_int: Mat256,
-    pub basis: IMat8,
-    pub gram: Mat256,        // G = B · Q_int · Bᵀ
-    pub temp_bq: Mat256,     // intermediate = B · Q_int
+    pub(crate) q_int: Mat256,
+    pub(crate) basis: IMat8,
+    pub(crate) gram: Mat256,        // G = B · Q_int · Bᵀ
+    pub(crate) temp_bq: Mat256,     // intermediate = B · Q_int
 
     // ── L²-LLL state (Nguyen-Stehlé 2009): pure f64. Theorem 2 + Figure 7
     // prove this precision is sufficient for d ≤ 11; we operate at d=8.
@@ -159,9 +159,9 @@ pub struct IntScratch {
     // The exact integer Gram lives in `gram` (i256). f64 entries are derived
     // on demand via i256→f64 (mantissa truncation; exponent has 1024-bit
     // range so our 2^240 max gram entries fit with no overflow).
-    pub r_bar: [[f64; 8]; 8],
-    pub mu_bar: [[f64; 8]; 8],
-    pub s_bar: [[f64; 8]; 8],
+    pub(crate) r_bar: [[f64; 8]; 8],
+    pub(crate) mu_bar: [[f64; 8]; 8],
+    pub(crate) s_bar: [[f64; 8]; 8],
 
     // ── post-LLL Cholesky output (f64 production path) ──
     /// Lower-triangular Cholesky factor of the natural-scale post-LLL Gram,
@@ -169,15 +169,15 @@ pub struct IntScratch {
     /// invariant κ(G) ≤ (4/3)^(d-1) ≤ 16 at d=8: f64's 53-bit mantissa
     /// yields ~10⁻¹⁵ absolute error at the SE unit-scale bound check, six
     /// orders of magnitude below SE's 10⁻⁹ tolerance.
-    pub l_f64: [[f64; 8]; 8],
+    pub(crate) l_f64: [[f64; 8]; 8],
 
     // ── MPFR LU buffers at lu_prec (decoupled from prec_q; see compute_lu_prec) ──
-    pub lu_prec: u32,
-    pub lu_a: [[MpFloat; 8]; 8],
-    pub lu_rhs: [MpFloat; 8],
-    pub lu_x: [MpFloat; 8],
-    pub lu_tmp: MpFloat,
-    pub lu_acc: MpFloat,
+    pub(crate) lu_prec: u32,
+    pub(crate) lu_a: [[MpFloat; 8]; 8],
+    pub(crate) lu_rhs: [MpFloat; 8],
+    pub(crate) lu_x: [MpFloat; 8],
+    pub(crate) lu_tmp: MpFloat,
+    pub(crate) lu_acc: MpFloat,
 }
 
 // ─── Σ-derived constants (filled once per IntScratch::new) ───────────────────
@@ -301,7 +301,7 @@ impl IntScratch {
         s
     }
 
-    pub fn reset_basis(&mut self) {
+    pub(crate) fn reset_basis(&mut self) {
         self.basis = identity_basis();
     }
 }

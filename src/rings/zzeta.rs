@@ -16,38 +16,37 @@ use super::types::{Int, INT_ZERO, INT_ONE, INT_NEG_ONE, int_to_f64};
 /// Represented as integer coefficients of the basis {1, ζ, ζ², ζ³, ζ⁴, ζ⁵, ζ⁶, ζ⁷}.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct ZZeta {
-    pub a: Int,
-    pub b: Int,
-    pub c: Int, // ζ² = ω
-    pub d: Int,
-    pub e: Int, // ζ⁴ = i
-    pub f: Int,
-    pub g: Int,
-    pub h: Int,
+    pub(crate) a: Int,
+    pub(crate) b: Int,
+    pub(crate) c: Int, // ζ² = ω
+    pub(crate) d: Int,
+    pub(crate) e: Int, // ζ⁴ = i
+    pub(crate) f: Int,
+    pub(crate) g: Int,
+    pub(crate) h: Int,
 }
 
 impl ZZeta {
-    pub const ZERO: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
-    pub const ONE:  Self = Self { a: INT_ONE,  b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
-    pub const ZETA: Self = Self { a: INT_ZERO, b: INT_ONE,  c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
+    pub(crate) const ZERO: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
+    pub(crate) const ONE:  Self = Self { a: INT_ONE,  b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
+    pub(crate) const ZETA: Self = Self { a: INT_ZERO, b: INT_ONE,  c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
     /// ζ² = ω (the Clifford+T generator)
-    pub const OMEGA: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ONE,  d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
+    pub(crate) const OMEGA: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ONE,  d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
     /// i = ζ⁴
-    pub const I: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ONE,  f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
-    pub const NEG_ONE: Self = Self { a: INT_NEG_ONE, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
-    /// -i = -ζ⁴
-    pub const NEG_I: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_NEG_ONE, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
+    pub(crate) const I: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ONE,  f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
+    #[cfg_attr(not(test), allow(dead_code))] // test-only since the PyZZeta surface was removed
+    pub(crate) const NEG_ONE: Self = Self { a: INT_NEG_ONE, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
 
     #[inline]
     #[allow(clippy::too_many_arguments)] // 8 ring coefficients are intrinsic to Z[ζ].
-    pub const fn new(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int) -> Self {
+    pub(crate) const fn new(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int) -> Self {
         Self { a, b, c, d, e, f, g, h }
     }
 
     /// Construct from small integer coefficients, converting each via `Int::from_i32`.
     #[inline]
     #[allow(clippy::too_many_arguments)] // 8 ring coefficients are intrinsic to Z[ζ].
-    pub const fn from_i32(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> Self {
+    pub(crate) const fn from_i32(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> Self {
         Self::new(
             Int::from_i32(a), Int::from_i32(b), Int::from_i32(c), Int::from_i32(d),
             Int::from_i32(e), Int::from_i32(f), Int::from_i32(g), Int::from_i32(h),
@@ -59,7 +58,7 @@ impl ZZeta {
     /// # Panics
     /// Panics if `k >= 8` (programmer error, like an out-of-bounds index).
     #[inline]
-    pub fn coeff(self, k: usize) -> Int {
+    pub(crate) fn coeff(self, k: usize) -> Int {
         match k {
             0 => self.a, 1 => self.b, 2 => self.c, 3 => self.d,
             4 => self.e, 5 => self.f, 6 => self.g, 7 => self.h,
@@ -71,7 +70,7 @@ impl ZZeta {
     ///
     /// conj_coeffs[0] = coeffs[0],
     /// conj_coeffs[k] = −coeffs[8−k]  for k = 1..7.
-    pub fn conj(self) -> Self {
+    pub(crate) fn conj(self) -> Self {
         Self {
             a:  self.a,
             b: -self.h,
@@ -85,7 +84,7 @@ impl ZZeta {
     }
 
     /// Convert to a floating-point complex number.
-    pub fn to_complex(self) -> Complex64 {
+    pub(crate) fn to_complex(self) -> Complex64 {
         use std::f64::consts::PI;
         let zeta = |k: u32| Complex64::from_polar(1.0, PI * f64::from(k) / 8.0);
         int_to_f64(self.a) * zeta(0)
@@ -99,14 +98,14 @@ impl ZZeta {
     }
 
     /// Largest power of 2 dividing all coefficients (for normalization).
-    pub fn gcd_power_of_2(self) -> u32 {
+    pub(crate) fn gcd_power_of_2(self) -> u32 {
         let bits = self.a | self.b | self.c | self.d | self.e | self.f | self.g | self.h;
         if bits == INT_ZERO { Int::BITS - 1 } else { bits.trailing_zeros() }
     }
 
     /// Divide all coefficients by 2^shift.
     #[inline]
-    pub fn div2(self, shift: u32) -> Self {
+    pub(crate) fn div2(self, shift: u32) -> Self {
         Self {
             a: self.a >> shift, b: self.b >> shift, c: self.c >> shift, d: self.d >> shift,
             e: self.e >> shift, f: self.f >> shift, g: self.g >> shift, h: self.h >> shift,
@@ -114,13 +113,15 @@ impl ZZeta {
     }
 
     /// Multiply by √2 = ζ² − ζ⁶  (since e^{iπ/4} − e^{6iπ/8} = (1+i)/√2 − (−1+i)/√2 = √2).
-    pub fn mul_sqrt2(self) -> Self {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only since the PyZZeta surface was removed
+    pub(crate) fn mul_sqrt2(self) -> Self {
         let rhs = Self::from_i32(0, 0, 1, 0, 0, 0, -1, 0);
         self * rhs
     }
 
     /// Embed a ZOmega element: ω = ζ², so (a + bω + cω² + dω³) → (a + bζ² + cζ⁴ + dζ⁶).
-    pub fn from_zomega(a: Int, b: Int, c: Int, d: Int) -> Self {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only since the PyZZeta surface was removed
+    pub(crate) fn from_zomega(a: Int, b: Int, c: Int, d: Int) -> Self {
         Self::new(a, INT_ZERO, b, INT_ZERO, c, INT_ZERO, d, INT_ZERO)
     }
 }
@@ -231,58 +232,6 @@ impl fmt::Display for ZZeta {
             (self.g, "ζ⁶"),
             (self.h, "ζ⁷"),
         ], f)
-    }
-}
-
-// ─── PyO3 ─────────────────────────────────────────────────────────────────────
-
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
-/// Python-facing ZZeta.
-#[cfg(feature = "python")]
-#[pyclass(name = "ZZeta", frozen)]
-pub struct PyZZeta {
-    pub inner: ZZeta,
-}
-
-#[cfg(feature = "python")]
-impl PyZZeta {
-    pub fn to_inner(&self) -> ZZeta { self.inner }
-
-    pub fn from_inner(inner: ZZeta) -> Self { Self { inner } }
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl PyZZeta {
-    /// Python always passes 64-bit integers; cast to `Int` (may be wider than i64).
-    #[new]
-    fn new(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64) -> Self {
-        Self { inner: ZZeta::new(
-            Int::from_i64(a), Int::from_i64(b), Int::from_i64(c), Int::from_i64(d),
-            Int::from_i64(e), Int::from_i64(f), Int::from_i64(g), Int::from_i64(h),
-        )}
-    }
-
-    fn __add__(&self, other: &PyZZeta) -> Self { Self { inner: self.inner + other.inner } }
-    fn __sub__(&self, other: &PyZZeta) -> Self { Self { inner: self.inner - other.inner } }
-    fn __mul__(&self, other: &PyZZeta) -> Self { Self { inner: self.inner * other.inner } }
-    fn __neg__(&self) -> Self { Self { inner: -self.inner } }
-
-    fn to_complex(&self) -> (f64, f64) { let c = self.inner.to_complex(); (c.re, c.im) }
-    fn mul_sqrt2(&self) -> Self { Self { inner: self.inner.mul_sqrt2() } }
-    fn gcd_power_of_2(&self) -> u32 { self.inner.gcd_power_of_2() }
-
-    #[staticmethod] fn one()     -> Self { Self { inner: ZZeta::ONE } }
-    #[staticmethod] fn i()       -> Self { Self { inner: ZZeta::I } }
-    #[staticmethod] fn zero()    -> Self { Self { inner: ZZeta::ZERO } }
-    #[staticmethod] fn neg_one() -> Self { Self { inner: ZZeta::NEG_ONE } }
-
-    fn __repr__(&self) -> String {
-        let z = &self.inner;
-        format!("ZZeta({},{},{},{},{},{},{},{})",
-                z.a, z.b, z.c, z.d, z.e, z.f, z.g, z.h)
     }
 }
 

@@ -2,10 +2,10 @@
 //! and Z[ζ₁₆] ([`ZZeta`], Clifford+√T), plus the shared scalar types
 //! ([`Int`] = i256, `f64` = fast-path float, [`MpFloat`] = MPFR).
 
-pub mod types;
-pub mod zomega;
-pub mod zzeta;
+pub(crate) mod types;
+pub(crate) mod zomega;
+pub(crate) mod zzeta;
 
-pub use types::{Int, MpFloat};
-pub use zomega::ZOmega;
-pub use zzeta::ZZeta;
+pub(crate) use types::{Int, MpFloat};
+pub(crate) use zomega::ZOmega;
+pub(crate) use zzeta::ZZeta;

@@ -21,9 +21,10 @@ use super::scratch::{rfv, IntScratch};
 /// `should_escalate` is set when the i256 Gram overflowed during LLL
 /// (transient B-growth at very deep ε beyond what `TARGET_BITS = 180`
 /// absorbs) — clear in the target ε ∈ [1e-10, 1e-3] regime.
-pub struct LatticeSearchOutcome {
-    pub solutions: Vec<[i64; 8]>,
-    pub should_escalate: bool,
+pub(crate) struct LatticeSearchOutcome {
+    pub(crate) solutions: Vec<[i64; 8]>,
+    #[cfg_attr(not(test), allow(dead_code))] // read by the clifford_t probes
+    pub(crate) should_escalate: bool,
 }
 
 /// SE walk bound (squared Q-norm from the cap center). The structural band
@@ -70,7 +71,7 @@ pub fn find_aligned_lattice_points(
 /// MPFR (an exact target column at deep ε), so the cap center and SE dot keep
 /// precision below the f64 ULP.
 #[allow(clippy::too_many_arguments)]
-pub fn find_aligned_lattice_points_mpfr(
+pub(crate) fn find_aligned_lattice_points_mpfr(
     scratch: &mut IntScratch,
     y_q: &[MpFloat; 8],
     k: u32,
@@ -125,7 +126,7 @@ fn warm_seed_q_base(scratch: &mut IntScratch, y_q: &[MpFloat; 8], k: u32, eps: f
 /// nothing reaches a leaf. `external_abort` (a peer branch's win signal,
 /// read-only) aborts per recurse-entry but does NOT set `budget_hit`.
 #[allow(clippy::too_many_arguments)]
-pub fn find_aligned_lattice_points_outcome(
+pub(crate) fn find_aligned_lattice_points_outcome(
     scratch: &mut IntScratch,
     y: &[f64; 8],
     k: u32,
@@ -156,7 +157,7 @@ fn bail(eps: f64, k: u32, msg: std::fmt::Arguments) -> LatticeSearchOutcome {
 /// vector carries full precision, so the cap center and the SE alignment dot
 /// stay exact below the f64 ULP. `y_q` is at `scratch.prec_q`.
 #[allow(clippy::too_many_arguments)]
-pub fn find_aligned_lattice_points_outcome_mpfr(
+pub(crate) fn find_aligned_lattice_points_outcome_mpfr(
     scratch: &mut IntScratch,
     y_q: &[MpFloat; 8],
     k: u32,

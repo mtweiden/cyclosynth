@@ -11,32 +11,32 @@
 
 /// L² parameter η: relaxed size-reduction factor. Must satisfy 1/2 < η < √δ.
 /// Per Figure 7 of NS09, (δ=0.75, η=0.55) supports d ≤ 11 in f64.
-pub const L2_ETA: f64 = 0.55;
+pub(crate) const L2_ETA: f64 = 0.55;
 
 /// L² parameter δ: Lovász factor. (δ=0.75 is the classical LLL value.)
-pub const L2_DELTA: f64 = 0.75;
+pub(crate) const L2_DELTA: f64 = 0.75;
 
 /// δ̄ = (δ + 1) / 2 (used by the main loop's Lovász test, Figure 6 step 2).
-pub const L2_DELTA_BAR: f64 = (L2_DELTA + 1.0) / 2.0;
+pub(crate) const L2_DELTA_BAR: f64 = (L2_DELTA + 1.0) / 2.0;
 
 /// η̄ = (η + 1/2) / 2 (used by lazy size-reduction, Figure 5 step 1).
-pub const L2_ETA_BAR: f64 = (L2_ETA + 0.5) / 2.0;
+pub(crate) const L2_ETA_BAR: f64 = (L2_ETA + 0.5) / 2.0;
 
 /// Hard cap on lazy-size-reduce iterations per κ. Empirically converges in
 /// 1-3 passes; the cap is a safety net against pathological inputs.
-pub const MAX_LAZY_PASSES: usize = 32;
+pub(crate) const MAX_LAZY_PASSES: usize = 32;
 
 /// Outer L²-LLL iteration caps (safety nets, never hit in regime). 16D is 5×
 /// 8D because it runs far more swaps before converging (~230 vs a handful).
-pub const MAX_LLL_ITERS_8D: usize = 10_000;
-pub const MAX_LLL_ITERS_16D: usize = 50_000;
+pub(crate) const MAX_LLL_ITERS_8D: usize = 10_000;
+pub(crate) const MAX_LLL_ITERS_16D: usize = 50_000;
 
 // ─── Numerical limits ────────────────────────────────────────────────────────
 
 /// i256 magnitude target for the integer Gram. We pick a scale factor `B`
 /// such that `round(2^B · Q[i][j])` lands at ≈ `2^TARGET_BITS`, leaving
 /// headroom under `GRAM_OVERFLOW_THRESHOLD_BITS`.
-pub const TARGET_BITS: u32 = 180;
+pub(crate) const TARGET_BITS: u32 = 180;
 
 /// Gram-entry overflow threshold: 2^240, 15 bits under i256::MAX. Detects
 /// before wrap rather than preventing it — the check reads the entry after the
@@ -44,12 +44,12 @@ pub const TARGET_BITS: u32 = 180;
 /// thus crosses 2^240 (caught, abort to fallback) before reaching 2^255. A
 /// ring/dimension that could jump an entry >15 bits per update would need the
 /// guard moved ahead of the multiply.
-pub const GRAM_OVERFLOW_THRESHOLD_BITS: u32 = 240;
+pub(crate) const GRAM_OVERFLOW_THRESHOLD_BITS: u32 = 240;
 
 /// Compute the bit-shift `B` such that `round(2^B · Q[i][j])` lands in i256
 /// with max entry ≈ `2^TARGET_BITS`. Same formula for both backends.
 #[inline]
-pub fn compute_scale_bits(max_q_log2: i32) -> i32 {
+pub(crate) fn compute_scale_bits(max_q_log2: i32) -> i32 {
     TARGET_BITS as i32 - max_q_log2
 }
 
@@ -57,7 +57,7 @@ pub fn compute_scale_bits(max_q_log2: i32) -> i32 {
 
 /// Outcome of an LLL run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LllResult {
+pub(crate) enum LllResult {
     Converged,
     /// A Gram entry exceeded `GRAM_OVERFLOW_THRESHOLD_BITS`; the caller
     /// should reject this prefix and let the dispatcher advance.
@@ -74,7 +74,7 @@ use i256::i256;
 /// small negative (high limb `0xFF…FF`) subtracts two near-equal large
 /// f64s and loses all precision below ~2^140.
 #[inline]
-pub fn i256_to_f64(v: i256) -> f64 {
+pub(crate) fn i256_to_f64(v: i256) -> f64 {
     const SCALE_64: f64 = 18446744073709551616.0; // 2^64
     const SCALE_128: f64 = SCALE_64 * SCALE_64;
     const SCALE_192: f64 = SCALE_128 * SCALE_64;
@@ -104,7 +104,7 @@ use std::ptr::NonNull;
 /// MPFR precision in bits used to construct the anisotropic Q metric.
 /// `8·log₂(1/ε)` covers κ(Q) ≈ 16/ε⁴ with safety margin; floor at 100 bits
 /// for moderate ε where the formula otherwise underflows.
-pub fn compute_prec_q(eps: f64) -> u32 {
+pub(crate) fn compute_prec_q(eps: f64) -> u32 {
     let log_recip = (1.0 / eps).log2().max(1.0);
     // log₂(1/ε) ≤ 1074 for any positive f64 ε — bit counts fit u32.
     #[allow(clippy::cast_possible_truncation)]
@@ -121,7 +121,7 @@ pub fn compute_prec_q(eps: f64) -> u32 {
 /// Empirically at ε=1e-8 a 96-bit LU loses enough precision in z_c that SE
 /// misses the canonical-lde solution; 6·log₂(1/ε) bits leaves margin (75% of
 /// `prec_q`, so each MPFR op in the LU is ~1.3× cheaper).
-pub fn compute_lu_prec(eps: f64) -> u32 {
+pub(crate) fn compute_lu_prec(eps: f64) -> u32 {
     let log_recip = (1.0 / eps).log2().max(1.0);
     #[allow(clippy::cast_possible_truncation)] // same u32 bound as compute_prec_q
     let bits = (6.0 * log_recip).ceil() as u32;
@@ -130,13 +130,13 @@ pub fn compute_lu_prec(eps: f64) -> u32 {
 
 /// A zero `MpFloat` at the given precision.
 #[inline]
-pub fn rfz(prec: u32) -> MpFloat {
+pub(crate) fn rfz(prec: u32) -> MpFloat {
     MpFloat::with_val(prec, 0.0_f64)
 }
 
 /// An `MpFloat` holding `x` at the given precision.
 #[inline]
-pub fn rfv(prec: u32, x: f64) -> MpFloat {
+pub(crate) fn rfv(prec: u32, x: f64) -> MpFloat {
     MpFloat::with_val(prec, x)
 }
 
@@ -148,26 +148,26 @@ pub fn rfv(prec: u32, x: f64) -> MpFloat {
 
 /// A `D×D` matrix of zero `MpFloat`s at the given precision.
 #[inline]
-pub fn rmat_zero<const D: usize>(prec: u32) -> [[MpFloat; D]; D] {
+pub(crate) fn rmat_zero<const D: usize>(prec: u32) -> [[MpFloat; D]; D] {
     std::array::from_fn(|_| std::array::from_fn(|_| rfz(prec)))
 }
 
 /// A length-`D` vector of zero `MpFloat`s at the given precision.
 #[inline]
-pub fn rvec_zero<const D: usize>(prec: u32) -> [MpFloat; D] {
+pub(crate) fn rvec_zero<const D: usize>(prec: u32) -> [MpFloat; D] {
     std::array::from_fn(|_| rfz(prec))
 }
 
 /// A `D×D` matrix of i256 zeros.
 #[inline]
-pub fn imat_zero<const D: usize>() -> [[i256; D]; D] {
+pub(crate) fn imat_zero<const D: usize>() -> [[i256; D]; D] {
     let z = i256::from_i64(0);
     std::array::from_fn(|_| std::array::from_fn(|_| z))
 }
 
 /// The `D×D` identity basis (i64).
 #[inline]
-pub fn identity_basis<const D: usize>() -> [[i64; D]; D] {
+pub(crate) fn identity_basis<const D: usize>() -> [[i64; D]; D] {
     std::array::from_fn(|i| {
         let mut row = [0i64; D];
         row[i] = 1;
@@ -205,7 +205,7 @@ fn i256_log2_ceil(v: &i256) -> i32 {
 /// pair of i256 comparisons against precomputed `±2^241` bounds (the first
 /// short-circuits for the common in-range entry).
 #[inline]
-pub fn gram_overflow_check<const D: usize>(gram: &[[i256; D]; D]) -> bool {
+pub(crate) fn gram_overflow_check<const D: usize>(gram: &[[i256; D]; D]) -> bool {
     let pos = i256::from_i64(1).wrapping_shl(GRAM_OVERFLOW_THRESHOLD_BITS + 1);
     let neg = -pos;
     for i in 0..D {
@@ -224,7 +224,7 @@ pub fn gram_overflow_check<const D: usize>(gram: &[[i256; D]; D]) -> bool {
 /// Two-step recurrence (row-k update, then column-k update); idempotent for
 /// r=0. Caller must update the i64 basis row k separately.
 #[inline]
-pub fn gram_update_size_reduce<const D: usize>(
+pub(crate) fn gram_update_size_reduce<const D: usize>(
     gram: &mut [[i256; D]; D],
     k: usize,
     j: usize,
@@ -254,7 +254,7 @@ pub fn gram_update_size_reduce<const D: usize>(
 /// Apply the basis swap of rows a and b to the symmetric Gram: swap rows AND
 /// columns. O(D) work.
 #[inline]
-pub fn gram_update_swap<const D: usize>(gram: &mut [[i256; D]; D], a: usize, b: usize) {
+pub(crate) fn gram_update_swap<const D: usize>(gram: &mut [[i256; D]; D], a: usize, b: usize) {
     if a == b {
         return;
     }
@@ -270,7 +270,7 @@ pub fn gram_update_swap<const D: usize>(gram: &mut [[i256; D]; D], a: usize, b: 
 /// consistent. After this the GS state for rows kappa_insert..kappa_orig is
 /// stale; the caller must refresh row kappa_insert via its CFA.
 #[inline]
-pub fn basis_insert<const D: usize>(
+pub(crate) fn basis_insert<const D: usize>(
     gram: &mut [[i256; D]; D],
     basis: &mut [[i64; D]; D],
     kappa_orig: usize,
@@ -290,7 +290,7 @@ pub fn basis_insert<const D: usize>(
 /// entry exceeds `2^GRAM_OVERFLOW_THRESHOLD_BITS` (caller aborts to
 /// fallback).
 #[inline]
-pub fn compute_gram_full<const D: usize>(
+pub(crate) fn compute_gram_full<const D: usize>(
     gram: &mut [[i256; D]; D],
     basis: &[[i64; D]; D],
     q_int: &[[i256; D]; D],
@@ -331,7 +331,7 @@ pub fn compute_gram_full<const D: usize>(
 
 /// Round `2^shift_bits · x` to i256 (negative `shift_bits` scales down).
 /// Saturates to i256 bounds — callers pick `shift_bits` to avoid that.
-pub fn rug_to_i256_scaled(x: &MpFloat, shift_bits: i32) -> i256 {
+pub(crate) fn rug_to_i256_scaled(x: &MpFloat, shift_bits: i32) -> i256 {
     if x.is_zero() {
         return i256::from_i64(0);
     }
@@ -368,7 +368,7 @@ fn rfloat_to_i256(x: &MpFloat) -> i256 {
 
 /// Write i256 `v` into a pre-allocated `MpFloat` `dst` (zero-allocation:
 /// a non-owned `mpz_t` stack view that `mpfr::set_z` reads from).
-pub fn i256_to_rfloat(v: i256, dst: &mut MpFloat) {
+pub(crate) fn i256_to_rfloat(v: i256, dst: &mut MpFloat) {
     let zero = i256::from_i64(0);
     if v == zero {
         // SAFETY: `dst.as_raw_mut()` is a valid initialized `mpfr_t`; set_zero

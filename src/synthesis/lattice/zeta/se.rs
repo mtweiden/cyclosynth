@@ -43,7 +43,7 @@ fn predictive_trunc_disabled() -> bool {
 /// bracket-sized (exact small i64), so no intermediate ever exceeds
 /// O(√T·O(1)) — mirroring the f64 accumulator's restructure.
 #[inline]
-pub fn verify_partial_dd_exceeds(
+pub(crate) fn verify_partial_dd_exceeds(
     r_eucl_dd: &[[(f64, f64); 16]; 16],
     z: &[i64; 16],
     z_c: &SeCenter16,
@@ -220,7 +220,7 @@ fn q_candidate_dd(
 /// totally-real-subring decomposition of unitarity over Z[ζ_16] yields
 /// three independent constraints (one per non-σ_1 Galois embedding).
 #[inline]
-pub fn beta_1(u: &[i64; 8]) -> i128 {
+pub(crate) fn beta_1(u: &[i64; 8]) -> i128 {
     let u: [i128; 8] = std::array::from_fn(|i| i128::from(u[i]));
     u[0]*u[1] + u[1]*u[2] + u[2]*u[3] + u[3]*u[4]
         + u[4]*u[5] + u[5]*u[6] + u[6]*u[7]
@@ -228,7 +228,7 @@ pub fn beta_1(u: &[i64; 8]) -> i128 {
 }
 
 #[inline]
-pub fn beta_2(u: &[i64; 8]) -> i128 {
+pub(crate) fn beta_2(u: &[i64; 8]) -> i128 {
     let u: [i128; 8] = std::array::from_fn(|i| i128::from(u[i]));
     u[0]*u[2] + u[1]*u[3] + u[2]*u[4] + u[3]*u[5]
         + u[4]*u[6] + u[5]*u[7]
@@ -236,7 +236,7 @@ pub fn beta_2(u: &[i64; 8]) -> i128 {
 }
 
 #[inline]
-pub fn beta_3(u: &[i64; 8]) -> i128 {
+pub(crate) fn beta_3(u: &[i64; 8]) -> i128 {
     let u: [i128; 8] = std::array::from_fn(|i| i128::from(u[i]));
     u[0]*u[3] + u[1]*u[4] + u[2]*u[5] + u[3]*u[6] + u[4]*u[7]
         - u[0]*u[5] - u[1]*u[6] - u[2]*u[7]
@@ -246,7 +246,7 @@ pub fn beta_3(u: &[i64; 8]) -> i128 {
 /// Returns `(B_1, B_2, B_3)`. All three must equal 0 for a valid Clifford+√T
 /// candidate (the totally-real-subring decomposition of unitarity).
 #[inline]
-pub fn bilinear_forms(x: &[i64; 16]) -> (i128, i128, i128) {
+pub(crate) fn bilinear_forms(x: &[i64; 16]) -> (i128, i128, i128) {
     let u1: [i64; 8] = x[0..8].try_into().expect("8-of-16 slice");
     let u2: [i64; 8] = x[8..16].try_into().expect("8-of-16 slice");
     (
@@ -264,7 +264,8 @@ pub fn bilinear_forms(x: &[i64; 16]) -> (i128, i128, i128) {
 /// Convention: `B[i]` is the i-th basis vector (a row), so
 /// `x[j] = Σ_i z[i] · B[i][j]`.
 #[inline]
-pub fn reconstruct_x(b_lll: &[[i64; 16]; 16], z: &[i64; 16]) -> [i64; 16] {
+#[cfg_attr(not(test), allow(dead_code))] // 16D SE reference path, exercised by tests
+pub(crate) fn reconstruct_x(b_lll: &[[i64; 16]; 16], z: &[i64; 16]) -> [i64; 16] {
     let mut x = [0i64; 16];
     for i in 0..16 {
         for j in 0..16 {
@@ -294,9 +295,9 @@ pub fn reconstruct_x(b_lll: &[[i64; 16]; 16], z: &[i64; 16]) -> [i64; 16] {
 /// f64. Measuring Q from this true center keeps a valid solution's measured Q
 /// equal to its geometric Q (band [0.875, 1.25]) at every k.
 #[derive(Clone, Copy, Debug)]
-pub struct SeCenter16 {
-    pub int: [i64; 16],
-    pub frac: [f64; 16],
+pub(crate) struct SeCenter16 {
+    pub(crate) int: [i64; 16],
+    pub(crate) frac: [f64; 16],
     /// Re-check every f64 prune-fire at dd precision; the dd verdict wins.
     /// Necessary at ε ≤ 1.5e-8 where the f64 dot product suffers
     /// catastrophic cancellation; pure overhead at shallower ε. Per-walk
@@ -305,13 +306,14 @@ pub struct SeCenter16 {
     /// perturbs the recursion cores' signatures. Set from
     /// `IntScratch16::verify_prune_mpfr` by `find_aligned_lattice_points_mpfr`;
     /// constructors default it to `false`.
-    pub verify_prune_mpfr: bool,
+    pub(crate) verify_prune_mpfr: bool,
 }
 
 impl SeCenter16 {
     /// Center with zero fractional part (used by tests with integer
     /// centers).
-    pub fn from_int(int: [i64; 16]) -> Self {
+    #[cfg_attr(not(test), allow(dead_code))] // 16D SE reference path, exercised by tests
+    pub(crate) fn from_int(int: [i64; 16]) -> Self {
         Self { int, frac: [0.0; 16], verify_prune_mpfr: false }
     }
 
@@ -321,7 +323,7 @@ impl SeCenter16 {
     /// computed in MPFR then extracted to f64 (|frac| ≤ 0.5, always
     /// f64-precise). NaN/∞ coordinates map to (0, 0.0) — the SE walk will
     /// return empty.
-    pub fn from_lu_x(lu_x: &[MpFloat; 16]) -> Self {
+    pub(crate) fn from_lu_x(lu_x: &[MpFloat; 16]) -> Self {
         let mut int = [0i64; 16];
         let mut frac = [0.0f64; 16];
         for i in 0..16 {
@@ -353,7 +355,8 @@ impl SeCenter16 {
 /// walk aborts and returns the leaf count visited so far.
 ///
 /// Returns the total number of leaf callbacks made.
-pub fn schnorr_euchner_16d_reference<F>(
+#[cfg_attr(not(test), allow(dead_code))] // 16D SE reference path, exercised by tests
+pub(crate) fn schnorr_euchner_16d_reference<F>(
     l: &[[f64; 16]; 16],
     z_c: &SeCenter16,
     bound_sq: f64,
@@ -537,7 +540,7 @@ fn update_x_for_z_change(
 
 /// What the SE walker should do with a leaf candidate.
 #[derive(Clone, Copy, Debug)]
-pub enum LeafAction {
+pub(crate) enum LeafAction {
     /// Discard this leaf, keep walking.
     Skip,
     /// Collect this leaf, keep walking.
@@ -899,7 +902,7 @@ fn expand_se_prefix_node(
 // SE center-relative offsets/deltas are bracket-sized: |z − z_c.int| ≤ 2·max_off ≪ 2^53 (se_bracket doc).
 // f64→i128/i64: target_norm_sq = 2^k is f64-exact for k ≤ 126; bracket edges are floor/ceil ints.
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-pub fn schnorr_euchner<F>(
+pub(crate) fn schnorr_euchner<F>(
     l: &[[f64; 16]; 16],
     l_q_dd: Option<&[[(f64, f64); 16]; 16]>,
     z_c: &SeCenter16,

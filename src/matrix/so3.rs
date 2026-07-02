@@ -41,27 +41,27 @@ use crate::rings::types::{INT_ZERO, INT_ONE, INT_TWO, int_to_f64};
 
 /// An element of Z[√2]: `a + b·√2`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct R2(pub Int, pub Int);
+pub struct R2(pub(crate) Int, pub(crate) Int);
 
 impl R2 {
-    pub const ZERO: Self = R2(INT_ZERO, INT_ZERO);
-    pub const ONE:  Self = R2(INT_ONE,  INT_ZERO);
+    pub(crate) const ZERO: Self = R2(INT_ZERO, INT_ZERO);
+    pub(crate) const ONE:  Self = R2(INT_ONE,  INT_ZERO);
 
     /// Construct from small integer coefficients.
     #[inline]
-    pub const fn from_i32(a: i32, b: i32) -> Self {
+    pub(crate) const fn from_i32(a: i32, b: i32) -> Self {
         R2(Int::from_i32(a), Int::from_i32(b))
     }
 
     /// Multiply by √2: (a + b√2)·√2 = 2b + a·√2.
     #[inline]
-    pub fn mul_sqrt2(self) -> Self {
+    pub(crate) fn mul_sqrt2(self) -> Self {
         R2(INT_TWO * self.1, self.0)
     }
 
     /// Divide by √2 (exact; panics in debug if self.0 is odd).
     #[inline]
-    pub fn div_sqrt2(self) -> Self {
+    pub(crate) fn div_sqrt2(self) -> Self {
         debug_assert!(
             self.0 % INT_TWO == INT_ZERO,
             "R2::div_sqrt2: a must be even, got R2({},{})",
@@ -72,7 +72,7 @@ impl R2 {
     }
 
     /// Largest n such that √2^n divides this element.
-    pub fn sqrt2_valuation(self) -> u32 {
+    pub(crate) fn sqrt2_valuation(self) -> u32 {
         if self.0 == INT_ZERO && self.1 == INT_ZERO {
             return u32::MAX;
         }
@@ -92,7 +92,8 @@ impl R2 {
     }
 
     /// Convert to f64.
-    pub fn to_f64(self) -> f64 {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only oracle/debug helper
+    pub(crate) fn to_f64(self) -> f64 {
         int_to_f64(self.0) + int_to_f64(self.1) * SQRT_2
     }
 }
@@ -130,20 +131,21 @@ impl Mul for R2 {
 /// Multiplication rules derived from γ² = 2+√2, (√2)² = 2:
 ///   (γ√2)² = γ²·2 = (2+√2)·2 = 4+2√2
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct R4(pub Int, pub Int, pub Int, pub Int);
+pub struct R4(pub(crate) Int, pub(crate) Int, pub(crate) Int, pub(crate) Int);
 
 impl R4 {
-    pub const ZERO: Self = R4(INT_ZERO, INT_ZERO, INT_ZERO, INT_ZERO);
-    pub const ONE:  Self = R4(INT_ONE,  INT_ZERO, INT_ZERO, INT_ZERO);
+    pub(crate) const ZERO: Self = R4(INT_ZERO, INT_ZERO, INT_ZERO, INT_ZERO);
+    pub(crate) const ONE:  Self = R4(INT_ONE,  INT_ZERO, INT_ZERO, INT_ZERO);
 
     /// Construct from small integer coefficients.
     #[inline]
-    pub const fn from_i32(a: i32, b: i32, c: i32, d: i32) -> Self {
+    pub(crate) const fn from_i32(a: i32, b: i32, c: i32, d: i32) -> Self {
         R4(Int::from_i32(a), Int::from_i32(b), Int::from_i32(c), Int::from_i32(d))
     }
 
     /// Convert to f64.
-    pub fn to_f64(self) -> f64 {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only oracle/debug helper
+    pub(crate) fn to_f64(self) -> f64 {
         let sqrt2   = SQRT_2;
         let gamma   = (2.0f64 + sqrt2).sqrt(); // √(2+√2)
         let gamma_s = gamma * sqrt2;           // γ·√2
@@ -157,7 +159,8 @@ impl R4 {
     ///
     /// Uses the fact that γ · (2−√2)γ = 2, so testing divisibility by γ
     /// is equivalent to: `self * R4(0,0,2,-1)` has all even coefficients.
-    pub fn gamma_valuation(self) -> u32 {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only oracle/debug helper
+    pub(crate) fn gamma_valuation(self) -> u32 {
         if self == R4::ZERO {
             return u32::MAX;
         }
@@ -178,7 +181,8 @@ impl R4 {
     }
 
     /// Divide by γ (exact; panics in debug if not divisible).
-    pub fn div_gamma(self) -> Self {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only oracle/debug helper
+    pub(crate) fn div_gamma(self) -> Self {
         let t = self * R4::from_i32(0, 0, 2, -1);
         debug_assert!(
             t.0 % INT_TWO == INT_ZERO && t.1 % INT_TWO == INT_ZERO
@@ -195,7 +199,8 @@ impl R4 {
     ///   aγ + b√2·γ + cγ² + dγ²√2
     ///   = aγ + bγ√2 + c(2+√2) + d(2+√2)√2
     ///   = (2c+2d) + (c+2d)√2 + aγ + bγ√2
-    pub fn mul_gamma(self) -> Self {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only oracle/debug helper
+    pub(crate) fn mul_gamma(self) -> Self {
         R4(INT_TWO*self.2 + INT_TWO*self.3, self.2 + INT_TWO*self.3, self.0, self.1)
     }
 
@@ -203,7 +208,7 @@ impl R4 {
     ///
     /// Iterated div_sqrt2 until impossible. R4(a, b, c, d) is divisible by √2
     /// iff a and c are even (since √2·R4(b, a/2, d, c/2) = R4(a, b, c, d)).
-    pub fn sqrt2_valuation(self) -> u32 {
+    pub(crate) fn sqrt2_valuation(self) -> u32 {
         if self == R4::ZERO {
             return u32::MAX;
         }
@@ -221,7 +226,7 @@ impl R4 {
 
     /// Divide by √2 (exact; panics in debug if not divisible).
     /// Requires self.0 and self.2 to be even.
-    pub fn div_sqrt2(self) -> Self {
+    pub(crate) fn div_sqrt2(self) -> Self {
         debug_assert!(
             self.0 % INT_TWO == INT_ZERO && self.2 % INT_TWO == INT_ZERO,
             "R4::div_sqrt2: not divisible by √2, got R4({},{},{},{})",
@@ -231,7 +236,7 @@ impl R4 {
     }
 
     /// Multiply by √2: (a + b√2 + cγ + dγ√2)·√2 = 2b + a√2 + 2dγ + cγ√2.
-    pub fn mul_sqrt2(self) -> Self {
+    pub(crate) fn mul_sqrt2(self) -> Self {
         R4(INT_TWO*self.1, self.0, INT_TWO*self.3, self.2)
     }
 }
@@ -343,6 +348,7 @@ pub trait Sqrt2Ring:
     fn mul_sqrt2(self) -> Self;
     fn div_sqrt2(self) -> Self;
     fn sqrt2_valuation(self) -> u32;
+    #[cfg_attr(not(test), allow(dead_code))] // test-only oracle/debug helper
     fn to_f64(self) -> f64;
 }
 
@@ -384,17 +390,17 @@ impl Sqrt2Ring for R4 {
 /// `mul_gamma`/`div_gamma`/`gamma_valuation` as algebraic operations on the
 /// ring itself, but `Ratio<R4>` doesn't use them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Ratio<R> {
-    pub num: R,
-    pub exp: u32,
+pub(crate) struct Ratio<R> {
+    pub(crate) num: R,
+    pub(crate) exp: u32,
 }
 
 impl<R: Sqrt2Ring> Ratio<R> {
-    pub const ZERO: Self = Ratio { num: R::ZERO, exp: 0 };
-    pub const ONE:  Self = Ratio { num: R::ONE,  exp: 0 };
+    pub(crate) const ZERO: Self = Ratio { num: R::ZERO, exp: 0 };
+    pub(crate) const ONE:  Self = Ratio { num: R::ONE,  exp: 0 };
 
     /// Cancel common √2 factors between numerator and denominator.
-    pub fn simplify(&mut self) {
+    pub(crate) fn simplify(&mut self) {
         if self.num == R::ZERO { self.exp = 0; return; }
         let v = self.num.sqrt2_valuation().min(self.exp);
         for _ in 0..v { self.num = self.num.div_sqrt2(); }
@@ -408,7 +414,8 @@ impl<R: Sqrt2Ring> Ratio<R> {
         x
     }
 
-    pub fn to_f64(self) -> f64 {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only oracle/debug helper
+    pub(crate) fn to_f64(self) -> f64 {
         self.num.to_f64() / (f64::from(self.exp) / 2.0).exp2()
     }
 }
@@ -452,14 +459,14 @@ impl<R: Sqrt2Ring> Add for Ratio<R> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SO3<R> {
     /// 9 entries in row-major order: e[3*row + col].
-    pub e: [Ratio<R>; 9],
+    pub(crate) e: [Ratio<R>; 9],
 }
 
 // ─── Generic SO3<R> inherent methods ─────────────────────────────────────────
 
 impl<R: Sqrt2Ring> SO3<R> {
     /// Identity matrix (all entries have exp=0).
-    pub fn identity() -> Self {
+    pub(crate) fn identity() -> Self {
         let mut e = [Ratio::<R>::ZERO; 9];
         e[0] = Ratio::<R>::ONE;
         e[4] = Ratio::<R>::ONE;
@@ -467,11 +474,8 @@ impl<R: Sqrt2Ring> SO3<R> {
         SO3 { e }
     }
 
-    #[inline]
-    pub fn get(&self, r: usize, c: usize) -> Ratio<R> { self.e[3*r+c] }
-
     /// Maximum denominator exponent across all non-zero entries.
-    pub fn maximum_denominator_exponent(&self) -> u32 {
+    pub(crate) fn maximum_denominator_exponent(&self) -> u32 {
         self.e
             .iter()
             .filter(|r| r.num != R::ZERO)
@@ -481,12 +485,14 @@ impl<R: Sqrt2Ring> SO3<R> {
     }
 
     /// Simplify each entry individually (cancel √2 from numerator and denominator).
-    pub fn reduce(&mut self) {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only oracle/debug helper
+    pub(crate) fn reduce(&mut self) {
         for entry in self.e.iter_mut() { entry.simplify(); }
     }
 
     /// Convert to 3×3 float matrix.
-    pub fn to_float(&self) -> [[f64; 3]; 3] {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only oracle/debug helper
+    pub(crate) fn to_float(&self) -> [[f64; 3]; 3] {
         let mut out = [[0.0f64; 3]; 3];
         for r in 0..3 {
             for c in 0..3 {
@@ -513,7 +519,7 @@ impl SO3<R2> {
     ///   ax = Re(P),  bx = −Im(P),  cx = Re(R)
     ///   ay = Im(Q),  by =  Re(Q),  cy = Im(R)
     ///   az = Re(S),  bz = −Im(S),  cz = N/2
-    pub fn from_u2(u: &U2T) -> Self {
+    pub(crate) fn from_u2(u: &U2T) -> Self {
         let a = u.u11; let b = u.u12;
         let c = u.u21; let d = u.u22;
         let k = u.k;
@@ -569,7 +575,7 @@ impl SO3<R4> {
     ///     R4(2·z.e, z.c+z.g, z.d+z.f−z.b−z.h, z.b+z.h)
     ///   cz: N is real Z[ζ_16] (N.e=0, N.f=−N.d, N.g=−N.c, N.h=−N.b). In
     ///     Z[γ] basis {1, √2, γ, γ√2}, N = R4(N.a, N.c, N.b−N.d, N.d).
-    pub fn from_u2(u: &U2Q) -> Self {
+    pub(crate) fn from_u2(u: &U2Q) -> Self {
         let a = u.u11; let b = u.u12;
         let c = u.u21; let d = u.u22;
         let k = u.k;
@@ -724,7 +730,7 @@ impl<R: Sqrt2Ring> SO3Ops for SO3<R> {
 impl<R> SO3<R> {
     /// Transpose (the inverse, for a rotation). The `*_neg` factories are
     /// `*_pos().transposed()`; the swaps are the 3×3 row-major transpose.
-    pub fn transposed(mut self) -> Self {
+    pub(crate) fn transposed(mut self) -> Self {
         self.e.swap(1, 3);
         self.e.swap(2, 6);
         self.e.swap(5, 7);
@@ -733,7 +739,7 @@ impl<R> SO3<R> {
 }
 
 /// Rz(+π/4) as SO3<R2>.
-pub fn rz_pos() -> SO3<R2> {
+pub(crate) fn rz_pos() -> SO3<R2> {
     let mut e = [Ratio::<R2>::ZERO; 9];
     e[0] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };  // cos(π/4) = 1/√2
     e[1] = Ratio { num: R2::from_i32(-1, 0), exp: 1 };  // -sin(π/4) = -1/√2
@@ -744,12 +750,12 @@ pub fn rz_pos() -> SO3<R2> {
 }
 
 /// Rz(-π/4) = Rz(+π/4)ᵀ.
-pub fn rz_neg() -> SO3<R2> {
+pub(crate) fn rz_neg() -> SO3<R2> {
     rz_pos().transposed()
 }
 
 /// Rx(+π/4) as SO3<R2>.
-pub fn rx_pos() -> SO3<R2> {
+pub(crate) fn rx_pos() -> SO3<R2> {
     let mut e = [Ratio::<R2>::ZERO; 9];
     e[0] = Ratio { num: R2::from_i32( 0, 1), exp: 1 };
     e[4] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };
@@ -760,12 +766,12 @@ pub fn rx_pos() -> SO3<R2> {
 }
 
 /// Rx(-π/4) = Rx(+π/4)ᵀ.
-pub fn rx_neg() -> SO3<R2> {
+pub(crate) fn rx_neg() -> SO3<R2> {
     rx_pos().transposed()
 }
 
 /// Ry(+π/4) as SO3<R2>.
-pub fn ry_pos() -> SO3<R2> {
+pub(crate) fn ry_pos() -> SO3<R2> {
     let mut e = [Ratio::<R2>::ZERO; 9];
     e[0] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };
     e[2] = Ratio { num: R2::from_i32( 1, 0), exp: 1 };
@@ -776,7 +782,7 @@ pub fn ry_pos() -> SO3<R2> {
 }
 
 /// Ry(-π/4) = Ry(+π/4)ᵀ.
-pub fn ry_neg() -> SO3<R2> {
+pub(crate) fn ry_neg() -> SO3<R2> {
     ry_pos().transposed()
 }
 
@@ -792,7 +798,7 @@ pub fn ry_neg() -> SO3<R2> {
 // Standard Rz(π/8) = [[cos,-sin,0],[sin,cos,0],[0,0,1]], pre-simplify exp=2.
 
 /// Rz(+π/8) as SO3<R4>.
-pub fn rz_pos_q() -> SO3<R4> {
+pub(crate) fn rz_pos_q() -> SO3<R4> {
     let mut e = [Ratio::<R4>::ZERO; 9];
     e[0] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
     e[1] = Ratio { num: R4::from_i32(0, 0,  1, -1), exp: 2 };  // -sin(π/8)
@@ -804,12 +810,12 @@ pub fn rz_pos_q() -> SO3<R4> {
 }
 
 /// Rz(-π/8) = Rz(+π/8)ᵀ.
-pub fn rz_neg_q() -> SO3<R4> {
+pub(crate) fn rz_neg_q() -> SO3<R4> {
     rz_pos_q().transposed()
 }
 
 /// Rx(+π/8) as SO3<R4>.
-pub fn rx_pos_q() -> SO3<R4> {
+pub(crate) fn rx_pos_q() -> SO3<R4> {
     let mut e = [Ratio::<R4>::ZERO; 9];
     e[0] = Ratio { num: R4::from_i32(2, 0,  0,  0), exp: 2 };  // 1
     e[4] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
@@ -821,12 +827,12 @@ pub fn rx_pos_q() -> SO3<R4> {
 }
 
 /// Rx(-π/8) = Rx(+π/8)ᵀ.
-pub fn rx_neg_q() -> SO3<R4> {
+pub(crate) fn rx_neg_q() -> SO3<R4> {
     rx_pos_q().transposed()
 }
 
 /// Ry(+π/8) as SO3<R4>.
-pub fn ry_pos_q() -> SO3<R4> {
+pub(crate) fn ry_pos_q() -> SO3<R4> {
     let mut e = [Ratio::<R4>::ZERO; 9];
     e[0] = Ratio { num: R4::from_i32(0, 0,  1,  0), exp: 2 };  // cos(π/8)
     e[2] = Ratio { num: R4::from_i32(0, 0, -1,  1), exp: 2 };  // sin(π/8)
@@ -838,7 +844,7 @@ pub fn ry_pos_q() -> SO3<R4> {
 }
 
 /// Ry(-π/8) = Ry(+π/8)ᵀ.
-pub fn ry_neg_q() -> SO3<R4> {
+pub(crate) fn ry_neg_q() -> SO3<R4> {
     ry_pos_q().transposed()
 }
 

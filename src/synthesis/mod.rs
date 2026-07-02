@@ -29,13 +29,13 @@
 pub mod angle;
 pub mod clifford_sqrt_t;
 pub mod clifford_t;
-pub mod cliffords;
-pub mod cost_bound;
+pub(crate) mod cliffords;
+pub(crate) mod cost_bound;
 pub mod decomposer;
 pub mod diag;
 pub mod distance;
 pub mod lattice;
-pub mod synthesizer;
+pub(crate) mod synthesizer;
 
 /// Build the global rayon pool with 16 MiB worker stacks before its
 /// lazy default init. The optimal-mode pipeline runs two parity

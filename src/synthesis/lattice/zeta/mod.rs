@@ -23,16 +23,17 @@
 //!   `U = [[u_1, −u_2*], [u_2, u_1*]] / √(2^k)`
 
 pub mod brute;
-pub mod bkz;
-pub mod cholesky_lu;
-pub mod dd;
-pub mod integer;
-pub mod lll;
-pub mod q_metric;
-pub mod scratch;
-pub mod se;
+pub(crate) mod bkz;
+pub(crate) mod cholesky_lu;
+pub(crate) mod dd;
+pub(crate) mod integer;
+pub(crate) mod lll;
+pub(crate) mod q_metric;
+pub(crate) mod scratch;
+pub(crate) mod se;
 
-pub use integer::{find_aligned_lattice_points_with_stop, find_aligned_lattice_points_mpfr};
+pub use integer::find_aligned_lattice_points_with_stop;
+pub(crate) use integer::find_aligned_lattice_points_mpfr;
 pub use scratch::IntScratch16;
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

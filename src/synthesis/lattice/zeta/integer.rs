@@ -182,7 +182,7 @@ where
 ///
 /// Same `external_abort` / `consumed` semantics as [`find_aligned_lattice_points_with_stop`].
 #[allow(clippy::too_many_arguments)]
-pub fn find_aligned_lattice_points_mpfr<F>(
+pub(crate) fn find_aligned_lattice_points_mpfr<F>(
     scratch: &mut IntScratch16,
     y: &[MpFloat; 16],
     v: &[MpFloat; 4],

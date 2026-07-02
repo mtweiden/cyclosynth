@@ -13,10 +13,6 @@ use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
 use crate::rings::zomega::ZOmega;
 use crate::rings::zzeta::ZZeta;
-#[cfg(feature = "python")]
-use crate::rings::zomega::PyZOmega;
-#[cfg(feature = "python")]
-use crate::rings::zzeta::PyZZeta;
 
 // ─── Trait ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +24,6 @@ pub trait RingElem: Copy + Add<Output = Self> + Neg<Output = Self> {
     fn one() -> Self;
     fn i() -> Self;  // imaginary unit
     fn omega() -> Self;  // ω = e^{iπ/4}
-    fn root_of_unity() -> Self;  // ω = e^{iπ/4} or ζ = e^{iπ/8}
 }
 
 impl RingElem for ZOmega {
@@ -38,7 +33,6 @@ impl RingElem for ZOmega {
     fn one() -> Self { Self::ONE }
     fn i() -> Self { Self::I }
     fn omega() -> Self { Self::OMEGA }
-    fn root_of_unity() -> Self { Self::OMEGA }
 }
 
 impl RingElem for ZZeta {
@@ -48,7 +42,6 @@ impl RingElem for ZZeta {
     fn one() -> Self { Self::ONE }
     fn i() -> Self { Self::I }
     fn omega() -> Self { Self::OMEGA }
-    fn root_of_unity() -> Self { Self::ZETA }
 }
 
 // ─── U2<R> ────────────────────────────────────────────────────────────────────
@@ -57,21 +50,21 @@ impl RingElem for ZZeta {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct U2<R: RingElem + Mul<Output = R> + Sub<Output = R>> {
     /// Numerator elements
-    pub u11: R,
-    pub u12: R,
-    pub u21: R,
-    pub u22: R,
+    pub(crate) u11: R,
+    pub(crate) u12: R,
+    pub(crate) u21: R,
+    pub(crate) u22: R,
     /// Denominator exponent: actual matrix entries are divided by √2^k.
-    pub k: u32,
+    pub(crate) k: u32,
 }
 
 impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
-    pub const fn new(u11: R, u12: R, u21: R, u22: R, k: u32) -> Self {
+    pub(crate) const fn new(u11: R, u12: R, u21: R, u22: R, k: u32) -> Self {
         Self { u11, u12, u21, u22, k }
     }
 
     /// Hermitian adjoint: U† = conj-transpose = [[ū11, ū21], [ū12, ū22]] / √2^k.
-    pub fn dagger(&self) -> Self {
+    pub(crate) fn dagger(&self) -> Self {
         Self {
             u11: self.u11.conj(),
             u12: self.u21.conj(),
@@ -82,7 +75,7 @@ impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
     }
 
     /// Convert to 2×2 complex float matrix (row-major [[a,b],[c,d]]).
-    pub fn to_float(&self) -> [[Complex64; 2]; 2] {
+    pub fn to_float(self) -> [[Complex64; 2]; 2] {
         let scale = 1.0 / (f64::from(self.k) / 2.0).exp2();  // 1 / √2^k = 2^{-k/2}
         [
             [self.u11.to_complex() * scale, self.u12.to_complex() * scale],
@@ -97,7 +90,7 @@ impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
     /// Each ring element is converted to Complex64 individually before multiplying.
     /// This avoids i64 overflow in ring arithmetic when k is large (≳50 for ZOmega),
     /// while still deferring the denominator scaling to the final float step.
-    pub fn diamond_distance(&self, other: &Self) -> f64 {
+    pub(crate) fn diamond_distance(&self, other: &Self) -> f64 {
         let p = self.u11.to_complex() * other.u11.to_complex().conj()
               + self.u12.to_complex() * other.u12.to_complex().conj()
               + self.u21.to_complex() * other.u21.to_complex().conj()
@@ -112,34 +105,34 @@ impl<R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
 
 impl <R: RingElem + Mul<Output = R> + Sub<Output = R>> U2<R> {
     /// Identity matrix: [[1,0],[0,1]] / √2^0
-    pub fn eye() -> Self {
+    pub(crate) fn eye() -> Self {
         Self::new(R::one(), R::zero(), R::zero(), R::one(), 0)
     }
 
     /// H gate: [[1,1],[1,−1]] / √2.
-    pub fn h() -> Self {
+    pub(crate) fn h() -> Self {
         Self::new(R::one(), R::one(), R::one(), -R::one(), 1)
     }
 
     /// S gate: diag(1, i).
-    pub fn s() -> Self {
+    pub(crate) fn s() -> Self {
         Self::new(R::one(), R::zero(), R::zero(), R::i(), 0)
     }
 
     /// T gate: [[1,0],[0,ω]] (ω = e^{iπ/4} in both rings).
-    pub fn t() -> Self {
+    pub(crate) fn t() -> Self {
         Self::new(R::one(), R::zero(), R::zero(), R::omega(), 0)
     }
 
-    pub fn x() -> Self {
+    pub(crate) fn x() -> Self {
         Self::new(R::zero(), R::one(), R::one(), R::zero(), 0)
     }
 
-    pub fn y() -> Self {
+    pub(crate) fn y() -> Self {
         Self::new(R::zero(), -R::i(), R::i(), R::zero(), 0)
     }
 
-    pub fn z() -> Self {
+    pub(crate) fn z() -> Self {
         Self::new(R::one(), R::zero(), R::zero(), -R::one(), 0)
     }
 }
@@ -149,7 +142,8 @@ impl U2<ZOmega> {
     /// repeatedly dividing every entry by √2 = ω − ω³ while all four stay in
     /// Z[ω]. `Mul` accumulates `k` without reducing, so this recovers the true
     /// lde of a product. Mirror of the ZZeta `reduced()`.
-    pub fn reduced(self) -> Self {
+    #[allow(dead_code)] // consumed by the python+trace diag pyfunctions and oracle tests
+    pub(crate) fn reduced(self) -> Self {
         let sqrt2 = ZOmega::OMEGA - ZOmega::OMEGA * ZOmega::OMEGA * ZOmega::OMEGA;
         let mut m = self;
         while m.k > 0 {
@@ -178,7 +172,7 @@ impl U2<ZOmega> {
 
 impl U2<ZZeta> {
     /// Q gate: [[1,0],[0,ζ]] / √2^0 (for U2Q)
-    pub fn q() -> Self {
+    pub(crate) fn q() -> Self {
         Self::new(ZZeta::ONE, ZZeta::ZERO, ZZeta::ZERO, ZZeta::ZETA, 0)
     }
 
@@ -252,148 +246,6 @@ pub type U2T = U2<ZOmega>;
 
 /// Clifford+√T unitary matrix (denominator in Z[ζ]).
 pub type U2Q = U2<ZZeta>;
-
-// ─── PyO3 ─────────────────────────────────────────────────────────────────────
-
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
-/// Tagged-enum wrapper over the two concrete `U2` instantiations.
-///
-/// Used by `PyU2` to expose a single Python class regardless of the underlying
-/// ring (`ZOmega` for Clifford+T, `ZZeta` for Clifford+√T).
-#[cfg(feature = "python")]
-#[derive(Clone)]
-pub enum U2Variant {
-    Omega(U2T),
-    Zeta(U2Q),
-}
-
-/// Python-facing U2 classes
-#[cfg(feature = "python")]
-#[pyclass(name = "U2")]
-pub struct PyU2 {
-    inner: U2Variant,
-}
-
-#[cfg(feature = "python")]
-impl PyU2 {
-    pub fn to_inner(&self) -> &U2Variant { &self.inner }
-}
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl PyU2 {
-    #[new]
-    fn new(
-        u11: Bound<'_, PyAny>,
-        u12: Bound<'_, PyAny>,
-        u21: Bound<'_, PyAny>,
-        u22: Bound<'_, PyAny>,
-        k: u32,
-    ) -> PyResult<Self> {
-        let type_err = |name: &str| PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            format!("{name} must be the same ring type as u11 (ZOmega or ZZeta)")
-        );
-
-        // Try ZOmega
-        if let Ok(a) = u11.downcast::<PyZOmega>() {
-            let b = u12.downcast::<PyZOmega>().map_err(|_| type_err("u12"))?;
-            let c = u21.downcast::<PyZOmega>().map_err(|_| type_err("u21"))?;
-            let d = u22.downcast::<PyZOmega>().map_err(|_| type_err("u22"))?;
-            return Ok(Self {
-                inner: U2Variant::Omega(U2T::new(
-                    a.get().to_inner(), b.get().to_inner(),
-                    c.get().to_inner(), d.get().to_inner(),
-                    k,
-                )),
-            });
-        }
-
-        // Try ZZeta
-        if let Ok(a) = u11.downcast::<PyZZeta>() {
-            let b = u12.downcast::<PyZZeta>().map_err(|_| type_err("u12"))?;
-            let c = u21.downcast::<PyZZeta>().map_err(|_| type_err("u21"))?;
-            let d = u22.downcast::<PyZZeta>().map_err(|_| type_err("u22"))?;
-            return Ok(Self {
-                inner: U2Variant::Zeta(U2Q::new(
-                    a.get().to_inner(), b.get().to_inner(),
-                    c.get().to_inner(), d.get().to_inner(),
-                    k,
-                )),
-            });
-        }
-
-        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-            "u11 must be an instance of ZOmega or ZZeta"
-        ))
-    }
-
-    fn dagger(&self) -> Self {
-        let inner = match self.inner {
-            U2Variant::Omega(u) => U2Variant::Omega(u.dagger()),
-            U2Variant::Zeta(u) => U2Variant::Zeta(u.dagger()),
-        };
-        Self { inner }
-    }
-
-    fn u11(&self, py: Python<'_>) -> PyResult<PyObject> {
-        match self.inner {
-            U2Variant::Omega(u) => Ok(Bound::new(py, PyZOmega { inner: u.u11 })?.to_object(py)),
-            U2Variant::Zeta(u)  => Ok(Bound::new(py, PyZZeta  { inner: u.u11 })?.to_object(py)),
-        }
-    }
-
-    fn u12(&self, py: Python<'_>) -> PyResult<PyObject> {
-        match self.inner {
-            U2Variant::Omega(u) => Ok(Bound::new(py, PyZOmega { inner: u.u12 })?.to_object(py)),
-            U2Variant::Zeta(u)  => Ok(Bound::new(py, PyZZeta  { inner: u.u12 })?.to_object(py)),
-        }
-    }
-
-    fn u21(&self, py: Python<'_>) -> PyResult<PyObject> {
-        match self.inner {
-            U2Variant::Omega(u) => Ok(Bound::new(py, PyZOmega { inner: u.u21 })?.to_object(py)),
-            U2Variant::Zeta(u)  => Ok(Bound::new(py, PyZZeta  { inner: u.u21 })?.to_object(py)),
-        }
-    }
-
-    fn u22(&self, py: Python<'_>) -> PyResult<PyObject> {
-        match self.inner {
-            U2Variant::Omega(u) => Ok(Bound::new(py, PyZOmega { inner: u.u22 })?.to_object(py)),
-            U2Variant::Zeta(u)  => Ok(Bound::new(py, PyZZeta  { inner: u.u22 })?.to_object(py)),
-        }
-    }
-
-    fn to_float(&self) -> Vec<Vec<(f64, f64)>> {
-        let mat = match self.inner {
-            U2Variant::Omega(u) => u.to_float(),
-            U2Variant::Zeta(u) => u.to_float(),
-        };
-
-        mat.iter()
-            .map(|row| {
-                row.iter()
-                    .map(|c| (c.re, c.im))
-                    .collect()
-            })
-            .collect()
-    }
-
-    fn __mul__(&self, other: &Self) -> PyResult<Self> {
-        match (&self.inner, &other.inner) {
-            (U2Variant::Omega(a), U2Variant::Omega(b)) => {
-                Ok(Self { inner: U2Variant::Omega((*a) * (*b)) })
-            }
-            (U2Variant::Zeta(a), U2Variant::Zeta(b)) => {
-                Ok(Self { inner: U2Variant::Zeta((*a) * (*b)) })
-            }
-            _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
-                "Cannot multiply U2 matrices of different ring types"
-            )),
-        }
-    }
-}
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 

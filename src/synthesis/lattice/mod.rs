@@ -3,7 +3,8 @@
 //! [`common`] holds the dimension-independent L²-LLL parameters and helpers
 //! shared by both.
 
-pub mod backend;
-pub mod common;
+#[allow(dead_code)] // owner-accepted LatticeBackend contract; not yet load-bearing (see memory)
+pub(crate) mod backend;
+pub(crate) mod common;
 pub mod omega;
 pub mod zeta;

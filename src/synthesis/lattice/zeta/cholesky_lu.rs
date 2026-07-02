@@ -35,7 +35,8 @@ use crate::synthesis::lattice::common::i256_to_f64;
 /// at `scratch.prec_q` bits, dividing out `2^scale_bits` so the result is the
 /// natural-scale `G`. Returned matrix lives on the stack; the caller passes
 /// it to `cholesky_int`.
-pub fn snapshot_gram_to_mpfr(scratch: &mut IntScratch16) -> [[MpFloat; 16]; 16] {
+#[cfg_attr(not(test), allow(dead_code))] // MPFR/reference oracle, exercised by tests
+pub(crate) fn snapshot_gram_to_mpfr(scratch: &mut IntScratch16) -> [[MpFloat; 16]; 16] {
     let prec = scratch.prec_q;
     let shift = scratch.scale_bits;
     let mut tmp = rfz(prec);
@@ -61,7 +62,8 @@ pub fn snapshot_gram_to_mpfr(scratch: &mut IntScratch16) -> [[MpFloat; 16]; 16] 
 /// factor at `scratch.prec_q` bits, or `None` on a non-positive-definite
 /// pivot. Test-only oracle for `cholesky_f64`; the fresh stack matrix is
 /// kept out of `IntScratch16` so production doesn't carry a second 16x16.
-pub fn cholesky_int(
+#[cfg_attr(not(test), allow(dead_code))] // MPFR/reference oracle, exercised by tests
+pub(crate) fn cholesky_int(
     scratch: &mut IntScratch16,
     g_post: &[[MpFloat; 16]; 16],
 ) -> Option<[[MpFloat; 16]; 16]> {
@@ -101,7 +103,7 @@ pub fn cholesky_int(
 /// i.e. `Bᵀ`) and `scratch.lu_rhs`, then partial-pivoting LU runs in place.
 /// Solution lands in `scratch.lu_x`. Returns `false` if the matrix is
 /// numerically singular (pivot below 1e-30).
-pub fn lu_solve_int_inplace(scratch: &mut IntScratch16) -> bool {
+pub(crate) fn lu_solve_int_inplace(scratch: &mut IntScratch16) -> bool {
     // Load lu_a = Bᵀ and lu_rhs = c. Convert i64 → MPFR via f64 (every i64
     // basis entry post-LLL is well within f64's 53-bit exact range — the
     // basis stays under 2^41 even at deep ε, and at moderate ε ≤ 2^15).
@@ -180,7 +182,7 @@ pub fn lu_solve_int_inplace(scratch: &mut IntScratch16) -> bool {
 /// `κ(G) ≤ (4/3)^15 ≈ 75` at d=16 (~6 bits of conditioning loss). f64's
 /// 53-bit mantissa absorbs that with wide margin, yielding ~10⁻¹⁴ error at
 /// the SE bound check — five orders below SE's 10⁻⁹ tolerance.
-pub fn cholesky_f64(scratch: &mut IntScratch16) -> bool {
+pub(crate) fn cholesky_f64(scratch: &mut IntScratch16) -> bool {
     let scale = 2.0_f64.powi(-scratch.scale_bits);
     let mut g = [[0.0_f64; 16]; 16];
     for i in 0..16 {
@@ -229,7 +231,7 @@ pub fn cholesky_f64(scratch: &mut IntScratch16) -> bool {
 /// `None` (saturation). For unimodular bases the *final* det is ±1 so there
 /// is no issue, but spurious overflow during elimination is possible at
 /// pathological inputs.
-pub fn det_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
+pub(crate) fn det_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
     let mut a: [[i128; 16]; 16] =
         std::array::from_fn(|i| std::array::from_fn(|j| i128::from(m[i][j])));
     let mut sign: i128 = 1;
@@ -275,7 +277,7 @@ pub fn det_exact(m: &[[i64; 16]; 16]) -> Option<i64> {
 
 /// Upper-triangular Cholesky factor `R` of the Euclidean Gram, as an f64
 /// snapshot plus a double-double `(hi, lo)` projection of the same factor.
-pub type CholeskyDual16 = ([[f64; 16]; 16], [[(f64, f64); 16]; 16]);
+pub(crate) type CholeskyDual16 = ([[f64; 16]; 16], [[(f64, f64); 16]; 16]);
 
 /// MPFR-128 Cholesky of the Euclidean Gram `B·Bᵀ`, returning the
 /// upper-triangular factor R (`Rᵀ·R = B·Bᵀ`) as both an f64 snapshot (the SE
@@ -287,7 +289,7 @@ pub type CholeskyDual16 = ([[f64; 16]; 16], [[(f64, f64); 16]; 16]);
 /// alarms at small lde where `s -= l[i][k]*l[j][k]` cancellation is tight, so
 /// 128 is the floor. `None` if the Gram is not PD (rank-deficient basis =
 /// upstream bug).
-pub fn euclidean_cholesky_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyDual16> {
+pub(crate) fn euclidean_cholesky_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyDual16> {
     const PREC: u32 = 128;
     let mut gram = [[0_i128; 16]; 16];
     for i in 0..16 {
@@ -325,7 +327,7 @@ pub fn euclidean_cholesky_mpfr_dual(basis: &[[i64; 16]; 16]) -> Option<CholeskyD
 /// invariant), so this factors the same matrix `cholesky_f64` reads —
 /// at 128-bit precision instead of f64. Returns `None` if the Gram is not
 /// positive-definite (rank-deficient basis — upstream-bug territory).
-pub fn q_cholesky_mpfr_dual(
+pub(crate) fn q_cholesky_mpfr_dual(
     gram: &[[i256; 16]; 16],
     scale_bits: i32,
 ) -> Option<CholeskyDual16> {
@@ -416,7 +418,8 @@ fn i128_to_mpfr(v: i128, prec: u32) -> MpFloat {
 /// partial-prune lower bound is `euclidean_cholesky_mpfr_dual`). The Gram
 /// is accumulated in i128 first — at deep ε an inflated basis (~2^25) pushes
 /// entries to ~2^54, the edge of f64's mantissa — then converted to f64.
-pub fn euclidean_cholesky(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]> {
+#[cfg_attr(not(test), allow(dead_code))] // MPFR/reference oracle, exercised by tests
+pub(crate) fn euclidean_cholesky(basis: &[[i64; 16]; 16]) -> Option<[[f64; 16]; 16]> {
     // Exact integer Gram = B·Bᵀ in i128 to absorb deep-ε basis growth.
     let mut gram = [[0_i128; 16]; 16];
     for i in 0..16 {

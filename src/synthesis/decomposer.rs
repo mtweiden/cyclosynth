@@ -11,8 +11,6 @@ use crate::matrix::so3::{SO3T, SO3Q, SO3Ops};
 #[cfg(test)]
 use crate::matrix::so3::R4;
 use crate::matrix::u2::{U2, U2T, U2Q, RingElem};
-#[cfg(feature = "python")]
-use crate::matrix::u2::{PyU2, U2Variant};
 use crate::matrix::{rz_neg, rx_neg, ry_neg, rz_neg_q, rx_neg_q, ry_neg_q};
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 
@@ -123,8 +121,6 @@ impl GateRing for ZZeta {
 pub struct BlochDecomposer;
 
 impl BlochDecomposer {
-    pub fn new() -> Self { Self }
-
     /// Decompose an exact unitary into a gate string.
     ///
     /// - `U2<ZOmega>` (`U2T`) → output in {H, S, T, X, Y, Z}
@@ -378,32 +374,6 @@ fn simplify_gate_string(input: &str) -> String {
         s = s.replace('I', "");
     }
     s
-}
-
-// ─── PyO3 ─────────────────────────────────────────────────────────────────────
-
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
-/// Python-facing BlochDecomposer (stateless).
-#[cfg(feature = "python")]
-#[pyclass(name = "BlochDecomposer")]
-pub struct PyBlochDecomposer;
-
-#[cfg(feature = "python")]
-#[pymethods]
-impl PyBlochDecomposer {
-    #[new]
-    fn new() -> Self { Self }
-
-    /// Decompose a unitary into a gate string.
-    /// Accepts U2(ZOmega) → {H, S, T} or U2(ZZeta) → {H, S, T, Q}.
-    fn decompose(&self, u: PyRef<'_, PyU2>) -> String {
-        match u.to_inner() {
-            U2Variant::Omega(u2t) => BlochDecomposer.decompose(u2t),
-            U2Variant::Zeta(u2q)  => BlochDecomposer.decompose(u2q),
-        }
-    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

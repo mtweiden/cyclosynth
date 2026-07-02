@@ -22,7 +22,7 @@ use std::sync::OnceLock;
 /// Elapsed nanoseconds as `u64` for the phase-timer counters (u64 ns wraps
 /// after ~584 years; telemetry-only).
 #[inline]
-pub fn elapsed_ns(t: std::time::Instant) -> u64 {
+pub(crate) fn elapsed_ns(t: std::time::Instant) -> u64 {
     t.elapsed().as_nanos() as u64
 }
 
@@ -55,30 +55,30 @@ pub const fn trace_enabled() -> bool {
 // ─── Per-lde counters (reset at the start of each prefix_split_search) ─────────────────
 
 /// MA prefixes considered at this lde.
-pub static N_PREFIXES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_PREFIXES: AtomicU64 = AtomicU64::new(0);
 
 /// Prefixes rejected by `try_unitary_to_uv` (not in SU(2): wrong determinant or
 /// odd-parity ζ̄ adjustment failed).
-pub static N_UV_EXTRACT_REJECTED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_UV_EXTRACT_REJECTED: AtomicU64 = AtomicU64::new(0);
 
 /// Total Schnorr-Euchner leaf-callback invocations summed across all
 /// prefixes in this prefix_split_search. Useful for spotting individual prefixes
 /// whose ellipsoid is "fat" relative to alignment requirements.
-pub static N_SE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_SE_CALLBACKS: AtomicU64 = AtomicU64::new(0);
 
 /// Total 8D SE recurse-entries (true node count) summed across all find_aligned_lattice_points
 /// calls since the last reset. Always accumulated (one fetch_add per
 /// find_aligned_lattice_points call, not per node) — used to size the PASS1/PASS2 node caps.
-pub static N_SE_NODES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_SE_NODES: AtomicU64 = AtomicU64::new(0);
 
 /// Max 8D SE recurse-entries consumed by any single find_aligned_lattice_points call (one
 /// prefix × one branch walk) since the last reset. The per-prefix node
 /// caps must sit well above this on solution-bearing levels.
-pub static N_SE_NODES_MAX: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_SE_NODES_MAX: AtomicU64 = AtomicU64::new(0);
 
 /// Record a per-walk node count into [`N_SE_NODES_MAX`] (relaxed cmpxchg
 /// max loop; called once per find_aligned_lattice_points, not per node).
-pub fn record_se_nodes_max(nodes: u64) {
+pub(crate) fn record_se_nodes_max(nodes: u64) {
     if trace_enabled() {
         let mut cur = N_SE_NODES_MAX.load(Ordering::Relaxed);
         while nodes > cur {
@@ -97,63 +97,63 @@ pub fn record_se_nodes_max(nodes: u64) {
 /// distance to the target exceeded ε. Should be 0 in steady state;
 /// non-zero indicates a precision issue in the SE bound vs the actual
 /// alignment threshold.
-pub static N_DIST_REJECTED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_DIST_REJECTED: AtomicU64 = AtomicU64::new(0);
 
 // ─── Per-phase nanosecond accumulators ───────────────────────────────────────
 //
 // CPU-summed nanoseconds across all find_aligned_lattice_points calls in the current prefix_split_search.
 // Total ≈ wall-time × n_threads in steady state (high parallel efficiency).
 
-pub static T_BUILD_NS: AtomicU64 = AtomicU64::new(0);
-pub static T_LLL_NS: AtomicU64 = AtomicU64::new(0);
-pub static T_CHOLESKY_NS: AtomicU64 = AtomicU64::new(0);
-pub static T_LU_NS: AtomicU64 = AtomicU64::new(0);
-pub static T_SE_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static T_BUILD_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static T_LLL_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static T_CHOLESKY_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static T_LU_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static T_SE_NS: AtomicU64 = AtomicU64::new(0);
 
 // ─── LLL iteration telemetry ─────────────────────────────────────────────────
 
 /// Sum of LLL inner-loop iterations across all find_aligned_lattice_points calls in this prefix_split_search.
-pub static N_LLL_ITERS_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_LLL_ITERS_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Max iter count seen by any single LLL call in this prefix_split_search.
-pub static N_LLL_ITERS_MAX: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_LLL_ITERS_MAX: AtomicU64 = AtomicU64::new(0);
 /// LLL calls that hit the safety cap (typically 10_000 iters). Should be 0;
 /// non-zero indicates LLL cycling at the active precision.
-pub static N_LLL_AT_CAP: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_LLL_AT_CAP: AtomicU64 = AtomicU64::new(0);
 
 /// Cumulative passes across all `lazy_size_reduce` invocations. Diagnostic
 /// signal for whether the size-reduction inner loop converges in 1-2 passes
 /// (per Nguyen-Stehlé 2009 expectation) or runs hot.
-pub static N_LAZY_PASSES_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_LAZY_PASSES_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Number of `lazy_size_reduce` invocations.
-pub static N_LAZY_CALLS_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_LAZY_CALLS_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Max passes ever seen in a single invocation.
-pub static N_LAZY_PASSES_MAX: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_LAZY_PASSES_MAX: AtomicU64 = AtomicU64::new(0);
 
 // ─── 16D Z[ζ_16] / Clifford+√T-specific counters ─────────────────────────────
 
 /// Number of `find_aligned_lattice_points` invocations across this synthesize call (one per k).
-pub static N_LATTICE_SEARCH_CALLS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_LATTICE_SEARCH_CALLS: AtomicU64 = AtomicU64::new(0);
 /// SE leaves rejected by the norm-shell check (`‖x‖² == 2^k`).
-pub static N_NORM_REJECTED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_NORM_REJECTED: AtomicU64 = AtomicU64::new(0);
 /// SE leaves rejected by the bilinear forms check (`B_1=B_2=B_3=0`).
-pub static N_BILINEAR_REJECTED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_BILINEAR_REJECTED: AtomicU64 = AtomicU64::new(0);
 /// SE leaves rejected by the alignment check (`(y·x)² ≥ threshold_xy`).
-pub static N_ALIGN_REJECTED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_ALIGN_REJECTED: AtomicU64 = AtomicU64::new(0);
 /// SE leaves passing all filters (returned by `find_aligned_lattice_points`).
-pub static N_SOLS_RETURNED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_SOLS_RETURNED: AtomicU64 = AtomicU64::new(0);
 /// Time spent inside SE leaf-check closures (sum across all find_aligned_lattice_points calls).
-pub static T_LEAF_CHECK_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static T_LEAF_CHECK_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Norm-shell prune firings in the SE walk (trace-gated).
-pub static N_PRUNE_FIRES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_PRUNE_FIRES: AtomicU64 = AtomicU64::new(0);
 /// Prune firings that triggered MPFR verification.
-pub static N_VERIFY_PRUNE_FIRES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_VERIFY_PRUNE_FIRES: AtomicU64 = AtomicU64::new(0);
 /// Prune firings where MPFR verification disagreed with f64 (MPFR said keep,
 /// f64 said prune). These are the false negatives the verification rescues.
-pub static N_VERIFY_PRUNE_CORRECTED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_VERIFY_PRUNE_CORRECTED: AtomicU64 = AtomicU64::new(0);
 
 /// CPU-summed nanoseconds spent inside `verify_partial_dd_exceeds`.
-pub static T_VERIFY_DD_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static T_VERIFY_DD_NS: AtomicU64 = AtomicU64::new(0);
 
 
 
@@ -164,9 +164,9 @@ pub static T_VERIFY_DD_NS: AtomicU64 = AtomicU64::new(0);
 // (they share a scope); the baseline counter isolates its own span so
 // the probe's [profile] line can attribute each.
 
-pub static T_STAGE_SCREEN_NS: AtomicU64 = AtomicU64::new(0);
-pub static T_STAGE_FRONTIER_NS: AtomicU64 = AtomicU64::new(0);
-pub static T_STAGE_BASELINE_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static T_STAGE_SCREEN_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static T_STAGE_FRONTIER_NS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static T_STAGE_BASELINE_NS: AtomicU64 = AtomicU64::new(0);
 
 /// One-line machine-parseable counter snapshot (`key=value` pairs).
 /// The probe prints it per synthesis call as `[profile] ...`;
@@ -212,12 +212,12 @@ pub fn profile_line() -> String {
 /// refill granularity) exceeded the walk's initial budget × margin. These
 /// surface upstream exactly as budget hits — same `budget_hit` flag, same
 /// ledger truncation — just without burning the remaining budget.
-pub static N_PREDICTIVE_TRUNC_FIRES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_PREDICTIVE_TRUNC_FIRES: AtomicU64 = AtomicU64::new(0);
 
 /// Walks that exhausted their budget pool the plain way (burned 100% of the
 /// budget before completing). Compare against `N_PREDICTIVE_TRUNC_FIRES` to
 /// see how many truncations the projection reclaimed.
-pub static N_BUDGET_EXHAUST_FIRES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static N_BUDGET_EXHAUST_FIRES: AtomicU64 = AtomicU64::new(0);
 
 // ─── Per-depth survivorship ───────────────────────────────────────────────────
 //
@@ -234,7 +234,7 @@ pub static N_RECURSE_ENTER_AT_DEPTH: [AtomicU64; 16] = [
 
 
 /// Record one lazy_size_reduce invocation's pass count.
-pub fn record_lazy_passes(passes: u64) {
+pub(crate) fn record_lazy_passes(passes: u64) {
     if !trace_enabled() {
         return;
     }
@@ -256,7 +256,7 @@ pub fn record_lazy_passes(passes: u64) {
 
 /// Record an LLL call's iteration count + atomically update
 /// `N_LLL_ITERS_MAX` via a compare-exchange loop.
-pub fn record_lll_iters(iters: u64, cap: u64) {
+pub(crate) fn record_lll_iters(iters: u64, cap: u64) {
     if !trace_enabled() {
         return;
     }
@@ -322,34 +322,34 @@ pub fn reset_all() {
 
 /// Snapshot of the current counter values for printing.
 pub struct Snapshot {
-    pub prefixes: u64,
-    pub uv_extract_rejected: u64,
+    pub(crate) prefixes: u64,
+    pub(crate) uv_extract_rejected: u64,
     pub se_callbacks: u64,
     pub se_nodes: u64,
-    pub se_nodes_max: u64,
-    pub dist_rejected: u64,
+    pub(crate) se_nodes_max: u64,
+    pub(crate) dist_rejected: u64,
     pub t_build_ms: f64,
     pub t_lll_ms: f64,
     pub t_cholesky_ms: f64,
     pub t_lu_ms: f64,
     pub t_se_ms: f64,
-    pub lll_iters_total: u64,
-    pub lll_iters_max: u64,
-    pub lll_at_cap: u64,
-    pub lazy_passes_total: u64,
-    pub lazy_calls_total: u64,
-    pub lazy_passes_max: u64,
+    pub(crate) lll_iters_total: u64,
+    pub(crate) lll_iters_max: u64,
+    pub(crate) lll_at_cap: u64,
+    pub(crate) lazy_passes_total: u64,
+    pub(crate) lazy_calls_total: u64,
+    pub(crate) lazy_passes_max: u64,
     // 16D Z[ζ_16] fields.
-    pub lattice_search_calls: u64,
-    pub norm_rejected: u64,
-    pub bilinear_rejected: u64,
-    pub align_rejected: u64,
-    pub sols_returned: u64,
-    pub t_leaf_check_ms: f64,
-    pub prune_fires: u64,
-    pub verify_prune_fires: u64,
-    pub verify_prune_corrected: u64,
-    pub t_verify_dd_ms: f64,
+    pub(crate) lattice_search_calls: u64,
+    pub(crate) norm_rejected: u64,
+    pub(crate) bilinear_rejected: u64,
+    pub(crate) align_rejected: u64,
+    pub(crate) sols_returned: u64,
+    pub(crate) t_leaf_check_ms: f64,
+    pub(crate) prune_fires: u64,
+    pub(crate) verify_prune_fires: u64,
+    pub(crate) verify_prune_corrected: u64,
+    pub(crate) t_verify_dd_ms: f64,
 }
 
 pub fn snapshot() -> Snapshot {
@@ -451,7 +451,7 @@ pub static N_WIN_PREFIX_LEN_SUM: AtomicU64 = AtomicU64::new(0);
 
 /// Record one prefix_split_search find. `idx` is the prefix's position in
 /// the sweep order actually used, `len` the sweep length.
-pub fn record_branch_win(odd: bool, idx: usize, len: usize, lde: u32) {
+pub(crate) fn record_branch_win(odd: bool, idx: usize, len: usize, lde: u32) {
     if !trace_enabled() {
         return;
     }

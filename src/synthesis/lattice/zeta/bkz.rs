@@ -18,13 +18,13 @@ use super::scratch::IntScratch16;
 
 /// Maximum BKZ tours before bailing. Most useful BKZ runs converge
 /// within 4–8 tours at d=16, β≤8. Hard cap is mostly defensive.
-pub const BKZ_MAX_LOOPS: usize = 16;
+pub(crate) const BKZ_MAX_LOOPS: usize = 16;
 
 /// Lovász-equivalent δ for BKZ's "shortened?" check. 0.99 mirrors fplll's
 /// default. Lower δ = more aggressive (any small improvement triggers
 /// insertion); higher δ = more conservative (only meaningful shortenings
 /// trigger).
-pub const BKZ_DELTA: f64 = 0.99;
+pub(crate) const BKZ_DELTA: f64 = 0.99;
 
 /// SVP enumeration on the projected β-dim sublattice at frontier κ, reading
 /// the (MPFR) GS state already populated on `scratch` as f64.
@@ -46,7 +46,7 @@ pub const BKZ_DELTA: f64 = 0.99;
 /// `‖v‖²_Q ≤ radius_sq`, or `None`.
 ///
 /// At β≤8 the search tree is small (typically ≤ a few hundred nodes).
-pub fn svp_enum_block(
+pub(crate) fn svp_enum_block(
     scratch: &IntScratch16,
     kappa: usize,
     block_size: usize,
@@ -195,7 +195,7 @@ fn enumerate_recursive(
 // `Err(())` is a documented "skip this tour step" signal, not an error
 // value the caller inspects; a dedicated error type adds nothing.
 #[allow(clippy::result_unit_err)]
-pub fn bkz_insert(
+pub(crate) fn bkz_insert(
     scratch: &mut IntScratch16,
     kappa: usize,
     block_size: usize,
@@ -432,7 +432,7 @@ fn negate_row(scratch: &mut IntScratch16, i: usize) {
 /// unimodular op; [`bkz_insert`] returns `Err(())` and that tour step is
 /// skipped, leaving the basis LLL-reduced. This is rare on LLL-reduced
 /// bases (the SE walk usually returns an x with a ±1 coord).
-pub fn bkz_tours(
+pub(crate) fn bkz_tours(
     scratch: &mut IntScratch16,
     block_size: usize,
     max_loops: usize,

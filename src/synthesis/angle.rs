@@ -24,7 +24,7 @@ impl Angle {
     /// Evaluate to f64 radians.
     // f64 evaluation is the approximate path by contract (exact path: to_radians_mpfr).
     #[allow(clippy::cast_precision_loss)]
-    pub fn to_radians_f64(self) -> f64 {
+    pub(crate) fn to_radians_f64(self) -> f64 {
         match self {
             Angle::Rad(x) => x,
             Angle::PiRatio(p, q) => (p as f64) / (q as f64) * std::f64::consts::PI,
@@ -34,7 +34,7 @@ impl Angle {
     /// Evaluate to radians as an MPFR float at `prec` bits. For `PiRatio` the
     /// result is the correctly-rounded `(p/q)·π` (π carries full `prec` bits,
     /// p and q are exact), the source of exactness below the f64 ULP.
-    pub fn to_radians_mpfr(self, prec: u32) -> MpFloat {
+    pub(crate) fn to_radians_mpfr(self, prec: u32) -> MpFloat {
         match self {
             Angle::Rad(x) => MpFloat::with_val(prec, x),
             Angle::PiRatio(p, q) => {
@@ -89,7 +89,8 @@ fn parse_decimal_ratio(s: &str) -> Option<(i64, i64)> {
 /// `"pi"`, `"3pi"`, `"3*pi"`, `"pi/8"`, `"3*pi/4"`, `"-2pi/3"`, `"0.25pi"` —
 /// returned as a reduced [`Angle::PiRatio`]. A string with no `pi` parses as
 /// [`Angle::Rad`]. The `Err` is a human-readable message.
-pub fn parse_angle_str(raw: &str) -> Result<Angle, String> {
+#[cfg_attr(not(feature = "python"), allow(dead_code))] // consumed by the PySynthesizer angle-string parser (and tests)
+pub(crate) fn parse_angle_str(raw: &str) -> Result<Angle, String> {
     let s: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
     let lower = s.to_lowercase();
     let Some(pos) = lower.find("pi") else {
@@ -123,7 +124,7 @@ pub fn parse_angle_str(raw: &str) -> Result<Angle, String> {
 
 /// `Rz(alpha)·Ry(beta)·Rz(gamma)` as an SU(2) `Mat2` (det = 1 by construction).
 /// Convention: `Rz(t) = diag(e^{-it/2}, e^{it/2})`, `Ry(t) = [[c,-s],[s,c]]`.
-pub fn su2_from_zyz(alpha: f64, beta: f64, gamma: f64) -> Mat2 {
+pub(crate) fn su2_from_zyz(alpha: f64, beta: f64, gamma: f64) -> Mat2 {
     let cb = (beta * 0.5).cos();
     let sb = (beta * 0.5).sin();
     let pag = (alpha + gamma) * 0.5;
@@ -137,7 +138,7 @@ pub fn su2_from_zyz(alpha: f64, beta: f64, gamma: f64) -> Mat2 {
 
 /// Default MPFR precision for the exact target column: 384 bits covers the
 /// search precision (≈6·log₂(1/ε)) for any ε ≳ 1e-19.
-pub const DEFAULT_COL_PREC: u32 = 384;
+pub(crate) const DEFAULT_COL_PREC: u32 = 384;
 
 /// Build BOTH synthesis artifacts from the SAME ZYZ angles: the f64 SU(2)
 /// target matrix (acceptance check) and the MPFR target column at `prec`
@@ -149,7 +150,7 @@ pub const DEFAULT_COL_PREC: u32 = 384;
 /// pair risks a convention mismatch (e.g. U3 angles passed positionally into
 /// the ZYZ signature), which centers the deep-ε box on a different unitary
 /// than the acceptance target and produces a silent-miss ladder.
-pub fn angle_target(alpha: Angle, beta: Angle, gamma: Angle, prec: u32) -> (Mat2, [MpFloat; 4]) {
+pub(crate) fn angle_target(alpha: Angle, beta: Angle, gamma: Angle, prec: u32) -> (Mat2, [MpFloat; 4]) {
     let mat = su2_from_zyz(alpha.to_radians_f64(), beta.to_radians_f64(), gamma.to_radians_f64());
     let col = su2_col_mpfr(alpha, beta, gamma, prec);
     debug_assert!(
@@ -178,7 +179,7 @@ fn col_target_mismatch(col: &[MpFloat; 4], target: &Mat2) -> f64 {
 /// Column 1 of `Rz(alpha)·Ry(beta)·Rz(gamma)` in MPFR at `prec` bits, as
 /// `[Re u00, Im u00, Re u10, Im u10]`. Exact for `PiRatio` angles. The column
 /// is unit-norm by construction, so no `√det` normalization is needed.
-pub fn su2_col_mpfr(alpha: Angle, beta: Angle, gamma: Angle, prec: u32) -> [MpFloat; 4] {
+pub(crate) fn su2_col_mpfr(alpha: Angle, beta: Angle, gamma: Angle, prec: u32) -> [MpFloat; 4] {
     let a = alpha.to_radians_mpfr(prec);
     let b = beta.to_radians_mpfr(prec);
     let g = gamma.to_radians_mpfr(prec);

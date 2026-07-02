@@ -6,29 +6,28 @@
 use i256::i256;
 
 /// Integer coefficient type for ring elements (ZOmega, ZZeta) and SO3 scalars (R2, R4).
-pub type Int = i256;
+pub(crate) type Int = i256;
 
 
 /// Arbitrary-precision (MPFR) float, used wherever f64 runs out of headroom
 /// (the lattice Q-metric, Gram-Schmidt, deep-ε verification). Precision is set
 /// per use site (see `GS_PREC`, `compute_prec_q`), not fixed.
-pub type MpFloat = rug::Float;
+pub(crate) type MpFloat = rug::Float;
 
 
 // Int constants — use these instead of Int::from(n) at call sites
-pub const INT_ZERO:    Int = Int::from_i8(0);
-pub const INT_ONE:     Int = Int::from_i8(1);
-pub const INT_TWO:     Int = Int::from_i8(2);
-pub const INT_THREE:   Int = Int::from_i8(3);
-pub const INT_FOUR:    Int = Int::from_i8(4);
-pub const INT_NEG_ONE: Int = Int::from_i8(-1);
+pub(crate) const INT_ZERO:    Int = Int::from_i8(0);
+pub(crate) const INT_ONE:     Int = Int::from_i8(1);
+pub(crate) const INT_TWO:     Int = Int::from_i8(2);
+pub(crate) const INT_FOUR:    Int = Int::from_i8(4);
+pub(crate) const INT_NEG_ONE: Int = Int::from_i8(-1);
 
 
 /// Convert an `Int` to `f64`.
 // Per-limb rounding is ≤ 2^-53 relative to the total; f64 output is approximate by contract.
 #[allow(clippy::cast_precision_loss)]
 #[inline]
-pub fn int_to_f64(x: Int) -> f64 {
+pub(crate) fn int_to_f64(x: Int) -> f64 {
     const SCALE_64: f64 = 18446744073709551616.0; // 2^64
     const SCALE_128: f64 = SCALE_64 * SCALE_64;
     const SCALE_192: f64 = SCALE_128 * SCALE_64;

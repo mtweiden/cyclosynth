@@ -43,7 +43,7 @@ pub struct SynthResult {
 /// let synth = Synthesizer::new(1e-3, false);
 /// // Clifford+√T (denser gate set, generally fewer gates).
 /// let synth = Synthesizer::new(1e-3, true);
-/// let result = synth.synthesize(target);
+/// let result = synth.synthesize_zyz(alpha, beta, gamma);
 /// ```
 pub struct Synthesizer {
     inner: Backend,
@@ -104,7 +104,8 @@ impl Synthesizer {
     /// model (default 3). Quantized to the nearest half-unit (the model
     /// compares `2·T + round(2·weight)·Q`), so e.g. 3.6 → 3.5. Ignored for
     /// Clifford+T.
-    pub fn with_q_cost(mut self, weight: f64) -> Self {
+    #[cfg_attr(not(feature = "python"), allow(dead_code))] // consumed by the PySynthesizer binding
+    pub(crate) fn with_q_cost(mut self, weight: f64) -> Self {
         if let Backend::Q(s) = self.inner {
             self.inner = Backend::Q(s.with_q_cost(weight));
         }
@@ -114,7 +115,8 @@ impl Synthesizer {
     /// Clifford+√T only: also search `window` lde levels above the first
     /// hit and return the global min-cost candidate (see
     /// [`SynthesizerQ::with_optimal_lde_window`]). Ignored for Clifford+T.
-    pub fn with_optimal_lde_window(mut self, window: u32) -> Self {
+    #[cfg_attr(not(feature = "python"), allow(dead_code))] // consumed by the PySynthesizer binding
+    pub(crate) fn with_optimal_lde_window(mut self, window: u32) -> Self {
         if let Backend::Q(s) = self.inner {
             self.inner = Backend::Q(s.with_optimal_lde_window(window));
         }
@@ -124,7 +126,8 @@ impl Synthesizer {
     /// Clifford+√T only: wall-clock budget in ms for the min-cost
     /// enumeration (see [`SynthesizerQ::with_optimal_deadline_ms`]);
     /// `None` removes the deadline. Ignored for Clifford+T.
-    pub fn with_optimal_deadline_ms(mut self, ms: Option<u64>) -> Self {
+    #[cfg_attr(not(feature = "python"), allow(dead_code))] // consumed by the PySynthesizer binding
+    pub(crate) fn with_optimal_deadline_ms(mut self, ms: Option<u64>) -> Self {
         if let Backend::Q(s) = self.inner {
             self.inner = Backend::Q(s.with_optimal_deadline_ms(ms));
         }
@@ -135,7 +138,8 @@ impl Synthesizer {
     /// (see [`SynthesizerQ::with_seq_parity`]); `Some(false)` forces the
     /// concurrent (lower-wall) branches below the 2.5e-8 sequential
     /// threshold. Ignored for Clifford+T.
-    pub fn with_seq_parity(mut self, seq: Option<bool>) -> Self {
+    #[cfg_attr(not(feature = "python"), allow(dead_code))] // consumed by the PySynthesizer binding
+    pub(crate) fn with_seq_parity(mut self, seq: Option<bool>) -> Self {
         if let Backend::Q(s) = self.inner {
             self.inner = Backend::Q(s.with_seq_parity(seq));
         }
@@ -164,27 +168,6 @@ impl Synthesizer {
         self.synthesize_zyz(phi, theta, lam)
     }
 
-    /// Synthesize `target` (a 2×2 unitary). Returns `None` if no circuit
-    /// in the chosen gate set within `max_lde` reaches diamond distance
-    /// below `epsilon`.
-    ///
-    /// Prefer [`Self::synthesize_zyz`]/[`Self::synthesize_u3`] — building the
-    /// target and exact column separately risks a convention mismatch.
-    pub fn synthesize(&self, target: Mat2) -> Option<SynthResult> {
-        match &self.inner {
-            Backend::T(s) => s.synthesize(target).map(|r| SynthResult {
-                gates: r.gates,
-                lde: r.lde,
-                distance: r.distance,
-            }),
-            Backend::Q(s) => s.synthesize(target).map(|r| SynthResult {
-                gates: r.gates,
-                lde: r.lde,
-                distance: r.distance,
-            }),
-        }
-    }
-
     /// Synthesize with a higher-precision target column `exact_col` — the
     /// √det-normalized first column `[Re u00, Im u00, Re u10, Im u10]` of the
     /// SU(2) target (e.g. from exact rational-π angles via
@@ -193,7 +176,7 @@ impl Synthesizer {
     ///
     /// Prefer [`Self::synthesize_zyz`]/[`Self::synthesize_u3`] — building the
     /// target and exact column separately risks a convention mismatch.
-    pub fn synthesize_su2_col(
+    pub(crate) fn synthesize_su2_col(
         &self,
         target: Mat2,
         exact_col: &[crate::rings::MpFloat; 4],
@@ -213,10 +196,11 @@ impl Synthesizer {
     }
 
     /// Target diamond distance the synthesized circuit must come within.
-    pub fn epsilon(&self) -> f64 {
+    #[cfg_attr(not(feature = "python"), allow(dead_code))] // consumed by the PySynthesizer binding
+    pub(crate) fn epsilon(&self) -> f64 {
         match &self.inner {
             Backend::T(s) => s.epsilon,
-            Backend::Q(s) => s.epsilon,
+            Backend::Q(s) => s.epsilon(),
         }
     }
 
@@ -230,7 +214,8 @@ impl Synthesizer {
 
     /// Smallest lde the synthesizer starts from (skips guaranteed-empty
     /// shallow depths at deep ε).
-    pub fn min_lde(&self) -> u32 {
+    #[cfg_attr(not(feature = "python"), allow(dead_code))] // consumed by the PySynthesizer binding
+    pub(crate) fn min_lde(&self) -> u32 {
         match &self.inner {
             Backend::T(s) => s.min_lde,
             Backend::Q(s) => s.min_lde,
@@ -238,14 +223,16 @@ impl Synthesizer {
     }
 
     /// `true` if this is a Clifford+√T synthesizer, `false` for Clifford+T.
-    pub fn sqrt_t(&self) -> bool {
+    #[cfg_attr(not(feature = "python"), allow(dead_code))] // consumed by the PySynthesizer binding
+    pub(crate) fn sqrt_t(&self) -> bool {
         matches!(&self.inner, Backend::Q(_))
     }
 
     /// Cost in `T` states of one √T-class syllable in the syllable cost model
     /// (a T-class syllable costs 1). Canonical 3; reflects a custom
     /// `with_q_cost` on the √T backend.
-    pub fn q_weight(&self) -> f64 {
+    #[cfg_attr(not(feature = "python"), allow(dead_code))] // consumed by the PySynthesizer binding
+    pub(crate) fn q_weight(&self) -> f64 {
         match &self.inner {
             Backend::T(_) => 3.0,
             // q_cost_x2 is a small user knob (default 7; set from 2·weight).
@@ -263,18 +250,18 @@ use pyo3::prelude::*;
 /// Python-facing result of a synthesis run. Same shape for both gate sets.
 #[cfg(feature = "python")]
 #[pyclass(name = "SynthResult", frozen)]
-pub struct PySynthResult {
+pub(crate) struct PySynthResult {
     /// Gate string (leftmost = first gate applied), or `None` if extraction
     /// failed. Alphabet `{H, S, T, X, Y, Z}` for Clifford+T,
     /// `{H, S, T, Q, X, Y, Z}` for Clifford+√T.
     #[pyo3(get)]
-    pub gates: Option<String>,
+    pub(crate) gates: Option<String>,
     /// Denominator exponent (lde, the search depth) of the synthesized unitary.
     #[pyo3(get)]
-    pub lde: u32,
+    pub(crate) lde: u32,
     /// Diamond distance from the synthesized unitary to the target (< epsilon).
     #[pyo3(get)]
-    pub distance: f64,
+    pub(crate) distance: f64,
     /// Q-gate weight used for `cost` (3 unless overridden on the √T backend).
     q_weight: f64,
 }
@@ -346,7 +333,7 @@ impl PySynthResult {
 /// ```
 #[cfg(feature = "python")]
 #[pyclass(name = "Synthesizer", frozen)]
-pub struct PySynthesizer {
+pub(crate) struct PySynthesizer {
     inner: Synthesizer,
 }
 

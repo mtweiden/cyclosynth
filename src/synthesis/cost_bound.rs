@@ -8,10 +8,10 @@
 /// Maximum reduced lde over the single-qubit Clifford group in the
 /// `U2Q` representation (⟨H, S⟩ closure, incl. phases): 1 under full
 /// denominator reduction (H itself). `tests::clifford_lde_max_is_1`.
-pub const CLIFFORD_LDE_MAX: u32 = 1;
+pub(crate) const CLIFFORD_LDE_MAX: u32 = 1;
 
 /// Per-x/y-syllable lde contribution. `tests::syllable_lde_constants`.
-pub const XY_SYLLABLE_LDE: u32 = 2;
+pub(crate) const XY_SYLLABLE_LDE: u32 = 2;
 
 /// Min syllable-model cost (half-units) of a non-Clifford syllable: a T-class
 /// syllable costs 2 (a √T-class costs `q_cost_x2`; `TQ = T^{3/2}` is ONE
@@ -22,7 +22,7 @@ const MIN_SYLLABLE_COST_HALF_UNITS: usize = 2;
 /// Clifford+√T unitary with reduced lde `k`: `max(2·⌈(k−1)/2⌉, 4k−6)`. Rests on
 /// `cost ≥ 2N ≥ 2(2k−3)` where N is the reduced Bloch/SO(3) exponent; sound for
 /// any `q_cost_x2 ≥ 4` (default 6). The syllable-count floor only binds at k ≤ 2.
-pub fn cost_lb_half_units(k: u32) -> usize {
+pub(crate) fn cost_lb_half_units(k: u32) -> usize {
     let excess = k.saturating_sub(CLIFFORD_LDE_MAX);
     // n_xy ≥ ⌈excess / XY_SYLLABLE_LDE⌉, each costing ≥ 2 half-units.
     let n_xy = excess.div_ceil(XY_SYLLABLE_LDE) as usize;
@@ -36,7 +36,7 @@ pub fn cost_lb_half_units(k: u32) -> usize {
 /// PARITY of `d` is sound — a target matches up to global phase ζ₁₆ʲ, shifting
 /// the class by 2j, so a mod-4 bound is NOT sound. Pass `q_cost_x2` (not a
 /// hard-coded constant) to stay sound under any √T weight.
-pub fn class_cost_lb_half_units(d: u32, q_cost_x2: usize) -> usize {
+pub(crate) fn class_cost_lb_half_units(d: u32, q_cost_x2: usize) -> usize {
     if d % 2 == 1 { q_cost_x2 } else { 0 }
 }
 

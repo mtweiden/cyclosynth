@@ -16,7 +16,7 @@ use super::common::LllResult;
 
 /// The lattice-enumeration core one ring must provide. See the module docs for
 /// what deliberately lives outside it.
-pub trait LatticeBackend {
+pub(crate) trait LatticeBackend {
     /// Lattice dimension (8 for Z[ω], 16 for Z[ζ_16]).
     const DIM: usize;
 
@@ -49,7 +49,7 @@ pub trait LatticeBackend {
 }
 
 /// Z[ω] / Clifford+T, 8-dimensional.
-pub struct Omega;
+pub(crate) struct Omega;
 
 impl LatticeBackend for Omega {
     const DIM: usize = 8;
@@ -77,7 +77,7 @@ impl LatticeBackend for Omega {
 }
 
 /// Z[ζ_16] / Clifford+√T, 16-dimensional.
-pub struct Zeta;
+pub(crate) struct Zeta;
 
 impl LatticeBackend for Zeta {
     const DIM: usize = 16;

@@ -29,7 +29,8 @@ use crate::synthesis::lattice::common::i256_to_rfloat;
 /// Q-metric scale `G`. Returned matrix lives on the stack; the caller passes
 /// it to `cholesky_int`. Test/diagnostic oracle only — kept out of
 /// `IntScratch` so production doesn't carry a second 8x8 MPFR matrix.
-pub fn snapshot_gram_to_mpfr(scratch: &IntScratch) -> [[MpFloat; 8]; 8] {
+#[cfg_attr(not(test), allow(dead_code))] // MPFR oracle path: tests + python+trace diag_inner_cap
+pub(crate) fn snapshot_gram_to_mpfr(scratch: &IntScratch) -> [[MpFloat; 8]; 8] {
     let prec = scratch.prec_q;
     let shift = scratch.scale_bits;
     let mut tmp = rfz(prec);
@@ -57,7 +58,8 @@ pub fn snapshot_gram_to_mpfr(scratch: &IntScratch) -> [[MpFloat; 8]; 8] {
 /// (extremely rare for LLL-output bases). Reference oracle for `cholesky_f64`;
 /// not used in production. The fresh stack matrices are kept out of
 /// `IntScratch` so production doesn't carry a second pair of 8x8 MPFR matrices.
-pub fn cholesky_int(
+#[cfg_attr(not(test), allow(dead_code))] // MPFR oracle path: tests + python+trace diag_inner_cap
+pub(crate) fn cholesky_int(
     scratch: &IntScratch,
     g_post: &[[MpFloat; 8]; 8],
 ) -> Option<[[MpFloat; 8]; 8]> {
@@ -98,7 +100,7 @@ use rug::Assign;
 /// Reads `scratch.lu_a` (the matrix), `scratch.lu_rhs` (the RHS),
 /// writes `scratch.lu_x` (the solution). Returns `false` if the matrix is
 /// numerically singular (pivot below 1e-30).
-pub fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
+pub(crate) fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
     let tol = rfv(scratch.lu_prec, 1e-30);
 
     for k in 0..8 {
@@ -166,7 +168,7 @@ pub fn lu_solve_int_inplace(scratch: &mut IntScratch) -> bool {
 /// reduced Gram is well-conditioned even when the input Q has κ ≈ 2^137 at
 /// ε=1e-10, and the SE walk's MPFR-128 bound check tolerance (~10⁻⁹) is six
 /// orders above the f64 Cholesky's ~10⁻¹⁵ absolute error at unit scale.
-pub fn cholesky_f64(scratch: &mut IntScratch) -> bool {
+pub(crate) fn cholesky_f64(scratch: &mut IntScratch) -> bool {
     let scale = 2.0_f64.powi(-scratch.scale_bits);
     let mut g = [[0.0_f64; 8]; 8];
     for i in 0..8 {
@@ -209,7 +211,7 @@ pub fn cholesky_f64(scratch: &mut IntScratch) -> bool {
 /// A non-unimodular result indicates the GS lost orthogonalization — for the
 /// L² pipeline this should never happen at our dimension (d=8), but the check
 /// is cheap and catches algorithm bugs early.
-pub fn det_exact(m: &IMat8) -> Option<i64> {
+pub(crate) fn det_exact(m: &IMat8) -> Option<i64> {
     let mut a: [[i256; 8]; 8] =
         std::array::from_fn(|i| std::array::from_fn(|j| i256::from_i64(m[i][j])));
     let mut sign: i64 = 1;
@@ -273,7 +275,7 @@ pub fn det_exact(m: &IMat8) -> Option<i64> {
 ///   Euclid-long — there the f64 partial sums cancel at 1e18 scale and
 ///   the prune cuts branches containing TRUE solutions (masked pre-
 ///   dedup by the 8× coset-mate redundancy).
-pub fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
+pub(crate) fn euclidean_cholesky(basis: &IMat8) -> Option<[[f64; 8]; 8]> {
     // Exact integer Gram = B·Bᵀ in i128 (basis entries can reach ~2^33 in
     // Euclid-pathological frames, where i64 products would overflow).
     let mut gram = [[0_i128; 8]; 8];

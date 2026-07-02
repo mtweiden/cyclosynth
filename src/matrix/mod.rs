@@ -2,10 +2,10 @@
 //! SO(3) rotations ([`SO3`]), with their Clifford+T (`*T`) and Clifford+√T
 //! (`*Q`) ring instantiations.
 
-pub mod so3;
-pub mod u2;
+pub(crate) mod so3;
+pub(crate) mod u2;
 
-pub use so3::{
+pub(crate) use so3::{
     rz_neg, rx_neg, ry_neg,
     rz_neg_q, rx_neg_q, ry_neg_q,
 };

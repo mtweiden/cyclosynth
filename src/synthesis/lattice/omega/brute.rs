@@ -52,7 +52,7 @@ use crate::rings::{MpFloat, ZOmega};
 ///   align[6] = v[3]
 ///   align[7] = (−v[2] + v[3]) / √2
 /// ```
-pub fn compute_align_vec(v: [f64; 4]) -> [f64; 8] {
+pub(crate) fn compute_align_vec(v: [f64; 4]) -> [f64; 8] {
     let r = FRAC_1_SQRT_2;
     [
         v[0],
@@ -73,7 +73,7 @@ pub fn compute_align_vec(v: [f64; 4]) -> [f64; 8] {
 /// T† = [[1,0],[0,ω̄]]; det(V·T†) = ω̄ for SU(2) V.
 /// After det normalization in unitary_to_uv (dividing first column by √det),
 /// both u1 and u2 rotate by e^{iπ/8}: uv(V·T†) = e^{iπ/8} · uv(V).
-pub fn apply_t_dag_to_uv(v: [f64; 4]) -> [f64; 4] {
+pub(crate) fn apply_t_dag_to_uv(v: [f64; 4]) -> [f64; 4] {
     let (c, s) = (std::f64::consts::FRAC_PI_8.cos(), std::f64::consts::FRAC_PI_8.sin());
     [v[0]*c - v[1]*s, v[0]*s + v[1]*c, v[2]*c - v[3]*s, v[2]*s + v[3]*c]
 }
@@ -83,7 +83,7 @@ pub fn apply_t_dag_to_uv(v: [f64; 4]) -> [f64; 4] {
 /// T = [[1,0],[0,ω]]; det(V·T) = ω for SU(2) V.
 /// After det normalization in unitary_to_uv (dividing first column by √det),
 /// both u1 and u2 rotate by e^{-iπ/8}: uv(V·T) = e^{-iπ/8} · uv(V).
-pub fn apply_t_to_uv(v: [f64; 4]) -> [f64; 4] {
+pub(crate) fn apply_t_to_uv(v: [f64; 4]) -> [f64; 4] {
     let (c, s) = (std::f64::consts::FRAC_PI_8.cos(), std::f64::consts::FRAC_PI_8.sin());
     [v[0]*c + v[1]*s, -v[0]*s + v[1]*c, v[2]*c + v[3]*s, -v[2]*s + v[3]*c]
 }
@@ -97,7 +97,7 @@ pub fn apply_t_to_uv(v: [f64; 4]) -> [f64; 4] {
 /// factor: uv(C†·V) = (C†·v / √2^k) / √conj(det(C)).
 /// Clifford table entries are SU(2) (det=1) so the correction is 1 there;
 /// MA prefix products (H, S, T) have det ≠ 1 and require the correction.
-pub fn apply_u2t_dag_to_uv(c: &U2T, v: [f64; 4]) -> [f64; 4] {
+pub(crate) fn apply_u2t_dag_to_uv(c: &U2T, v: [f64; 4]) -> [f64; 4] {
     let v1 = Complex64::new(v[0], v[1]);
     let v2 = Complex64::new(v[2], v[3]);
     let scale = 1.0 / (2.0_f64.powi(c.k as i32)).sqrt();
@@ -121,7 +121,7 @@ pub fn apply_u2t_dag_to_uv(c: &U2T, v: [f64; 4]) -> [f64; 4] {
 }
 
 /// MPFR analog of [`apply_t_dag_to_uv`]: rotate the uv pair by `e^{iπ/8}`.
-pub fn apply_t_dag_to_uv_mpfr(v: &[MpFloat; 4], prec: u32) -> [MpFloat; 4] {
+pub(crate) fn apply_t_dag_to_uv_mpfr(v: &[MpFloat; 4], prec: u32) -> [MpFloat; 4] {
     let ang = MpFloat::with_val(prec, rug::float::Constant::Pi) / 8u32;
     let c = ang.clone().cos();
     let s = ang.sin();
@@ -139,7 +139,7 @@ pub fn apply_t_dag_to_uv_mpfr(v: &[MpFloat; 4], prec: u32) -> [MpFloat; 4] {
 /// `v = [Re v1, Im v1, Re v2, Im v2]`. Preserves precision below the f64 ULP
 /// for the deep-ε prefix-split search (prefix coefficients are far inside
 /// i64 there, so `int_to_f64` is exact). `prec` is the working precision.
-pub fn apply_u2t_dag_to_uv_mpfr(c: &U2T, v: &[MpFloat; 4], prec: u32) -> [MpFloat; 4] {
+pub(crate) fn apply_u2t_dag_to_uv_mpfr(c: &U2T, v: &[MpFloat; 4], prec: u32) -> [MpFloat; 4] {
     let f = |x: f64| MpFloat::with_val(prec, x);
     let mul = |a: &MpFloat, b: &MpFloat| MpFloat::with_val(prec, a * b);
     let add = |a: &MpFloat, b: &MpFloat| MpFloat::with_val(prec, a + b);
@@ -216,7 +216,7 @@ pub fn normalize4(v: [f64; 4]) -> Option<[f64; 4]> {
 // correction loops absorb that); (s+1)² overflows i64 only for n ≥ 2^62.
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 #[inline]
-pub fn integer_sqrt(n: i64) -> i64 {
+pub(crate) fn integer_sqrt(n: i64) -> i64 {
     if n <= 0 {
         return 0;
     }
@@ -584,7 +584,7 @@ fn brute_enum_inner<
 ///
 /// # Returns
 /// Vector of `[a1, b1, c1, d1, a2, b2, c2, d2]` satisfying all constraints.
-pub fn brute_aligned_search(
+pub(crate) fn brute_aligned_search(
     v: [f64; 4],
     k: u32,
     epsilon: f64,

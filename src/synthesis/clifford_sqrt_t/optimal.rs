@@ -388,7 +388,8 @@ impl SynthesizerQ {
     /// half-units under the current slope-1/2 staircase; a tighter
     /// staircase shrinks the required horizon proportionally without
     /// touching this code.
-    pub fn synthesize_exhaustive_certified(
+    #[cfg_attr(not(test), allow(dead_code))] // certified-optimality surface, exercised by tests
+    pub(crate) fn synthesize_exhaustive_certified(
         &self,
         target: Mat2,
         k_max: u32,
@@ -564,7 +565,8 @@ impl SynthesizerQ {
     /// points); anything above the smaller branch horizon costs at
     /// least `cost_lb_half_units(horizon + 1)`. With `certify` off no
     /// m = 0 tasks run and the certificate is vacuous (lower = 0).
-    pub fn synthesize_with_certificate(
+    #[cfg_attr(not(test), allow(dead_code))] // certified-optimality surface, exercised by tests
+    pub(crate) fn synthesize_with_certificate(
         &self,
         target: Mat2,
     ) -> Option<(SynthResultQ, CostCertificate)> {

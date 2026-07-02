@@ -35,7 +35,7 @@ use super::scratch::{
 /// caller gave us. At ε=1e-8 the cap-radial direction `Δ_y/R = ε²/4 ≈ 2.5e-17`
 /// is below f64 ULP at unit scale (~2.2e-16); the f64-input version below
 /// loses the cap localization in this regime.
-pub fn build_q_mpfr_zeta_from_mpfr_v(
+pub(crate) fn build_q_mpfr_zeta_from_mpfr_v(
     scratch: &mut IntScratch16,
     v: &[MpFloat; 4],
     k: u32,
@@ -131,7 +131,8 @@ pub fn build_q_mpfr_zeta_from_mpfr_v(
 /// Build Q from an f64 `v`. Test-only entry point (production uses
 /// `build_q_mpfr_zeta_from_mpfr_v` per prefix); kept as the oracle for
 /// `build_q_zzeta_lattice`.
-pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: f64) {
+#[cfg_attr(not(test), allow(dead_code))] // MPFR oracle, exercised by tests
+pub(crate) fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: f64) {
     let prec = scratch.prec_q;
     let one = rfv(prec, 1.0);
     let two = rfv(prec, 2.0);
@@ -219,7 +220,7 @@ pub fn build_q_mpfr_zeta(scratch: &mut IntScratch16, v: [f64; 4], k: u32, eps: f
 
 /// Snapshot the MPFR Q into `scratch.q_int` with adaptive scaling. Sets
 /// `scratch.scale_bits` such that `max(|Q_int|) ≈ 2^TARGET_BITS`.
-pub fn build_q_int_zeta(scratch: &mut IntScratch16) {
+pub(crate) fn build_q_int_zeta(scratch: &mut IntScratch16) {
     let mut max_log2: i32 = i32::MIN;
     for i in 0..16 {
         for j in 0..16 {
@@ -255,7 +256,7 @@ use crate::synthesis::lattice::common::rug_to_i256_scaled;
 /// a sanity oracle in tests against [`build_q_mpfr_zeta`]; not exercised in
 /// the production pipeline (which always goes through MPFR + i256).
 #[cfg(test)]
-pub fn build_q_zzeta_lattice(v: [f64; 4], k: u32, eps: f64) -> [[f64; 16]; 16] {
+pub(crate) fn build_q_zzeta_lattice(v: [f64; 4], k: u32, eps: f64) -> [[f64; 16]; 16] {
     use crate::synthesis::lattice::zeta::brute::compute_align_vec_zeta;
 
     let r_sq = 2.0f64.powi(k as i32);

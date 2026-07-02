@@ -23,7 +23,7 @@ use super::se::bilinear_forms;
 ///   `y[8+j] = cos(jπ/8)·v[2] + sin(jπ/8)·v[3]`  (u_2 block)
 // j < 8 — exact in f64.
 #[allow(clippy::cast_precision_loss)]
-pub fn compute_align_vec_zeta(v: [f64; 4]) -> [f64; 16] {
+pub(crate) fn compute_align_vec_zeta(v: [f64; 4]) -> [f64; 16] {
     let mut y = [0.0f64; 16];
     for j in 0..8 {
         let theta = (j as f64) * PI / 8.0;
@@ -51,7 +51,7 @@ pub fn uv_to_lattice_y_zeta(v: [f64; 4], k: u32) -> [f64; 16] {
 /// ~1e-16 error in ‖y‖ displaces the cap and causes find/miss flicker.
 /// Fix: MPFR cos/sin tables, then rescale so ‖y‖ = ρ = 2^(k/2)/2 EXACTLY.
 /// Norm errors then become pure direction errors, harmless to the cap.
-pub fn uv_to_lattice_y_zeta_mpfr(v: &[MpFloat; 4], k: u32, prec: u32) -> [MpFloat; 16] {
+pub(crate) fn uv_to_lattice_y_zeta_mpfr(v: &[MpFloat; 4], k: u32, prec: u32) -> [MpFloat; 16] {
     // cos/sin(jπ/8) tables at `prec` (MPFR Pi — no f64 trig roundings).
     let pi = MpFloat::with_val(prec, rug::float::Constant::Pi);
     let mut raw: [MpFloat; 16] = std::array::from_fn(|_| MpFloat::with_val(prec, 0.0));
@@ -124,7 +124,7 @@ fn enumerate<F: FnMut(&[i64; 16])>(
 /// with `‖u_1‖² + ‖u_2‖² = 2^k` and `B_1 = B_2 = B_3 = 0`.
 ///
 /// Returns 16-element integer solutions. Cost is exponential in `k`.
-pub fn enumerate_unitary_norm_shell(k: u32) -> Vec<[i64; 16]> {
+pub(crate) fn enumerate_unitary_norm_shell(k: u32) -> Vec<[i64; 16]> {
     assert!(k < 31, "k too large for i64 norm shell (would overflow)");
     let target_norm_sq = 1i64 << k;
     let mut x = [0i64; 16];

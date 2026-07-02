@@ -79,15 +79,16 @@ pub struct SynthResultQ {
 /// pipeline's numeric trust boundary (f64+dd distance checks, cap
 /// margin `bound_sq`), like every other result of this crate.
 #[derive(Debug, Clone, Copy)]
-pub struct CostCertificate {
+#[cfg_attr(not(test), allow(dead_code))] // certificate fields are read by the certified-optimality tests
+pub(crate) struct CostCertificate {
     /// Cost of the returned circuit (half-units).
-    pub upper_half_units: usize,
+    pub(crate) upper_half_units: usize,
     /// Proven lower bound on the optimum (half-units).
-    pub lower_half_units: usize,
+    pub(crate) lower_half_units: usize,
     /// Horizon: every circuit with lde ≤ this was enumerated.
-    pub k_searched: u32,
+    pub(crate) k_searched: u32,
     /// `upper ≤ L(k_searched + 1)`: nothing beyond the horizon can win.
-    pub certified_optimal: bool,
+    pub(crate) certified_optimal: bool,
 }
 
 /// Clifford+√T synthesizer over `Z[ζ_16]`.
@@ -95,43 +96,43 @@ pub struct CostCertificate {
 /// Field names mirror `clifford_t::SynthesizerT`. Defaults in [`Self::new`].
 #[derive(Clone)]
 pub struct SynthesizerQ {
-    /// Approximation precision in diamond distance.
-    pub epsilon: f64,
+    /// Approximation precision in diamond distance. Private: paired with
+    /// lde-window tuning in [`Self::new`]; read via [`Self::epsilon`].
+    epsilon: f64,
     /// Maximum lde to search before giving up.
-    pub max_lde: u32,
+    pub(crate) max_lde: u32,
     /// Minimum lde to start searching from.
-    pub min_lde: u32,
+    pub(crate) min_lde: u32,
     /// FGKM-prefix divide-and-conquer split parameter; `None` = single
     /// search. Builder: [`Self::with_prefix_split_m`].
-    pub prefix_split_m: Option<u32>,
+    pub(crate) prefix_split_m: Option<u32>,
     /// Allowed `(d_target − d_L) mod 16` offsets for a prefix to be
     /// processed; empty = no filter. Builder: [`Self::with_inner_det_phase_filter`].
-    pub inner_det_phase_filter: Vec<u32>,
+    pub(crate) inner_det_phase_filter: Vec<u32>,
     /// BKZ-β post-pass syllable size (0 = off). Ambient default comes from
-    /// the `CYCLOSYNTH_BKZ` env var in [`Self::new`]; the [`Self::with_bkz`]
-    /// builder overrides it.
-    pub bkz_block_size: u32,
+    /// the `CYCLOSYNTH_BKZ` env var in [`Self::new`].
+    pub(crate) bkz_block_size: u32,
     /// Number of lde levels the dc path dispatches concurrently, with a
     /// cross-LDE abort so the first finder cancels its peers. ε-tuned in
     /// [`Self::new`].
-    pub parallel_lde_window: u32,
+    pub(crate) parallel_lde_window: u32,
     /// Node count a predecessor LDE must burn without finding before the
     /// next speculative LDE launches (0 = off). Budget-triggered rather
     /// than time-based so easy targets never pay for speculation. ε-tuned
     /// in [`Self::new`].
-    pub parallel_lde_trigger_nodes: u64,
+    pub(crate) parallel_lde_trigger_nodes: u64,
     /// Enumerate all ε-close candidates and return the min-cost one
     /// (`cost = T + (q_cost_x2/2)·Q`) instead of the first hit.
     /// Builder: [`Self::with_optimize_cost`].
-    pub optimize_cost: bool,
+    pub(crate) optimize_cost: bool,
     /// m values the enum stage runs per lde (m=0 = single-search, m≥1 =
     /// D&C with that split); empty disables the sweep. Builder:
     /// [`Self::with_optimal_m_sweep`].
-    pub optimal_m_sweep: Vec<u32>,
+    pub(crate) optimal_m_sweep: Vec<u32>,
     /// Multiplier on every budget cap in optimize mode: first-hit gets an
     /// early-bail advantage that optimal-mode walkers must buy back with
     /// budget. Builder: [`Self::with_optimal_budget_multiplier`].
-    pub optimal_budget_multiplier: u64,
+    pub(crate) optimal_budget_multiplier: u64,
     /// Cross-parity shared incumbent (half-units). Both branches' prefix
     /// prunes share it, and the screens poll it as a dynamic max_lde
     /// clamp (cost c̃ ⇒ lde ≤ c̃ + 1), which is what lets the parity
@@ -152,37 +153,37 @@ pub struct SynthesizerQ {
     /// Extra lde levels enumerated above the first feasible one — the
     /// lde-vs-cost relationship is not monotone, so the cost minimum can
     /// sit above find-lde. Builder: [`Self::with_optimal_lde_window`].
-    pub optimal_lde_window: u32,
+    pub(crate) optimal_lde_window: u32,
     /// Per-parity-branch wall deadline (ms) for the merged enum frontier
     /// (one cost-floor-ordered stream of prefix units across all (k, m)
     /// arms); `None` = per-(k, m) node-budget grid. Never applies
     /// in certify mode, which needs budget-truncation semantics.
     /// Builder: [`Self::with_optimal_deadline_ms`].
-    pub optimal_deadline_ms: Option<u64>,
+    pub(crate) optimal_deadline_ms: Option<u64>,
     /// Add m = 0 full-level tasks (the only variant that proves a level
     /// exhausted) and run the floor-driven extension. Set internally by the
     /// certified entry points, not via a builder.
-    pub certify: bool,
+    pub(crate) certify: bool,
     /// Wall budget (ms) for the certify extension loop above the window.
     /// Builder: [`Self::with_certify_extra_ms`].
-    pub certify_extra_ms: u64,
+    pub(crate) certify_extra_ms: u64,
     /// Also search e^{iπ/16}·target: one parity class reaches only
     /// circuits with Q-count ≡ d(target) (mod 2) — half the pool. Set
     /// internally by the optimal pipeline, not via a builder.
-    pub odd_parity_branch: bool,
+    pub(crate) odd_parity_branch: bool,
     /// Override the deep-ε sequential-parity schedule: `None` = ε rule
     /// (sequential below 2.5e-8, where each branch saturates the pool
     /// alone); `Some(false)` = concurrent branches (less wall, slightly
     /// higher cost). Builder: [`Self::with_seq_parity`].
-    pub seq_parity: Option<bool>,
+    pub(crate) seq_parity: Option<bool>,
     /// Run enum tasks with an open det-phase filter (all 16 classes):
     /// the closed first-hit defaults exclude classes containing cost
     /// optima. Builder: [`Self::with_optimal_open_dr_filter`].
-    pub optimal_open_dr_filter: bool,
+    pub(crate) optimal_open_dr_filter: bool,
     /// Q-gate cost weight in half-units of a T gate: cost is computed as
     /// integer `2·T + q_cost_x2·Q` so it stays exactly comparable (and
     /// CAS-able). Builder: [`Self::with_q_cost`].
-    pub q_cost_x2: usize,
+    pub(crate) q_cost_x2: usize,
 }
 
 /// Smallest lde where a generic SU(2) target is reachable within ε,
@@ -392,6 +393,11 @@ impl SynthesizerQ {
         }
     }
 
+    /// Approximation precision in diamond distance (set in [`Self::new`]).
+    pub(crate) fn epsilon(&self) -> f64 {
+        self.epsilon
+    }
+
     pub fn with_max_lde(mut self, max_lde: u32) -> Self {
         self.max_lde = max_lde;
         self
@@ -406,7 +412,8 @@ impl SynthesizerQ {
     /// Splits each lattice search at lde_total into a length-m FGKM prefix
     /// `U_L` (enumerated from `L_m^Q`) plus an inner LLL+SE search at
     /// lde_inner = lde_total − k_prefix, then composes. Off by default.
-    pub fn with_prefix_split_m(mut self, m: u32) -> Self {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only tuning knob
+    pub(crate) fn with_prefix_split_m(mut self, m: u32) -> Self {
         self.prefix_split_m = Some(m);
         self
     }
@@ -417,19 +424,9 @@ impl SynthesizerQ {
     /// Completeness caveat: a target's right factorization may not lie
     /// in any single d_R bucket — widening the set or iterating m covers
     /// more cases.
-    pub fn with_inner_det_phase_filter(mut self, allowed_offsets: Vec<u32>) -> Self {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only tuning knob
+    pub(crate) fn with_inner_det_phase_filter(mut self, allowed_offsets: Vec<u32>) -> Self {
         self.inner_det_phase_filter = allowed_offsets;
-        self
-    }
-
-    /// Run a BKZ-β post-pass after LLL inside `find_aligned_lattice_points_with_stop`. β=0
-    /// disables (the default). β=2 is LLL-equivalent — use β≥3 to see
-    /// any improvement. Empirically helpful at deep ε where the
-    /// post-LLL SE region is large. Overrides the `CYCLOSYNTH_BKZ`
-    /// ambient default read in [`Self::new`].
-    pub fn with_bkz(mut self, block_size: u32) -> Self {
-        debug_assert!(block_size == 0 || (3..=8).contains(&block_size));
-        self.bkz_block_size = block_size;
         self
     }
 
@@ -474,13 +471,14 @@ impl SynthesizerQ {
 
     /// Force (`true`) or disable (`false`) sequential parity branches
     /// at deep ε; `None` restores the ε rule. See the field doc.
-    pub fn with_seq_parity(mut self, seq: Option<bool>) -> Self {
+    pub(crate) fn with_seq_parity(mut self, seq: Option<bool>) -> Self {
         self.seq_parity = seq;
         self
     }
 
     /// Set the certify extension wall budget in milliseconds.
-    pub fn with_certify_extra_ms(mut self, ms: u64) -> Self {
+    #[cfg_attr(not(test), allow(dead_code))] // test-only tuning knob
+    pub(crate) fn with_certify_extra_ms(mut self, ms: u64) -> Self {
         self.certify_extra_ms = ms;
         self
     }
@@ -494,7 +492,7 @@ impl SynthesizerQ {
     /// Set the Q-gate cost weight in T-gate units (e.g. `3` for the
     /// `T + 3·Q` model). Stored in exact half-units; weights are
     /// rounded to the nearest 0.5.
-    pub fn with_q_cost(mut self, weight: f64) -> Self {
+    pub(crate) fn with_q_cost(mut self, weight: f64) -> Self {
         debug_assert!(weight > 0.0 && weight.is_finite());
         // f64→usize saturates; weight is a small user knob (debug-asserted finite).
         #[allow(clippy::cast_possible_truncation)]
@@ -510,7 +508,7 @@ impl SynthesizerQ {
     /// Returns `None` if no circuit within `max_lde` achieves diamond
     /// distance < `epsilon`. Returns the FIRST candidate found at the
     /// smallest k that works (not necessarily √T-count optimal).
-    pub fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
+    pub(crate) fn synthesize(&self, target: Mat2) -> Option<SynthResultQ> {
         self.synthesize_with_unverified_levels(target, None)
     }
 
@@ -620,17 +618,16 @@ mod recon;
 
 pub(crate) use brute::*;
 pub(crate) use first_hit::*;
-pub use prefix::{
+pub(crate) use prefix::{
     build_fgkm_prefix_coset_keys, build_fgkm_prefix_gate_counts,
-    build_fgkm_prefix_orbits, build_fgkm_prefix_set,
+    build_fgkm_prefix_set,
 };
 pub(crate) use prefix::{coset_keep_mask, ZETA_COSET_DEDUP};
 #[cfg(test)]
-pub(crate) use prefix::{canonical_key_q, lde0_cliffords_q};
-pub use recon::{
-    det_phase_of, solution_to_u2q, solution_to_u2q_with_det_phase,
-    unitary_to_uv_zeta,
-};
+pub(crate) use prefix::{build_fgkm_prefix_orbits, canonical_key_q, lde0_cliffords_q};
+pub use recon::{det_phase_of, solution_to_u2q_with_det_phase, unitary_to_uv_zeta};
+#[cfg(test)]
+pub(crate) use recon::solution_to_u2q;
 pub use recon::project_det_to_zeta_coset;
 #[cfg(test)]
 pub(crate) use recon::zeta_16_pow;

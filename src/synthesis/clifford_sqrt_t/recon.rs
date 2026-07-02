@@ -8,7 +8,8 @@ use super::*;
 ///
 /// Convention: `sol = [u_1.a, …, u_1.h, u_2.a, …, u_2.h]` with
 /// `U = [[u_1, −u_2*], [u_2, u_1*]] / √(2^k)` (SU(2) form, det = 1).
-pub fn solution_to_u2q(sol: &[i64; 16], k: u32) -> U2Q {
+#[cfg_attr(not(test), allow(dead_code))] // default-phase reconstruction, exercised by tests
+pub(crate) fn solution_to_u2q(sol: &[i64; 16], k: u32) -> U2Q {
     solution_to_u2q_with_det_phase(sol, k, 0)
 }
 

@@ -28,7 +28,8 @@ use crate::rings::MpFloat;
 /// `(k, ε)` (cached via `scratch.q_base_key`); the per-prefix remainder is
 /// just the rank-1 term over the symmetric lower triangle plus the ‖y‖²
 /// and cap-center loops.
-pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[f64; 8], k: u32, eps: f64) {
+#[cfg_attr(not(test), allow(dead_code))] // MPFR oracle, exercised by test probes
+pub(crate) fn build_q_mpfr(scratch: &mut IntScratch, y: &[f64; 8], k: u32, eps: f64) {
     let prec = scratch.prec_q;
     ensure_q_base(scratch, k, eps);
     for i in 0..8 {
@@ -40,7 +41,7 @@ pub fn build_q_mpfr(scratch: &mut IntScratch, y: &[f64; 8], k: u32, eps: f64) {
 /// As [`build_q_mpfr`], but reads the alignment vector `y` directly from MPFR
 /// instead of lifting it from f64. Below the f64 ULP (cap half-width ≈ ε² at
 /// ε≈1e-8) this preserves the precision an exact target column carries.
-pub fn build_q_mpfr_y(scratch: &mut IntScratch, y: &[MpFloat; 8], k: u32, eps: f64) {
+pub(crate) fn build_q_mpfr_y(scratch: &mut IntScratch, y: &[MpFloat; 8], k: u32, eps: f64) {
     ensure_q_base(scratch, k, eps);
     for i in 0..8 {
         scratch.y_rf[i].assign(&y[i]);
@@ -91,7 +92,7 @@ fn finish_build_q(scratch: &mut IntScratch) {
 /// `uv_to_lattice_y` (see `clifford_t`) evaluated in MPFR: the 8D alignment
 /// vector scaled to ‖y‖² = 2^(k-1). Exact for an MPFR `v`, preserving the
 /// precision of an exact target column. `prec` is the working precision.
-pub fn uv_to_lattice_y_mpfr(v: &[MpFloat; 4], k: u32, prec: u32) -> [MpFloat; 8] {
+pub(crate) fn uv_to_lattice_y_mpfr(v: &[MpFloat; 4], k: u32, prec: u32) -> [MpFloat; 8] {
     let r = MpFloat::with_val(prec, 2.0).sqrt().recip(); // 1/√2
     let scaled_sum =
         |a: &MpFloat, b: &MpFloat| MpFloat::with_val(prec, MpFloat::with_val(prec, a + b) * &r);
@@ -180,7 +181,7 @@ fn build_q_base(scratch: &mut IntScratch, k: u32, eps: f64) {
 ///
 /// Strategy: find max |Q_mpfr[i][j]|, choose B = TARGET_BITS − ⌈log₂(max)⌉,
 /// then round each `S·Q[i][j]` to i256 with `S = 2^B`.
-pub fn build_q_int(scratch: &mut IntScratch) {
+pub(crate) fn build_q_int(scratch: &mut IntScratch) {
     // Find max magnitude (lower triangle suffices — Q is symmetric).
     let mut max_log2: i32 = i32::MIN;
     for i in 0..8 {
@@ -219,7 +220,7 @@ pub fn build_q_int(scratch: &mut IntScratch) {
 
 // ─── rug → i256 conversion (used by build_q_int) ─────────────────────────────
 
-pub use crate::synthesis::lattice::common::rug_to_i256_scaled;
+pub(crate) use crate::synthesis::lattice::common::rug_to_i256_scaled;
 
 #[cfg(test)]
 mod mpfr_input_tests {

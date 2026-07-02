@@ -5,9 +5,6 @@
 # `python/cyclosynth/py.typed`, and set `python-source = "python"` under
 # `[tool.maturin]`. Kept at the repo root as documentation until then.
 
-import numpy as np
-import numpy.typing as npt
-
 class SynthResult:
     """Result of a synthesis run (same shape for Clifford+T and Clifford+√T)."""
 
@@ -42,9 +39,6 @@ class Synthesizer:
         deadline_ms: int | None = None,
         seq_parity: bool | None = None,
     ) -> None: ...
-    def synthesize(
-        self, target: npt.NDArray[np.complex128]
-    ) -> SynthResult | None: ...
     def synthesize_u3(
         self,
         theta: float | str,

@@ -37,7 +37,7 @@ static SHELL_FILTER: LazyLock<bool> =
     LazyLock::new(|| std::env::var("CYCLOSYNTH_SHELL_FILTER").as_deref() != Ok("0"));
 
 /// Whether the depth-0 norm-shell prune is enabled (default on; `=0` disables).
-pub fn shell_filter_enabled() -> bool {
+pub(crate) fn shell_filter_enabled() -> bool {
     *SHELL_FILTER
 }
 
@@ -49,14 +49,14 @@ pub fn shell_filter_enabled() -> bool {
 /// whole z[0] range misses the shell — every leaf below would fail the norm
 /// check. Discriminant math is checked i256 (partial norms reach ~2^205); any
 /// overflow yields `None` and the caller falls back to full enumeration.
-pub struct ShellFilter {
+pub(crate) struct ShellFilter {
     basis: IMat8,
     a: i256,
     target_norm: i256,
 }
 
 impl ShellFilter {
-    pub fn new(basis: &IMat8, target_norm: i128) -> Self {
+    pub(crate) fn new(basis: &IMat8, target_norm: i128) -> Self {
         let mut a = i256::from_i64(0);
         for j in 0..8 {
             let b0 = i256::from_i64(basis[0][j]);
@@ -130,12 +130,12 @@ fn isqrt_i256(mut n: i256) -> i256 {
 /// MPFR precision used by SE. 128 bits gives enough margin for SE's
 /// 10⁻⁹ bound-check tolerance at all supported ε; f64-only SE breaks at
 /// ε ≤ 1e-5 from squared-norm cancellation noise.
-pub const SE_PREC: u32 = 128;
+pub(crate) const SE_PREC: u32 = 128;
 
 /// Convert an arbitrary-precision `MpFloat` (built at scratch.prec_q for
 /// post-LLL Cholesky) to the SE working precision (128 bits). Single
 /// allocation, single MPFR conversion.
-pub fn rfloat_to_se(r: &MpFloat) -> MpFloat {
+pub(crate) fn rfloat_to_se(r: &MpFloat) -> MpFloat {
     MpFloat::with_val(SE_PREC, r)
 }
 
@@ -195,7 +195,7 @@ impl SharedTemps {
 /// `budget_exhausted` may also be set from inside `callback` (the leaf-cap
 /// path) to abort the walk without reporting a solution.
 #[allow(clippy::too_many_arguments)]
-pub fn schnorr_euchner<F>(
+pub(crate) fn schnorr_euchner<F>(
     r_chol: &[[MpFloat; 8]; 8],
     z_c: &[MpFloat; 8],
     bound: &MpFloat,
@@ -444,7 +444,7 @@ fn recurse<F>(
 /// ~2^33, so intermediate products reach ~2^102; i128 accumulation is exact
 /// and the final `x` fits i64 (Theorem 2's L³-reduced-basis bound + SE bound).
 #[inline]
-pub fn reconstruct_x(b_lll: &IMat8, z: &[i128; 8]) -> [i64; 8] {
+pub(crate) fn reconstruct_x(b_lll: &IMat8, z: &[i128; 8]) -> [i64; 8] {
     let mut x = [0i128; 8];
     for i in 0..8 {
         for j in 0..8 {
@@ -473,7 +473,7 @@ pub fn reconstruct_x(b_lll: &IMat8, z: &[i128; 8]) -> [i64; 8] {
 /// Returns `i128` to avoid silent overflow at deep ε where x_i can reach
 /// ~2^41 and pairwise products hit ~2^82.
 #[inline]
-pub fn bilinear_b(x: &[i64; 8]) -> i128 {
+pub(crate) fn bilinear_b(x: &[i64; 8]) -> i128 {
     let (a1, b1, c1, d1) = (i128::from(x[0]), i128::from(x[1]), i128::from(x[2]), i128::from(x[3]));
     let (a2, b2, c2, d2) = (i128::from(x[4]), i128::from(x[5]), i128::from(x[6]), i128::from(x[7]));
     a1 * b1 - a1 * d1 + b1 * c1 + c1 * d1 + a2 * b2 - a2 * d2 + b2 * c2 + c2 * d2

@@ -21,7 +21,7 @@ pub type Mat2 = [[Complex<f64>; 2]; 2];
 
 /// Project a 2×2 unitary onto SU(2): `U' = U / √det(U)`, so `det(U') = 1`
 /// (global phase is unobservable). The guard handles degenerate `det ≈ 0`.
-pub fn to_su2(u: &Mat2) -> Mat2 {
+pub(crate) fn to_su2(u: &Mat2) -> Mat2 {
     let det = u[0][0] * u[1][1] - u[0][1] * u[1][0];
     let s = det.sqrt();
     if s.norm() < 1e-12 {

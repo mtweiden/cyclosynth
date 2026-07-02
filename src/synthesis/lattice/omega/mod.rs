@@ -17,15 +17,16 @@
 //! the pre-allocated MPFR/i256 buffers reused across calls.
 
 pub mod brute;
-pub mod cholesky_lu;
-pub mod integer;
-pub mod lll;
-pub mod q_metric;
+pub(crate) mod cholesky_lu;
+pub(crate) mod integer;
+pub(crate) mod lll;
+pub(crate) mod q_metric;
 pub mod scratch;
-pub mod se;
+pub(crate) mod se;
 
 
-pub use integer::{find_aligned_lattice_points, find_aligned_lattice_points_mpfr};
+pub use integer::find_aligned_lattice_points;
+pub(crate) use integer::find_aligned_lattice_points_mpfr;
 pub use scratch::IntScratch;
 
 #[cfg(test)]

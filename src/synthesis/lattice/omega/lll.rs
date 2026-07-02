@@ -13,13 +13,15 @@ use crate::synthesis::lattice::common;
 
 // ─── L²-LLL parameters & result type — in lattice::common ────────────────────
 
-pub use crate::synthesis::lattice::common::{
-    L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
+pub(crate) use crate::synthesis::lattice::common::{
+    L2_DELTA_BAR, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
 };
+#[cfg(test)]
+pub(crate) use crate::synthesis::lattice::common::{L2_DELTA, L2_ETA};
 
 // ─── i256 → f64 conversion (used by CFA on the exact Gram) ───────────────────
 
-pub use crate::synthesis::lattice::common::i256_to_f64;
+pub(crate) use crate::synthesis::lattice::common::i256_to_f64;
 
 // ─── Cholesky Factorization Algorithm (Figure 4) ─────────────────────────────
 
@@ -28,7 +30,7 @@ pub use crate::synthesis::lattice::common::i256_to_f64;
 /// exact Gram via `i256_to_f64`. Assumes rows 0..i are already filled —
 /// the L² main loop calls this at each new κ.
 #[inline]
-pub fn cfa_row(scratch: &mut IntScratch, i: usize) {
+pub(crate) fn cfa_row(scratch: &mut IntScratch, i: usize) {
     for j in 0..i {
         let mut r = i256_to_f64(scratch.gram[i][j]);
         for k in 0..j {
@@ -47,7 +49,8 @@ pub fn cfa_row(scratch: &mut IntScratch, i: usize) {
 }
 
 /// Run CFA for all 8 rows in order.
-pub fn cfa_full(scratch: &mut IntScratch) {
+#[cfg_attr(not(test), allow(dead_code))] // CFA reference, exercised by tests
+pub(crate) fn cfa_full(scratch: &mut IntScratch) {
     for i in 0..8 {
         cfa_row(scratch, i);
     }
@@ -69,7 +72,7 @@ pub fn cfa_full(scratch: &mut IntScratch) {
 /// Returns a value < MAX_LAZY_PASSES on convergence (the pass index) and
 /// MAX_LAZY_PASSES on non-convergence; callers detect the latter by `==`.
 /// The cap never fires in practice; it guards pathological inputs.
-pub fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
+pub(crate) fn lazy_size_reduce(scratch: &mut IntScratch, kappa: usize) -> usize {
     let mut x = [0i64; 8];
 
     for pass in 0..MAX_LAZY_PASSES {
@@ -162,7 +165,7 @@ fn basis_insert(scratch: &mut IntScratch, kappa_orig: usize, kappa_insert: usize
 /// entries fit ≤ 2^216 (40-bit margin to i256::MAX). Transient B-growth
 /// during deep-ε swaps can breach the 2^GRAM_OVERFLOW_THRESHOLD_BITS guard.
 #[inline]
-pub fn compute_gram_full(scratch: &mut IntScratch) -> bool {
+pub(crate) fn compute_gram_full(scratch: &mut IntScratch) -> bool {
     common::compute_gram_full(
         &mut scratch.gram,
         &scratch.basis,
@@ -198,7 +201,7 @@ fn gram_overflow_check(scratch: &IntScratch) -> bool {
 /// invariant on the prefix is what makes the f64 GS coefficients accurate
 /// enough; running CFA on an unreduced basis would suffer catastrophic
 /// cancellation at deep ε.
-pub fn lll_l2(scratch: &mut IntScratch) -> LllResult {
+pub(crate) fn lll_l2(scratch: &mut IntScratch) -> LllResult {
     lll_l2_seeded(scratch, None).0
 }
 
@@ -207,7 +210,7 @@ pub fn lll_l2(scratch: &mut IntScratch) -> LllResult {
 /// metric at the same `(k, ε)`): any unimodular basis of ℤ⁸ reduces to the
 /// SAME lattice, so downstream (det ±1, Cholesky, LU, SE) is unaffected.
 /// Returns the LLL iteration count.
-pub fn lll_l2_seeded(
+pub(crate) fn lll_l2_seeded(
     scratch: &mut IntScratch,
     seed: Option<&super::scratch::IMat8>,
 ) -> (LllResult, usize) {

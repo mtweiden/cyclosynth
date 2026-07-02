@@ -35,9 +35,11 @@ use crate::synthesis::lattice::common;
 
 // ─── L²-LLL parameters & result type — defined in lattice::common ────────────
 
-pub use crate::synthesis::lattice::common::{
-    L2_DELTA, L2_DELTA_BAR, L2_ETA, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
+pub(crate) use crate::synthesis::lattice::common::{
+    L2_DELTA_BAR, L2_ETA_BAR, LllResult, MAX_LAZY_PASSES,
 };
+#[cfg(test)]
+pub(crate) use crate::synthesis::lattice::common::{L2_DELTA, L2_ETA};
 
 
 // ─── i256 → MPFR conversion ──────────────────────────────────────────────────
@@ -58,7 +60,7 @@ pub(super) fn gram_overflow_check(scratch: &IntScratch16) -> bool {
 /// Row-at-a-time CFA (Figure 4 of Nguyen-Stehlé 2009) at MPFR precision.
 /// Computes `r_bar[i][*]`, `mu_bar[i][*]`, `s_bar[i][*]` given rows 0..i are
 /// already populated. Reads gram entries via `i256_to_rfloat`.
-pub fn cfa_row(scratch: &mut IntScratch16, i: usize) {
+pub(crate) fn cfa_row(scratch: &mut IntScratch16, i: usize) {
     // Off-diagonal entries: j = 0..i-1
     for j in 0..i {
         // r̄_{i,j} = <b_i, b_j> from i256 Gram.
@@ -92,7 +94,8 @@ pub fn cfa_row(scratch: &mut IntScratch16, i: usize) {
 }
 
 /// Run CFA for ALL rows 0..16.
-pub fn cfa_full(scratch: &mut IntScratch16) {
+#[cfg_attr(not(test), allow(dead_code))] // CFA reference, exercised by tests
+pub(crate) fn cfa_full(scratch: &mut IntScratch16) {
     for i in 0..16 {
         cfa_row(scratch, i);
     }
@@ -130,7 +133,7 @@ pub(super) fn basis_insert(scratch: &mut IntScratch16, kappa_orig: usize, kappa_
 /// `scratch.temp_bq`). Returns `false` if any Gram entry exceeds
 /// `2^GRAM_OVERFLOW_THRESHOLD_BITS`.
 #[inline]
-pub fn compute_gram_full(scratch: &mut IntScratch16) -> bool {
+pub(crate) fn compute_gram_full(scratch: &mut IntScratch16) -> bool {
     common::compute_gram_full(
         &mut scratch.gram,
         &scratch.basis,
@@ -148,7 +151,7 @@ pub fn compute_gram_full(scratch: &mut IntScratch16) -> bool {
 /// computes CFA for row κ, predicts X_i = round(μ̄_{κ,i}), updates μ̄_{κ,j}
 /// predictively, then applies the basis transform `b_κ -= Σ X_i b_i` and
 /// updates the i256 Gram. Repeats until convergence.
-pub fn lazy_size_reduce(scratch: &mut IntScratch16, kappa: usize) -> usize {
+pub(crate) fn lazy_size_reduce(scratch: &mut IntScratch16, kappa: usize) -> usize {
     let mut x = [0i64; 16];
 
     for pass in 0..MAX_LAZY_PASSES {
@@ -216,7 +219,7 @@ pub fn lazy_size_reduce(scratch: &mut IntScratch16, kappa: usize) -> usize {
 /// **Precondition:** `scratch.basis` is the identity, and `scratch.q_int`
 /// holds the integer-scaled Q. The caller (or [`run_lll`]) is responsible
 /// for invoking [`compute_gram_full`] before this function.
-pub fn lll_l2(scratch: &mut IntScratch16) -> LllResult {
+pub(crate) fn lll_l2(scratch: &mut IntScratch16) -> LllResult {
     let max_iter = common::MAX_LLL_ITERS_16D;
     let mut iters: usize = 0;
 
@@ -284,7 +287,7 @@ pub fn lll_l2(scratch: &mut IntScratch16) -> LllResult {
 
 /// Convenience: reset the basis to identity, prepare Gram from Q_int,
 /// then run LLL.
-pub fn run_lll(scratch: &mut IntScratch16) -> LllResult {
+pub(crate) fn run_lll(scratch: &mut IntScratch16) -> LllResult {
     scratch.reset_basis();
     if !compute_gram_full(scratch) {
         return LllResult::GramOverflow;
