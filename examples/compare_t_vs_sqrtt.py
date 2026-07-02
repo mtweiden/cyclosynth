@@ -26,7 +26,7 @@ def haar_u3(rng):
 
 
 def main():
-    epsilon, n_targets = 1e-7, 10
+    epsilon, n_targets = 1e-8, 10
     synth_t = cyclosynth.Synthesizer(epsilon)
     synth_q = cyclosynth.Synthesizer(epsilon, sqrt_t=True, optimize_cost=True)
 
