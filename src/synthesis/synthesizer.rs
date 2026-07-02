@@ -168,6 +168,20 @@ impl Synthesizer {
         self.synthesize_zyz(phi, theta, lam)
     }
 
+    /// Synthesize a `U1(lambda)` gate (qiskit convention), ≅ `Rz(lambda)` up
+    /// to global phase.
+    pub fn synthesize_u1(&self, lam: Angle) -> Option<SynthResult> {
+        // U1(λ) ≡ ZYZ(α=λ, β=0, γ=0); β/γ exactly zero (PiRatio, not Rad)
+        self.synthesize_zyz(lam, Angle::PiRatio(0, 1), Angle::PiRatio(0, 1))
+    }
+
+    /// Synthesize a `U2(phi, lambda)` gate (qiskit convention),
+    /// `U2(φ,λ) = U3(π/2, φ, λ)`.
+    pub fn synthesize_u2(&self, phi: Angle, lam: Angle) -> Option<SynthResult> {
+        // U2(φ,λ) ≡ ZYZ(α=φ, β=π/2, γ=λ); β exactly π/2 (PiRatio, not Rad)
+        self.synthesize_zyz(phi, Angle::PiRatio(1, 2), lam)
+    }
+
     /// Synthesize with a higher-precision target column `exact_col` — the
     /// √det-normalized first column `[Re u00, Im u00, Re u10, Im u10]` of the
     /// SU(2) target (e.g. from exact rational-π angles via
@@ -348,12 +362,16 @@ impl PySynthesizer {
     /// `lde_window`, `deadline_ms`, `seq_parity`) are **Clifford+√T-only**
     /// cost-optimizer tuning and raise `ValueError` if passed with
     /// `sqrt_t=False`.
+    ///
+    /// ε-range policy (see [`check_epsilon_policy`]): `sqrt_t=True` raises
+    /// `ValueError` for ε < 1e-8; `sqrt_t=False` warns for ε < 1e-10.
     #[new]
     #[pyo3(signature = (epsilon, *, sqrt_t=false, max_lde=None, min_lde=None,
                         optimize_cost=None, q_cost=None, lde_window=None,
                         deadline_ms=None, seq_parity=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
+        py: Python<'_>,
         epsilon: f64,
         sqrt_t: bool,
         max_lde: Option<u32>,
@@ -364,6 +382,7 @@ impl PySynthesizer {
         deadline_ms: Option<u64>,
         seq_parity: Option<bool>,
     ) -> PyResult<Self> {
+        check_epsilon_policy(py, epsilon, sqrt_t)?;
         // The cost-optimizer kwargs only affect the √T backend; silently
         // ignoring them for Clifford+T is a footgun, so reject up front.
         if !sqrt_t
@@ -447,6 +466,26 @@ impl PySynthesizer {
         )))
     }
 
+    /// Synthesize a `U1(lambda)` gate (qiskit convention) — a phase gate,
+    /// ≅ `Rz(lambda)` up to global phase. The angle accepts the same
+    /// float/`pi`-string forms as [`Self::synthesize_u3`].
+    #[pyo3(signature = (lam))]
+    fn synthesize_u1(&self, lam: &Bound<'_, PyAny>) -> PyResult<Option<PySynthResult>> {
+        Ok(self.wrap(self.inner.synthesize_u1(parse_angle(lam)?)))
+    }
+
+    /// Synthesize a `U2(phi, lambda)` gate (qiskit convention),
+    /// `U2(phi, lambda) = U3(pi/2, phi, lambda)`. Each angle accepts the same
+    /// float/`pi`-string forms as [`Self::synthesize_u3`].
+    #[pyo3(signature = (phi, lam))]
+    fn synthesize_u2(
+        &self,
+        phi: &Bound<'_, PyAny>,
+        lam: &Bound<'_, PyAny>,
+    ) -> PyResult<Option<PySynthResult>> {
+        Ok(self.wrap(self.inner.synthesize_u2(parse_angle(phi)?, parse_angle(lam)?)))
+    }
+
     #[getter]
     fn epsilon(&self) -> f64 {
         self.inner.epsilon()
@@ -505,4 +544,116 @@ fn parse_angle(obj: &Bound<'_, PyAny>) -> PyResult<Angle> {
         PyErr::new::<pyo3::exceptions::PyTypeError, _>("angle must be a float or string")
     })?;
     parse_angle_str(&s).map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
+}
+
+/// ε-range policy of the Python API (the Rust core is unrestricted). Enforced
+/// at every Python entry point: `Synthesizer.__init__` and the module-level
+/// `synthesize_u1/u2/u3` functions.
+///
+/// - Clifford+√T (`sqrt_t=True`): ε < 1e-8 raises `ValueError` — the Z[ζ16]
+///   backend's f64 SE walk loses the cap below that (cap half-width ε² hits
+///   the f64 ULP; see the ε=1.5e-8 cliff analysis).
+/// - Clifford+T (`sqrt_t=False`): ε < 1e-10 emits a `UserWarning` and
+///   proceeds — below the oracle-validated range, runtime grows steeply and
+///   T-optimality is unverified.
+#[cfg(feature = "python")]
+fn check_epsilon_policy(py: Python<'_>, epsilon: f64, sqrt_t: bool) -> PyResult<()> {
+    if sqrt_t {
+        if epsilon < 1e-8 {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Clifford+√T synthesis is supported for epsilon >= 1e-8 (the \
+                 Z[ζ16] backend's validated precision range); requested \
+                 {epsilon:e}. Use sqrt_t=False (Clifford+T) for deeper epsilon."
+            )));
+        }
+    } else if epsilon < 1e-10 {
+        PyErr::warn_bound(
+            py,
+            &py.get_type_bound::<pyo3::exceptions::PyUserWarning>(),
+            &format!(
+                "epsilon {epsilon:e} is below the oracle-validated range \
+                 (1e-10); runtimes grow steeply (~10x per decade; \
+                 minutes-scale tails at 1e-12) and T-optimality is unverified \
+                 at this depth."
+            ),
+            2,
+        )?;
+    }
+    Ok(())
+}
+
+/// One-shot driver behind the module-level functions: policy check, build a
+/// default synthesizer, run `f` on it, wrap for Python. All target/column
+/// construction stays inside the library `Synthesizer` angle adapters.
+#[cfg(feature = "python")]
+fn synthesize_oneshot(
+    py: Python<'_>,
+    epsilon: f64,
+    sqrt_t: bool,
+    f: impl FnOnce(&Synthesizer) -> Option<SynthResult>,
+) -> PyResult<Option<PySynthResult>> {
+    check_epsilon_policy(py, epsilon, sqrt_t)?;
+    let synth = Synthesizer::new(epsilon, sqrt_t);
+    let q_weight = synth.q_weight();
+    Ok(f(&synth).map(|r| PySynthResult {
+        gates: r.gates,
+        lde: r.lde,
+        distance: r.distance,
+        q_weight,
+    }))
+}
+
+/// Synthesize a `U1(lam)` gate (qiskit convention; ≅ `Rz(lam)` up to global
+/// phase) to diamond distance `epsilon` with default settings.
+///
+/// The angle is a float (radians) or an exact-π string like `"pi/64"`;
+/// `sqrt_t=True` selects Clifford+√T (requires ε ≥ 1e-8). Returns `None` if
+/// no circuit was found. For repeated calls or tuning knobs, use
+/// [`PySynthesizer`] (`cyclosynth.Synthesizer`).
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (lam, epsilon, *, sqrt_t=false))]
+pub(crate) fn synthesize_u1(
+    py: Python<'_>,
+    lam: &Bound<'_, PyAny>,
+    epsilon: f64,
+    sqrt_t: bool,
+) -> PyResult<Option<PySynthResult>> {
+    let lam = parse_angle(lam)?;
+    synthesize_oneshot(py, epsilon, sqrt_t, |s| s.synthesize_u1(lam))
+}
+
+/// Synthesize a `U2(phi, lam)` gate (qiskit convention;
+/// `U2(φ,λ) = U3(π/2, φ, λ)`) to diamond distance `epsilon` with default
+/// settings. Same angle forms / `sqrt_t` semantics as [`synthesize_u1`].
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (phi, lam, epsilon, *, sqrt_t=false))]
+pub(crate) fn synthesize_u2(
+    py: Python<'_>,
+    phi: &Bound<'_, PyAny>,
+    lam: &Bound<'_, PyAny>,
+    epsilon: f64,
+    sqrt_t: bool,
+) -> PyResult<Option<PySynthResult>> {
+    let (phi, lam) = (parse_angle(phi)?, parse_angle(lam)?);
+    synthesize_oneshot(py, epsilon, sqrt_t, |s| s.synthesize_u2(phi, lam))
+}
+
+/// Synthesize a `U3(theta, phi, lam)` gate (qiskit/bqskit convention) to
+/// diamond distance `epsilon` with default settings. Same angle forms /
+/// `sqrt_t` semantics as [`synthesize_u1`].
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (theta, phi, lam, epsilon, *, sqrt_t=false))]
+pub(crate) fn synthesize_u3(
+    py: Python<'_>,
+    theta: &Bound<'_, PyAny>,
+    phi: &Bound<'_, PyAny>,
+    lam: &Bound<'_, PyAny>,
+    epsilon: f64,
+    sqrt_t: bool,
+) -> PyResult<Option<PySynthResult>> {
+    let (theta, phi, lam) = (parse_angle(theta)?, parse_angle(phi)?, parse_angle(lam)?);
+    synthesize_oneshot(py, epsilon, sqrt_t, |s| s.synthesize_u3(theta, phi, lam))
 }

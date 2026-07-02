@@ -29,7 +29,7 @@ maturin develop --release
   The search metric is severely ill-conditioned — its condition number grows like `ε⁻⁴` (≈ 2¹⁰⁷ at `ε = 1e-8`) — so hardware `f64` loses too many bits; MPFR keeps the LLL reduction and Schnorr-Euchner enumeration faithful at deep `ε`.
 - **gmp** (arbitrary-precision integers) backs the exact integer Gram arithmetic when the fixed-width `i256` path would overflow at large lde, and is also the foundation MPFR itself is built on.
 
-(`examples/verify.py` additionally needs `pip install mpmath` for its high-precision cross-check.)
+(The comparison examples additionally need `pip install numpy`.)
 
 ## Usage (Python)
 
@@ -38,10 +38,10 @@ import cyclosynth
 
 # Targets are given by their rotation ANGLES, not a matrix: deep-ε synthesis
 # needs more than f64 precision, which only the angles carry (cos/sin are
-# evaluated to the search precision). The target here is Rz(α)·Ry(β)·Rz(γ).
-synth = cyclosynth.Synthesizer(epsilon=1e-5)
-result = synth.synthesize_zyz(4.863069, 2.757718, 5.394728)
-# angles: floats (radians) or exact 'pi'-strings; synthesize_u3(θ, φ, λ) also available
+# evaluated to the search precision). Angles are floats (radians) or exact
+# 'pi'-strings like "pi/64".
+result = cyclosynth.synthesize_u3(1.047198, 2.757718, 5.394728, epsilon=1e-5)
+result = cyclosynth.synthesize_u1("pi/64", 1e-10)   # U1(λ) ≅ Rz(λ); exact-π string
 
 if result:                        # None if no circuit was found within epsilon
     print(result.gates)           # gate string over {H, S, s, T, t, X, Y, Z}
@@ -50,8 +50,20 @@ if result:                        # None if no circuit was found within epsilon
     print(result.distance)        # diamond distance, < epsilon
 ```
 
+`synthesize_u1(lam, ε)`, `synthesize_u2(phi, lam, ε)` (= `U3(π/2, φ, λ)`), and `synthesize_u3(theta, phi, lam, ε)` cover the qiskit U-gate family; each takes `sqrt_t=True` to synthesize over Clifford+√T instead of Clifford+T.
 The composition convention is *leftmost gate is the leftmost matrix factor*: for `"ABC"` the unitary is `A·B·C`.
-`examples/verify.py` round-trips a gate string back to a unitary and re-checks the distance.
+
+Supported `epsilon` ranges: Clifford+√T (`sqrt_t=True`) requires `ε ≥ 1e-8` (`ValueError` below — the Z[ζ16] backend's validated precision range); Clifford+T accepts any `ε` but warns below `1e-10` (outside the oracle-validated range; runtimes grow ~10× per decade).
+
+### Advanced: the `Synthesizer` class
+
+For repeated calls (one reusable instance), ZYZ Euler-angle targets, or the tuning knobs below, construct a `Synthesizer` directly:
+
+```python
+synth = cyclosynth.Synthesizer(epsilon=1e-5)          # sqrt_t=True for Clifford+√T
+result = synth.synthesize_zyz(4.863069, 2.757718, 5.394728)   # Rz(α)·Ry(β)·Rz(γ)
+# synthesize_u1 / synthesize_u2 / synthesize_u3 also available as methods
+```
 
 ### Choosing Clifford+√T settings
 
@@ -83,11 +95,8 @@ After `maturin develop --release`, the [`examples/`](examples/) directory shows 
 
 | example | what it does |
 |---|---|
-| [`synth.py`](examples/synth.py) | Synthesize a `U3(α, β, γ)` target with both Clifford+T and Clifford+√T; read the result. |
-| [`choosing_epsilon.py`](examples/choosing_epsilon.py) | Sweep ε to see the accuracy/T-count trade-off. |
-| [`optimize_cost.py`](examples/optimize_cost.py) | The Clifford+√T `optimize_cost` knob: minimize `T + 3·Q`. |
-| [`compare_t_vs_sqrtt.py`](examples/compare_t_vs_sqrtt.py) | Clifford+T vs Clifford+√T cost (`T + 3·Q`) on the same targets. |
-| [`verify.py`](examples/verify.py) | Verification harness: independently re-check synthesized circuits at high precision (needs `mpmath`; runs 100 trials, slow). |
+| [`compare_t_vs_sqrtt.py`](examples/compare_t_vs_sqrtt.py) | Clifford+T vs Clifford+√T cost (`T + 3·Q`) on the same Haar-random targets. |
+| [`compare_t_vs_sqrtt_gates.py`](examples/compare_t_vs_sqrtt_gates.py) | Interactive: enter U3 angles, see both gate sets' circuits side by side. |
 
 ## Usage (Rust)
 

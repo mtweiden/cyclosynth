@@ -5,6 +5,52 @@
 # `python/cyclosynth/py.typed`, and set `python-source = "python"` under
 # `[tool.maturin]`. Kept at the repo root as documentation until then.
 
+def synthesize_u1(
+    lam: float | str,
+    epsilon: float,
+    *,
+    sqrt_t: bool = False,
+) -> SynthResult | None:
+    """Synthesize a ``U1(lam)`` gate (qiskit convention; ``Rz(lam)`` up to
+    global phase) to diamond distance ``epsilon`` with default settings.
+
+    The angle is a float in radians or an exact-π string like ``"pi/64"``;
+    ``sqrt_t=True`` selects Clifford+√T (requires ``epsilon >= 1e-8``, else
+    ``ValueError``). With ``sqrt_t=False``, ``epsilon < 1e-10`` emits a
+    ``UserWarning`` (below the oracle-validated range) and proceeds. Returns
+    ``None`` if no circuit was found. For repeated calls or tuning knobs, use
+    :class:`Synthesizer`.
+    """
+    ...
+
+def synthesize_u2(
+    phi: float | str,
+    lam: float | str,
+    epsilon: float,
+    *,
+    sqrt_t: bool = False,
+) -> SynthResult | None:
+    """Synthesize a ``U2(phi, lam)`` gate (qiskit convention;
+    ``U2(φ,λ) = U3(π/2, φ, λ)``) to diamond distance ``epsilon`` with default
+    settings. Same angle forms / ``sqrt_t`` semantics as
+    :func:`synthesize_u1`.
+    """
+    ...
+
+def synthesize_u3(
+    theta: float | str,
+    phi: float | str,
+    lam: float | str,
+    epsilon: float,
+    *,
+    sqrt_t: bool = False,
+) -> SynthResult | None:
+    """Synthesize a ``U3(theta, phi, lam)`` gate (qiskit/bqskit convention)
+    to diamond distance ``epsilon`` with default settings. Same angle forms /
+    ``sqrt_t`` semantics as :func:`synthesize_u1`.
+    """
+    ...
+
 class SynthResult:
     """Result of a synthesis run (same shape for Clifford+T and Clifford+√T)."""
 
@@ -38,7 +84,12 @@ class Synthesizer:
         lde_window: int | None = None,
         deadline_ms: int | None = None,
         seq_parity: bool | None = None,
-    ) -> None: ...
+    ) -> None:
+        """``sqrt_t=True`` requires ``epsilon >= 1e-8`` (``ValueError``
+        below); ``sqrt_t=False`` emits a ``UserWarning`` for
+        ``epsilon < 1e-10`` (below the oracle-validated range).
+        """
+        ...
     def synthesize_u3(
         self,
         theta: float | str,
@@ -63,6 +114,22 @@ class Synthesizer:
     ) -> SynthResult | None:
         """Synthesize ``Rz(alpha)·Ry(beta)·Rz(gamma)`` from ZYZ Euler angles.
 
+        Each angle accepts the same float / ``pi``-string forms as
+        :meth:`synthesize_u3`.
+        """
+        ...
+    def synthesize_u1(self, lam: float | str) -> SynthResult | None:
+        """Synthesize a ``U1(lam)`` gate (``Rz(lam)`` up to global phase).
+        The angle accepts the same float / ``pi``-string forms as
+        :meth:`synthesize_u3`.
+        """
+        ...
+    def synthesize_u2(
+        self,
+        phi: float | str,
+        lam: float | str,
+    ) -> SynthResult | None:
+        """Synthesize a ``U2(phi, lam)`` gate (``U2(φ,λ) = U3(π/2, φ, λ)``).
         Each angle accepts the same float / ``pi``-string forms as
         :meth:`synthesize_u3`.
         """

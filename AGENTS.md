@@ -30,6 +30,10 @@ Python:
 
 ```python
 import cyclosynth
+# One-shot: the qiskit U-gate family (sqrt_t=True selects Clifford+√T).
+result = cyclosynth.synthesize_u1("pi/64", 1e-10)    # also synthesize_u2(φ, λ, ε),
+                                                     # synthesize_u3(θ, φ, λ, ε)
+# Reusable instance + ZYZ Euler targets + tuning knobs:
 synth  = cyclosynth.Synthesizer(1e-5, sqrt_t=True)   # omit sqrt_t for Clifford+T
 # Targets are specified by ANGLES, not matrices — the input must carry more
 # than f64 precision for deep ε (cos/sin are evaluated to the search precision).
@@ -42,8 +46,10 @@ if result:                                           # None if no circuit within
 ```
 
 Every returned circuit satisfies `distance < epsilon` (diamond distance).
-Runnable examples are in `examples/` (`synth.py`, `compare_t_vs_sqrtt.py`,
-`optimize_cost.py`, `choosing_epsilon.py`, `verify.py`).
+ε-range policy (Python layer only): `sqrt_t=True` raises `ValueError` below
+ε = 1e-8; `sqrt_t=False` warns below ε = 1e-10 and proceeds.
+Runnable examples are in `examples/` (`compare_t_vs_sqrtt.py`,
+`compare_t_vs_sqrtt_gates.py`).
 
 Rust: `synthesis::Synthesizer::new(epsilon, sqrt_t)`, then `synthesize_with_exact_col`
 (deep-ε, exact MPFR column from angles) or `synthesize(target)` (f64 matrix,

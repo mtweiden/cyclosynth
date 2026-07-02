@@ -14,11 +14,15 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 #[pymodule]
 fn cyclosynth(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // The public surface is exactly the synthesizer and its result. The ring /
-    // U2 / decomposer types are internal plumbing and are intentionally not
+    // The public surface is the synthesizer, its result, and the one-shot
+    // module-level synthesize_u1/u2/u3 conveniences. The ring / U2 /
+    // decomposer types are internal plumbing and are intentionally not
     // exported (they have no standalone Python use).
     m.add_class::<synthesis::synthesizer::PySynthesizer>()?;
     m.add_class::<synthesis::synthesizer::PySynthResult>()?;
+    m.add_function(wrap_pyfunction!(synthesis::synthesizer::synthesize_u1, m)?)?;
+    m.add_function(wrap_pyfunction!(synthesis::synthesizer::synthesize_u2, m)?)?;
+    m.add_function(wrap_pyfunction!(synthesis::synthesizer::synthesize_u3, m)?)?;
     // D&C / inner-cap diagnostics (trace-only).
     #[cfg(feature = "trace")]
     {
