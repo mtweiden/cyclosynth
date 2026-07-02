@@ -29,6 +29,7 @@
 use crate::matrix::u2::U2Q;
 use crate::rings::ZZeta;
 use crate::rings::types::Int;
+use crate::synthesis::angle::{angle_target, Angle, DEFAULT_COL_PREC};
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2q_float, Mat2};
@@ -513,6 +514,23 @@ impl SynthesizerQ {
         self.synthesize_with_unverified_levels(target, None)
     }
 
+    /// Synthesize the SU(2) rotation `Rz(alpha)·Ry(beta)·Rz(gamma)` from its
+    /// ZYZ Euler angles — the safe entry point. Builds the target via
+    /// [`crate::synthesis::angle::angle_target`] (which pairs it with the
+    /// exact MPFR column and checks the convention in debug builds); the √T
+    /// backend currently searches from the f64 target only, so the column is
+    /// dropped here.
+    pub fn synthesize_zyz(&self, alpha: Angle, beta: Angle, gamma: Angle) -> Option<SynthResultQ> {
+        let (target, _col) = angle_target(alpha, beta, gamma, DEFAULT_COL_PREC);
+        self.synthesize(target)
+    }
+
+    /// Synthesize a `U3(theta, phi, lambda)` gate (qiskit/bqskit convention)
+    /// from its angles; the global phase is unobservable and dropped.
+    pub fn synthesize_u3(&self, theta: Angle, phi: Angle, lam: Angle) -> Option<SynthResultQ> {
+        // U3(θ,φ,λ) ≡ ZYZ(α=φ, β=θ, γ=λ)
+        self.synthesize_zyz(phi, theta, lam)
+    }
 }
 
 /// One in-flight walk the incumbent watcher may kill: a static cost

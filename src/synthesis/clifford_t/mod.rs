@@ -42,6 +42,7 @@ use crate::synthesis::cliffords::{CLIFFORD_LDE0_IDX, CLIFFORD_TABLE_T};
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2t_float, to_su2, Mat2};
 use crate::rings::MpFloat;
+use crate::synthesis::angle::{angle_target, Angle, DEFAULT_COL_PREC};
 use crate::synthesis::lattice::omega::brute::{
     brute_aligned_search, apply_t_dag_to_uv, apply_t_dag_to_uv_mpfr, apply_t_to_uv,
     apply_u2t_dag_to_uv, apply_u2t_dag_to_uv_mpfr, compute_align_vec, normalize4,
@@ -715,11 +716,30 @@ impl SynthesizerT {
         self.run(target, None)
     }
 
+    /// Synthesize the SU(2) rotation `Rz(alpha)·Ry(beta)·Rz(gamma)` from its
+    /// ZYZ Euler angles. Builds the f64 target and the exact MPFR column from
+    /// the SAME angles (via [`crate::synthesis::angle::angle_target`]) — the
+    /// safe entry point; see [`Self::synthesize_with_exact_col`]'s caveat.
+    pub fn synthesize_zyz(&self, alpha: Angle, beta: Angle, gamma: Angle) -> Option<SynthResultT> {
+        let (target, col) = angle_target(alpha, beta, gamma, DEFAULT_COL_PREC);
+        self.synthesize_with_exact_col(target, &col)
+    }
+
+    /// Synthesize a `U3(theta, phi, lambda)` gate (qiskit/bqskit convention)
+    /// from its angles; the global phase is unobservable and dropped.
+    pub fn synthesize_u3(&self, theta: Angle, phi: Angle, lam: Angle) -> Option<SynthResultT> {
+        // U3(θ,φ,λ) ≡ ZYZ(α=φ, β=θ, γ=λ)
+        self.synthesize_zyz(phi, theta, lam)
+    }
+
     /// Synthesize with a higher-precision target column `exact_col` (the
     /// √det-normalized first column of the SU(2) target, e.g. from exact
     /// rational-π angles). At deep ε the search aligns to this MPFR column
     /// instead of the f64 chain, reaching ε below the f64 ULP wall. `target`
     /// (f64) is still used for the diamond-distance acceptance check.
+    ///
+    /// Prefer [`Self::synthesize_zyz`]/[`Self::synthesize_u3`] — building the
+    /// target and exact column separately risks a convention mismatch.
     pub fn synthesize_with_exact_col(
         &self,
         target: Mat2,

@@ -5,7 +5,8 @@
 //! precision, which is what lets a rational-π target be built exactly rather
 //! than at the f64 wall (the cap half-width ≈ ε² reaches the f64 ULP at
 //! ε≈1e-8). [`su2_from_zyz`] builds the f64 target; [`su2_col_mpfr`] builds the
-//! exact target column at a given precision.
+//! exact target column at a given precision; [`angle_target`] builds BOTH from
+//! the same angles and is the only sanctioned way to obtain the pair.
 
 use num_complex::Complex;
 
@@ -132,6 +133,46 @@ pub fn su2_from_zyz(alpha: f64, beta: f64, gamma: f64) -> Mat2 {
         [polar(cb, -pag), -polar(sb, -pamg)],
         [polar(sb, pamg), polar(cb, pag)],
     ]
+}
+
+/// Default MPFR precision for the exact target column: 384 bits covers the
+/// search precision (≈6·log₂(1/ε)) for any ε ≳ 1e-19.
+pub const DEFAULT_COL_PREC: u32 = 384;
+
+/// Build BOTH synthesis artifacts from the SAME ZYZ angles: the f64 SU(2)
+/// target matrix (acceptance check) and the MPFR target column at `prec`
+/// bits (deep-ε box center; exact for `PiRatio` angles).
+///
+/// This is the ONE place the (target, column) pair is constructed — every
+/// angle entry point (`Synthesizer`/`SynthesizerT`/`SynthesizerQ`
+/// `synthesize_zyz`/`synthesize_u3`) routes through it. Hand-assembling the
+/// pair risks a convention mismatch (e.g. U3 angles passed positionally into
+/// the ZYZ signature), which centers the deep-ε box on a different unitary
+/// than the acceptance target and produces a silent-miss ladder.
+pub fn angle_target(alpha: Angle, beta: Angle, gamma: Angle, prec: u32) -> (Mat2, [MpFloat; 4]) {
+    let mat = su2_from_zyz(alpha.to_radians_f64(), beta.to_radians_f64(), gamma.to_radians_f64());
+    let col = su2_col_mpfr(alpha, beta, gamma, prec);
+    debug_assert!(
+        col_target_mismatch(&col, &mat) < 1e-9,
+        "MPFR column disagrees with f64 target (err {:.3e}) — angle-convention \
+         mismatch (U3 vs ZYZ arg order into su2_col_mpfr)",
+        col_target_mismatch(&col, &mat)
+    );
+    (mat, col)
+}
+
+/// Max phase-aligned error between the MPFR column and column 1 of the f64
+/// target. Debug-build guard against angle-convention drift: the column must
+/// be (up to global phase) column 1 of the target — else the deep-ε search
+/// centers on a different unitary than the acceptance check.
+fn col_target_mismatch(col: &[MpFloat; 4], target: &Mat2) -> f64 {
+    let c0 = Complex::new(col[0].to_f64(), col[1].to_f64());
+    let c1 = Complex::new(col[2].to_f64(), col[3].to_f64());
+    let (t00, t10) = (target[0][0], target[1][0]);
+    // Phase-align on the larger component, then compare both.
+    let (ref_c, ref_t) = if c0.norm() >= c1.norm() { (c0, t00) } else { (c1, t10) };
+    let phase = if ref_c.norm() > 1e-12 { ref_t / ref_c } else { Complex::new(1.0, 0.0) };
+    (c0 * phase - t00).norm().max((c1 * phase - t10).norm())
 }
 
 /// Column 1 of `Rz(alpha)·Ry(beta)·Rz(gamma)` in MPFR at `prec` bits, as
