@@ -4,11 +4,11 @@ Syntheize general single-qubit unitaries into Clifford+T and Clifford+√T gates
 
 Given a target gate and a tolerance ε, cyclosynth returns a circuit within diamond distance ε of the target:
 
-- **Clifford+T** — gates {H, S, T, X, Y, Z}, with the *minimal T-count* at that ε.
-- **Clifford+√T** — adds the Q = √T gate; typically ~10–15% cheaper than the Clifford+T circuit for the same target, and never costlier.
+- **Clifford+T** — gates `{H, S, T, X, Y, Z}`, with the *minimal T-count* at that ε.
+- **Clifford+√T** — adds the Q = √T gate; typically ~20% cheaper than the Clifford+T circuit for the same target, and never costlier.
 
 This code base implements the algorithm of [Morisaki et al.](https://arxiv.org/abs/2510.05816), extended to Clifford+T.
-Typical runtimes are about a half second at ε = 10^-10 (Clifford+T).
+Typical runtimes are about a half second at ε=`1e-10` (Clifford+T).
 
 ## Install
 
