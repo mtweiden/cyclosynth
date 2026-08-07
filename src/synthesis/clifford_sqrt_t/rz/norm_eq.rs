@@ -1,9 +1,9 @@
-//! Relative norm equation w·w̄ = ξ for the CM extension Z[ζ₁₆]/Z[g].
+//! Relative norm equation w·w̄ = ξ for the CM extension Z[ζ]/Z[g].
 //!
 //! Mirrors the Clifford+T Diophantine step (gridsynth/diophantine.rs)
-//! with the prime constructions adapted to the ζ₁₆ splitting law
+//! with the prime constructions adapted to the ζ splitting law
 //! (classes by p mod 16; the quadratic subfields Q(i) and Q(√−2) of
-//! Q(ζ₁₆) supply the explicit generators):
+//! Q(ζ) supply the explicit generators):
 //!   - the ramified part: (1−ζ)(1−ζ̄) = 2 − g,
 //!   - p ≡ 1 (mod 4): t = gcd(h + i, π) with h² ≡ −1 (mod p), i = ζ⁴,
 //!   - p ≡ 3 (mod 8): t = gcd(h + √−2, π) with h² ≡ −2, √−2 = ζ² + ζ⁶,
@@ -16,7 +16,7 @@
 //! Every constructed factor is VERIFIED (t·t̄ ~ π) before use; failures
 //! degrade to skips, never to wrong answers. The final unit is resolved
 //! by a square root in Z[g] (relative norms of units are exactly the
-//! squares of real units, since O*(Q(ζ₁₆)) = ⟨ζ⟩·O*(Q(g)) by Hasse's
+//! squares of real units, since O*(Q(ζ)) = ⟨ζ⟩·O*(Q(g)) by Hasse's
 //! unit index for prime-power cyclotomics).
 
 use rug::{Complete, Integer};
@@ -279,7 +279,7 @@ fn adj_decompose(xi: &ZRootTwoPlusRootTwo, rng: &mut Rng, budget: &mut Budget) -
     Some(t)
 }
 
-/// Solve w·w̄ = ξ exactly over Z[ζ₁₆], or None (no solution / gave up).
+/// Solve w·w̄ = ξ exactly over Z[ζ], or None (no solution / gave up).
 pub(crate) fn solve_rel_norm(xi: &ZRootTwoPlusRootTwo, rng: &mut Rng, budget: &mut Budget) -> Option<ZZetaBig> {
     if xi.is_zero() {
         return Some(ZZetaBig::zero());

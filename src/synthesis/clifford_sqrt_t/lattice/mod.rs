@@ -1,6 +1,6 @@
-//! Native 16D Lenstra-style search for Clifford+√T (Z[ζ_16]) synthesis.
+//! Native 16D Lenstra-style search for Clifford+√T (Z[ζ]) synthesis.
 //!
-//! This module is the Z[ζ_16] analog of `clifford_t::lattice` (which
+//! This module is the Z[ζ] analog of `clifford_t::lattice` (which
 //! targets Z[ω] / Clifford+T). The two are deliberately kept separate to
 //! isolate the precision and integer-width choices: f64 Gram-Schmidt is
 //! provably sufficient at d=8 (Theorem 2 of Nguyen-Stehlé 2009) but not at

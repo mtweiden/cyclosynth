@@ -234,6 +234,7 @@ use std::f64::consts::PI;
                 // MPFR at the scratch precision (an f64 eval of this form
                 // is garbage: Q eigenvalues reach 1/Δ_y² ~ 1e14 at 1e-5 and
                 // the form only stays O(1) through cancellation).
+                use crate::synthesis::clifford_t::lattice::integer::find_aligned_lattice_points_outcome;
                 use crate::synthesis::clifford_t::lattice::{q_metric::build_q_mpfr, scratch::IntScratch};
                 let mut qs = IntScratch::new(eps);
                 build_q_mpfr(&mut qs, &y, lde_inner, eps);
@@ -257,7 +258,7 @@ use std::f64::consts::PI;
                     let mut s2 = IntScratch::new(eps);
                     s2.reset_basis();
                     let hit = AtomicBool::new(false);
-                    let out = crate::synthesis::clifford_t::lattice::integer::find_aligned_lattice_points_outcome(
+                    let out = find_aligned_lattice_points_outcome(
                         &mut s2, &y, lde_inner, eps, usize::MAX, u64::MAX,
                         50_000_000, &hit, None,
                     );
@@ -429,7 +430,7 @@ use std::f64::consts::PI;
 
     /// Telemetry (ignored): geometric Q-norm² distribution of ε-close 8D
     /// solutions, the Z[ω] mirror of the 16D `q_norm_distribution_sweep_16d` that
-    /// found the ζ₁₆ band [0.875, 1.25] and dropped that bound 8 → 1.5.
+    /// found the ζ band [0.875, 1.25] and dropped that bound 8 → 1.5.
     /// The 8D SE bound is the empirical 1.51 (lattice/integer.rs); this
     /// measures where ε-close solutions actually sit, from the TRUE cap
     /// center (the 8D walk already uses a fractional center, so measured

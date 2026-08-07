@@ -1,10 +1,10 @@
-//! Aligned-lattice-point search for the 16D Z[ζ_16] pipeline (= the
+//! Aligned-lattice-point search for the 16D Z[ζ] pipeline (= the
 //! paper's phase 1, arXiv:2510.05816 Alg 3.6): build Q → L²-LLL →
 //! Cholesky → LU cap-center solve → Schnorr-Euchner with leaf checks.
 //!
 //! ## Leaf checks
 //!
-//!  - `‖x‖² == 2^k` (norm shell — i.e. `x ∈ Z[ζ_16]²` with combined norm
+//!  - `‖x‖² == 2^k` (norm shell — i.e. `x ∈ Z[ζ]²` with combined norm
 //!    matching the lde).
 //!  - `bilinear_forms(x) == (0, 0, 0)` (β_1, β_2, β_3 — the totally-real
 //!    decomposition of the unitarity constraint).
@@ -13,11 +13,11 @@
 //! ## Alignment threshold
 //!
 //! `thresh_xy = 2^(2k) · (1 − ε²) / 32`. Compared to the 8D path's
-//! `2^(2k)·(1−ε²)/4`, the additional factor of 8 reflects the Z[ζ_16]
+//! `2^(2k)·(1−ε²)/4`, the additional factor of 8 reflects the Z[ζ]
 //! conventions:
 //!
 //!  - `‖y_lattice‖² = 2^k/4` (vs 8D's `2^(k−1)`) — 16D y has half the
-//!    lattice-coord norm because each Z[ζ_16] element has 8 ζ-coefficients
+//!    lattice-coord norm because each Z[ζ] element has 8 ζ-coefficients
 //!    (vs 4 for Z[ω]) so the Σ-preimage spreads further.
 //!  - For a valid lattice solution `x_target` with `B_1=B_2=B_3=0`, the
 //!    σ_1 image of `Σ x_target` matches `y_real` exactly, so
@@ -384,7 +384,7 @@ where
     // solution coinciding with `y_real`, giving target `(y·x)² = 2^(2k-1)`
     // — threshold lifts to `2^(2k-2)·(1−ε²) = 2^(2k)·(1−ε²)/4`.
     //
-    // 16D Z[ζ_16] path: for a valid lattice solution `x_target`,
+    // 16D Z[ζ] path: for a valid lattice solution `x_target`,
     //   `(y_lattice · x_target) = (1/4) (y_real · Σ x_target)
     //                           = (1/4) (y_real · σ_1-block of Σ x_target)
     //                           = (1/4) ‖y_real‖² = (1/4) · 2^k = 2^(k−2)`,

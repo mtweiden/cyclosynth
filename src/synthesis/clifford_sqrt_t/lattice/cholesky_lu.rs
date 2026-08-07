@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn cholesky_f64_16_round_trip() {
         // Construct a known PSD 16x16 matrix: G = 4·I_16. (Matches the
-        // structure of Σᵀ·Σ for the Z[ζ_16] embedding.) Cholesky factor
+        // structure of Σᵀ·Σ for the Z[ζ] embedding.) Cholesky factor
         // should be 2·I_16.
         let mut g = [[0.0_f64; 16]; 16];
         for i in 0..16 {

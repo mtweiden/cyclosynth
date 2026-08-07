@@ -2,7 +2,7 @@
 
 use super::*;
 
-// ─── Solution → U2Q reconstruction (Z[ζ_16] analog of solution_to_u2t) ───────
+// ─── Solution → U2Q reconstruction (Z[ζ] analog of solution_to_u2t) ───────
 
 /// Build `U2Q` from a 16-element solution and denominator exponent.
 ///
@@ -13,30 +13,30 @@ pub(crate) fn solution_to_u2q(sol: &[i64; 16], k: u32) -> U2Q {
     solution_to_u2q_with_det_phase(sol, k, 0)
 }
 
-/// `ζ_16^d` as a `ZZeta` element, for `d` in `0..16`. `ζ_16^8 = −1`, so
-/// `ζ_16^(d+8) = −ζ_16^d`.
-pub(crate) fn zeta_16_pow(d: u32) -> ZZeta {
+/// `ζ^d` as a `ZZeta` element, for `d` in `0..16`. `ζ^8 = −1`, so
+/// `ζ^(d+8) = −ζ^d`.
+pub(crate) fn zeta_pow(d: u32) -> ZZeta {
     let d = d % 16;
     if d < 8 {
         let mut c = [0i32; 8];
         c[d as usize] = 1;
         ZZeta::from_i32(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7])
     } else {
-        -zeta_16_pow(d - 8)
+        -zeta_pow(d - 8)
     }
 }
 
 /// Build a Clifford+√T `U2Q` from a 16-element solution at lde `k` with
 /// **det-phase parameter** `det_phase` in `0..16`.
 ///
-/// The reconstructed `U2Q` has determinant `ζ_16^det_phase`. Convention:
+/// The reconstructed `U2Q` has determinant `ζ^det_phase`. Convention:
 ///
 /// ```text
-/// U = [[u_1, ζ_16^d · (−u_2*)], [u_2, ζ_16^d · u_1*]] / √(2^k)
+/// U = [[u_1, ζ^d · (−u_2*)], [u_2, ζ^d · u_1*]] / √(2^k)
 /// ```
 ///
 /// For `d = 0` this matches [`solution_to_u2q`] (SU(2) form). For `d ≠ 0`
-/// the second column is rotated by `ζ_16^d`, making `U` reach Clifford+√T
+/// the second column is rotated by `ζ^d`, making `U` reach Clifford+√T
 /// products with non-unit determinant (e.g. circuits containing an odd
 /// number of Q gates).
 pub fn solution_to_u2q_with_det_phase(sol: &[i64; 16], k: u32, det_phase: u32) -> U2Q {
@@ -46,12 +46,12 @@ pub fn solution_to_u2q_with_det_phase(sol: &[i64; 16], k: u32, det_phase: u32) -
     );
     let u1 = mk(&sol[0..8]);
     let u2 = mk(&sol[8..16]);
-    let phase = zeta_16_pow(det_phase);
+    let phase = zeta_pow(det_phase);
     U2Q::new(u1, phase * (-u2.conj()), u2, phase * u1.conj(), k)
 }
 
 /// Rotate `target` by a global phase so its det lands exactly on the
-/// nearest ζ₁₆ power. Lossless (diamond distance is phase-invariant) —
+/// nearest ζ power. Lossless (diamond distance is phase-invariant) —
 /// but without it a U(2) input whose det is not a 16th root carries a
 /// residual phase no completion can absorb, and the search burns to
 /// max_lde finding nothing.
@@ -72,7 +72,7 @@ pub fn project_det_to_zeta_coset(target: &Mat2) -> Mat2 {
     ]
 }
 
-/// The det-phase `d ∈ {0..15}` of V: the integer with `ζ_16^d` closest
+/// The det-phase `d ∈ {0..15}` of V: the integer with `ζ^d` closest
 /// to `det(V)` on the unit circle (16-valued analog of Z[ω]'s
 /// `det_zeta_parity`).
 pub fn det_phase_of(target: &Mat2) -> u32 {

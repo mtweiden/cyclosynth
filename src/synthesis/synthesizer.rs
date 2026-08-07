@@ -4,19 +4,21 @@
 //! [`SynthesizerT`](crate::synthesis::clifford_t::SynthesizerT) for
 //! Clifford+T over Z[ω] and
 //! [`SynthesizerQ`](crate::synthesis::clifford_sqrt_t::SynthesizerQ) for
-//! Clifford+√T over Z[ζ_16] — behind a single struct. Pick the backend at
+//! Clifford+√T over Z[ζ] — behind a single struct. Pick the backend at
 //! construction with the `sqrt_t: bool` flag (default false → Clifford+T).
 //!
 //! ## Why two backends behind one type
 //!
 //! The two flows use *different algorithms* (Z[ω]: 8D MA-prefix
-//! divide-and-conquer; Z[ζ_16]: 16D LLL+SE with a brute-force small-k mode
+//! divide-and-conquer; Z[ζ]: 16D LLL+SE with a brute-force small-k mode
 //! and an FGKM-prefix divide-and-conquer mode for deep k), so they can't be
 //! expressed cleanly as a single generic `Synthesizer<R: GateRing>`. This
 //! wrapper gives users a single API while the internals keep their own
 //! optimised code paths.
 
 use crate::synthesis::angle::Angle;
+use crate::synthesis::clifford_sqrt_t::rz::synthesize_rz_q;
+use crate::synthesis::clifford_t::rz::synthesize_rz as synthesize_rz_native;
 use crate::synthesis::distance::Mat2;
 use crate::synthesis::clifford_t::SynthesizerT;
 use crate::synthesis::clifford_sqrt_t::SynthesizerQ;
@@ -39,7 +41,7 @@ pub struct SynthResult {
 }
 
 /// Single-qubit unitary synthesizer over either Clifford+T (Z[ω]) or
-/// Clifford+√T (Z[ζ_16]).
+/// Clifford+√T (Z[ζ]).
 ///
 /// ```rust,ignore
 /// // Clifford+T (default).
@@ -229,15 +231,10 @@ impl Synthesizer {
                 return Some(r);
             }
             let r = match &self.inner {
-                Backend::T(s) => {
-                    crate::synthesis::clifford_t::rz::ladder::synthesize_rz(&theta, &target, s.epsilon)
+                Backend::T(s) => synthesize_rz_native(&theta, &target, s.epsilon),
+                Backend::Q(s) => {
+                    synthesize_rz_q(&theta, &target, s.epsilon(), s.q_cost_x2)
                 }
-                Backend::Q(s) => crate::synthesis::clifford_sqrt_t::rz::ladder::synthesize_rz_q(
-                    &theta,
-                    &target,
-                    s.epsilon(),
-                    s.q_cost_x2,
-                ),
             };
             if r.is_some() {
                 return r;
@@ -862,7 +859,7 @@ fn parse_angle(obj: &Bound<'_, PyAny>) -> PyResult<Angle> {
 /// at every Python entry point: `Synthesizer.__init__` and the module-level
 /// `synthesize_u1/u2/u3` functions.
 ///
-/// - Clifford+√T (`sqrt_t=True`): ε < 1e-8 raises `ValueError` — the Z[ζ16]
+/// - Clifford+√T (`sqrt_t=True`): ε < 1e-8 raises `ValueError` — the Z[ζ]
 ///   backend's f64 SE walk loses the cap below that (cap half-width ε² hits
 ///   the f64 ULP; see the ε=1.5e-8 cliff analysis).
 /// - Clifford+T (`sqrt_t=False`): ε < 1e-10 emits a `UserWarning` and
@@ -903,7 +900,7 @@ fn check_epsilon_policy(
         if epsilon < 1e-8 {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
                 "jointly-optimized Clifford+√T synthesis (u2/u3) is supported \
-                 for epsilon >= 1e-8 (the Z[ζ16] lattice backend's validated \
+                 for epsilon >= 1e-8 (the Z[ζ] lattice backend's validated \
                  range); requested {epsilon:e}. Use synthesize_zyz — the \
                  rotation-by-rotation route through the native gridsynth \
                  infrastructure — for the full range at ~2.5-3x the cost, or \

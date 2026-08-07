@@ -1,5 +1,5 @@
 //! Native Ross–Selinger-style route for diagonal targets over
-//! Clifford+√T — the ζ₁₆ counterpart of [`crate::synthesis::clifford_t::rz::ladder`].
+//! Clifford+√T — the ζ counterpart of [`crate::synthesis::clifford_t::rz::ladder`].
 //!
 //! Same wrapper contract: probe a loose→tight ε ladder against the
 //! crate's own acceptance check, then return the CHEAPEST verified

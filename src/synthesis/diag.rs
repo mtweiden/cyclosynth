@@ -129,7 +129,7 @@ pub(crate) static N_LAZY_CALLS_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Max passes ever seen in a single invocation.
 pub(crate) static N_LAZY_PASSES_MAX: AtomicU64 = AtomicU64::new(0);
 
-// ─── 16D Z[ζ_16] / Clifford+√T-specific counters ─────────────────────────────
+// ─── 16D Z[ζ] / Clifford+√T-specific counters ─────────────────────────────
 
 /// Number of `find_aligned_lattice_points` invocations across this synthesize call (one per k).
 pub(crate) static N_LATTICE_SEARCH_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -339,7 +339,7 @@ pub struct Snapshot {
     pub(crate) lazy_passes_total: u64,
     pub(crate) lazy_calls_total: u64,
     pub(crate) lazy_passes_max: u64,
-    // 16D Z[ζ_16] fields.
+    // 16D Z[ζ] fields.
     pub(crate) lattice_search_calls: u64,
     pub(crate) norm_rejected: u64,
     pub(crate) bilinear_rejected: u64,

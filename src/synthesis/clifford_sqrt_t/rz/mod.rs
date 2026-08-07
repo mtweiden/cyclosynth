@@ -1,9 +1,9 @@
 //! Native gridsynth for Clifford+√T z-rotations.
 //!
-//! The Ross–Selinger structure generalized to Z[ζ₁₆]: the 1D grid
+//! The Ross–Selinger structure generalized to Z[ζ]: the 1D grid
 //! problems over Z[√2] become an 8D lattice problem over Z[g]²
 //! (g = 2cos π/8), and the Diophantine step becomes a relative norm
-//! equation for the CM extension Z[ζ₁₆]/Z[g]. `clifford_t::rz` is the
+//! equation for the CM extension Z[ζ]/Z[g]. `clifford_t::rz` is the
 //! Clifford+T counterpart this mirrors.
 
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
@@ -16,8 +16,11 @@ use crate::matrix::U2Q;
 use crate::rings::types::MpFloat;
 use crate::rings::ZZeta;
 use crate::synthesis::decomposer::BlochDecomposer;
+use crate::synthesis::clifford_sqrt_t::gates_cost;
 use crate::synthesis::factor::{Budget, Rng};
 use crate::synthesis::clifford_t::rz::integer_to_i256;
+
+pub(crate) use ladder::synthesize_rz_q;
 
 use grid::GridCtx;
 use norm_eq::solve_rel_norm;
@@ -45,7 +48,6 @@ fn assemble_gates_q(
     phase_sweep: bool,
     q_cost_x2: usize,
 ) -> Option<String> {
-    use crate::synthesis::clifford_sqrt_t::gates_cost;
     // Decomposer SO(3) guard (numerators ~2^k in I256), mirroring the
     // Clifford+T driver's k-wall.
     if k > 250 {
@@ -122,7 +124,6 @@ pub(crate) fn gridsynth_q_gates_cfg(
     q_cost_x2: usize,
     cfg: QCostCfg,
 ) -> Option<String> {
-    use crate::synthesis::clifford_sqrt_t::gates_cost;
     // Empirically the m-sweep moves a candidate's cost by a few gates;
     // only candidates within this margin of the incumbent are re-swept.
     const SWEEP_MARGIN: usize = 8;
@@ -200,7 +201,10 @@ pub(crate) fn gridsynth_q_gates_cfg(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::ladder::exact_rz_distance;
+    use crate::synthesis::clifford_t::rz::prec_for_epsilon;
     use crate::synthesis::distance::Mat2;
+    use crate::synthesis::near_clifford::eval_gates_q;
 
     fn rz_target(theta: f64) -> Mat2 {
         [
@@ -222,7 +226,7 @@ mod tests {
     #[ignore = "diagnostic probe, print-only"]
     fn gridsynth_q_reject_diag() {
         for eps in [1e-14_f64, 1e-16] {
-            let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+            let prec = prec_for_epsilon(eps);
             let theta = MpFloat::with_val(prec, 0.7_f64);
             let ctx = GridCtx::new(&theta, eps, prec);
             let decades = -eps.log10();
@@ -243,14 +247,13 @@ mod tests {
     #[test]
     #[ignore = "bench probe, print-only"]
     fn gridsynth_t_vs_q_paired() {
-        use crate::synthesis::clifford_sqrt_t::gates_cost;
-        use crate::synthesis::clifford_t::rz::gridsynth_gates_native;
+            use crate::synthesis::clifford_t::rz::gridsynth_gates_native;
         let angles = [0.7_f64, 1.9, 0.3, 0.196_349_540_849_362_07, 2.6];
         for eps in [
             1e-2_f64, 1e-3, 1e-4, 1e-5, 1e-6, 1e-8, 1e-10, 1e-12, 1e-14, 1e-16, 1e-18,
             1e-24, 1e-32, 1e-40, 1e-48,
         ] {
-            let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+            let prec = prec_for_epsilon(eps);
             let (mut sum_t, mut sum_q) = (0usize, 0usize);
             let mut line = String::new();
             let t0 = std::time::Instant::now();
@@ -293,7 +296,7 @@ mod tests {
         ];
         let angles = [0.7_f64, 1.9, 0.3, 2.51, 1.1];
         for eps in [1e-3_f64, 1e-5] {
-            let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+            let prec = prec_for_epsilon(eps);
             for (name, cfg) in &cfgs {
                 let t0 = std::time::Instant::now();
                 let costs: Vec<usize> = angles
@@ -302,7 +305,7 @@ mod tests {
                         let theta = MpFloat::with_val(prec, th);
                         let g = gridsynth_q_gates_cfg(&theta, eps, prec, 6, *cfg)
                             .expect("solves");
-                        crate::synthesis::clifford_sqrt_t::gates_cost(&g, 6)
+                        gates_cost(&g, 6)
                     })
                     .collect();
                 let dt = t0.elapsed();
@@ -318,7 +321,7 @@ mod tests {
     #[ignore = "diagnostic probe, print-only"]
     fn gridsynth_q_geo_compare() {
         for eps in [1e-14_f64, 1e-16] {
-            let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+            let prec = prec_for_epsilon(eps);
             let theta = MpFloat::with_val(prec, 0.7_f64);
             let ctx = GridCtx::new(&theta, eps, prec);
             let decades = -eps.log10();
@@ -340,7 +343,7 @@ mod tests {
     #[ignore = "diagnostic probe, print-only"]
     fn gridsynth_q_hang_diag() {
         let eps = 1e-16_f64;
-        let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+        let prec = prec_for_epsilon(eps);
         let theta = MpFloat::with_val(prec, 0.7_f64);
         let t0 = std::time::Instant::now();
         let ctx = GridCtx::new(&theta, eps, prec);
@@ -389,7 +392,7 @@ mod tests {
                 break;
             }
             let eps = 10f64.powi(-i32::try_from(decades).expect("small"));
-            let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+            let prec = prec_for_epsilon(eps);
             for (name, th) in [("generic", 0.7_f64), ("near-id", 3.74507e-7)] {
                 if th < eps * 10.0 {
                     continue;
@@ -400,7 +403,7 @@ mod tests {
                 let dt = t0.elapsed();
                 match g {
                     Some(g) => {
-                        let u = crate::synthesis::near_clifford::eval_gates_q(&g)
+                        let u = eval_gates_q(&g)
                             .expect("evaluable");
                         let target = [
                             [
@@ -413,11 +416,11 @@ mod tests {
                             ],
                         ];
                         let _ = target;
-                        let d = crate::synthesis::clifford_sqrt_t::rz::ladder::exact_rz_distance(
+                        let d = exact_rz_distance(
                             &u, &theta, prec,
                         );
                         let ok = if d < eps { "ok " } else { "BAD" };
-                        let cost = crate::synthesis::clifford_sqrt_t::gates_cost(&g, 6);
+                        let cost = gates_cost(&g, 6);
                         eprintln!(
                             "eps=1e-{decades:<2} {name:8} cost={cost:<4} dist={d:9.2e} {ok} {dt:>9.2?}"
                         );
@@ -440,7 +443,7 @@ mod tests {
     #[ignore = "diagnostic probe, print-only"]
     fn gridsynth_q_none_diag() {
         let eps = 1e-5_f64;
-        let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+        let prec = prec_for_epsilon(eps);
         let theta = MpFloat::with_val(prec, 0.7_f64);
         let ctx = GridCtx::new(&theta, eps, prec);
         let mut rng = Rng::new(GSQ_SEED);
@@ -474,11 +477,11 @@ mod tests {
             for &th in &angles {
                 let target = rz_target(th);
                 let theta = MpFloat::with_val(
-                    crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps),
+                    prec_for_epsilon(eps),
                     th,
                 );
                 let t0 = std::time::Instant::now();
-                let native = crate::synthesis::clifford_sqrt_t::rz::ladder::synthesize_rz_q(
+                let native = synthesize_rz_q(
                     &theta, &target, eps, 6,
                 );
                 let t_native = t0.elapsed();

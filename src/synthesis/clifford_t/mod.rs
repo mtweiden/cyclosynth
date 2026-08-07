@@ -777,7 +777,7 @@ impl SynthesizerT {
     fn run(&self, target: Mat2, exact_col: Option<&[MpFloat; 4]>) -> Option<SynthResultT> {
         // Project to SU(2): the search assumes det = 1 (see `to_su2`).
         let target = to_su2(&target);
-        // 16 MiB worker stacks: the 8D path races the ζ₁₆ entries for
+        // 16 MiB worker stacks: the 8D path races the ζ entries for
         // global-pool init, and a 2 MiB pool overflows later deep walks.
         crate::synthesis::ensure_rayon_stack();
         let raw_uv = unitary_to_uv(&target);

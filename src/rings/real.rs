@@ -1,7 +1,7 @@
 //! The real subfield rings of the synthesis cyclotomics, on
 //! `rug::Integer` coefficients (arbitrary precision): Z[√2] = the real
 //! subfield of Q(ω) ([`ZRootTwo`], Clifford+T) and Z[g], g = 2cos(π/8) =
-//! √(2+√2) = the real subfield of Q(ζ₁₆) ([`ZRootTwoPlusRootTwo`],
+//! √(2+√2) = the real subfield of Q(ζ) ([`ZRootTwoPlusRootTwo`],
 //! Clifford+√T). Neither has a fixed-width counterpart — they exist for
 //! the native z-rotation routes, whose norm-equation intermediates are
 //! unbounded. Shared integer helpers (`rounddiv`, `ntz`, …) and the
@@ -767,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zeta16_basics() {
+    fn test_zeta_basics() {
         let z = ZZetaBig::zeta();
         // ζ⁸ = −1.
         let mut p = ZZetaBig::one();
@@ -800,7 +800,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zeta16_divmod_gcd() {
+    fn test_zeta_divmod_gcd() {
         let x = ZZetaBig::from_module(&ZRootTwoPlusRootTwo::from_i64(5, 1, -2, 0), &ZRootTwoPlusRootTwo::from_i64(0, 3, 1, 1));
         let y = ZZetaBig::from_module(&ZRootTwoPlusRootTwo::from_i64(1, 1, 0, 0), &ZRootTwoPlusRootTwo::from_i64(1, 0, 0, 0));
         let (q, r) = x.divmod(&y);

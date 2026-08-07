@@ -181,7 +181,7 @@ impl U2<ZZeta> {
     }
 
     /// Fully reduce the denominator exponent: repeatedly divide every
-    /// entry by √2 = ζ² − ζ⁶ while all four stay in Z[ζ₁₆], decrementing
+    /// entry by √2 = ζ² − ζ⁶ while all four stay in Z[ζ], decrementing
     /// `k` each time. `Mul` accumulates `k` without reducing, so `k` of
     /// a product is only an upper bound on the true lde until this is
     /// called. Uses: x is divisible by √2 ⟺ all coefficients of x·√2

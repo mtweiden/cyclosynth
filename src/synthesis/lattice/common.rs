@@ -1,6 +1,6 @@
 //! Dimension-independent items shared between the two Lenstra-style
 //! LLL+SE backends: `clifford_t::lattice` (8D, Z[ω]) and
-//! `clifford_sqrt_t::lattice` (16D, Z[ζ_16]). The hot-path code
+//! `clifford_sqrt_t::lattice` (16D, Z[ζ]). The hot-path code
 //! (dim-specialized `[[T; 8]]` vs `[[T; 16]]` loops, bilinear forms,
 //! ring-specific Q-metric and reconstruction) stays separate per backend
 //! so the dimension is a compile-time constant. Only the L²-LLL
@@ -143,7 +143,7 @@ pub(crate) fn rfv(prec: u32, x: f64) -> MpFloat {
 // ─── Dimension-generic zero-fill / identity constructors ─────────────────────
 //
 // Shared by both backends' scratch buffers; `const D` monomorphizes to the
-// per-dimension shapes (8 for Z[ω], 16 for Z[ζ_16]). Callers usually let `D`
+// per-dimension shapes (8 for Z[ω], 16 for Z[ζ]). Callers usually let `D`
 // infer from the target field/binding type.
 
 /// A `D×D` matrix of zero `MpFloat`s at the given precision.
@@ -191,7 +191,7 @@ fn i256_log2_ceil(v: &i256) -> i32 {
 // ─── Dimension-generic integer-Gram kernels ─────────────────────────────────
 //
 // These operate only on the exact i256 Gram / i64 basis (no Gram-Schmidt
-// floats), so they are identical for d=8 (Z[ω]) and d=16 (Z[ζ_16]) modulo
+// floats), so they are identical for d=8 (Z[ω]) and d=16 (Z[ζ]) modulo
 // the dimension. Each backend's `lll` module keeps a thin wrapper that pulls
 // the relevant scratch fields and calls these; `const D` monomorphizes to
 // per-dimension code. The

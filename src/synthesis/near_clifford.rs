@@ -142,7 +142,7 @@ fn catalog_t() -> &'static [ShallowPoint] {
 }
 
 /// √T-count-1 additions for the Clifford+√T backend (√T is shallow in
-/// Z[ζ₁₆] but not in Z[ω]). Deduped against `catalog_t` entries too.
+/// Z[ζ] but not in Z[ω]). Deduped against `catalog_t` entries too.
 fn catalog_q_extra() -> &'static [ShallowPoint] {
     CATALOG_Q.get_or_init(|| {
         let cliffords = clifford_result_strings();

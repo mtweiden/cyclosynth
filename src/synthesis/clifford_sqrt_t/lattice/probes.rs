@@ -290,7 +290,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
     /// Diagnostic: for Rz(0.3) at ε=1e-3, first establish the lde the 8D
     /// Clifford+T synthesizer reaches (upper bound for Clifford+√T since
     /// `T = QQ` as gates and lde counts √2 denominators identically). Then
-    /// verify the Z[ζ_16] / Clifford+√T flow hits it at ≤ that lde.
+    /// verify the Z[ζ] / Clifford+√T flow hits it at ≤ that lde.
     /// Behind `#[ignore]`: `cargo test --release --lib sqrt_t_depth_vs_clifford_t_baseline --
     /// --ignored --nocapture`.
     #[test]

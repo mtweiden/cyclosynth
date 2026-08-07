@@ -33,7 +33,7 @@ pub(crate) fn brute_shell_cached(k: u32) -> &'static BruteShell {
     CACHE[k as usize].get_or_init(|| {
         let sols = enumerate_unitary_norm_shell(k);
         let inv_scale = 1.0 / (2f64.powi(k as i32)).sqrt();
-        // ζ₁₆^j basis at unit scale.
+        // ζ^j basis at unit scale.
         let basis: [Complex64; 8] =
             std::array::from_fn(|j| Complex64::from_polar(1.0, j as f64 * PI / 8.0));
         let to_c = |s: &[i64]| -> Complex64 {
@@ -52,7 +52,7 @@ pub(crate) fn brute_shell_cached(k: u32) -> &'static BruteShell {
 }
 
 /// f64 estimate of the diamond distance from the cached unit-scale
-/// matrix and det-phase rotation `zd = ζ₁₆^d`. Conservative prefilter
+/// matrix and det-phase rotation `zd = ζ^d`. Conservative prefilter
 /// only — callers skip the exact MPFR check when the estimate clears ε
 /// by [`brute_prefilter_threshold`]'s margin, so no true ε-accept is
 /// ever lost (estimator abs error ≲ 1e-14 on these O(1) entries).

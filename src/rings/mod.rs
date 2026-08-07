@@ -1,5 +1,5 @@
 //! Exact number rings the synthesis works in: Z[ω] ([`ZOmega`], Clifford+T)
-//! and Z[ζ₁₆] ([`ZZeta`], Clifford+√T), plus the shared scalar types
+//! and Z[ζ] ([`ZZeta`], Clifford+√T), plus the shared scalar types
 //! ([`Int`] = i256, `f64` = fast-path float, [`MpFloat`] = MPFR).
 
 pub(crate) mod dyadic;

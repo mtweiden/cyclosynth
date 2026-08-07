@@ -9,7 +9,7 @@
 //! integer lattice coordinates to the uv parameterization.
 //!
 //! ## The coordinate vocabulary (authoritative; cross-linked from the
-//! ζ₁₆ mirror and clifford_sqrt_t)
+//! ζ mirror and clifford_sqrt_t)
 //!
 //! - **uv** (`v: [f64; 4]`): the det-normalized first column of the
 //!   target unitary as reals — (Re u₁, Im u₁, Re u₂, Im u₂). All

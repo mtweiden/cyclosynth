@@ -222,7 +222,7 @@ pub(crate) fn find_aligned_lattice_points_outcome_mpfr(
 
     // Step 3: assert det(B) = ±1 (unimodular basis output).
     let basis = scratch.basis;
-    match crate::synthesis::clifford_t::lattice::cholesky_lu::det_exact(&basis) {
+    match super::cholesky_lu::det_exact(&basis) {
         Some(1) | Some(-1) => {}
         Some(d) => return bail(eps, k, format_args!("LLL non-unimodular (det={d})")),
         None => return bail(eps, k, format_args!("det_exact overflow")),
@@ -576,7 +576,7 @@ mod tests {
             return result;
         }
         // Unimodular check
-        let det = crate::synthesis::clifford_t::lattice::cholesky_lu::det_exact(&s.basis)
+        let det = super::super::cholesky_lu::det_exact(&s.basis)
             .expect("det_exact overflow");
         assert!(
             det == 1 || det == -1,
@@ -649,7 +649,7 @@ mod tests {
         if let LllResult::GramOverflow = result {
             return result;
         }
-        let det = crate::synthesis::clifford_t::lattice::cholesky_lu::det_exact(&s.basis)
+        let det = super::super::cholesky_lu::det_exact(&s.basis)
             .expect("det_exact overflow");
         assert!(
             det == 1 || det == -1,

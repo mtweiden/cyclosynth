@@ -36,6 +36,9 @@ use crate::synthesis::decomposer::BlochDecomposer;
 
 use crate::synthesis::factor::{Budget, Rng};
 use norm_eq::diophantine;
+
+#[cfg_attr(not(test), allow(unused_imports))] // prec_for_epsilon: probe/test consumer
+pub(crate) use ladder::{prec_for_epsilon, synthesize_rz};
 use crate::rings::dyadic::{DOmega, DRootTwo};
 use crate::rings::real::ZRootTwo;
 use crate::rings::zomega::ZOmegaBig;
@@ -245,6 +248,8 @@ pub(crate) fn gridsynth_gates_native(theta: &MpFloat, epsilon: f64, prec: u32) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
+    use crate::synthesis::near_clifford::eval_gates_t;
 
     /// Which (k, phase) level produced the ε=1e-28 generic result, and is
     /// the assembled unitary S-shifted? (bug bisect probe)
@@ -253,7 +258,7 @@ mod tests {
     #[ignore = "bisect probe, print-only"]
     fn gridsynth_phase_branch_bisect() {
         let eps = 1e-28_f64;
-        let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+        let prec = prec_for_epsilon(eps);
         let th = 1.0472_f64;
         let theta = MpFloat::with_val(prec, th);
         let eps_f = MpFloat::with_val(prec, eps);
@@ -359,13 +364,13 @@ mod tests {
                             .to_f64()
                     };
                     eprintln!("assembled U2T dd = {:.3e} (k={})", dd_of(&u2t), u2t.k);
-                    let re_evaled = crate::synthesis::near_clifford::eval_gates_t(&g).expect("eval");
+                    let re_evaled = eval_gates_t(&g).expect("eval");
                     eprintln!("gates-eval  dd = {:.3e} (k={})", dd_of(&re_evaled), re_evaled.k);
                     // Mismatch M = gates† · u2t: if the decomposer dropped its
                     // Clifford suffix, M is that Clifford exactly.
                     let m = (re_evaled.dagger() * u2t).reduced();
                     eprintln!("mismatch k={} ", m.k);
-                    for (nm, c) in crate::synthesis::cliffords::CLIFFORD_TABLE_T {
+                    for (nm, c) in CLIFFORD_TABLE_T {
                         let d = c.diamond_distance(&m);
                         if d < 1e-6 {
                             eprintln!("mismatch is Clifford {nm} (d={d:.2e})");
@@ -422,7 +427,7 @@ mod tests {
         let mut total = std::time::Duration::ZERO;
         let mut rows: Vec<(String, f64, f64)> = Vec::new();
         for eps in [1e-4_f64, 1e-6, 1e-8, 1e-10] {
-            let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+            let prec = prec_for_epsilon(eps);
             for (name, th) in &angles {
                 if *th < eps {
                     continue;
@@ -462,7 +467,7 @@ mod tests {
                 break;
             }
             let eps = 10f64.powi(-i32::try_from(decades).expect("small"));
-            let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+            let prec = prec_for_epsilon(eps);
             for (name, th) in [("generic", 1.0472_f64), ("near-id", 3.74507e-7)] {
                 let theta = MpFloat::with_val(prec, th);
                 let t0 = std::time::Instant::now();
@@ -475,7 +480,7 @@ mod tests {
                         // D² = q(8−q)/16 with q = 4 − 2|tr(U·Rz(θ)†)|, the
                         // library's diamond formula on exact coefficients.
                         let vp = prec + 128;
-                        let u = crate::synthesis::near_clifford::eval_gates_t(&g)
+                        let u = eval_gates_t(&g)
                             .expect("evaluable");
                         let theta_v = MpFloat::with_val(vp, th);
                         let half = MpFloat::with_val(vp, &theta_v / 2u32);
@@ -543,7 +548,7 @@ mod tests {
     fn bench_gridsynth_scaling() {
         // Deep-ε scaling: single calls, one generic + one near-Clifford angle.
         for eps in [1e-6_f64, 1e-8, 1e-10, 1e-12, 1e-14] {
-            let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+            let prec = prec_for_epsilon(eps);
             for (name, th) in [("generic", 1.0472_f64), ("near-id", 3.74507e-7)] {
                 let theta = MpFloat::with_val(prec, th);
                 let t0 = std::time::Instant::now();
@@ -561,7 +566,7 @@ mod tests {
             for tid in 0..8u64 {
                 scope.spawn(move || {
                     let eps = 1e-8_f64;
-                    let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+                    let prec = prec_for_epsilon(eps);
                     for i in 0..40u64 {
                         #[allow(clippy::cast_precision_loss)]
                         let th = 0.1 + (tid * 40 + i) as f64 * 0.007;
@@ -605,7 +610,7 @@ mod tests {
             v
         };
         for eps in [1e-4_f64, 1e-6, 1e-8, 1e-10] {
-            let prec = crate::synthesis::clifford_t::rz::ladder::prec_for_epsilon(eps);
+            let prec = prec_for_epsilon(eps);
             for &th in &angles {
                 if th < eps {
                     continue;

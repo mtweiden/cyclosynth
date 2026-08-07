@@ -187,7 +187,7 @@ impl GridCtx {
         }
     }
 
-    /// Is u divisible by √2 in Z[ζ₁₆]? Those candidates already appeared
+    /// Is u divisible by √2 in Z[ζ]? Those candidates already appeared
     /// at level k−1 — skip.
     fn divisible_by_sqrt2(a: &ZRootTwoPlusRootTwo, b: &ZRootTwoPlusRootTwo) -> bool {
         let u = ZZetaBig::from_module(a, b);

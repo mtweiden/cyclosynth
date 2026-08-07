@@ -1,4 +1,4 @@
-//! Clifford+√T synthesis backend over Z[ζ_16].
+//! Clifford+√T synthesis backend over Z[ζ].
 //!
 //! [`SynthesizerQ`] is one of two backends behind the unified user-facing
 //! [`crate::synthesis::Synthesizer`]; the other is
@@ -73,7 +73,7 @@ pub struct SynthResultQ {
 /// `k_searched` covers every circuit with reduced lde ≤ k_searched —
 /// lower-lde circuits appear as √2-scaled lattice points on the shell;
 /// (2) both det-phase parity branches are searched (q ≡ d mod 2 and
-/// the ζ₁₆-automorphism collapse mean two branches are complete);
+/// the ζ-automorphism collapse mean two branches are complete);
 /// (3) anything beyond the horizon costs ≥ `cost_lb_half_units(k+1)`
 /// (verified staircase, cost_bound.rs). The certificate inherits the
 /// pipeline's numeric trust boundary (f64+dd distance checks, cap
@@ -91,7 +91,7 @@ pub(crate) struct CostCertificate {
     pub(crate) certified_optimal: bool,
 }
 
-/// Clifford+√T synthesizer over `Z[ζ_16]`.
+/// Clifford+√T synthesizer over `Z[ζ]`.
 ///
 /// Field names mirror `clifford_t::SynthesizerT`. Defaults in [`Self::new`].
 #[derive(Clone)]
@@ -194,7 +194,7 @@ pub struct SynthesizerQ {
 }
 
 /// Smallest lde where a generic SU(2) target is reachable within ε,
-/// per the Gaussian heuristic over the Minkowski-embedded Z[ζ_16]
+/// per the Gaussian heuristic over the Minkowski-embedded Z[ζ]
 /// lattice. We start the search 3 below this estimate so easy targets
 /// land without an extra full-shell sweep.
 fn lattice_lde_estimate(epsilon: f64) -> u32 {
@@ -261,8 +261,8 @@ pub(crate) fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
         .sum()
 }
 
-/// Inner (right-factor) det-phase for a left prefix `u_l`: the residual ζ₁₆
-/// power the suffix must carry so `det(u_l · u_r) = ζ₁₆^d_target`.
+/// Inner (right-factor) det-phase for a left prefix `u_l`: the residual ζ
+/// power the suffix must carry so `det(u_l · u_r) = ζ^d_target`.
 pub(crate) fn inner_d_r(d_target: u32, u_l: &U2Q) -> u32 {
     let d_l = det_phase_of(&u_l.to_float());
     ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32
@@ -651,7 +651,7 @@ pub use recon::{det_phase_of, solution_to_u2q_with_det_phase, unitary_to_uv_zeta
 pub(crate) use recon::solution_to_u2q;
 pub use recon::project_det_to_zeta_coset;
 #[cfg(test)]
-pub(crate) use recon::zeta_16_pow;
+pub(crate) use recon::zeta_pow;
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 

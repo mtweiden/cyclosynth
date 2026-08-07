@@ -1,6 +1,7 @@
 //! First-hit pipeline: lde sweep, prefix-split search, parallel-LDE
 //! speculation, and the deep-ε precision routing.
 
+use crate::synthesis::lattice::common;
 use crate::rings::MpFloat;
 use super::*;
 
@@ -29,7 +30,7 @@ pub(crate) fn prefix_residual_uv_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [M
         let mut re = MpFloat::with_val(prec, 0.0);
         let mut im = MpFloat::with_val(prec, 0.0);
         for i in 0..8 {
-            let c = crate::synthesis::lattice::common::i256_to_f64(z.coeff(i));
+            let c = common::i256_to_f64(z.coeff(i));
             if c != 0.0 {
                 re += MpFloat::with_val(prec, &cosv[i] * c);
                 im += MpFloat::with_val(prec, &sinv[i] * c);
@@ -656,7 +657,7 @@ impl SynthesizerQ {
         use crate::synthesis::diag;
         crate::synthesis::ensure_rayon_stack();
 
-        // Land det on a ζ₁₆ power via a global phase rotation (norm-preserving;
+        // Land det on a ζ power via a global phase rotation (norm-preserving;
         // see `project_det_to_zeta_coset`). The cap requires a unit-norm target
         // column — `unitary_to_uv_zeta` reads it directly and the
         // reconstruction's `d` parameter carries the det-phase. At ε≈1e-8 the
@@ -885,7 +886,7 @@ impl SynthesizerQ {
         None
     }
 
-    /// Z[ζ_16] analog of Clifford+T's `prefix_split_search`: for each prefix
+    /// Z[ζ] analog of Clifford+T's `prefix_split_search`: for each prefix
     /// `U_L ∈ L_m^Q`, search the inner factor at `lde_total − k_prefix` and
     /// compose; `d_R = (d_target − d_L) mod 16` parametrises the inner
     /// reconstruction so `U_L · U_R` matches the target's det phase.

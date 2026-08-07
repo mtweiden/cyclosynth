@@ -6,11 +6,12 @@ mod probes;
 
     use super::*;
     use crate::rings::MpFloat;
+    use crate::synthesis::lattice::common;
     use super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
     use super::se::bilinear_forms;
     use crate::synthesis::decomposer::BlochDecomposer;
     use crate::synthesis::distance::Mat2;
-    use crate::synthesis::clifford_sqrt_t::lattice::brute::{
+    use super::brute::{
         compute_align_vec_zeta, enumerate_unitary_norm_shell, uv_to_lattice_y_zeta,
     };
     use crate::synthesis::clifford_sqrt_t::{
@@ -483,7 +484,7 @@ mod probes;
         let mut tmp = MpFloat::with_val(s.prec_q, 0.0);
         for i in 0..16 {
             for j in 0..16 {
-                crate::synthesis::lattice::common::i256_to_rfloat(s.q_int[i][j], &mut tmp);
+                common::i256_to_rfloat(s.q_int[i][j], &mut tmp);
                 let recovered = if s.scale_bits >= 0 {
                     tmp.clone() >> s.scale_bits as u32
                 } else {
