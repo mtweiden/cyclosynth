@@ -30,6 +30,7 @@ pub mod angle;
 pub mod clifford_sqrt_t;
 pub mod clifford_t;
 pub(crate) mod cliffords;
+pub(crate) mod factor;
 pub mod decomposer;
 pub mod diag;
 pub mod distance;
