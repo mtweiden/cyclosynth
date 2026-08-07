@@ -27,8 +27,11 @@ pub trait RingElem: Copy + Add<Output = Self> + Neg<Output = Self> {
 }
 
 impl RingElem for ZOmega {
-    fn conj(self) -> Self { self.conj() }
-    fn to_complex(self) -> Complex64 { self.to_complex() }
+    // Explicit inherent calls: the by-value trait methods would otherwise
+    // out-rank the by-ref inherent ones inside their own bodies (infinite
+    // recursion).
+    fn conj(self) -> Self { ZOmega::conj(&self) }
+    fn to_complex(self) -> Complex64 { ZOmega::to_complex(&self) }
     fn zero() -> Self { Self::ZERO }
     fn one() -> Self { Self::ONE }
     fn i() -> Self { Self::I }
@@ -36,8 +39,9 @@ impl RingElem for ZOmega {
 }
 
 impl RingElem for ZZeta {
-    fn conj(self) -> Self { self.conj() }
-    fn to_complex(self) -> Complex64 { self.to_complex() }
+    // Explicit inherent calls — same resolution trap as the ZOmega impl.
+    fn conj(self) -> Self { ZZeta::conj(&self) }
+    fn to_complex(self) -> Complex64 { ZZeta::to_complex(&self) }
     fn zero() -> Self { Self::ZERO }
     fn one() -> Self { Self::ONE }
     fn i() -> Self { Self::I }
