@@ -43,7 +43,7 @@ pub struct SynthResult {
 /// let synth = Synthesizer::new(1e-3, false);
 /// // Clifford+√T (denser gate set, generally fewer gates).
 /// let synth = Synthesizer::new(1e-3, true);
-/// let result = synth.synthesize_zyz(alpha, beta, gamma);
+/// let result = synth.synthesize_u3(theta, phi, lam);
 /// ```
 pub struct Synthesizer {
     inner: Backend,
@@ -160,8 +160,10 @@ impl Synthesizer {
         self
     }
 
-    /// Synthesize the SU(2) rotation `Rz(alpha)·Ry(beta)·Rz(gamma)` from its
-    /// ZYZ Euler angles — the preferred entry point.
+    /// Jointly-optimized synthesis of `Rz(alpha)·Ry(beta)·Rz(gamma)` —
+    /// the engine behind the u-gate family ([`Self::synthesize_u3`] and
+    /// friends). For the rotation-by-rotation construction with the full
+    /// native ε range, see [`Self::synthesize_zyz`].
     ///
     /// Builds BOTH the f64 acceptance target and the exact MPFR target
     /// column from the SAME angles (one construction, via
@@ -169,7 +171,7 @@ impl Synthesizer {
     /// and the acceptance check can never disagree, then routes to
     /// [`Self::synthesize_su2_col`]. Exact below the f64 ULP for
     /// [`Angle::PiRatio`] angles; [`Angle::Rad`] covers plain-f64 callers.
-    pub fn synthesize_zyz(&self, alpha: Angle, beta: Angle, gamma: Angle) -> Option<SynthResult> {
+    pub(crate) fn synthesize_zyz_joint(&self, alpha: Angle, beta: Angle, gamma: Angle) -> Option<SynthResult> {
         use crate::synthesis::angle::{angle_target, DEFAULT_COL_PREC};
         let (target, col) = angle_target(alpha, beta, gamma, DEFAULT_COL_PREC);
         // β = 0 → diagonal target Rz(α+γ): take the native Ross–Selinger
@@ -200,28 +202,28 @@ impl Synthesizer {
     /// from its angles; the global phase is unobservable and dropped.
     pub fn synthesize_u3(&self, theta: Angle, phi: Angle, lam: Angle) -> Option<SynthResult> {
         // U3(θ,φ,λ) ≡ ZYZ(α=φ, β=θ, γ=λ)
-        self.synthesize_zyz(phi, theta, lam)
+        self.synthesize_zyz_joint(phi, theta, lam)
     }
 
     /// Synthesize a `U1(lambda)` gate (qiskit convention), ≅ `Rz(lambda)` up
     /// to global phase.
     pub fn synthesize_u1(&self, lam: Angle) -> Option<SynthResult> {
         // U1(λ) ≡ ZYZ(α=λ, β=0, γ=0); β/γ exactly zero (PiRatio, not Rad)
-        self.synthesize_zyz(lam, Angle::PiRatio(0, 1), Angle::PiRatio(0, 1))
+        self.synthesize_zyz_joint(lam, Angle::PiRatio(0, 1), Angle::PiRatio(0, 1))
     }
 
     /// Synthesize a `U2(phi, lambda)` gate (qiskit convention),
     /// `U2(φ,λ) = U3(π/2, φ, λ)`.
     pub fn synthesize_u2(&self, phi: Angle, lam: Angle) -> Option<SynthResult> {
         // U2(φ,λ) ≡ ZYZ(α=φ, β=π/2, γ=λ); β exactly π/2 (PiRatio, not Rad)
-        self.synthesize_zyz(phi, Angle::PiRatio(1, 2), lam)
+        self.synthesize_zyz_joint(phi, Angle::PiRatio(1, 2), lam)
     }
 
     /// Synthesize `Rz(theta)` (≅ `U1(theta)` up to the dropped global
     /// phase) — the native Ross–Selinger route, ε down to 1e-48 on both
     /// gate sets.
     pub fn synthesize_rz(&self, theta: Angle) -> Option<SynthResult> {
-        self.synthesize_zyz(theta, Angle::PiRatio(0, 1), Angle::PiRatio(0, 1))
+        self.synthesize_zyz_joint(theta, Angle::PiRatio(0, 1), Angle::PiRatio(0, 1))
     }
 
     /// Synthesize `Rx(theta) = H·Rz(theta)·H` — the Rz circuit wrapped in
@@ -235,6 +237,44 @@ impl Synthesizer {
     /// same range and distance guarantees as [`Self::synthesize_rx`].
     pub fn synthesize_ry(&self, theta: Angle) -> Option<SynthResult> {
         self.wrap_rz(theta, "SH", "Hs")
+    }
+
+    /// Synthesize `Rz(alpha)·Ry(beta)·Rz(gamma)` rotation-by-rotation
+    /// through the native gridsynth infrastructure: three z-axis
+    /// rotations at `epsilon/3` each (Ry via its exact Clifford wrap).
+    ///
+    /// Full native ε range (down to ~3e-48) on both gate sets and
+    /// seconds-fast at any depth; the u-gate family
+    /// ([`Self::synthesize_u3`] and friends) is jointly optimized
+    /// instead (~2.5–3× cheaper circuits, narrower validated range).
+    /// The returned `distance` is the sum of the three verified
+    /// component distances — a sound upper bound on the composite
+    /// diamond distance.
+    pub fn synthesize_zyz(
+        &self,
+        alpha: Angle,
+        beta: Angle,
+        gamma: Angle,
+    ) -> Option<SynthResult> {
+        use crate::synthesis::near_clifford::{eval_gates_q, eval_gates_t};
+        let eps_each = self.epsilon() / 3.0;
+        if eps_each < 1e-48 {
+            return None;
+        }
+        let sub = Synthesizer::new(eps_each, self.sqrt_t());
+        let ra = sub.synthesize_rz(alpha)?;
+        let rb = sub.synthesize_ry(beta)?;
+        let rc = sub.synthesize_rz(gamma)?;
+        let gates = format!("{}{}{}", ra.gates?, rb.gates?, rc.gates?);
+        let lde = match &self.inner {
+            Backend::T(_) => eval_gates_t(&gates)?.k,
+            Backend::Q(_) => eval_gates_q(&gates)?.k,
+        };
+        Some(SynthResult {
+            gates: Some(gates),
+            lde,
+            distance: ra.distance + rb.distance + rc.distance,
+        })
     }
 
     /// Rz circuit conjugated by an exact Clifford word: `pre·C·post` where
@@ -510,11 +550,12 @@ impl PySynthesizer {
     /// `sqrt_t=False`.
     ///
     /// ε-range policy (see [`check_epsilon_policy`]): ε ≥ 1e-48 always
-    /// (`ValueError` below); non-z-rotation calls additionally raise
-    /// `ValueError` for ε < 1e-8 with `sqrt_t=True` and warn below 1e-10
-    /// with `sqrt_t=False` — the range check happens per call because
-    /// z-rotation targets (u1/rz/rx/ry, β = 0) take the native routes,
-    /// which are valid to 1e-48 on both gate sets.
+    /// (`ValueError` below); the range checks happen per call.
+    /// Z-rotation targets (u1/rz/rx/ry) and `synthesize_zyz` (the
+    /// rotation-by-rotation route) take the native gridsynth
+    /// infrastructure down to the 1e-48-class floor on both gate sets.
+    /// Jointly-optimized general targets: `sqrt_t=True` (u2/u3) raises
+    /// `ValueError` below 1e-8; `sqrt_t=False` warns below 1e-10.
     ///
     /// `native_rz` (default on) routes z-rotation targets through the
     /// native Ross–Selinger path — milliseconds at any supported ε,
@@ -612,9 +653,14 @@ impl PySynthesizer {
         Ok(self.wrap(self.inner.synthesize_u3(theta, phi, lam)))
     }
 
-    /// Synthesize the SU(2) rotation `Rz(alpha)·Ry(beta)·Rz(gamma)` from its
-    /// ZYZ Euler angles. Each angle accepts the same float/`pi`-string forms
-    /// as [`Self::synthesize_u3`].
+    /// Synthesize `Rz(alpha)·Ry(beta)·Rz(gamma)` rotation-by-rotation
+    /// through the native gridsynth routes (each rotation at
+    /// `epsilon/3`): the full ε range (floor ~3e-48) on both gate sets,
+    /// seconds-fast at any depth, at ~2.5–3× the jointly-optimized cost
+    /// of [`Self::synthesize_u3`]. The reported distance is the sum of
+    /// the three verified component distances (a sound upper bound).
+    /// Each angle accepts the same float/`pi`-string forms as
+    /// [`Self::synthesize_u3`].
     #[pyo3(signature = (alpha, beta, gamma))]
     fn synthesize_zyz(
         &self,
@@ -625,7 +671,7 @@ impl PySynthesizer {
         let py = alpha.py();
         let (alpha, beta, gamma) =
             (parse_angle(alpha)?, parse_angle(beta)?, parse_angle(gamma)?);
-        self.check_policy(py, beta.is_zero())?;
+        self.check_policy(py, true)?;
         Ok(self.wrap(self.inner.synthesize_zyz(alpha, beta, gamma)))
     }
 
@@ -798,11 +844,12 @@ fn check_epsilon_policy(
     if sqrt_t {
         if epsilon < 1e-8 {
             return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "general Clifford+√T synthesis is supported for epsilon >= 1e-8 \
-                 (the Z[ζ16] lattice backend's validated precision range); \
-                 requested {epsilon:e}. Z-rotations (u1 / rz / rx / ry, or \
-                 beta=0) are supported down to 1e-48 via the native route, as \
-                 is sqrt_t=False (Clifford+T) for general targets."
+                "jointly-optimized Clifford+√T synthesis (u2/u3) is supported \
+                 for epsilon >= 1e-8 (the Z[ζ16] lattice backend's validated \
+                 range); requested {epsilon:e}. Use synthesize_zyz — the \
+                 rotation-by-rotation route through the native gridsynth \
+                 infrastructure — for the full range at ~2.5-3x the cost, or \
+                 sqrt_t=False for general targets."
             )));
         }
     } else if epsilon < 1e-10 {
@@ -930,6 +977,25 @@ pub(crate) fn synthesize_u2(
 ) -> PyResult<Option<PySynthResult>> {
     let (phi, lam) = (parse_angle(phi)?, parse_angle(lam)?);
     synthesize_oneshot(py, epsilon, sqrt_t, false, |s| s.synthesize_u2(phi, lam))
+}
+
+/// Synthesize `Rz(alpha)·Ry(beta)·Rz(gamma)` rotation-by-rotation through
+/// the native gridsynth routes (each rotation at `epsilon/3`) — the full
+/// ε range on both gate sets at ~2.5–3× the jointly-optimized cost of
+/// [`synthesize_u3`]. Same angle forms as [`synthesize_u1`].
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (alpha, beta, gamma, epsilon, *, sqrt_t=false))]
+pub(crate) fn synthesize_zyz(
+    py: Python<'_>,
+    alpha: &Bound<'_, PyAny>,
+    beta: &Bound<'_, PyAny>,
+    gamma: &Bound<'_, PyAny>,
+    epsilon: f64,
+    sqrt_t: bool,
+) -> PyResult<Option<PySynthResult>> {
+    let (alpha, beta, gamma) = (parse_angle(alpha)?, parse_angle(beta)?, parse_angle(gamma)?);
+    synthesize_oneshot(py, epsilon, sqrt_t, true, |s| s.synthesize_zyz(alpha, beta, gamma))
 }
 
 /// Synthesize a `U3(theta, phi, lam)` gate (qiskit/bqskit convention) to
@@ -1159,6 +1225,50 @@ mod tests {
                     "triple sqrt_t={sqrt_t} eps={eps:.0e}: dist={dist:.2e} cost_x2={tq} {dt:?}"
                 );
             }
+        }
+    }
+
+    /// `synthesize_zyz` (the rotation-by-rotation gridsynth route)
+    /// matches its ZYZ target on both gate sets, at coarse ε and below
+    /// the √T joint pipeline's 1e-8 floor.
+    #[test]
+    fn test_zyz_rotation_route() {
+        use crate::synthesis::distance::{diamond_distance_float, diamond_distance_u2t_float};
+        use crate::synthesis::near_clifford::{eval_gates_q, eval_gates_t};
+        use num_complex::Complex;
+        let (a, b, g) = (0.7_f64, 1.9, 0.3);
+        let target = {
+            let rz = |t: f64| [
+                [Complex::from_polar(1.0, -t / 2.0), Complex::new(0.0, 0.0)],
+                [Complex::new(0.0, 0.0), Complex::from_polar(1.0, t / 2.0)],
+            ];
+            let ry = |t: f64| [
+                [Complex::new((t / 2.0).cos(), 0.0), Complex::new(-(t / 2.0).sin(), 0.0)],
+                [Complex::new((t / 2.0).sin(), 0.0), Complex::new((t / 2.0).cos(), 0.0)],
+            ];
+            let mm = |x: [[Complex<f64>; 2]; 2], y: [[Complex<f64>; 2]; 2]| {
+                let mut o = [[Complex::new(0.0, 0.0); 2]; 2];
+                for i in 0..2 {
+                    for j in 0..2 {
+                        o[i][j] = x[i][0] * y[0][j] + x[i][1] * y[1][j];
+                    }
+                }
+                o
+            };
+            mm(mm(rz(a), ry(b)), rz(g))
+        };
+        for (sqrt_t, eps) in [(false, 1e-4), (true, 1e-4), (true, 1e-10)] {
+            let r = Synthesizer::new(eps, sqrt_t)
+                .synthesize_zyz(Angle::Rad(a), Angle::Rad(b), Angle::Rad(g))
+                .unwrap_or_else(|| panic!("zyz sqrt_t={sqrt_t} eps={eps}"));
+            assert!(r.distance < eps, "bound {} >= {eps}", r.distance);
+            let gates = r.gates.expect("gates");
+            let d = if sqrt_t {
+                diamond_distance_float(&eval_gates_q(&gates).expect("eval").to_float(), &target)
+            } else {
+                diamond_distance_u2t_float(&eval_gates_t(&gates).expect("eval"), &target)
+            };
+            assert!(d < eps, "measured {d:.3e} >= {eps} (sqrt_t={sqrt_t})");
         }
     }
 

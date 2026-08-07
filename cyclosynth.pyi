@@ -50,6 +50,30 @@ def synthesize_u3(
     ``sqrt_t`` semantics as :func:`synthesize_u1`.
     """
     ...
+def synthesize_rz(
+    theta: float | str, epsilon: float, *, sqrt_t: bool = False
+) -> SynthResult | None:
+    """Rz(theta) via the native route; epsilon down to 1e-48 on both gate
+    sets. Same angle forms / ``sqrt_t`` semantics as :func:`synthesize_u1`."""
+    ...
+def synthesize_rx(
+    theta: float | str, epsilon: float, *, sqrt_t: bool = False
+) -> SynthResult | None:
+    """Rx(theta) = H·Rz(theta)·H; same range as :func:`synthesize_rz`."""
+    ...
+def synthesize_ry(
+    theta: float | str, epsilon: float, *, sqrt_t: bool = False
+) -> SynthResult | None:
+    """Ry(theta) = S·H·Rz(theta)·H·S†; same range as :func:`synthesize_rz`."""
+    ...
+def synthesize_zyz(
+    alpha: float | str, beta: float | str, gamma: float | str,
+    epsilon: float, *, sqrt_t: bool = False
+) -> SynthResult | None:
+    """Rz(alpha)·Ry(beta)·Rz(gamma) rotation-by-rotation through the native
+    gridsynth routes (each at epsilon/3): full range on both gate sets at
+    ~2.5-3x the jointly-optimized cost of :func:`synthesize_u3`."""
+    ...
 
 class SynthResult:
     """Result of a synthesis run (same shape for Clifford+T and Clifford+√T)."""
@@ -112,11 +136,11 @@ class Synthesizer:
         beta: float | str,
         gamma: float | str,
     ) -> SynthResult | None:
-        """Synthesize ``Rz(alpha)·Ry(beta)·Rz(gamma)`` from ZYZ Euler angles.
-
-        Each angle accepts the same float / ``pi``-string forms as
-        :meth:`synthesize_u3`.
-        """
+        """Rz(alpha)·Ry(beta)·Rz(gamma) built rotation-by-rotation through
+        the native gridsynth routes (each rotation at epsilon/3): the full
+        epsilon range on both gate sets at ~2.5-3x the jointly-optimized
+        cost of :meth:`synthesize_u3`. Distance is the sum of the three
+        verified component distances (a sound upper bound)."""
         ...
     def synthesize_u1(self, lam: float | str) -> SynthResult | None:
         """Synthesize a ``U1(lam)`` gate (``Rz(lam)`` up to global phase).
@@ -133,6 +157,18 @@ class Synthesizer:
         Each angle accepts the same float / ``pi``-string forms as
         :meth:`synthesize_u3`.
         """
+        ...
+    def synthesize_rz(self, theta: float | str) -> SynthResult | None:
+        """Rz(theta) via the native route (epsilon down to 1e-48 on both
+        gate sets). Angle forms as :meth:`synthesize_u3`."""
+        ...
+    def synthesize_rx(self, theta: float | str) -> SynthResult | None:
+        """Rx(theta) = H·Rz(theta)·H — same range and guarantees as
+        :meth:`synthesize_rz`."""
+        ...
+    def synthesize_ry(self, theta: float | str) -> SynthResult | None:
+        """Ry(theta) = S·H·Rz(theta)·H·S† — same range and guarantees as
+        :meth:`synthesize_rz`."""
         ...
     @property
     def epsilon(self) -> float: ...

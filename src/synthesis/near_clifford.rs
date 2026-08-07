@@ -358,7 +358,7 @@ mod tests {
     fn test_u3_near_identity_ring() {
         let synth = Synthesizer::new(1e-8, false);
         let r = synth
-            .synthesize_zyz(Angle::Rad(0.0), Angle::Rad(3.74507e-7), Angle::Rad(0.0))
+            .synthesize_zyz_joint(Angle::Rad(0.0), Angle::Rad(3.74507e-7), Angle::Rad(0.0))
             .expect("near-identity u3 should synthesize");
         assert!(r.distance < 1e-8, "distance {}", r.distance);
         let gates = r.gates.expect("gates");
@@ -371,7 +371,7 @@ mod tests {
     fn test_u3_near_h_ring() {
         let synth = Synthesizer::new(1e-8, false);
         let r = synth
-            .synthesize_zyz(
+            .synthesize_zyz_joint(
                 Angle::Rad(0.0),
                 Angle::Rad(std::f64::consts::FRAC_PI_2 + 3.74507e-7),
                 Angle::PiRatio(1, 1),
@@ -385,7 +385,7 @@ mod tests {
     fn test_u3_below_eps_catalog() {
         let synth = Synthesizer::new(1e-8, false);
         let r = synth
-            .synthesize_zyz(Angle::Rad(0.0), Angle::Rad(5e-9), Angle::Rad(0.0))
+            .synthesize_zyz_joint(Angle::Rad(0.0), Angle::Rad(5e-9), Angle::Rad(0.0))
             .expect("below-eps u3 should synthesize");
         assert_eq!(r.gates.as_deref(), Some(""), "expected the identity");
         assert!(r.distance < 1e-8);
@@ -396,7 +396,7 @@ mod tests {
     fn test_q_backend_ring_escape() {
         let synth = Synthesizer::new(1e-5, true);
         let r = synth
-            .synthesize_zyz(Angle::Rad(0.0), Angle::Rad(5e-5), Angle::Rad(0.0))
+            .synthesize_zyz_joint(Angle::Rad(0.0), Angle::Rad(5e-5), Angle::Rad(0.0))
             .expect("near-identity √T target should synthesize");
         assert!(r.distance < 1e-5, "distance {}", r.distance);
     }
@@ -407,7 +407,7 @@ mod tests {
     fn test_shallow_eps_no_escape() {
         let synth = Synthesizer::new(1e-2, false);
         let r = synth
-            .synthesize_zyz(Angle::Rad(0.0), Angle::Rad(0.05), Angle::Rad(0.0))
+            .synthesize_zyz_joint(Angle::Rad(0.0), Angle::Rad(0.05), Angle::Rad(0.0))
             .expect("shallow-eps target should synthesize");
         assert!(r.distance < 1e-2);
         let gates = r.gates.expect("gates");
