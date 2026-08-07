@@ -4,9 +4,6 @@
 //! directly; the lattice pipelines instead keep one global √2^k outside
 //! pure-integer numerators.
 
-// Scaffolding: consumers land incrementally in later commits.
-#![cfg_attr(not(test), allow(dead_code))]
-
 // Denominator-exponent deltas are bounded by the lde cap (≤ ~250),
 // so the i64→u32 casts cannot truncate.
 #![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

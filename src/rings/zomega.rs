@@ -14,9 +14,6 @@
 //! fourth-power the coefficients). Both share every algebraic operation
 //! below; the cross-width oracle test at the bottom pins the equivalence.
 
-// Scaffolding: consumers land incrementally in later commits.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use num_complex::Complex64;
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};

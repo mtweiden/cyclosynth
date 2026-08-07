@@ -4,9 +4,6 @@
 //! Tonelli-style). Both native z-rotation routes consume this — the ring
 //! Diophantine layers stay per gate set in their `norm_eq` modules.
 
-// Scaffolding: consumers land incrementally in later commits.
-#![cfg_attr(not(test), allow(dead_code))]
-
 // The ρ-cap arithmetic (digit-count heuristics) casts through f64;
 // every value is bounded by the 150k iteration cap.
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]

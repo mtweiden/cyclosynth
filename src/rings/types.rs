@@ -3,9 +3,6 @@
 //! Change `Int` here to affect all ring-integer arithmetic uniformly.
 //! Floats are two-tier: primitive `f64` for the fast path, `MpFloat` (below)
 //! where f64 runs out of headroom.
-// Scaffolding: consumers land incrementally in later commits.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use i256::i256;
 use rug::ops::DivRounding;
 

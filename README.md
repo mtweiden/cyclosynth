@@ -59,6 +59,14 @@ The `Synthesizer` constructor also exposes tuning knobs (`deadline_ms`, `q_cost`
 
 Runnable demos are in [`examples/`](examples/).
 
+## Attribution
+
+Algorithms follow arXiv:2510.05816 (core lattice synthesis) and
+Ross–Selinger arXiv:1403.2975 (z-rotations). Portions of the Clifford+T
+z-rotation route were derived from the MIT-licensed
+[pygridsynth](https://github.com/quantum-programming/pygridsynth)
+(see [THIRD_PARTY.md](THIRD_PARTY.md)).
+
 ## Usage (Rust)
 
 The same API is available directly from the crate:

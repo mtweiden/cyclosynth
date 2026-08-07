@@ -47,6 +47,12 @@ pub struct SynthResult {
 /// ```
 pub struct Synthesizer {
     inner: Backend,
+    /// Clifford+T only: route diagonal (β = 0) targets through the native
+    /// Ross–Selinger path (`rz_gridsynth`) instead of the 8D lattice
+    /// pipeline. On by default: it is T-optimal for z-rotations, runs in
+    /// milliseconds, and covers near-Clifford angles whose solutions lie
+    /// above the ε-tuned lde band (issue #2).
+    native_rz: bool,
 }
 
 // A `Synthesizer` is created once per session and never held in bulk, so the
@@ -68,7 +74,15 @@ impl Synthesizer {
         } else {
             Backend::T(SynthesizerT::new(epsilon))
         };
-        Self { inner }
+        Self { inner, native_rz: true }
+    }
+
+    /// Clifford+T only: disable the native Ross–Selinger route for diagonal
+    /// targets and force the 8D lattice pipeline (mainly for A/B testing).
+    /// Ignored for Clifford+√T, which never takes the native route.
+    pub fn with_native_rz(mut self, on: bool) -> Self {
+        self.native_rz = on;
+        self
     }
 
     /// Override the maximum lde the search will probe.
@@ -158,6 +172,19 @@ impl Synthesizer {
     pub fn synthesize_zyz(&self, alpha: Angle, beta: Angle, gamma: Angle) -> Option<SynthResult> {
         use crate::synthesis::angle::{angle_target, DEFAULT_COL_PREC};
         let (target, col) = angle_target(alpha, beta, gamma, DEFAULT_COL_PREC);
+        // β = 0 → diagonal target Rz(α+γ): take the native Ross–Selinger
+        // route for Clifford+T (see the `native_rz` field). Falls through
+        // to the lattice pipeline if it declines (it never hangs).
+        if self.native_rz && beta.is_zero() {
+            if let Backend::T(s) = &self.inner {
+                let theta = alpha.to_radians_mpfr(DEFAULT_COL_PREC)
+                    + gamma.to_radians_mpfr(DEFAULT_COL_PREC);
+                let r = crate::synthesis::clifford_t::rz::ladder::synthesize_rz(&theta, &target, s.epsilon);
+                if r.is_some() {
+                    return r;
+                }
+            }
+        }
         self.synthesize_su2_col(target, &col)
     }
 
@@ -642,6 +669,12 @@ fn check_epsilon_policy(py: Python<'_>, epsilon: f64, sqrt_t: bool) -> PyResult<
                  {epsilon:e}. Use sqrt_t=False (Clifford+T) for deeper epsilon."
             )));
         }
+    } else if epsilon < 1e-48 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Clifford+T synthesis is supported for epsilon >= 1e-48 (the \
+             exact-integer width of the gate decomposition; verified to \
+             that depth for z-rotations); requested {epsilon:e}."
+        )));
     } else if epsilon < 1e-10 {
         PyErr::warn_bound(
             py,

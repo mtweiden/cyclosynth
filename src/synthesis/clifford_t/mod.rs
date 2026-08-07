@@ -1124,5 +1124,6 @@ impl SynthesizerT {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 pub mod lattice;
+pub(crate) mod rz;
 #[cfg(test)]
 mod tests;

@@ -23,6 +23,7 @@ pgo/cyclosynth.profdata
 *.csv
 *.png
 *.md
+!THIRD_PARTY.md
 # …but the top-level docs that belong in git:
 !README.md
 !AGENTS.md

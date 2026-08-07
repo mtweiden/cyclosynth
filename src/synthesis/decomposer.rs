@@ -59,6 +59,10 @@ pub trait GateRing: RingElem + Mul<Output = Self> + Sub<Output = Self>{
             .map(|(name, _)| name)
     }
 
+    /// Fully reduce a U2's denominator exponent (strip √2 factors). Kept on
+    /// the trait because `U2::reduced` is implemented per concrete ring.
+    fn reduce_u2(u: U2<Self>) -> U2<Self>;
+
     /// Name of the magic gate: `"T"` or `"Q"`.
     fn magic_gate_name() -> &'static str;
 
@@ -83,6 +87,8 @@ impl GateRing for ZOmega {
     }
     fn rz_pos_u2() -> U2T { U2T::t() }
 
+    fn reduce_u2(u: U2T) -> U2T { u.reduced() }
+
     fn magic_gate_name() -> &'static str { "T" }
 
     fn decompose_target(target: &U2<Self>) -> String {
@@ -106,6 +112,8 @@ impl GateRing for ZZeta {
         U2Q::s() * U2Q::h() * U2Q::q() * U2Q::h() * U2Q::s().dagger()
     }
     fn rz_pos_u2() -> U2Q { U2Q::q() }
+
+    fn reduce_u2(u: U2Q) -> U2Q { u.reduced() }
 
     fn magic_gate_name() -> &'static str { "Q" }
 
@@ -171,17 +179,22 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
         let ez = rz_r.max_exp();
         let best = ex.min(ey).min(ez);
 
+        // Reduce as we accumulate: `Mul` grows k without reducing, and a
+        // few hundred unreduced syllables overflow the I256 numerators
+        // silently (first seen at k≈143 targets from the native gridsynth
+        // path — the residual then misidentifies and the Clifford suffix
+        // is dropped).
         if ex == best {
             so3 = rx_r;
-            p_output_u2 = p_output_u2 * rx_u2;
+            p_output_u2 = R::reduce_u2(p_output_u2 * rx_u2);
             raw.push('x');
         } else if ey == best {
             so3 = ry_r;
-            p_output_u2 = p_output_u2 * ry_u2;
+            p_output_u2 = R::reduce_u2(p_output_u2 * ry_u2);
             raw.push('y');
         } else {
             so3 = rz_r;
-            p_output_u2 = p_output_u2 * rz_u2;
+            p_output_u2 = R::reduce_u2(p_output_u2 * rz_u2);
             raw.push('z');
         }
 
@@ -189,7 +202,7 @@ fn decompose_so3<R: GateRing>(target: &U2<R>) -> String {
     }
 
     // gate_c = p_output_u2† · target; raw + clifford_suffix evaluates to target.
-    let gate_c = p_output_u2.dagger() * *target;
+    let gate_c = R::reduce_u2(p_output_u2.dagger() * *target);
     let clifford_suffix = R::identify_clifford_from_u2(&gate_c)
         .filter(|&name| name != "I")
         .unwrap_or("");
@@ -277,7 +290,7 @@ fn decompose_so3_canonical_q(target: &U2Q) -> String {
 
         let cand = &candidates[best_idx];
         so3 = best_so3;
-        p_output_u2 = p_output_u2 * cand.u2_pos;
+        p_output_u2 = (p_output_u2 * cand.u2_pos).reduced();
         raw_segments.push(canonical_segment_string(cand.axis, cand.a));
 
         if best_exp == 0 {
@@ -286,7 +299,7 @@ fn decompose_so3_canonical_q(target: &U2Q) -> String {
     }
 
     // Identify the residual Clifford C such that target = p_output_u2 · C.
-    let gate_c = p_output_u2.dagger() * *target;
+    let gate_c = (p_output_u2.dagger() * *target).reduced();
     let clifford_suffix = ZZeta::identify_clifford_from_u2(&gate_c)
         .filter(|&name| name != "I")
         .unwrap_or("");
