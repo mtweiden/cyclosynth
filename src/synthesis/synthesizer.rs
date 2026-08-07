@@ -59,6 +59,46 @@ pub struct Synthesizer {
     native_rz: bool,
 }
 
+
+/// If `theta` is within `epsilon` of a diagonal gate power — k·π/4
+/// (Clifford+T: powers of T) or k·π/8 (Clifford+√T: powers of √T) —
+/// return that exact circuit at lde 0.
+///
+/// Catches both exactly-Clifford-looking angles (π/2 multiples: I, S,
+/// Z, S†) and the exact T/√T powers between them, at any ε: the
+/// distance to the snapped power is the phase-invariant trace formula
+/// D² = q(8−q)/16, q = 4 − 4|cos(δ/2)|, evaluated in MPFR at the
+/// angle's precision — no f64 saturation, so a `PiRatio` input lands on
+/// the exact circuit even at the 1e-48 floor. Gate strings stay in the
+/// diagonal alphabet ({"", T, S, ST, Z, ZT, S†, T†} · √T^{0,1}), which
+/// the syllable cost model already prices minimally.
+fn snap_rz_to_diag_power(theta: &crate::rings::MpFloat, epsilon: f64, sqrt_t: bool) -> Option<SynthResult> {
+    use crate::rings::MpFloat;
+    let prec = theta.prec();
+    let pi = MpFloat::with_val(prec, rug::float::Constant::Pi);
+    let m = if sqrt_t { 8u32 } else { 4 };
+    let step = MpFloat::with_val(prec, &pi / m);
+    let k = MpFloat::with_val(prec, theta / &step).round();
+    let k_int = k.to_integer()?.to_i64()?;
+    let delta = MpFloat::with_val(prec, theta - &MpFloat::with_val(prec, &k * &step));
+    let cos_half = MpFloat::with_val(prec, &delta / 2u32).cos().abs();
+    let q = MpFloat::with_val(prec, 4.0) - MpFloat::with_val(prec, &cos_half * 4u32);
+    let d = (MpFloat::with_val(prec, &q * &(MpFloat::with_val(prec, 8.0) - &q)) / 16u32).sqrt();
+    // NaN-safe accept: only a definite d < ε snaps.
+    if d.partial_cmp(&epsilon) != Some(std::cmp::Ordering::Less) {
+        return None;
+    }
+    const DIAG: [&str; 8] = ["", "T", "S", "ST", "Z", "ZT", "s", "t"];
+    let gates = if sqrt_t {
+        let steps = usize::try_from(k_int.rem_euclid(16)).expect("0..16");
+        format!("{}{}", DIAG[(steps / 2) % 8], if steps % 2 == 1 { "Q" } else { "" })
+    } else {
+        let steps = usize::try_from(k_int.rem_euclid(8)).expect("0..8");
+        DIAG[steps].to_string()
+    };
+    Some(SynthResult { gates: Some(gates), lde: 0, distance: d.to_f64() })
+}
+
 // A `Synthesizer` is created once per session and never held in bulk, so the
 // T-vs-Q size gap is irrelevant; boxing would only fight the consuming
 // `with_*` builder methods.
@@ -183,6 +223,11 @@ impl Synthesizer {
         if self.native_rz && beta.is_zero() {
             let theta = alpha.to_radians_mpfr(DEFAULT_COL_PREC)
                 + gamma.to_radians_mpfr(DEFAULT_COL_PREC);
+            // Diagonal gate powers (Clifford-looking angles and exact
+            // T/√T powers) answer directly at lde 0.
+            if let Some(r) = snap_rz_to_diag_power(&theta, self.epsilon(), self.sqrt_t()) {
+                return Some(r);
+            }
             let r = match &self.inner {
                 Backend::T(s) => {
                     crate::synthesis::clifford_t::rz::ladder::synthesize_rz(&theta, &target, s.epsilon)
@@ -1278,6 +1323,55 @@ mod tests {
             };
             assert!(d < eps, "measured {d:.3e} >= {eps} (sqrt_t={sqrt_t})");
         }
+    }
+
+    /// Clifford-looking and exact-T/√T-power angles answer directly from
+    /// the diagonal snap: exact strings at lde 0, at any ε (including a
+    /// PiRatio input at the 1e-48 floor), and near-misses within ε snap
+    /// to the power while genuine non-powers still synthesize.
+    #[test]
+    fn test_rz_diag_power_snap() {
+        use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
+        // Exact powers, Clifford+T.
+        let t = Synthesizer::new(1e-10, false);
+        for (theta, want) in [
+            (Angle::PiRatio(1, 4), "T"),
+            (Angle::PiRatio(1, 2), "S"),
+            (Angle::PiRatio(1, 1), "Z"),
+            (Angle::PiRatio(-1, 4), "t"),
+            (Angle::Rad(FRAC_PI_2), "S"),
+        ] {
+            let r = t.synthesize_rz(theta).expect("snap");
+            assert_eq!(r.gates.as_deref(), Some(want));
+            assert_eq!(r.lde, 0);
+            assert!(r.distance < 1e-12, "dist {}", r.distance);
+        }
+        // Exact powers, Clifford+√T — including the √T-only π/8 class.
+        let q = Synthesizer::new(1e-10, true);
+        for (theta, want) in [
+            (Angle::PiRatio(1, 8), "Q"),
+            (Angle::PiRatio(3, 8), "TQ"),
+            (Angle::PiRatio(1, 2), "S"),
+        ] {
+            let r = q.synthesize_rz(theta).expect("snap");
+            assert_eq!(r.gates.as_deref(), Some(want));
+            assert_eq!(r.lde, 0);
+        }
+        // Deep ε: PiRatio stays exact where f64 catalog distances saturate.
+        let deep = Synthesizer::new(1e-30, false);
+        let r = deep.synthesize_rz(Angle::PiRatio(1, 4)).expect("deep snap");
+        assert_eq!(r.gates.as_deref(), Some("T"));
+        assert!(r.distance < 1e-30);
+        // Near-miss within ε snaps; outside ε synthesizes normally.
+        let t8 = Synthesizer::new(1e-8, false);
+        let r = t8.synthesize_rz(Angle::Rad(FRAC_PI_4 + 1e-9)).expect("near snap");
+        assert_eq!(r.gates.as_deref(), Some("T"));
+        assert!(r.distance < 1e-8);
+        let r = t8.synthesize_rz(Angle::Rad(0.7)).expect("non-power");
+        assert!(r.gates.as_deref().is_some_and(|g| g.len() > 8), "0.7 must synthesize");
+        // The wrap routes inherit the snap: Rx(π/2) = H·S·H.
+        let r = t.synthesize_rx(Angle::PiRatio(1, 2)).expect("rx snap");
+        assert_eq!(r.gates.as_deref(), Some("HSH"));
     }
 
     /// √T + deep ε through the front door proves the native-Q routing:
