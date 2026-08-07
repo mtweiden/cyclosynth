@@ -31,7 +31,10 @@ pub struct SynthResult {
     pub gates: Option<String>,
     /// Denominator exponent of the synthesized unitary.
     pub lde: u32,
-    /// Diamond distance from synthesized unitary to target.
+    /// Diamond distance from synthesized unitary to target. For
+    /// [`Synthesizer::synthesize_zyz`] this is the sum of the verified
+    /// per-rotation distances — a sound upper bound rather than the
+    /// measured composite distance.
     pub distance: f64,
 }
 
@@ -241,7 +244,8 @@ impl Synthesizer {
 
     /// Synthesize `Rz(alpha)·Ry(beta)·Rz(gamma)` rotation-by-rotation
     /// through the native gridsynth infrastructure: three z-axis
-    /// rotations at `epsilon/3` each (Ry via its exact Clifford wrap).
+    /// rotations at `epsilon/3` each (Ry via its exact Clifford wrap);
+    /// β = 0 collapses to a single full-ε z-rotation.
     ///
     /// Full native ε range (down to ~3e-48) on both gate sets and
     /// seconds-fast at any depth; the u-gate family
@@ -257,11 +261,20 @@ impl Synthesizer {
         gamma: Angle,
     ) -> Option<SynthResult> {
         use crate::synthesis::near_clifford::{eval_gates_q, eval_gates_t};
+        // A zero middle rotation collapses to a single z-rotation — run it
+        // at full ε (exact distance, ~3× cheaper than splitting).
+        if beta.is_zero() {
+            return self.synthesize_zyz_joint(alpha, beta, gamma);
+        }
         let eps_each = self.epsilon() / 3.0;
         if eps_each < 1e-48 {
             return None;
         }
-        let sub = Synthesizer::new(eps_each, self.sqrt_t());
+        // The sub-synthesizer inherits the caller's routing and cost-model
+        // knobs; only ε changes.
+        let sub = Synthesizer::new(eps_each, self.sqrt_t())
+            .with_native_rz(self.native_rz)
+            .with_q_cost(self.q_weight());
         let ra = sub.synthesize_rz(alpha)?;
         let rb = sub.synthesize_ry(beta)?;
         let rc = sub.synthesize_rz(gamma)?;
@@ -435,7 +448,7 @@ impl Synthesizer {
     pub(crate) fn q_weight(&self) -> f64 {
         match &self.inner {
             Backend::T(_) => 3.0,
-            // q_cost_x2 is a small user knob (default 7; set from 2·weight).
+            // q_cost_x2 is a small user knob (default 6 = 3·T; set from 2·weight).
             #[allow(clippy::cast_precision_loss)]
             Backend::Q(s) => s.q_cost_x2 as f64 / 2.0,
         }
@@ -1147,8 +1160,8 @@ mod tests {
     }
 
     /// Where do the u3 pipelines actually stop? Direct pipeline probes
-    /// below the policy floors, plus the triple-Rz decomposition
-    /// (u3 = Rz(α)·SH·Rz(β)·HS†·Rz(γ), each rotation native at ε/3).
+    /// below the policy floors, plus the rotation route
+    /// ([`Synthesizer::synthesize_zyz`]) at the same depths.
     /// Run: `cargo test --release --lib probe_u3_deep_floors -- --ignored --nocapture`
     #[test]
     #[ignore = "diagnostic probe, print-only"]
@@ -1160,7 +1173,7 @@ mod tests {
         // The 16D pipeline below its 1e-8 floor grinds without terminating
         // (>17 min on one target at 1e-9, with or without the reduced-
         // basis cache — the SE enumeration volume is the wall). Probe T
-        // only; use the triple-Rz rows for deep sqrt-T u3.
+        // only; use the synthesize_zyz rows for deep sqrt-T u3.
         for (sqrt_t, eps_list) in [(false, vec![1e-10_f64, 1e-11])] {
             for eps in eps_list {
                 let synth = Synthesizer::new(eps, sqrt_t);
@@ -1175,22 +1188,17 @@ mod tests {
                 }
             }
         }
-        // Triple-Rz decomposition at deep ε, both gate sets.
+        // Rotation route (synthesize_zyz) at deep ε, both gate sets,
+        // verified here against an independently composed target.
         for sqrt_t in [false, true] {
             for eps in [1e-10_f64, 1e-12] {
-                let synth = Synthesizer::new(eps / 3.0, sqrt_t);
+                let synth = Synthesizer::new(eps, sqrt_t);
                 let t0 = std::time::Instant::now();
-                let rz1 = synth.synthesize_rz(Angle::Rad(g)).expect("rz1");
-                let ry = synth.synthesize_ry(Angle::Rad(b)).expect("ry");
-                let rz2 = synth.synthesize_rz(Angle::Rad(a)).expect("rz2");
-                let gates = format!(
-                    "{}{}{}",
-                    rz2.gates.expect("g2"), ry.gates.expect("gy"), rz1.gates.expect("g1")
-                );
+                let r = synth
+                    .synthesize_zyz(Angle::Rad(a), Angle::Rad(b), Angle::Rad(g))
+                    .expect("zyz");
+                let gates = r.gates.expect("gates");
                 let dt = t0.elapsed();
-                // Verify against the composed target.
-                let (ca, sa) = ((a / 2.0).cos(), (a / 2.0).sin());
-                let _ = (ca, sa);
                 let target = {
                     use num_complex::Complex;
                     let rz = |t: f64| [
@@ -1222,7 +1230,7 @@ mod tests {
                      crate::synthesis::clifford_sqrt_t::gates_cost(&gates, 6))
                 };
                 eprintln!(
-                    "triple sqrt_t={sqrt_t} eps={eps:.0e}: dist={dist:.2e} cost_x2={tq} {dt:?}"
+                    "zyz    sqrt_t={sqrt_t} eps={eps:.0e}: dist={dist:.2e} cost_x2={tq} {dt:?}"
                 );
             }
         }

@@ -142,32 +142,8 @@ where
         let y_mpfr = uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, prec);
         // Reduced-basis reuse across the lde ladder: the key must pin
         // everything v (and hence Q up to the 2^-k scalar) depends on.
-        scratch.cache_key = deep_v_src.map(|(u_l, target)| {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            u_l.u11.hash(&mut h);
-            u_l.u12.hash(&mut h);
-            u_l.u21.hash(&mut h);
-            u_l.u22.hash(&mut h);
-            u_l.k.hash(&mut h);
-            for row in target {
-                for z in row {
-                    z.re.to_bits().hash(&mut h);
-                    z.im.to_bits().hash(&mut h);
-                }
-            }
-            if let Some((rot, rk)) = rot_src {
-                for row in rot {
-                    for z in row {
-                        z.re.to_bits().hash(&mut h);
-                        z.im.to_bits().hash(&mut h);
-                    }
-                }
-                rk.hash(&mut h);
-            }
-            eps.to_bits().hash(&mut h);
-            h.finish()
-        });
+        scratch.cache_key =
+            deep_v_src.map(|(u_l, target)| reduction_cache_key(u_l, target, rot_src, eps));
         find_aligned_lattice_points_mpfr(
             scratch, &y_mpfr, &v_mpfr, k, eps, max_leaf_checks, budget_hit,
             should_stop, external_abort, consumed,
@@ -179,6 +155,43 @@ where
             external_abort, consumed,
         )
     }
+}
+
+
+/// Cache key for reduced-basis reuse (see
+/// [`super::lattice::scratch::BasisCache16`]): hashes every input the
+/// whitened form's direction depends on — the prefix, the target, the
+/// speculative rotation, and ε.
+fn reduction_cache_key(
+    u_l: &U2Q,
+    target: &Mat2,
+    rot_src: Option<&(Mat2, u32)>,
+    eps: f64,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    u_l.u11.hash(&mut h);
+    u_l.u12.hash(&mut h);
+    u_l.u21.hash(&mut h);
+    u_l.u22.hash(&mut h);
+    u_l.k.hash(&mut h);
+    for row in target {
+        for z in row {
+            z.re.to_bits().hash(&mut h);
+            z.im.to_bits().hash(&mut h);
+        }
+    }
+    if let Some((rot, rk)) = rot_src {
+        for row in rot {
+            for z in row {
+                z.re.to_bits().hash(&mut h);
+                z.im.to_bits().hash(&mut h);
+            }
+        }
+        rk.hash(&mut h);
+    }
+    eps.to_bits().hash(&mut h);
+    h.finish()
 }
 
 /// Two-pass leaf-budget strategy: pass 1 bails fast on doomed lde levels;
