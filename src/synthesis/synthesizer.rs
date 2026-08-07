@@ -1016,6 +1016,70 @@ mod tests {
         }
     }
 
+    /// u3 (general-target) pipeline benchmark through the front door,
+    /// both gate sets. Deterministic targets; per-ε minimum over trials.
+    /// Run: `cargo test --release --lib bench_u3_pipeline -- --ignored --nocapture`
+    #[test]
+    #[ignore = "bench probe, print-only"]
+    fn bench_u3_pipeline() {
+        let mut state = 0xC0FF_EE00_D00D_5EEDu64;
+        let mut rnd = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU
+        };
+        let targets: Vec<[f64; 3]> = (0..5).map(|_| [rnd(), rnd(), rnd()]).collect();
+        for (sqrt_t, levels) in [
+                        (false, vec![1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8]),
+            (true, vec![1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7]),
+        ] {
+            let set = if sqrt_t { "sqrt_t" } else { "t     " };
+            for eps in levels {
+                let synth = Synthesizer::new(eps, sqrt_t);
+                let mut total_ms = 0.0;
+                let mut costs = Vec::new();
+                for a in &targets {
+                    let mut best = f64::INFINITY;
+                    let mut lde = 0;
+                    for _ in 0..2 {
+                        let t0 = std::time::Instant::now();
+                        let r = synth
+                            .synthesize_u3(Angle::Rad(a[0]), Angle::Rad(a[1]), Angle::Rad(a[2]))
+                            .expect("solves");
+                        best = best.min(t0.elapsed().as_secs_f64() * 1e3);
+                        lde = r.lde;
+                    }
+                    total_ms += best;
+                    costs.push(lde);
+                }
+                eprintln!(
+                    "{set} eps={eps:.0e}  sum(min) {total_ms:9.1} ms across 5 targets  lde={costs:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "bench probe, print-only"]
+    fn bench_u3_deep_q() {
+        let mut state = 0xC0FF_EE00_D00D_5EEDu64;
+        let mut rnd = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU
+        };
+        let targets: Vec<[f64; 3]> = (0..5).map(|_| [rnd(), rnd(), rnd()]).collect();
+        let synth = Synthesizer::new(1e-8, true);
+        for (i, a) in targets.iter().enumerate() {
+            let t0 = std::time::Instant::now();
+            let r = synth
+                .synthesize_u3(Angle::Rad(a[0]), Angle::Rad(a[1]), Angle::Rad(a[2]))
+                .expect("solves");
+            eprintln!(
+                "deep_q target_{i}  {:8.2?}  lde={} dist={:.2e}",
+                t0.elapsed(), r.lde, r.distance
+            );
+        }
+    }
+
     /// √T + deep ε through the front door proves the native-Q routing:
     /// the 16D lattice pipeline is not validated below 1e-8, so only the
     /// native route can produce this result.

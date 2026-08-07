@@ -41,10 +41,6 @@ use std::f64::consts::PI;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub(crate) mod cost_bound;
-pub mod lattice;
-pub(crate) mod rz;
-
 /// Result of a synthesis call: the gate string, its lde, and the diamond
 /// distance achieved.
 ///
@@ -614,6 +610,9 @@ pub(crate) fn with_incumbent_watcher<R: Send>(
     })
 }
 
+pub(crate) mod cost_bound;
+pub mod lattice;
+pub(crate) mod rz;
 mod brute;
 mod first_hit;
 mod optimal;
