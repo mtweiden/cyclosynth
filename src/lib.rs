@@ -23,6 +23,9 @@ fn cyclosynth(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(synthesis::synthesizer::synthesize_u1, m)?)?;
     m.add_function(wrap_pyfunction!(synthesis::synthesizer::synthesize_u2, m)?)?;
     m.add_function(wrap_pyfunction!(synthesis::synthesizer::synthesize_u3, m)?)?;
+    m.add_function(wrap_pyfunction!(synthesis::synthesizer::synthesize_rz, m)?)?;
+    m.add_function(wrap_pyfunction!(synthesis::synthesizer::synthesize_rx, m)?)?;
+    m.add_function(wrap_pyfunction!(synthesis::synthesizer::synthesize_ry, m)?)?;
     // D&C / inner-cap diagnostics (trace-only).
     #[cfg(feature = "trace")]
     {

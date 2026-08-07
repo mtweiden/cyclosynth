@@ -7,8 +7,6 @@
 //! Clifford+T counterpart this mirrors.
 
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
-// Routed from the front door in a later commit; probe/test-consumed here.
-#![allow(dead_code)]
 
 pub(crate) mod ladder;
 pub(crate) mod grid;

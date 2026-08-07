@@ -45,8 +45,9 @@ Notes:
 
 - **Angles, not matrices.** Targets are given by rotation angles — floats (radians) or exact-π strings (`"pi/64"`, `"3*pi/4"`, `"-2pi/3"`). Deep-ε synthesis needs more precision than an `f64` may carry.
 - **Gate order.** In the gate string, the leftmost gate is the leftmost matrix factor: `"ABC"` means `A·B·C`.
-- `synthesize_u1(lam, epsilon)` and `synthesize_u2(phi, lam, epsilon)` cover the rest of the qiskit U-gate family.
-- **Supported ε:** Clifford+T is validated to `1e-10` (below that it warns and proceeds); Clifford+√T requires `ε ≥ 1e-8`.
+- `synthesize_u1(lam, epsilon)` and `synthesize_u2(phi, lam, epsilon)` cover the rest of the qiskit U-gate family; `synthesize_rz/rx/ry(theta, epsilon)` cover the axis rotations (Rx and Ry are the Rz circuit wrapped in exact Cliffords, so they share Rz's range and guarantees).
+- **Supported ε:** z-rotation targets (`u1`/`rz`/`rx`/`ry`, or `u3` with θ = 0) run a native Ross–Selinger-style route on BOTH gate sets: milliseconds-to-seconds, exact-verified, down to the hard floor of `1e-48`. General targets use the lattice pipelines: Clifford+T is validated to `1e-10` (warns and proceeds below; slow past `1e-12`), Clifford+√T requires `ε ≥ 1e-8`.
+- **Cost-first √T:** the Clifford+√T z-rotation route optimizes the weighted gate cost (T + 3·√T) over hundreds of candidates and all legal assembly phases, preferring cheaper circuits over faster calls; it averages ~0.75–0.79× the T-only cost of the same angle at the same ε.
 
 For repeated calls, construct one reusable instance:
 

@@ -7,9 +7,6 @@
 //! Below 1e-12 verification switches to the exact MPFR trace formula
 //! (`exact_rz_distance`) — f64 diamond distance saturates near 1e-15.
 
-// Routed from the front door in a later commit; probe/test-consumed here.
-#![allow(dead_code)]
-
 use crate::rings::types::MpFloat;
 use crate::synthesis::distance::{diamond_distance_float, Mat2};
 use crate::synthesis::clifford_sqrt_t::rz::gridsynth_q_gates_native;
