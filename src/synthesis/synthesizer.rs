@@ -195,6 +195,82 @@ impl Synthesizer {
         target: Mat2,
         exact_col: &[crate::rings::MpFloat; 4],
     ) -> Option<SynthResult> {
+        if let Some(r) = self.try_near_shallow(&target, exact_col) {
+            return Some(r);
+        }
+        self.synthesize_su2_col_direct(target, exact_col)
+    }
+
+    /// Near-shallow-point handling (issue #2): targets within ε of a
+    /// catalog point return it directly (optimal); targets in the
+    /// pathological ring ε ≤ δ < RING_FACTOR·ε synthesize `target·W†`
+    /// (generic) and append the exact escape circuit `W`. `None` = not
+    /// near a shallow point, or the escape declined — take the direct path.
+    fn try_near_shallow(
+        &self,
+        target: &Mat2,
+        exact_col: &[crate::rings::MpFloat; 4],
+    ) -> Option<SynthResult> {
+        use crate::synthesis::distance::diamond_distance_u2t_float;
+        use crate::synthesis::near_clifford as nc;
+        let eps = self.epsilon();
+        let is_q = matches!(self.inner, Backend::Q(_));
+        let (delta, point) = nc::nearest_shallow(target, is_q);
+        if delta < eps {
+            // The shallow point itself is the minimal-cost answer. Verify
+            // with the backend's exact acceptance check before returning.
+            let hit = if is_q {
+                nc::eval_gates_q(&point.gates).map(|u| {
+                    let d = crate::synthesis::distance::diamond_distance_float(
+                        &u.to_float(),
+                        target,
+                    );
+                    (u.k, d)
+                })
+            } else {
+                nc::eval_gates_t(&point.gates).map(|u| (u.k, diamond_distance_u2t_float(&u, target)))
+            };
+            if let Some((lde, dist)) = hit {
+                if dist < eps {
+                    return Some(SynthResult {
+                        gates: Some(point.gates.clone()),
+                        lde,
+                        distance: dist,
+                    });
+                }
+            }
+            // δ ≈ ε boundary disagreement — fall through to the escape.
+        }
+        if eps > nc::ESCAPE_EPS_MAX || delta >= nc::RING_FACTOR * eps {
+            return None;
+        }
+        let esc = nc::build_escape(target, exact_col, delta / eps)?;
+        let inner = self.synthesize_su2_col_direct(esc.target, &esc.col)?;
+        let inner_gates = inner.gates?;
+        let gates = format!("{inner_gates}{}", esc.w_gates);
+        // Composition with the exact W preserves diamond distance; re-verify
+        // against the ORIGINAL target with the exact evaluators anyway.
+        let (lde, dist) = if is_q {
+            let u = nc::eval_gates_q(&gates)?;
+            (u.k, crate::synthesis::distance::diamond_distance_float(&u.to_float(), target))
+        } else {
+            let u = nc::eval_gates_t(&gates)?;
+            (u.k, diamond_distance_u2t_float(&u, target))
+        };
+        if dist < eps {
+            Some(SynthResult { gates: Some(gates), lde, distance: dist })
+        } else {
+            None
+        }
+    }
+
+    /// Backend dispatch without the near-shallow front half — the escape
+    /// path calls this for its inner (generic) synthesis.
+    fn synthesize_su2_col_direct(
+        &self,
+        target: Mat2,
+        exact_col: &[crate::rings::MpFloat; 4],
+    ) -> Option<SynthResult> {
         match &self.inner {
             Backend::T(s) => s.synthesize_with_exact_col(target, exact_col).map(|r| SynthResult {
                 gates: r.gates,

@@ -769,3 +769,94 @@ use std::f64::consts::PI;
     }
 
 
+
+    /// Issue-#2 adjudication census: EXHAUSTIVE minimum diamond distance
+    /// from every Clifford+T unitary of T-count ≤ TMAX to a δ-ladder of
+    /// near-identity targets Rz(δ) plus a generic target — streamed over
+    /// Matsumoto–Amano words (leading T | ε, syllables {HT, HST}, all 24
+    /// trailing Cliffords via target pre-rotation). No lattice, no search,
+    /// no pruning: pure enumeration ground truth. If near-identity targets
+    /// admitted generic-depth solutions (i.e. the observed T-count climb
+    /// were a search bug), their curves here would decay like the generic
+    /// curve; a repulsion floor at δ that persists for many levels is
+    /// intrinsic to the gate set.
+    /// Run: `cargo test --release --lib census_exhaustive_near_clifford -- --ignored --nocapture`
+    #[test]
+    #[ignore = "census probe, print-only; see doc comment"]
+    fn census_exhaustive_near_clifford() {
+        const TMAX: u32 = 20;
+        let deltas = [0.5_f64, 0.1, 0.03, 0.01, 3e-3];
+        let mut targets: Vec<(String, Mat2)> = deltas
+            .iter()
+            .map(|&d| (format!("Rz({d})"), rz(d)))
+            .collect();
+        targets.push(("generic Rz(1.0472)".into(), rz(1.0472)));
+
+        // dd(W·C, T) = dd(W, T·C†): pre-rotate each target by all Cliffords.
+        let rotated: Vec<Vec<Mat2>> = targets
+            .iter()
+            .map(|(_, tg)| {
+                CLIFFORD_TABLE_T
+                    .iter()
+                    .map(|(_, c)| {
+                        let cf = c.to_float();
+                        let cd = [
+                            [cf[0][0].conj(), cf[1][0].conj()],
+                            [cf[0][1].conj(), cf[1][1].conj()],
+                        ];
+                        let mut m = [[Complex::new(0.0, 0.0); 2]; 2];
+                        for i in 0..2 {
+                            for j in 0..2 {
+                                m[i][j] = tg[i][0] * cd[0][j] + tg[i][1] * cd[1][j];
+                            }
+                        }
+                        m
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let ht = (U2T::h() * U2T::t()).reduced();
+        let hst = (U2T::h() * U2T::s() * U2T::t()).reduced();
+        let nt = targets.len();
+        let mut mins = vec![vec![f64::INFINITY; nt]; (TMAX + 1) as usize];
+        let mut stack: Vec<(U2T, u32)> = vec![(U2T::eye(), 0), (U2T::t(), 1)];
+        let mut nodes: u64 = 0;
+        while let Some((u, t)) = stack.pop() {
+            nodes += 1;
+            let uf = u.to_float();
+            for (ti, rots) in rotated.iter().enumerate() {
+                for r in rots {
+                    let d = diamond_distance_float(&uf, r);
+                    if d < mins[t as usize][ti] {
+                        mins[t as usize][ti] = d;
+                    }
+                }
+            }
+            if t < TMAX {
+                stack.push(((u * ht).reduced(), t + 1));
+                stack.push(((u * hst).reduced(), t + 1));
+            }
+        }
+        // Prefix-min: best over T-count ≤ t.
+        for t in 1..=(TMAX as usize) {
+            for ti in 0..nt {
+                if mins[t - 1][ti] < mins[t][ti] {
+                    mins[t][ti] = mins[t - 1][ti];
+                }
+            }
+        }
+        eprintln!("\ncensus over {nodes} MA words × 24 Cliffords, exhaustive min dd by T-count:");
+        eprint!("{:>3}", "t");
+        for (name, _) in &targets {
+            eprint!(" {name:>18}");
+        }
+        eprintln!();
+        for t in 0..=(TMAX as usize) {
+            eprint!("{t:>3}");
+            for ti in 0..nt {
+                eprint!(" {:>18.3e}", mins[t][ti]);
+            }
+            eprintln!();
+        }
+    }

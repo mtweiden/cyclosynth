@@ -35,6 +35,7 @@ pub mod decomposer;
 pub mod diag;
 pub mod distance;
 pub mod lattice;
+pub(crate) mod near_clifford;
 pub(crate) mod synthesizer;
 
 /// Build the global rayon pool with 16 MiB worker stacks before its

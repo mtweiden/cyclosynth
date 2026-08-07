@@ -50,8 +50,6 @@ use crate::synthesis::clifford_t::lattice::brute::{
 use crate::synthesis::clifford_t::lattice::{find_aligned_lattice_points_mpfr, IntScratch};
 use crate::synthesis::clifford_t::lattice::q_metric::uv_to_lattice_y_mpfr;
 
-pub mod lattice;
-
 /// At ε ≤ this, the deep-ε MPFR alignment path replaces the f64 chain (the
 /// f64 prefix residual and lattice y lose precision once the cap half-width
 /// ε²/4 nears the f64 ULP). `CYCLOSYNTH_OMEGA_FORCE_EXACT=1` forces it on at
@@ -356,6 +354,14 @@ const PASS2_CAP: u64 = u64::MAX;
 /// rule.
 const PASS1_NODE_CAP: u64 = 2_000_000;
 const PASS2_NODE_CAP: u64 = 50_000_000;
+
+/// Hard cap on the prefix length t' the search will build a prefix set
+/// for. The set is O(2^t') `U2T`s retained in a process-wide cache, so
+/// scanning levels beyond this (e.g. a user-supplied `max_lde` far above
+/// the ε band, or the pre-fix issue-#2 near-Clifford scan) exhausted
+/// system memory. 2^22 prefixes ≈ 0.6 GB — already far beyond any level
+/// that completes in reasonable time.
+const T_PRIME_CAP: u32 = 22;
 
 /// Candidates collected per DC walk before the ε-distance check. The
 /// coset dedup collapsed up to 8 independent first-hit draws into one
@@ -823,7 +829,7 @@ impl SynthesizerT {
                 (t_dc_start..=horizon)
                     .filter_map(|t| {
                         let tp = optimal_t_prime(t, self.epsilon);
-                        if tp > 0 && parity_ok(tp) && seen.insert(tp) {
+                        if tp > 0 && tp <= T_PRIME_CAP && parity_ok(tp) && seen.insert(tp) {
                             Some(tp)
                         } else {
                             None
@@ -836,7 +842,20 @@ impl SynthesizerT {
         }
 
         for t in t_dc_start..=self.max_lde {
-            if !parity_ok(optimal_t_prime(t, self.epsilon)) {
+            let tp = optimal_t_prime(t, self.epsilon);
+            // Memory guard: the prefix set is O(2^t'), retained in a cache.
+            // A user-supplied max_lde far above the ε-band would otherwise
+            // OOM the process; t' grows with t, so stop here (issue #2).
+            if tp > T_PRIME_CAP {
+                if crate::synthesis::diag::trace_enabled() {
+                    eprintln!(
+                        "[trace] lde={t} t'={tp} > cap {T_PRIME_CAP}: stopping search \
+                         (prefix set would exceed the memory guard)"
+                    );
+                }
+                break;
+            }
+            if !parity_ok(tp) {
                 continue;
             }
             let result = self.try_at_lde(&target, v, exact_col, t);
@@ -1104,5 +1123,6 @@ impl SynthesizerT {
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
+pub mod lattice;
 #[cfg(test)]
 mod tests;
