@@ -1374,6 +1374,36 @@ mod tests {
         assert_eq!(r.gates.as_deref(), Some("HSH"));
     }
 
+    /// Issue #2 repro, exactly as reported: u1 at ε=1e-8 near Cliffords.
+    /// Run: `cargo test --release --lib probe_issue2_repro -- --ignored --nocapture`
+    #[test]
+    #[ignore = "diagnostic probe, print-only"]
+    fn probe_issue2_repro() {
+        let synth = Synthesizer::new(1e-8, false);
+        let cases: Vec<(&str, f64)> = vec![
+            ("generic 1.0472", 1.0472),
+            ("pi/2^23 near id", 3.74507e-07),
+            ("near S", std::f64::consts::FRAC_PI_2 + 3.74507e-07),
+            ("delta 1e-2", 1e-2),
+            ("delta 1e-4", 1e-4),
+            ("delta 5e-6", 5e-6),
+            ("delta 2e-6", 2e-6),
+            ("delta 1e-6", 1e-6),
+            ("delta 1e-7", 1e-7),
+        ];
+        for (name, th) in cases {
+            let t0 = std::time::Instant::now();
+            let r = synth.synthesize_u1(Angle::Rad(th));
+            match r {
+                Some(r) => {
+                    let tc = r.gates.as_deref().map_or(0, |g| g.matches('T').count() + g.matches('t').count());
+                    eprintln!("{name:18} ok  T={tc:<4} dist={:.2e} {:?}", r.distance, t0.elapsed());
+                }
+                None => eprintln!("{name:18} NONE {:?}", t0.elapsed()),
+            }
+        }
+    }
+
     /// √T + deep ε through the front door proves the native-Q routing:
     /// the 16D lattice pipeline is not validated below 1e-8, so only the
     /// native route can produce this result.
