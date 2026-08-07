@@ -148,6 +148,25 @@ def main():
     fig.savefig(OUT_PNG, bbox_inches="tight")
     fig.savefig(OUT_PNG.replace(".pdf", ".svg"), bbox_inches="tight")
     print(f"saved {OUT_PNG} (+ .svg)")
+
+    # Single-panel version of the general-unitaries panel: the paper's
+    # headline figure (Fig. 1). Same data, styles, and reference slopes as
+    # panel (b), sized for a single column.
+    out_g = "scripts/data/cost_vs_eps_general.pdf"
+    figg, axg = plt.subplots(figsize=(6.0, 4.3))
+    hg = draw(axg, u3, "")
+    axg.set_ylabel(r"Cost ($T$ states)")
+    axg.legend(hg, [h.get_label() for h in hg], loc="upper left",
+               fontsize=10.5, framealpha=0.95, handlelength=1.6)
+    figg.tight_layout()
+    add_ref_lines(axg, [
+        (9.0, r"$9\,\log_2(1/\varepsilon)$", 4.6, 12),
+        (3.0, r"$3\,\log_2(1/\varepsilon)$", 6.6, 12),
+        (2.4, r"$2.4\,\log_2(1/\varepsilon)$", 7.3, -19),
+    ])
+    figg.savefig(out_g, bbox_inches="tight")
+    figg.savefig(out_g.replace(".pdf", ".svg"), bbox_inches="tight")
+    print(f"saved {out_g} (+ .svg)")
     for panel, s in (("Rz", rz), ("U3", u3)):
         if s is None:
             continue

@@ -43,6 +43,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) mod cost_bound;
 pub mod lattice;
+pub(crate) mod rz;
 
 /// Result of a synthesis call: the gate string, its lde, and the diamond
 /// distance achieved.

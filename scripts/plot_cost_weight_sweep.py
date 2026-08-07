@@ -109,8 +109,8 @@ ax.text(C_ASYMP + 0.06, 1.43, r"$c^\star\!\to\!4.0$",
         color="darkgreen", fontsize=14, rotation=90, va="top", ha="left")
 ax.text(np.mean(cstars), 0.53, "measured\ncrossover\nrange", color="0.3",
         fontsize=14, ha="center", va="bottom", ma="center")
-ax.set_xlabel(r"$c$ in $\mathrm{cost}(U_{\sqrt{T}}) = n_T + c\,n_{\sqrt{T}}$")
-ax.set_ylabel(r"$\rho = \mathrm{cost}(U_{\sqrt{T}})/\mathrm{cost}(U_T)$")
+ax.set_xlabel(r"$c$ ($T$ states per $\sqrt{T}$ gate)")
+ax.set_ylabel(r"$\rho = \mathrm{cost}_{\sqrt{T}}/\mathrm{cost}_{T}$")
 def dark_text(col, cap=0.45):
     """Scale a color toward black so its luminance <= cap (readable on white)."""
     r, g, b = mcolors.to_rgb(col)

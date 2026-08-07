@@ -14,9 +14,6 @@
 //! big rings in `crate::rings::real` — they involve Z[g], which has no
 //! fixed-width counterpart.
 
-// Scaffolding: consumers land incrementally in later commits.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use num_complex::Complex64;
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};

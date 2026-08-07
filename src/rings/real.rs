@@ -259,7 +259,6 @@ impl ZRootTwo {
 
 /// The four real embeddings' g values: 2cos(mπ/8) for m = 1, 3, 5, 7.
 /// Index 0 is the "principal" embedding the synthesis targets.
-#[cfg_attr(not(test), allow(dead_code))] // consumer: the sqrt-T route (next commit)
 pub(crate) fn generator_embeddings(prec: u32) -> [MpFloat; 4] {
     let pi = MpFloat::with_val(prec, rug::float::Constant::Pi);
     let mk = |m: u32| -> MpFloat {
@@ -271,7 +270,6 @@ pub(crate) fn generator_embeddings(prec: u32) -> [MpFloat; 4] {
 // ─── ZRootTwoPlusRootTwo: a + bg + cg² + dg³ ────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // consumer: the sqrt-T route (next commit)
 pub(crate) struct ZRootTwoPlusRootTwo {
     pub a: Integer,
     pub b: Integer,
@@ -279,7 +277,6 @@ pub(crate) struct ZRootTwoPlusRootTwo {
     pub d: Integer,
 }
 
-#[cfg_attr(not(test), allow(dead_code))] // consumer: the sqrt-T route (next commit)
 impl ZRootTwoPlusRootTwo {
     pub fn new(a: Integer, b: Integer, c: Integer, d: Integer) -> Self {
         Self { a, b, c, d }
@@ -554,7 +551,6 @@ impl ZRootTwoPlusRootTwo {
 
 /// Given target values v_i at the four embeddings, solve for integer
 /// coefficients (a,b,c,d) with a + bg_i + cg_i² + dg_i³ = v_i (rounded).
-#[cfg_attr(not(test), allow(dead_code))] // consumer: the sqrt-T route (next commit)
 fn solve_coeffs(vals: &[MpFloat], gen: &[MpFloat; 4], prec: u32) -> Option<ZRootTwoPlusRootTwo> {
     // Gaussian elimination on the 4×4 system in MPFR.
     let n = 4usize;
@@ -604,7 +600,6 @@ fn solve_coeffs(vals: &[MpFloat], gen: &[MpFloat; 4], prec: u32) -> Option<ZRoot
 /// Real-subfield bridge: Z[g] has no fixed-width counterpart, so the
 /// conversions and the Euclidean structure that route through it live
 /// beside the big rings rather than on the generic type.
-#[cfg_attr(not(test), allow(dead_code))] // consumer: the sqrt-T route (next commit)
 impl ZZetaBig {
     /// Lift a Z[g] element via g = ζ − ζ⁷ (g = ζ + ζ⁻¹, ζ⁻¹ = −ζ⁷).
     pub(crate) fn from_real(x: &ZRootTwoPlusRootTwo) -> Self {
