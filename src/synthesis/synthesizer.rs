@@ -1080,6 +1080,86 @@ mod tests {
         }
     }
 
+    /// Where do the u3 pipelines actually stop? Direct pipeline probes
+    /// below the policy floors, plus the triple-Rz decomposition
+    /// (u3 = Rz(α)·SH·Rz(β)·HS†·Rz(γ), each rotation native at ε/3).
+    /// Run: `cargo test --release --lib probe_u3_deep_floors -- --ignored --nocapture`
+    #[test]
+    #[ignore = "diagnostic probe, print-only"]
+    fn probe_u3_deep_floors() {
+        use crate::synthesis::distance::diamond_distance_float;
+        use crate::synthesis::near_clifford::{eval_gates_q, eval_gates_t};
+        let (a, b, g) = (0.7_f64, 1.9, 0.3);
+        // Direct pipelines below their floors, wall-clock reported.
+        // The 16D pipeline below its 1e-8 floor grinds without terminating
+        // (measured: >17 min on the first target at 1e-9) — probe T only.
+        for (sqrt_t, eps_list) in [(false, vec![1e-10_f64, 1e-11])] {
+            for eps in eps_list {
+                let synth = Synthesizer::new(eps, sqrt_t);
+                let t0 = std::time::Instant::now();
+                let r = synth.synthesize_u3(Angle::Rad(b), Angle::Rad(a), Angle::Rad(g));
+                match r {
+                    Some(r) => eprintln!(
+                        "direct sqrt_t={sqrt_t} eps={eps:.0e}: lde={} dist={:.2e} {:?}",
+                        r.lde, r.distance, t0.elapsed()
+                    ),
+                    None => eprintln!("direct sqrt_t={sqrt_t} eps={eps:.0e}: NONE {:?}", t0.elapsed()),
+                }
+            }
+        }
+        // Triple-Rz decomposition at deep ε, both gate sets.
+        for sqrt_t in [false, true] {
+            for eps in [1e-10_f64, 1e-12] {
+                let synth = Synthesizer::new(eps / 3.0, sqrt_t);
+                let t0 = std::time::Instant::now();
+                let rz1 = synth.synthesize_rz(Angle::Rad(g)).expect("rz1");
+                let ry = synth.synthesize_ry(Angle::Rad(b)).expect("ry");
+                let rz2 = synth.synthesize_rz(Angle::Rad(a)).expect("rz2");
+                let gates = format!(
+                    "{}{}{}",
+                    rz2.gates.expect("g2"), ry.gates.expect("gy"), rz1.gates.expect("g1")
+                );
+                let dt = t0.elapsed();
+                // Verify against the composed target.
+                let (ca, sa) = ((a / 2.0).cos(), (a / 2.0).sin());
+                let _ = (ca, sa);
+                let target = {
+                    use num_complex::Complex;
+                    let rz = |t: f64| [
+                        [Complex::from_polar(1.0, -t / 2.0), Complex::new(0.0, 0.0)],
+                        [Complex::new(0.0, 0.0), Complex::from_polar(1.0, t / 2.0)],
+                    ];
+                    let ry = |t: f64| [
+                        [Complex::new((t / 2.0).cos(), 0.0), Complex::new(-(t / 2.0).sin(), 0.0)],
+                        [Complex::new((t / 2.0).sin(), 0.0), Complex::new((t / 2.0).cos(), 0.0)],
+                    ];
+                    let mm = |x: [[Complex<f64>; 2]; 2], y: [[Complex<f64>; 2]; 2]| {
+                        let mut o = [[Complex::new(0.0, 0.0); 2]; 2];
+                        for i in 0..2 {
+                            for j in 0..2 {
+                                o[i][j] = x[i][0] * y[0][j] + x[i][1] * y[1][j];
+                            }
+                        }
+                        o
+                    };
+                    mm(mm(rz(a), ry(b)), rz(g))
+                };
+                let (dist, tq) = if sqrt_t {
+                    let u = eval_gates_q(&gates).expect("eval q");
+                    (diamond_distance_float(&u.to_float(), &target),
+                     crate::synthesis::clifford_sqrt_t::gates_cost(&gates, 6))
+                } else {
+                    let u = eval_gates_t(&gates).expect("eval t");
+                    (diamond_distance_float(&u.to_float(), &target),
+                     crate::synthesis::clifford_sqrt_t::gates_cost(&gates, 6))
+                };
+                eprintln!(
+                    "triple sqrt_t={sqrt_t} eps={eps:.0e}: dist={dist:.2e} cost_x2={tq} {dt:?}"
+                );
+            }
+        }
+    }
+
     /// √T + deep ε through the front door proves the native-Q routing:
     /// the 16D lattice pipeline is not validated below 1e-8, so only the
     /// native route can produce this result.
