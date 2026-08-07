@@ -1,12 +1,12 @@
 //! Native 16D Lenstra-style search for Clifford+√T (Z[ζ_16]) synthesis.
 //!
-//! This module is the Z[ζ_16] analog of [`super::omega`] (which targets
-//! Z[ω] / Clifford+T). The two modules are deliberately kept separate to
+//! This module is the Z[ζ_16] analog of `clifford_t::lattice` (which
+//! targets Z[ω] / Clifford+T). The two are deliberately kept separate to
 //! isolate the precision and integer-width choices: f64 Gram-Schmidt is
 //! provably sufficient at d=8 (Theorem 2 of Nguyen-Stehlé 2009) but not at
 //! d=16, so the 16D GS runs in MPFR throughout.
 //!
-//! Pipeline and module layout mirror [`super::omega`]; see
+//! Pipeline and module layout mirror `clifford_t::lattice`; see
 //! [`integer`] for the per-call stage breakdown. Brute force and
 //! y-helpers live in [`brute`]; U2Q reconstruction in
 //! [`crate::synthesis::clifford_sqrt_t`].

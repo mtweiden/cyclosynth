@@ -147,7 +147,7 @@ mod tests {
     fn class_bound_holds_on_brute_shells() {
         use crate::synthesis::clifford_sqrt_t::{det_phase_of, gates_cost, solution_to_u2q};
         use crate::synthesis::decomposer::BlochDecomposer;
-        use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
+        use crate::synthesis::clifford_sqrt_t::lattice::brute::enumerate_unitary_norm_shell;
 
         let mut checked = 0usize;
         for k in 0..=3u32 {
@@ -184,7 +184,7 @@ mod tests {
     fn cost_bound_below_brute_minimum_small_k() {
         use crate::synthesis::clifford_sqrt_t::{gates_cost, solution_to_u2q};
         use crate::synthesis::decomposer::BlochDecomposer;
-        use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
+        use crate::synthesis::clifford_sqrt_t::lattice::brute::enumerate_unitary_norm_shell;
 
         for k in 0..=3u32 {
             let sols = enumerate_unitary_norm_shell(k);

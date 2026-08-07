@@ -215,7 +215,7 @@ fn q_candidate_dd(
 /// Per-element β_1: see `clifford_sqrt_t_research.md` for derivation.
 /// Returns i128 to avoid silent overflow on pairwise products at deep k.
 ///
-/// Mirror of [`super::super::omega::se::bilinear_b`] for the Z[ζ_16] /
+/// Mirror of `clifford_t::lattice::se::bilinear_b` for the Z[ζ_16] /
 /// Clifford+√T flow. Three forms here vs one in 8D because the
 /// totally-real-subring decomposition of unitarity over Z[ζ_16] yields
 /// three independent constraints (one per non-σ_1 Galois embedding).
@@ -1318,7 +1318,7 @@ mod par_tests {
             }
             b[i][i] += 7; // boost diagonal for PSD
         }
-        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky(&b).expect("PSD");
+        let r = crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::euclidean_cholesky(&b).expect("PSD");
 
         // Pick a z, compute ‖B·z‖² directly.
         let z: [i64; 16] = [1, -2, 3, 0, -1, 2, 1, -3, 4, 0, -1, 2, 1, -2, 3, -1];
@@ -1352,7 +1352,7 @@ mod tests {
     use super::super::lll::run_lll;
     use super::super::q_metric::{build_q_int_zeta, build_q_mpfr_zeta};
     use super::super::scratch::IntScratch16;
-    use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
+    use crate::synthesis::clifford_sqrt_t::lattice::brute::enumerate_unitary_norm_shell;
     use std::collections::HashSet;
 
     fn realistic_v() -> [f64; 4] {
@@ -1460,7 +1460,7 @@ mod tests {
         for i in 0..16 {
             id[i][i] = 1;
         }
-        assert_eq!(crate::synthesis::lattice::zeta::cholesky_lu::det_exact(&id), Some(1));
+        assert_eq!(crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::det_exact(&id), Some(1));
     }
 
     #[test]
@@ -1474,7 +1474,7 @@ mod tests {
         m[1][1] = 0;
         m[0][1] = 1;
         m[1][0] = 1;
-        assert_eq!(crate::synthesis::lattice::zeta::cholesky_lu::det_exact(&m), Some(-1));
+        assert_eq!(crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::det_exact(&m), Some(-1));
     }
 
     #[test]
@@ -1486,7 +1486,7 @@ mod tests {
         build_q_int_zeta(&mut s);
         let r = run_lll(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
-        let det = crate::synthesis::lattice::zeta::cholesky_lu::det_exact(&s.basis).expect("LLL basis det must fit in i64");
+        let det = crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::det_exact(&s.basis).expect("LLL basis det must fit in i64");
         assert!(det == 1 || det == -1,
             "LLL output basis must be unimodular; got det = {}", det);
     }
@@ -1500,7 +1500,7 @@ mod tests {
         for i in 0..16 {
             id[i][i] = 1;
         }
-        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky(&id).expect("identity should be PD");
+        let r = crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::euclidean_cholesky(&id).expect("identity should be PD");
         for i in 0..16 {
             for j in 0..16 {
                 let expected = if i == j { 1.0 } else { 0.0 };
@@ -1513,7 +1513,7 @@ mod tests {
         for i in 0..16 {
             diag2[i][i] = 2;
         }
-        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky(&diag2).expect("2·I should be PD");
+        let r = crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::euclidean_cholesky(&diag2).expect("2·I should be PD");
         for i in 0..16 {
             for j in 0..16 {
                 let expected = if i == j { 2.0 } else { 0.0 };
@@ -1528,7 +1528,7 @@ mod tests {
                 tri[i][j] = if i == j { 3 } else { 1 };
             }
         }
-        let r = crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky(&tri).expect("lower-triangular full-rank should be PD");
+        let r = crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::euclidean_cholesky(&tri).expect("lower-triangular full-rank should be PD");
         // Check Rᵀ·R = B·Bᵀ.
         let mut bbt = [[0.0_f64; 16]; 16];
         for i in 0..16 {
@@ -1668,7 +1668,7 @@ mod tests {
         let r = run_lll(&mut s);
         assert!(matches!(r, super::super::lll::LllResult::Converged));
 
-        let (snap, dd) = crate::synthesis::lattice::zeta::cholesky_lu::q_cholesky_mpfr_dual(&s.gram, s.scale_bits)
+        let (snap, dd) = crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::q_cholesky_mpfr_dual(&s.gram, s.scale_bits)
             .expect("post-LLL Q Gram must be PD");
         // dd hi part ≡ f64 snapshot, lo bounded by hi's ULP.
         for i in 0..16 {
@@ -1724,7 +1724,7 @@ mod tests {
     #[test]
     fn dd_q_bracket_walk_matches_f64_walk() {
         use super::super::scratch::rfv;
-        use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta;
+        use crate::synthesis::clifford_sqrt_t::lattice::brute::uv_to_lattice_y_zeta;
         let v = realistic_v();
         let k = 2u32;
         let eps = 0.5_f64; // wide cap at k=2 → guaranteed non-empty walk
@@ -1743,12 +1743,12 @@ mod tests {
         assert!(cholesky_f64(&mut s));
         let l_upper_f64: [[f64; 16]; 16] =
             std::array::from_fn(|i| std::array::from_fn(|j| s.l_f64[j][i]));
-        let (l_upper_mpfr, l_q_dd) = crate::synthesis::lattice::zeta::cholesky_lu::q_cholesky_mpfr_dual(&s.gram, s.scale_bits)
+        let (l_upper_mpfr, l_q_dd) = crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::q_cholesky_mpfr_dual(&s.gram, s.scale_bits)
             .expect("post-LLL Q Gram must be PD");
         assert!(lu_solve_int_inplace(&mut s));
         let z_c = SeCenter16::from_lu_x(&s.lu_x);
         let (r_eucl, r_eucl_dd) =
-            crate::synthesis::lattice::zeta::cholesky_lu::euclidean_cholesky_mpfr_dual(&s.basis).expect("basis full-rank");
+            crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::euclidean_cholesky_mpfr_dual(&s.basis).expect("basis full-rank");
         let basis = s.basis;
         let target_norm_sq = 2.0_f64.powi(k as i32);
         let target_i64 = 1_i64 << k;

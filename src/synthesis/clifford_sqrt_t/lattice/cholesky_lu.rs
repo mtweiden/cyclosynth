@@ -1,5 +1,5 @@
 //! Post-LLL linear algebra at d=16: Cholesky and LU on the reduced Gram +
-//! basis. Mirrors `super::super::omega::cholesky_lu` (the d=8 path) with
+//! basis. Mirrors `clifford_t::lattice::cholesky_lu` (the d=8 path) with
 //! buffers and loops dimension-bumped to 16.
 //!
 //! Production path:

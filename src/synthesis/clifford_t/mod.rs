@@ -10,7 +10,7 @@
 //!
 //! - `direct_search` (`t ≤ direct_limit`; 8 at ε ≥ 1e-4, else 6):
 //!   brute-force enumeration over the norm shell `‖x‖² = 2^t` via
-//!   [`crate::synthesis::lattice::omega::brute::brute_aligned_search`]. Tries even, T, and T†
+//!   [`crate::synthesis::clifford_t::lattice::brute::brute_aligned_search`]. Tries even, T, and T†
 //!   right-side branches, each combined with all 24 Clifford left
 //!   prefixes. Fast for small `t`; exponential beyond that.
 //!
@@ -43,12 +43,14 @@ use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2t_float, to_su2, Mat2};
 use crate::rings::MpFloat;
 use crate::synthesis::angle::{angle_target, Angle, DEFAULT_COL_PREC};
-use crate::synthesis::lattice::omega::brute::{
+use crate::synthesis::clifford_t::lattice::brute::{
     brute_aligned_search, apply_t_dag_to_uv, apply_t_dag_to_uv_mpfr, apply_t_to_uv,
     apply_u2t_dag_to_uv, apply_u2t_dag_to_uv_mpfr, compute_align_vec, normalize4,
 };
-use crate::synthesis::lattice::omega::{find_aligned_lattice_points_mpfr, IntScratch};
-use crate::synthesis::lattice::omega::q_metric::uv_to_lattice_y_mpfr;
+use crate::synthesis::clifford_t::lattice::{find_aligned_lattice_points_mpfr, IntScratch};
+use crate::synthesis::clifford_t::lattice::q_metric::uv_to_lattice_y_mpfr;
+
+pub mod lattice;
 
 /// At ε ≤ this, the deep-ε MPFR alignment path replaces the f64 chain (the
 /// f64 prefix residual and lattice y lose precision once the cap half-width
@@ -403,7 +405,7 @@ fn lll_aligned_search(
         );
     }
     let y = uv_to_lattice_y(v, k);
-    crate::synthesis::lattice::omega::find_aligned_lattice_points(
+    lattice::find_aligned_lattice_points(
         scratch, &y, k, eps, max_solutions, max_leaf_checks, max_nodes,
         budget_hit, external_abort,
     )

@@ -707,12 +707,12 @@ mod tests {
     /// unimodular and (b) ||b*_0||² doesn't increase.
     #[test]
     fn bkz_4_smoke_on_lll_basis() {
-        use crate::synthesis::lattice::zeta::{
+        use crate::synthesis::clifford_sqrt_t::lattice::{
             integer::find_aligned_lattice_points_with_stop,
             lll::cfa_row,
             cholesky_lu::det_exact,
         };
-        use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta;
+        use crate::synthesis::clifford_sqrt_t::lattice::brute::uv_to_lattice_y_zeta;
         use std::sync::atomic::AtomicBool;
 
         // Use Rz(0.3) target as in the rest of the bench suite.

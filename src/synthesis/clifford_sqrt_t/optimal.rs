@@ -100,7 +100,7 @@ impl SynthesizerQ {
             }
             let u_l_cost = 2 * t + q_cost_x2 * q;
             let floor = u_l_cost.saturating_add(
-                crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
+                cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
             );
             cands.push((pi, d_r, floor));
         }
@@ -450,7 +450,7 @@ impl SynthesizerQ {
         }
 
         let (upper, result) = best?;
-        let beyond = crate::synthesis::cost_bound::cost_lb_half_units(k_max + 1);
+        let beyond = cost_bound::cost_lb_half_units(k_max + 1);
         let cert = CostCertificate {
             upper_half_units: upper,
             lower_half_units: upper.min(beyond),
@@ -589,7 +589,7 @@ impl SynthesizerQ {
         };
         let finish = |r: SynthResultQ, horizon: u32, q_cost_x2: usize| {
             let upper = gates_cost(r.gates.as_deref().unwrap_or(""), q_cost_x2);
-            let beyond = crate::synthesis::cost_bound::cost_lb_half_units(horizon + 1);
+            let beyond = cost_bound::cost_lb_half_units(horizon + 1);
             let cert = CostCertificate {
                 upper_half_units: upper,
                 lower_half_units: upper.min(beyond),
@@ -1101,7 +1101,7 @@ impl SynthesizerQ {
             // as_millis u128→u64 wraps only after ~584M years of wall time.
             #[allow(clippy::cast_possible_truncation)]
             while k <= self.max_lde
-                && crate::synthesis::cost_bound::cost_lb_half_units(k) < best.0
+                && cost_bound::cost_lb_half_units(k) < best.0
                 && (t_ext.elapsed().as_millis() as u64) < self.certify_extra_ms
             {
                 let (r, truncated) =

@@ -234,7 +234,7 @@ use std::f64::consts::PI;
                 // MPFR at the scratch precision (an f64 eval of this form
                 // is garbage: Q eigenvalues reach 1/Δ_y² ~ 1e14 at 1e-5 and
                 // the form only stays O(1) through cancellation).
-                use crate::synthesis::lattice::omega::{q_metric::build_q_mpfr, scratch::IntScratch};
+                use crate::synthesis::clifford_t::lattice::{q_metric::build_q_mpfr, scratch::IntScratch};
                 let mut qs = IntScratch::new(eps);
                 build_q_mpfr(&mut qs, &y, lde_inner, eps);
                 let prec = qs.q_mpfr[0][0].prec();
@@ -257,7 +257,7 @@ use std::f64::consts::PI;
                     let mut s2 = IntScratch::new(eps);
                     s2.reset_basis();
                     let hit = AtomicBool::new(false);
-                    let out = crate::synthesis::lattice::omega::integer::find_aligned_lattice_points_outcome(
+                    let out = crate::synthesis::clifford_t::lattice::integer::find_aligned_lattice_points_outcome(
                         &mut s2, &y, lde_inner, eps, usize::MAX, u64::MAX,
                         50_000_000, &hit, None,
                     );
@@ -272,7 +272,7 @@ use std::f64::consts::PI;
                 // z-path, and print the walker's own per-depth partials to
                 // find which level excludes it.
                 {
-                    use crate::synthesis::lattice::omega::{
+                    use crate::synthesis::clifford_t::lattice::{
                         cholesky_lu::{cholesky_f64, lu_solve_int_inplace},
                         lll::lll_l2,
                         q_metric::build_q_int,
@@ -450,8 +450,8 @@ use std::f64::consts::PI;
     #[test]
     #[ignore = "census probe, print-only; see doc comment"]
     fn q_norm_distribution_sweep() {
-        use crate::synthesis::lattice::omega::{integer::find_aligned_lattice_points_outcome as find_aligned_lattice_points, q_metric::build_q_mpfr};
-        use crate::synthesis::lattice::omega::scratch::IntScratch;
+        use crate::synthesis::clifford_t::lattice::{integer::find_aligned_lattice_points_outcome as find_aligned_lattice_points, q_metric::build_q_mpfr};
+        use crate::synthesis::clifford_t::lattice::scratch::IntScratch;
         use std::sync::atomic::AtomicBool;
 
         let budget: u64 = std::env::var("T8_BUDGET").ok()
@@ -620,9 +620,9 @@ use std::f64::consts::PI;
     #[test]
     #[ignore = "census probe, print-only; see doc comment"]
     fn warm_started_lll_iteration_savings() {
-        use crate::synthesis::lattice::omega::lll::{lll_l2_seeded, LllResult};
-        use crate::synthesis::lattice::omega::q_metric::{build_q_int, build_q_mpfr};
-        use crate::synthesis::lattice::omega::scratch::IntScratch;
+        use crate::synthesis::clifford_t::lattice::lll::{lll_l2_seeded, LllResult};
+        use crate::synthesis::clifford_t::lattice::q_metric::{build_q_int, build_q_mpfr};
+        use crate::synthesis::clifford_t::lattice::scratch::IntScratch;
         use rug::Assign;
 
         fn xorshift64(s: &mut u64) -> u64 {

@@ -10,7 +10,7 @@ mod probes;
     use super::se::bilinear_forms;
     use crate::synthesis::decomposer::BlochDecomposer;
     use crate::synthesis::distance::Mat2;
-    use crate::synthesis::lattice::zeta::brute::{
+    use crate::synthesis::clifford_sqrt_t::lattice::brute::{
         compute_align_vec_zeta, enumerate_unitary_norm_shell, uv_to_lattice_y_zeta,
     };
     use crate::synthesis::clifford_sqrt_t::{

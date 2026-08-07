@@ -43,7 +43,7 @@ use super::se::{bilinear_forms, schnorr_euchner, LeafAction, SeCenter16};
 use crate::synthesis::diag;
 
 /// MPFR precision used by the alignment-threshold dot product. Same as 8D
-/// `super::super::omega::se::SE_PREC` — 128 bits gives ~38 digits of
+/// `clifford_t::lattice::se::SE_PREC` — 128 bits gives ~38 digits of
 /// headroom past the precision walls in the f64 formula at ε ≲ √(machine_eps).
 const ALIGN_PREC: u32 = 128;
 
@@ -492,7 +492,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::synthesis::lattice::zeta::brute::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta};
+    use crate::synthesis::clifford_sqrt_t::lattice::brute::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta};
     use crate::synthesis::clifford_sqrt_t::{
         det_phase_of, solution_to_u2q_with_det_phase, unitary_to_uv_zeta,
     };
@@ -597,7 +597,7 @@ mod tests {
     /// returned candidates.
     #[test]
     fn lattice_search_finds_hqhqh_at_moderate_k() {
-        use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
+        use crate::synthesis::clifford_sqrt_t::lattice::brute::enumerate_unitary_norm_shell;
         use crate::synthesis::distance::diamond_distance_float;
 
         let k = 2u32;

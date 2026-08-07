@@ -53,26 +53,26 @@ pub(crate) struct Omega;
 
 impl LatticeBackend for Omega {
     const DIM: usize = 8;
-    type Scratch = super::omega::scratch::IntScratch;
+    type Scratch = crate::synthesis::clifford_t::lattice::scratch::IntScratch;
 
     fn compute_gram_full(scratch: &mut Self::Scratch) -> bool {
-        super::omega::lll::compute_gram_full(scratch)
+        crate::synthesis::clifford_t::lattice::lll::compute_gram_full(scratch)
     }
 
     fn run_lll(scratch: &mut Self::Scratch) -> LllResult {
-        super::omega::lll::lll_l2(scratch)
+        crate::synthesis::clifford_t::lattice::lll::lll_l2(scratch)
     }
 
-    fn new_scratch(eps: f64) -> Self::Scratch { super::omega::scratch::IntScratch::new(eps) }
+    fn new_scratch(eps: f64) -> Self::Scratch { crate::synthesis::clifford_t::lattice::scratch::IntScratch::new(eps) }
     fn reset_basis(scratch: &mut Self::Scratch) { scratch.reset_basis() }
     fn det_exact(scratch: &Self::Scratch) -> Option<i64> {
-        super::omega::cholesky_lu::det_exact(&scratch.basis)
+        crate::synthesis::clifford_t::lattice::cholesky_lu::det_exact(&scratch.basis)
     }
     fn cholesky_f64(scratch: &mut Self::Scratch) -> bool {
-        super::omega::cholesky_lu::cholesky_f64(scratch)
+        crate::synthesis::clifford_t::lattice::cholesky_lu::cholesky_f64(scratch)
     }
     fn lu_solve_int_inplace(scratch: &mut Self::Scratch) -> bool {
-        super::omega::cholesky_lu::lu_solve_int_inplace(scratch)
+        crate::synthesis::clifford_t::lattice::cholesky_lu::lu_solve_int_inplace(scratch)
     }
 }
 
@@ -81,26 +81,26 @@ pub(crate) struct Zeta;
 
 impl LatticeBackend for Zeta {
     const DIM: usize = 16;
-    type Scratch = super::zeta::scratch::IntScratch16;
+    type Scratch = crate::synthesis::clifford_sqrt_t::lattice::scratch::IntScratch16;
 
     fn compute_gram_full(scratch: &mut Self::Scratch) -> bool {
-        super::zeta::lll::compute_gram_full(scratch)
+        crate::synthesis::clifford_sqrt_t::lattice::lll::compute_gram_full(scratch)
     }
 
     fn run_lll(scratch: &mut Self::Scratch) -> LllResult {
-        super::zeta::lll::run_lll(scratch)
+        crate::synthesis::clifford_sqrt_t::lattice::lll::run_lll(scratch)
     }
 
-    fn new_scratch(eps: f64) -> Self::Scratch { super::zeta::scratch::IntScratch16::new(eps) }
+    fn new_scratch(eps: f64) -> Self::Scratch { crate::synthesis::clifford_sqrt_t::lattice::scratch::IntScratch16::new(eps) }
     fn reset_basis(scratch: &mut Self::Scratch) { scratch.reset_basis() }
     fn det_exact(scratch: &Self::Scratch) -> Option<i64> {
-        super::zeta::cholesky_lu::det_exact(&scratch.basis)
+        crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::det_exact(&scratch.basis)
     }
     fn cholesky_f64(scratch: &mut Self::Scratch) -> bool {
-        super::zeta::cholesky_lu::cholesky_f64(scratch)
+        crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::cholesky_f64(scratch)
     }
     fn lu_solve_int_inplace(scratch: &mut Self::Scratch) -> bool {
-        super::zeta::cholesky_lu::lu_solve_int_inplace(scratch)
+        crate::synthesis::clifford_sqrt_t::lattice::cholesky_lu::lu_solve_int_inplace(scratch)
     }
 }
 

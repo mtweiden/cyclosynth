@@ -966,7 +966,7 @@ impl SynthesizerQ {
                         abort: AtomicBool::new(false),
                         active: AtomicBool::new(false),
                         floor: c.saturating_add(
-                            crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
+                            cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
                         ),
                     }
                 })
@@ -1004,7 +1004,7 @@ impl SynthesizerQ {
                 // √2-scaled images of every lower-lde suffix, which can
                 // cost far less.
                 let suffix_lb =
-                    crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2);
+                    cost_bound::class_cost_lb_half_units(d_r, q_cost_x2);
                 if u_l_cost.saturating_add(suffix_lb) > cur_best {
                     return None;
                 }
@@ -1017,7 +1017,7 @@ impl SynthesizerQ {
             let u_l_local = *u_l;
             let target_local = *target;
             let suffix_floor =
-                crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2);
+                cost_bound::class_cost_lb_half_units(d_r, q_cost_x2);
             let should_stop = |x: &[i64; 16]| -> bool {
                 if optimize_cost {
                     // Stop the walk once the incumbent reaches this
