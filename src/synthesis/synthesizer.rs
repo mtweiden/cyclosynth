@@ -1092,7 +1092,9 @@ mod tests {
         let (a, b, g) = (0.7_f64, 1.9, 0.3);
         // Direct pipelines below their floors, wall-clock reported.
         // The 16D pipeline below its 1e-8 floor grinds without terminating
-        // (measured: >17 min on the first target at 1e-9) — probe T only.
+        // (>17 min on one target at 1e-9, with or without the reduced-
+        // basis cache — the SE enumeration volume is the wall). Probe T
+        // only; use the triple-Rz rows for deep sqrt-T u3.
         for (sqrt_t, eps_list) in [(false, vec![1e-10_f64, 1e-11])] {
             for eps in eps_list {
                 let synth = Synthesizer::new(eps, sqrt_t);

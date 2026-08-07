@@ -305,6 +305,7 @@ impl SynthesizerQ {
 
         let make_scratch = || {
             let mut s = Box::new(IntScratch16::new(epsilon));
+                    s.basis_cache = self.use_basis_cache.then(|| self.basis_cache.clone());
             s.bkz_block_size = bkz_block_size;
             s.verify_prune_mpfr = verify_prune_mpfr_for(epsilon);
             s
@@ -520,6 +521,7 @@ impl SynthesizerQ {
         let epsilon = self.epsilon;
         let s = scratch.get_or_insert_with(|| {
             let mut sb = Box::new(IntScratch16::new(epsilon));
+                    sb.basis_cache = self.use_basis_cache.then(|| self.basis_cache.clone());
             sb.bkz_block_size = self.bkz_block_size;
             sb
         });

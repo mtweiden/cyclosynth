@@ -226,12 +226,55 @@ where
         diag::T_BUILD_NS.fetch_add(diag::elapsed_ns(t), Ordering::Relaxed);
     }
 
-    if run_lll_ladder(scratch, k, eps).is_none() {
-        return Vec::new();
-    }
-
-    if run_bkz_postpass(scratch, k, eps).is_none() {
-        return Vec::new();
+    // Reduced-basis reuse: Q(k) = M/2^k for a fixed prefix, so a basis
+    // reduced at any lde serves every lde. On a hit, install the cached
+    // transform and rebuild the exact Gram (16³ integer ops — negligible
+    // next to a fresh reduction); on a miss (or Gram overflow with the
+    // cached basis), run the full ladder and publish the result.
+    let cache = scratch.cache_key.zip(scratch.basis_cache.clone());
+    static CACHE_DBG: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("ZETA_CACHE_DBG").is_some());
+    let dbg = *CACHE_DBG;
+    let cached_ok = if let Some((key, cache)) = &cache {
+        match cache.get(*key) {
+            Some(basis) => {
+                if dbg {
+                    // Compare cached vs fresh reduction at this level.
+                    let cached_copy = basis;
+                    scratch.reset_basis();
+                    let _ = super::lll::compute_gram_full(scratch);
+                    let fresh_ok = run_lll_ladder(scratch, k, eps).is_some()
+                        && run_bkz_postpass(scratch, k, eps).is_some();
+                    let same = fresh_ok && scratch.basis == cached_copy;
+                    eprintln!("[cache] k={k} HIT fresh_eq_cached={same}");
+                }
+                scratch.basis = basis;
+                super::lll::compute_gram_full(scratch)
+            }
+            None => {
+                if dbg {
+                    eprintln!("[cache] k={k} MISS");
+                }
+                false
+            }
+        }
+    } else {
+        false
+    };
+    if !cached_ok {
+        scratch.reset_basis();
+        if !super::lll::compute_gram_full(scratch) {
+            return Vec::new();
+        }
+        if run_lll_ladder(scratch, k, eps).is_none() {
+            return Vec::new();
+        }
+        if run_bkz_postpass(scratch, k, eps).is_none() {
+            return Vec::new();
+        }
+        if let Some((key, cache)) = &cache {
+            cache.insert(*key, scratch.basis);
+        }
     }
 
     // Deep-ε bound: an MPFR-128 Cholesky projected to an f64 snapshot +

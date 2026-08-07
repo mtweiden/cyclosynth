@@ -140,6 +140,34 @@ where
         // original and rotate exactly in MPFR.
         let v_mpfr = deep_v_mpfr(deep_v_src, rot_src, v, prec);
         let y_mpfr = uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, prec);
+        // Reduced-basis reuse across the lde ladder: the key must pin
+        // everything v (and hence Q up to the 2^-k scalar) depends on.
+        scratch.cache_key = deep_v_src.map(|(u_l, target)| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            u_l.u11.hash(&mut h);
+            u_l.u12.hash(&mut h);
+            u_l.u21.hash(&mut h);
+            u_l.u22.hash(&mut h);
+            u_l.k.hash(&mut h);
+            for row in target {
+                for z in row {
+                    z.re.to_bits().hash(&mut h);
+                    z.im.to_bits().hash(&mut h);
+                }
+            }
+            if let Some((rot, rk)) = rot_src {
+                for row in rot {
+                    for z in row {
+                        z.re.to_bits().hash(&mut h);
+                        z.im.to_bits().hash(&mut h);
+                    }
+                }
+                rk.hash(&mut h);
+            }
+            eps.to_bits().hash(&mut h);
+            h.finish()
+        });
         find_aligned_lattice_points_mpfr(
             scratch, &y_mpfr, &v_mpfr, k, eps, max_leaf_checks, budget_hit,
             should_stop, external_abort, consumed,
@@ -655,6 +683,7 @@ impl SynthesizerQ {
             let s = scratch
                 .get_or_insert_with(|| {
                     let mut sb = Box::new(IntScratch16::new(epsilon));
+                    sb.basis_cache = self.use_basis_cache.then(|| self.basis_cache.clone());
                     sb.bkz_block_size = bkz_block_size;
                     sb.verify_prune_mpfr = verify_prune_mpfr_for(epsilon);
                     sb
@@ -1076,6 +1105,7 @@ impl SynthesizerQ {
         // (possibly small) thread stack.
         let make_scratch = || {
             let mut s = Box::new(IntScratch16::new(epsilon));
+                    s.basis_cache = self.use_basis_cache.then(|| self.basis_cache.clone());
             s.bkz_block_size = bkz_block_size;
             s.verify_prune_mpfr = verify_prune_mpfr_for(epsilon);
             s

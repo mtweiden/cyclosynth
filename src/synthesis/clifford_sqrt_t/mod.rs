@@ -99,6 +99,13 @@ pub struct SynthesizerQ {
     /// Approximation precision in diamond distance. Private: paired with
     /// lde-window tuning in [`Self::new`]; read via [`Self::epsilon`].
     epsilon: f64,
+    /// Reduced-basis cache shared across the lde ladder (deep-ε path);
+    /// see [`lattice::scratch::BasisCache16`]. Opt-in: reusing bases is
+    /// sound (cached transforms are bit-identical to fresh reductions —
+    /// Q(k) = M/2^k), but the freed LLL time shifts what the wall-clock
+    /// deadlines explore, so default-on awaits a cost-telemetry eval.
+    basis_cache: Arc<lattice::scratch::BasisCache16>,
+    use_basis_cache: bool,
     /// Maximum lde to search before giving up.
     pub(crate) max_lde: u32,
     /// Minimum lde to start searching from.
@@ -348,6 +355,8 @@ impl SynthesizerQ {
 
         Self {
             epsilon,
+            basis_cache: Arc::default(),
+            use_basis_cache: false,
             min_lde,
             max_lde: max_lde_override,
             prefix_split_m,
@@ -394,6 +403,15 @@ impl SynthesizerQ {
     }
 
     /// Approximation precision in diamond distance (set in [`Self::new`]).
+    /// Reuse LLL+BKZ-reduced bases across the lde ladder (the reduced
+    /// transform is lde-independent for a fixed prefix). Off by default
+    /// pending a cost-telemetry eval.
+    #[cfg_attr(not(test), allow(dead_code))] // opt-in eval surface
+    pub(crate) fn with_lde_basis_cache(mut self, on: bool) -> Self {
+        self.use_basis_cache = on;
+        self
+    }
+
     pub(crate) fn epsilon(&self) -> f64 {
         self.epsilon
     }

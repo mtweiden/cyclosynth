@@ -97,6 +97,46 @@ pub struct IntScratch16 {
     /// `find_aligned_lattice_points_mpfr` copies it onto the walk's
     /// `SeCenter16`.
     pub(crate) verify_prune_mpfr: bool,
+    /// Reduced-basis reuse across the lde ladder (deep-ε path only).
+    pub(crate) basis_cache: Option<std::sync::Arc<BasisCache16>>,
+    /// Cache key for the current prefix/target; `None` disables reuse.
+    pub(crate) cache_key: Option<u64>,
+}
+
+/// Per-synthesizer cache of LLL+BKZ-reduced bases for the deep-ε path.
+///
+/// For a fixed prefix direction the Q-metric satisfies Q(k) = M / 2^k —
+/// the entire lde-dependence is a uniform positive scalar — so the
+/// reduced unimodular transform is identical at every lde. Reusing it
+/// across the lde ladder removes the dominant per-(prefix, lde) LLL
+/// cost. Keys hash the prefix/target/rotation identity; a stale or
+/// colliding entry can only degrade basis QUALITY, never soundness (the
+/// enumeration bounds are derived from the exact Gram of whatever basis
+/// is in use).
+pub struct BasisCache16 {
+    map: std::sync::RwLock<std::collections::HashMap<u64, IMat16>>,
+}
+
+impl Default for BasisCache16 {
+    fn default() -> Self {
+        Self { map: std::sync::RwLock::new(std::collections::HashMap::new()) }
+    }
+}
+
+impl BasisCache16 {
+    pub(crate) fn get(&self, key: u64) -> Option<IMat16> {
+        self.map.read().ok()?.get(&key).copied()
+    }
+
+    pub(crate) fn insert(&self, key: u64, basis: IMat16) {
+        if let Ok(mut m) = self.map.write() {
+            // Bound the footprint for long-lived synthesizers.
+            if m.len() > 200_000 {
+                m.clear();
+            }
+            m.insert(key, basis);
+        }
+    }
 }
 
 impl IntScratch16 {
@@ -133,6 +173,8 @@ impl IntScratch16 {
             lu_acc: rfz(lu_prec),
             bkz_block_size: 0,
             verify_prune_mpfr: false,
+            basis_cache: None,
+            cache_key: None,
         }
     }
 
