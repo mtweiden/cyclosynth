@@ -100,7 +100,7 @@ impl SynthesizerQ {
             }
             let u_l_cost = 2 * t + q_cost_x2 * q;
             let floor = u_l_cost.saturating_add(
-                crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
+                cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
             );
             cands.push((pi, d_r, floor));
         }
@@ -305,6 +305,7 @@ impl SynthesizerQ {
 
         let make_scratch = || {
             let mut s = Box::new(IntScratch16::new(epsilon));
+                    s.basis_cache = self.use_basis_cache.then(|| self.basis_cache.clone());
             s.bkz_block_size = bkz_block_size;
             s.verify_prune_mpfr = verify_prune_mpfr_for(epsilon);
             s
@@ -402,7 +403,7 @@ impl SynthesizerQ {
         ];
 
         // T-baseline floor only when the target's det class is even:
-        // Clifford+T determinants are even ζ₁₆ powers, so an odd-class
+        // Clifford+T determinants are even ζ powers, so an odd-class
         // target would make the baseline sweep its whole lde range
         // rejecting every prefix.
         let d_even = det_phase_of(&target).is_multiple_of(2);
@@ -450,7 +451,7 @@ impl SynthesizerQ {
         }
 
         let (upper, result) = best?;
-        let beyond = crate::synthesis::cost_bound::cost_lb_half_units(k_max + 1);
+        let beyond = cost_bound::cost_lb_half_units(k_max + 1);
         let cert = CostCertificate {
             upper_half_units: upper,
             lower_half_units: upper.min(beyond),
@@ -520,6 +521,7 @@ impl SynthesizerQ {
         let epsilon = self.epsilon;
         let s = scratch.get_or_insert_with(|| {
             let mut sb = Box::new(IntScratch16::new(epsilon));
+                    sb.basis_cache = self.use_basis_cache.then(|| self.basis_cache.clone());
             sb.bkz_block_size = self.bkz_block_size;
             sb
         });
@@ -589,7 +591,7 @@ impl SynthesizerQ {
         };
         let finish = |r: SynthResultQ, horizon: u32, q_cost_x2: usize| {
             let upper = gates_cost(r.gates.as_deref().unwrap_or(""), q_cost_x2);
-            let beyond = crate::synthesis::cost_bound::cost_lb_half_units(horizon + 1);
+            let beyond = cost_bound::cost_lb_half_units(horizon + 1);
             let cert = CostCertificate {
                 upper_half_units: upper,
                 lower_half_units: upper.min(beyond),
@@ -618,12 +620,12 @@ impl SynthesizerQ {
             // other class is unsearched, so the horizon is vacuous.
             return Some(finish(r, 0, self.q_cost_x2));
         }
-        // Parity branches: the pipeline pins det to ζ₁₆^{d(target)} and
+        // Parity branches: the pipeline pins det to ζ^{d(target)} and
         // Q-count ≡ d (mod 2), so one target reaches only half the pool.
         // Rotating by e^{iπ/16} shifts d by 1 and opens the odd-Q half;
         // diamond distance is phase-invariant, so odd finds are valid.
         // The Clifford+T baseline skips the odd branch (T-circuit dets
-        // are even ζ₁₆ powers — it would burn max_lde finding nothing).
+        // are even ζ powers — it would burn max_lde finding nothing).
         let g = Complex64::from_polar(1.0, PI / 16.0);
         let target_odd: Mat2 = [
             [target[0][0] * g, target[0][1] * g],
@@ -808,7 +810,7 @@ impl SynthesizerQ {
         target: Mat2,
         with_baseline: bool,
     ) -> (Option<SynthResultQ>, Vec<u32>, Option<(usize, SynthResultQ)>) {
-        // Clifford+T dets are even ζ₁₆ powers — odd-class targets make
+        // Clifford+T dets are even ζ powers — odd-class targets make
         // the baseline burn its whole lde sweep finding nothing.
         let with_baseline = with_baseline && det_phase_of(&target).is_multiple_of(2);
         let (first, unclear, t_baseline) = std::thread::scope(|s| {
@@ -1101,7 +1103,7 @@ impl SynthesizerQ {
             // as_millis u128→u64 wraps only after ~584M years of wall time.
             #[allow(clippy::cast_possible_truncation)]
             while k <= self.max_lde
-                && crate::synthesis::cost_bound::cost_lb_half_units(k) < best.0
+                && cost_bound::cost_lb_half_units(k) < best.0
                 && (t_ext.elapsed().as_millis() as u64) < self.certify_extra_ms
             {
                 let (r, truncated) =

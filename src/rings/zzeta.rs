@@ -5,26 +5,207 @@
 //!
 //! This is the coefficient ring for exactly-implementable Clifford+√T unitaries.
 //! Note that ZOmega embeds into ZZeta via ω = ζ² (odd-index coefficients are 0).
+//!
+//! One ring, two coefficient widths (see [`RingScalar`]), mirroring
+//! [`super::zomega`]: [`ZZeta`] = `ZZetaG<Int>` is the fixed-width (i256)
+//! hot-path type; [`ZZetaBig`] = `ZZetaG<rug::Integer>` is the unbounded
+//! type the native √T route's grid/norm-equation stages need. The
+//! real-subfield conversions (`from_real`/`rel_norm`/…) live beside the
+//! big rings in `crate::rings::real` — they involve Z[g], which has no
+//! fixed-width counterpart.
 
 use num_complex::Complex64;
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
-use super::types::{Int, INT_ZERO, INT_ONE, INT_NEG_ONE, int_to_f64};
+use super::types::{Int, RingScalar, INT_ZERO, INT_ONE, INT_NEG_ONE};
 
-/// An element of Z[ζ], ζ = e^{iπ/8}, ζ^8 = −1.
+/// An element of Z[ζ], ζ = e^{iπ/8}, ζ^8 = −1, generic over the
+/// coefficient width.
 ///
 /// Represented as integer coefficients of the basis {1, ζ, ζ², ζ³, ζ⁴, ζ⁵, ζ⁶, ζ⁷}.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub struct ZZeta {
-    pub(crate) a: Int,
-    pub(crate) b: Int,
-    pub(crate) c: Int, // ζ² = ω
-    pub(crate) d: Int,
-    pub(crate) e: Int, // ζ⁴ = i
-    pub(crate) f: Int,
-    pub(crate) g: Int,
-    pub(crate) h: Int,
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub struct ZZetaG<C: RingScalar> {
+    pub(crate) a: C,
+    pub(crate) b: C,
+    pub(crate) c: C, // ζ² = ω
+    pub(crate) d: C,
+    pub(crate) e: C, // ζ⁴ = i
+    pub(crate) f: C,
+    pub(crate) g: C,
+    pub(crate) h: C,
 }
+
+impl<C: RingScalar + Copy> Copy for ZZetaG<C> {}
+
+/// Fixed-width (i256) instantiation — the hot-path type.
+pub type ZZeta = ZZetaG<Int>;
+
+/// Arbitrary-precision instantiation — the native-route type.
+pub(crate) type ZZetaBig = ZZetaG<rug::Integer>;
+
+// ─── Generic core (both widths) ───────────────────────────────────────────────
+
+impl<C: RingScalar> ZZetaG<C> {
+    #[inline]
+    #[allow(clippy::too_many_arguments)] // 8 ring coefficients are intrinsic to Z[ζ].
+    pub(crate) fn from_parts(a: C, b: C, c: C, d: C, e: C, f: C, g: C, h: C) -> Self {
+        Self { a, b, c, d, e, f, g, h }
+    }
+
+    /// Construct from coefficients in ζ-power order.
+    pub(crate) fn from_coeffs(v: [C; 8]) -> Self {
+        let [a, b, c, d, e, f, g, h] = v;
+        Self::from_parts(a, b, c, d, e, f, g, h)
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_i64(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64) -> Self {
+        Self::from_parts(
+            C::from_i64(a), C::from_i64(b), C::from_i64(c), C::from_i64(d),
+            C::from_i64(e), C::from_i64(f), C::from_i64(g), C::from_i64(h),
+        )
+    }
+
+    pub(crate) fn zero() -> Self {
+        Self::from_i64(0, 0, 0, 0, 0, 0, 0, 0)
+    }
+
+    pub(crate) fn one() -> Self {
+        Self::from_i64(1, 0, 0, 0, 0, 0, 0, 0)
+    }
+
+    /// ζ itself.
+    pub(crate) fn zeta() -> Self {
+        Self::from_i64(0, 1, 0, 0, 0, 0, 0, 0)
+    }
+
+    /// Coefficients in ζ-power order, by reference.
+    #[inline]
+    pub(crate) fn coeffs(&self) -> [&C; 8] {
+        [&self.a, &self.b, &self.c, &self.d, &self.e, &self.f, &self.g, &self.h]
+    }
+
+    #[inline]
+    pub(crate) fn is_zero(&self) -> bool {
+        self.coeffs().iter().all(|x| x.is_zero())
+    }
+
+    #[inline]
+    pub(crate) fn add(&self, o: &Self) -> Self {
+        let (s, t) = (self.coeffs(), o.coeffs());
+        Self::from_coeffs(std::array::from_fn(|i| s[i].add(t[i])))
+    }
+
+    #[inline]
+    pub(crate) fn sub(&self, o: &Self) -> Self {
+        let (s, t) = (self.coeffs(), o.coeffs());
+        Self::from_coeffs(std::array::from_fn(|i| s[i].sub(t[i])))
+    }
+
+    #[inline]
+    pub(crate) fn neg(&self) -> Self {
+        let s = self.coeffs();
+        Self::from_coeffs(std::array::from_fn(|i| s[i].neg()))
+    }
+
+    /// Scale every coefficient by `x`.
+    #[inline]
+    pub(crate) fn scale(&self, x: &C) -> Self {
+        let s = self.coeffs();
+        Self::from_coeffs(std::array::from_fn(|i| s[i].mul(x)))
+    }
+
+    /// Multiplication in Z[ζ] modulo ζ^8 = −1.
+    ///
+    /// ζ^i · ζ^j = ζ^{i+j}; if i+j ≥ 8: ζ^{i+j} = −ζ^{i+j−8}, so
+    /// result[k] = Σ_{i+j≡k (mod 8), i+j<8} p_i·q_j − Σ_{i+j≥8} p_i·q_j.
+    #[inline]
+    pub(crate) fn mul(&self, rhs: &Self) -> Self {
+        let p = self.coeffs();
+        let q = rhs.coeffs();
+        // Unrolled with in-place accumulation: the fixed width inlines to
+        // plain adds; the unbounded width avoids per-term temporaries.
+        let mut out: [C; 8] = std::array::from_fn(|_| C::default());
+        macro_rules! acc {
+            ($k:expr, + $i:expr, $j:expr) => { out[$k].add_assign(&p[$i].mul(q[$j])); };
+            ($k:expr, - $i:expr, $j:expr) => { out[$k].sub_assign(&p[$i].mul(q[$j])); };
+        }
+        for i in 0..8usize {
+            for j in 0..8usize {
+                if i + j < 8 {
+                    acc!(i + j, + i, j);
+                } else {
+                    acc!(i + j - 8, - i, j);
+                }
+            }
+        }
+        Self::from_coeffs(out)
+    }
+
+    /// Multiply by ζ^m (coefficient rotation with ζ⁸ = −1 sign wrap).
+    pub(crate) fn mul_by_zeta_power(&self, m: u32) -> Self {
+        let m = (m % 16) as usize;
+        let s = self.coeffs();
+        Self::from_coeffs(std::array::from_fn(|j| {
+            // Which source index lands on ζ^j, and with which sign?
+            let i = (j + 16 - m) % 16;
+            if i < 8 {
+                s[i].clone()
+            } else {
+                s[i - 8].neg()
+            }
+        }))
+    }
+
+    /// Complex conjugate: ζ̄ = e^{−iπ/8} = ζ^{−1} = ζ^{15} = −ζ^7.
+    ///
+    /// conj_coeffs[0] = coeffs[0],
+    /// conj_coeffs[k] = −coeffs[8−k]  for k = 1..7.
+    pub(crate) fn conj(&self) -> Self {
+        Self::from_parts(
+            self.a.clone(),
+            self.h.neg(),
+            self.g.neg(),
+            self.f.neg(),
+            self.e.neg(),
+            self.d.neg(),
+            self.c.neg(),
+            self.b.neg(),
+        )
+    }
+
+    /// Convert to a floating-point complex number.
+    pub(crate) fn to_complex(&self) -> Complex64 {
+        use std::f64::consts::PI;
+        let zeta = |k: u32| Complex64::from_polar(1.0, PI * f64::from(k) / 8.0);
+        self.coeffs()
+            .iter()
+            .enumerate()
+            .map(|(k, x)| x.to_f64_approx() * zeta(u32::try_from(k).expect("k < 8")))
+            .sum()
+    }
+
+    /// Largest power of 2 dividing all coefficients (for normalization);
+    /// large sentinel for the zero element.
+    pub(crate) fn gcd_power_of_2(&self) -> u32 {
+        let cap = Int::BITS - 1;
+        self.coeffs()
+            .iter()
+            .map(|x| x.trailing_zeros_or(cap))
+            .min()
+            .expect("8 coefficients")
+    }
+
+    /// Divide all coefficients by 2^shift.
+    #[inline]
+    pub(crate) fn div2(&self, shift: u32) -> Self {
+        let s = self.coeffs();
+        Self::from_coeffs(std::array::from_fn(|i| s[i].shr_exact(shift)))
+    }
+}
+
+// ─── Fixed-width surface (source compatibility for the hot path) ──────────────
 
 impl ZZeta {
     pub(crate) const ZERO: Self = Self { a: INT_ZERO, b: INT_ZERO, c: INT_ZERO, d: INT_ZERO, e: INT_ZERO, f: INT_ZERO, g: INT_ZERO, h: INT_ZERO };
@@ -53,7 +234,7 @@ impl ZZeta {
         )
     }
 
-    /// Coefficient of ζ^k, k = 0..7.
+    /// Coefficient of ζ^k, k = 0..7 (by value — `Copy` instantiation).
     ///
     /// # Panics
     /// Panics if `k >= 8` (programmer error, like an out-of-bounds index).
@@ -63,52 +244,6 @@ impl ZZeta {
             0 => self.a, 1 => self.b, 2 => self.c, 3 => self.d,
             4 => self.e, 5 => self.f, 6 => self.g, 7 => self.h,
             _ => panic!("ZZeta::coeff: index {k} out of range"),
-        }
-    }
-
-    /// Complex conjugate: ζ̄ = e^{−iπ/8} = ζ^{−1} = ζ^{15} = −ζ^7.
-    ///
-    /// conj_coeffs[0] = coeffs[0],
-    /// conj_coeffs[k] = −coeffs[8−k]  for k = 1..7.
-    pub(crate) fn conj(self) -> Self {
-        Self {
-            a:  self.a,
-            b: -self.h,
-            c: -self.g,
-            d: -self.f,
-            e: -self.e,
-            f: -self.d,
-            g: -self.c,
-            h: -self.b,
-        }
-    }
-
-    /// Convert to a floating-point complex number.
-    pub(crate) fn to_complex(self) -> Complex64 {
-        use std::f64::consts::PI;
-        let zeta = |k: u32| Complex64::from_polar(1.0, PI * f64::from(k) / 8.0);
-        int_to_f64(self.a) * zeta(0)
-            + int_to_f64(self.b) * zeta(1)
-            + int_to_f64(self.c) * zeta(2)
-            + int_to_f64(self.d) * zeta(3)
-            + int_to_f64(self.e) * zeta(4)
-            + int_to_f64(self.f) * zeta(5)
-            + int_to_f64(self.g) * zeta(6)
-            + int_to_f64(self.h) * zeta(7)
-    }
-
-    /// Largest power of 2 dividing all coefficients (for normalization).
-    pub(crate) fn gcd_power_of_2(self) -> u32 {
-        let bits = self.a | self.b | self.c | self.d | self.e | self.f | self.g | self.h;
-        if bits == INT_ZERO { Int::BITS - 1 } else { bits.trailing_zeros() }
-    }
-
-    /// Divide all coefficients by 2^shift.
-    #[inline]
-    pub(crate) fn div2(self, shift: u32) -> Self {
-        Self {
-            a: self.a >> shift, b: self.b >> shift, c: self.c >> shift, d: self.d >> shift,
-            e: self.e >> shift, f: self.f >> shift, g: self.g >> shift, h: self.h >> shift,
         }
     }
 
@@ -126,16 +261,23 @@ impl ZZeta {
     }
 }
 
-// ─── Arithmetic ───────────────────────────────────────────────────────────────
+// ─── Big-width extras (native √T route) ───────────────────────────────────────
+
+impl ZZetaBig {
+    pub(crate) fn from_int(x: rug::Integer) -> Self {
+        let mut z = Self::zero();
+        z.a = x;
+        z
+    }
+}
+
+// ─── Arithmetic operators (fixed-width instantiation) ─────────────────────────
 
 impl Add for ZZeta {
     type Output = Self;
     #[inline]
     fn add(self, rhs: Self) -> Self {
-        Self {
-            a: self.a + rhs.a, b: self.b + rhs.b, c: self.c + rhs.c, d: self.d + rhs.d,
-            e: self.e + rhs.e, f: self.f + rhs.f, g: self.g + rhs.g, h: self.h + rhs.h,
-        }
+        ZZetaG::add(&self, &rhs)
     }
 }
 
@@ -143,10 +285,7 @@ impl Sub for ZZeta {
     type Output = Self;
     #[inline]
     fn sub(self, rhs: Self) -> Self {
-        Self {
-            a: self.a - rhs.a, b: self.b - rhs.b, c: self.c - rhs.c, d: self.d - rhs.d,
-            e: self.e - rhs.e, f: self.f - rhs.f, g: self.g - rhs.g, h: self.h - rhs.h,
-        }
+        ZZetaG::sub(&self, &rhs)
     }
 }
 
@@ -154,37 +293,15 @@ impl Neg for ZZeta {
     type Output = Self;
     #[inline]
     fn neg(self) -> Self {
-        Self {
-            a: -self.a, b: -self.b, c: -self.c, d: -self.d,
-            e: -self.e, f: -self.f, g: -self.g, h: -self.h,
-        }
+        ZZetaG::neg(&self)
     }
 }
 
-/// Multiplication in Z[ζ] modulo ζ^8 = −1.
-///
-/// ζ^i · ζ^j = ζ^{i+j}; if i+j ≥ 8: ζ^{i+j} = −ζ^{i+j−8}.
-///
-/// Written out explicitly (p = self, q = rhs):
-///   result[k] = Σ_{i+j≡k (mod 8), i+j<8} p_i·q_j  −  Σ_{i+j≡k (mod 8), i+j≥8} p_i·q_j
 impl Mul for ZZeta {
     type Output = Self;
     #[inline]
-    fn mul(self, q: Self) -> Self {
-        // Inline all 64 terms (p = self, q = rhs) — faster than a convolution loop.
-        let (p0,p1,p2,p3,p4,p5,p6,p7) = (self.a,self.b,self.c,self.d,self.e,self.f,self.g,self.h);
-        let (q0,q1,q2,q3,q4,q5,q6,q7) = (q.a, q.b, q.c, q.d, q.e, q.f, q.g, q.h);
-
-        Self {
-            a: p0*q0 - p1*q7 - p2*q6 - p3*q5 - p4*q4 - p5*q3 - p6*q2 - p7*q1,
-            b: p0*q1 + p1*q0 - p2*q7 - p3*q6 - p4*q5 - p5*q4 - p6*q3 - p7*q2,
-            c: p0*q2 + p1*q1 + p2*q0 - p3*q7 - p4*q6 - p5*q5 - p6*q4 - p7*q3,
-            d: p0*q3 + p1*q2 + p2*q1 + p3*q0 - p4*q7 - p5*q6 - p6*q5 - p7*q4,
-            e: p0*q4 + p1*q3 + p2*q2 + p3*q1 + p4*q0 - p5*q7 - p6*q6 - p7*q5,
-            f: p0*q5 + p1*q4 + p2*q3 + p3*q2 + p4*q1 + p5*q0 - p6*q7 - p7*q6,
-            g: p0*q6 + p1*q5 + p2*q4 + p3*q3 + p4*q2 + p5*q1 + p6*q0 - p7*q7,
-            h: p0*q7 + p1*q6 + p2*q5 + p3*q4 + p4*q3 + p5*q2 + p6*q1 + p7*q0,
-        }
+    fn mul(self, rhs: Self) -> Self {
+        ZZetaG::mul(&self, &rhs)
     }
 }
 
@@ -304,5 +421,36 @@ mod tests {
             (sqrt2.re - std::f64::consts::SQRT_2).abs() < 1e-12 && sqrt2.im.abs() < 1e-12,
             "mul_sqrt2(1) = {sqrt2}"
         );
+    }
+
+    /// Cross-width oracle: both instantiations implement the SAME ring.
+    #[test]
+    fn test_fixed_vs_big_agree() {
+        let mut state = 0xfeed_beef_1234_5678_u64;
+        let mut rnd = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((state >> 34) as i64) - (1 << 29)
+        };
+        for _ in 0..100 {
+            let xs: [i64; 8] = std::array::from_fn(|_| rnd());
+            let ys: [i64; 8] = std::array::from_fn(|_| rnd());
+            let xf = ZZeta::from_i64(xs[0], xs[1], xs[2], xs[3], xs[4], xs[5], xs[6], xs[7]);
+            let yf = ZZeta::from_i64(ys[0], ys[1], ys[2], ys[3], ys[4], ys[5], ys[6], ys[7]);
+            let xb = ZZetaBig::from_i64(xs[0], xs[1], xs[2], xs[3], xs[4], xs[5], xs[6], xs[7]);
+            let yb = ZZetaBig::from_i64(ys[0], ys[1], ys[2], ys[3], ys[4], ys[5], ys[6], ys[7]);
+            let pairs: [(ZZeta, ZZetaBig); 5] = [
+                (ZZetaG::mul(&xf, &yf), xb.mul(&yb)),
+                (ZZetaG::add(&xf, &yf), xb.add(&yb)),
+                (ZZetaG::sub(&xf, &yf), xb.sub(&yb)),
+                (ZZetaG::conj(&xf), xb.conj()),
+                (xf.mul_by_zeta_power(5), xb.mul_by_zeta_power(5)),
+            ];
+            for (ff, bb) in pairs {
+                let (fc, bc) = (ff.coeffs(), bb.coeffs());
+                for i in 0..8 {
+                    assert_eq!(format!("{}", fc[i]), format!("{}", bc[i]));
+                }
+            }
+        }
     }
 }

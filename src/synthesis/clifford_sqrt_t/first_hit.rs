@@ -1,6 +1,7 @@
 //! First-hit pipeline: lde sweep, prefix-split search, parallel-LDE
 //! speculation, and the deep-ε precision routing.
 
+use crate::synthesis::lattice::common;
 use crate::rings::MpFloat;
 use super::*;
 
@@ -29,7 +30,7 @@ pub(crate) fn prefix_residual_uv_mpfr(u_l: &U2Q, target: &Mat2, prec: u32) -> [M
         let mut re = MpFloat::with_val(prec, 0.0);
         let mut im = MpFloat::with_val(prec, 0.0);
         for i in 0..8 {
-            let c = crate::synthesis::lattice::common::i256_to_f64(z.coeff(i));
+            let c = common::i256_to_f64(z.coeff(i));
             if c != 0.0 {
                 re += MpFloat::with_val(prec, &cosv[i] * c);
                 im += MpFloat::with_val(prec, &sinv[i] * c);
@@ -140,6 +141,10 @@ where
         // original and rotate exactly in MPFR.
         let v_mpfr = deep_v_mpfr(deep_v_src, rot_src, v, prec);
         let y_mpfr = uv_to_lattice_y_zeta_mpfr(&v_mpfr, k, prec);
+        // Reduced-basis reuse across the lde ladder: the key must pin
+        // everything v (and hence Q up to the 2^-k scalar) depends on.
+        scratch.cache_key =
+            deep_v_src.map(|(u_l, target)| reduction_cache_key(u_l, target, rot_src, eps));
         find_aligned_lattice_points_mpfr(
             scratch, &y_mpfr, &v_mpfr, k, eps, max_leaf_checks, budget_hit,
             should_stop, external_abort, consumed,
@@ -151,6 +156,43 @@ where
             external_abort, consumed,
         )
     }
+}
+
+
+/// Cache key for reduced-basis reuse (see
+/// [`super::lattice::scratch::BasisCache16`]): hashes every input the
+/// whitened form's direction depends on — the prefix, the target, the
+/// speculative rotation, and ε.
+fn reduction_cache_key(
+    u_l: &U2Q,
+    target: &Mat2,
+    rot_src: Option<&(Mat2, u32)>,
+    eps: f64,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    u_l.u11.hash(&mut h);
+    u_l.u12.hash(&mut h);
+    u_l.u21.hash(&mut h);
+    u_l.u22.hash(&mut h);
+    u_l.k.hash(&mut h);
+    for row in target {
+        for z in row {
+            z.re.to_bits().hash(&mut h);
+            z.im.to_bits().hash(&mut h);
+        }
+    }
+    if let Some((rot, rk)) = rot_src {
+        for row in rot {
+            for z in row {
+                z.re.to_bits().hash(&mut h);
+                z.im.to_bits().hash(&mut h);
+            }
+        }
+        rk.hash(&mut h);
+    }
+    eps.to_bits().hash(&mut h);
+    h.finish()
 }
 
 /// Two-pass leaf-budget strategy: pass 1 bails fast on doomed lde levels;
@@ -615,7 +657,7 @@ impl SynthesizerQ {
         use crate::synthesis::diag;
         crate::synthesis::ensure_rayon_stack();
 
-        // Land det on a ζ₁₆ power via a global phase rotation (norm-preserving;
+        // Land det on a ζ power via a global phase rotation (norm-preserving;
         // see `project_det_to_zeta_coset`). The cap requires a unit-norm target
         // column — `unitary_to_uv_zeta` reads it directly and the
         // reconstruction's `d` parameter carries the det-phase. At ε≈1e-8 the
@@ -655,6 +697,7 @@ impl SynthesizerQ {
             let s = scratch
                 .get_or_insert_with(|| {
                     let mut sb = Box::new(IntScratch16::new(epsilon));
+                    sb.basis_cache = self.use_basis_cache.then(|| self.basis_cache.clone());
                     sb.bkz_block_size = bkz_block_size;
                     sb.verify_prune_mpfr = verify_prune_mpfr_for(epsilon);
                     sb
@@ -843,7 +886,7 @@ impl SynthesizerQ {
         None
     }
 
-    /// Z[ζ_16] analog of Clifford+T's `prefix_split_search`: for each prefix
+    /// Z[ζ] analog of Clifford+T's `prefix_split_search`: for each prefix
     /// `U_L ∈ L_m^Q`, search the inner factor at `lde_total − k_prefix` and
     /// compose; `d_R = (d_target − d_L) mod 16` parametrises the inner
     /// reconstruction so `U_L · U_R` matches the target's det phase.
@@ -966,7 +1009,7 @@ impl SynthesizerQ {
                         abort: AtomicBool::new(false),
                         active: AtomicBool::new(false),
                         floor: c.saturating_add(
-                            crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
+                            cost_bound::class_cost_lb_half_units(d_r, q_cost_x2),
                         ),
                     }
                 })
@@ -1004,7 +1047,7 @@ impl SynthesizerQ {
                 // √2-scaled images of every lower-lde suffix, which can
                 // cost far less.
                 let suffix_lb =
-                    crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2);
+                    cost_bound::class_cost_lb_half_units(d_r, q_cost_x2);
                 if u_l_cost.saturating_add(suffix_lb) > cur_best {
                     return None;
                 }
@@ -1017,7 +1060,7 @@ impl SynthesizerQ {
             let u_l_local = *u_l;
             let target_local = *target;
             let suffix_floor =
-                crate::synthesis::cost_bound::class_cost_lb_half_units(d_r, q_cost_x2);
+                cost_bound::class_cost_lb_half_units(d_r, q_cost_x2);
             let should_stop = |x: &[i64; 16]| -> bool {
                 if optimize_cost {
                     // Stop the walk once the incumbent reaches this
@@ -1076,6 +1119,7 @@ impl SynthesizerQ {
         // (possibly small) thread stack.
         let make_scratch = || {
             let mut s = Box::new(IntScratch16::new(epsilon));
+                    s.basis_cache = self.use_basis_cache.then(|| self.basis_cache.clone());
             s.bkz_block_size = bkz_block_size;
             s.verify_prune_mpfr = verify_prune_mpfr_for(epsilon);
             s

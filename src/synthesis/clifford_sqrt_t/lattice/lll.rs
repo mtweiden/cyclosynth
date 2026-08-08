@@ -1,4 +1,4 @@
-//! L²-LLL (Nguyen-Stehlé 2009) on the 16D Z[ζ_16] integer lattice.
+//! L²-LLL (Nguyen-Stehlé 2009) on the 16D Z[ζ] integer lattice.
 //!
 //! ## What's the same as the 8D version?
 //!

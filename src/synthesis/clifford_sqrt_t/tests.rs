@@ -165,7 +165,7 @@ mod probes;
     #[test]
     fn certificate_closes_on_t_target() {
         let t_f = U2Q::t().to_float();
-        let g = Complex64::from_polar(1.0, -PI / 8.0); // det(T)=ζ₁₆² → g²=ζ₁₆⁻²
+        let g = Complex64::from_polar(1.0, -PI / 8.0); // det(T)=ζ² → g²=ζ⁻²
         let target: Mat2 = [
             [t_f[0][0] * g, t_f[0][1] * g],
             [t_f[1][0] * g, t_f[1][1] * g],
@@ -470,7 +470,7 @@ mod probes;
             result.lde, result.distance, t0.elapsed()
         );
         assert!(result.distance < 1e-3);
-        // Upper bound from 8D Clifford+T: lde=28. Z[ζ_16] should land much
+        // Upper bound from 8D Clifford+T: lde=28. Z[ζ] should land much
         // smaller (~10) since `T = QQ` doubles the effective denominator
         // factor in the 8D path.
         assert!(result.lde <= 14,
@@ -652,7 +652,7 @@ mod probes;
                 let r = &prefixes[rep];
                 let mate = lde0.iter().any(|c| {
                     let rc = *r * *c;
-                    (0..16u32).any(|p| scale(&rc, zeta_16_pow(p)) == *u)
+                    (0..16u32).any(|p| scale(&rc, zeta_pow(p)) == *u)
                 });
                 assert!(
                     mate,

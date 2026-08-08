@@ -562,7 +562,7 @@ impl SO3<R4> {
     /// Derivation: SO3 from U2. Mirrors the SO3<R2>::from_u2 structure but
     /// extracts Re/Im into R4 = Z[γ] = Z[1, √2, γ, γ√2].
     ///
-    /// For z ∈ Z[ζ_16], 2·Re(z) and 2·Im(z) land in Z[γ] (the /2 factors in
+    /// For z ∈ Z[ζ], 2·Re(z) and 2·Im(z) land in Z[γ] (the /2 factors in
     /// cos(jπ/8), sin(jπ/8) are absorbed by the leading 2). Using
     /// Ratio<R4>'s √2-denominator and `init_exp = 2k+2`, each entry value is
     ///   `entry = num / √2^(2k+2) = num / 2^(k+1)`
@@ -573,7 +573,7 @@ impl SO3<R4> {
     ///     R4(2·z.a, z.c−z.g, z.b−z.h−z.d+z.f, z.d−z.f)
     ///   im3(z) = 2·Im(z) in R4 basis:
     ///     R4(2·z.e, z.c+z.g, z.d+z.f−z.b−z.h, z.b+z.h)
-    ///   cz: N is real Z[ζ_16] (N.e=0, N.f=−N.d, N.g=−N.c, N.h=−N.b). In
+    ///   cz: N is real Z[ζ] (N.e=0, N.f=−N.d, N.g=−N.c, N.h=−N.b). In
     ///     Z[γ] basis {1, √2, γ, γ√2}, N = R4(N.a, N.c, N.b−N.d, N.d).
     pub(crate) fn from_u2(u: &U2Q) -> Self {
         let a = u.u11; let b = u.u12;
@@ -613,7 +613,7 @@ impl SO3<R4> {
             )
         };
 
-        // N is a real Z[ζ_16] element: N.e = 0, N.f = -N.d, N.g = -N.c,
+        // N is a real Z[ζ] element: N.e = 0, N.f = -N.d, N.g = -N.c,
         // N.h = -N.b. In R4 basis it's R4(N.a, N.c, N.b−N.d, N.d).
         let cz = R4(n.a, n.c, n.b - n.d, n.d);
 

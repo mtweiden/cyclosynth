@@ -1,4 +1,4 @@
-//! Clifford+√T synthesis backend over Z[ζ_16].
+//! Clifford+√T synthesis backend over Z[ζ].
 //!
 //! [`SynthesizerQ`] is one of two backends behind the unified user-facing
 //! [`crate::synthesis::Synthesizer`]; the other is
@@ -10,11 +10,11 @@
 //! ## Backend (hybrid, three modes)
 //!
 //! For `k ≤ BRUTE_LIMIT` (=3): brute-force enumeration via
-//! [`crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell`] — cheap exact-find
+//! [`crate::synthesis::clifford_sqrt_t::lattice::brute::enumerate_unitary_norm_shell`] — cheap exact-find
 //! for small Clifford+√T targets (also the lattice pipeline's oracle).
 //!
 //! For larger `k`: single-shot 16D L²-LLL + Schnorr-Euchner via
-//! [`crate::synthesis::lattice::zeta::find_aligned_lattice_points_with_stop`] (with an optional BKZ-β
+//! [`crate::synthesis::clifford_sqrt_t::lattice::find_aligned_lattice_points_with_stop`] (with an optional BKZ-β
 //! post-pass), plus an FGKM-prefix divide-and-conquer mode (`prefix_split_search_q`)
 //! for deep `k`. Adaptive leaf budget scales exponentially in `k`.
 //!
@@ -33,8 +33,8 @@ use crate::synthesis::angle::{angle_target, Angle, DEFAULT_COL_PREC};
 use crate::synthesis::cliffords::CLIFFORD_TABLE_T;
 use crate::synthesis::decomposer::BlochDecomposer;
 use crate::synthesis::distance::{diamond_distance_u2q_float, Mat2};
-use crate::synthesis::lattice::zeta::{find_aligned_lattice_points_with_stop, find_aligned_lattice_points_mpfr, IntScratch16};
-use crate::synthesis::lattice::zeta::brute::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta, uv_to_lattice_y_zeta_mpfr};
+use crate::synthesis::clifford_sqrt_t::lattice::{find_aligned_lattice_points_with_stop, find_aligned_lattice_points_mpfr, IntScratch16};
+use crate::synthesis::clifford_sqrt_t::lattice::brute::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta, uv_to_lattice_y_zeta_mpfr};
 use num_complex::Complex64;
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -73,7 +73,7 @@ pub struct SynthResultQ {
 /// `k_searched` covers every circuit with reduced lde ≤ k_searched —
 /// lower-lde circuits appear as √2-scaled lattice points on the shell;
 /// (2) both det-phase parity branches are searched (q ≡ d mod 2 and
-/// the ζ₁₆-automorphism collapse mean two branches are complete);
+/// the ζ-automorphism collapse mean two branches are complete);
 /// (3) anything beyond the horizon costs ≥ `cost_lb_half_units(k+1)`
 /// (verified staircase, cost_bound.rs). The certificate inherits the
 /// pipeline's numeric trust boundary (f64+dd distance checks, cap
@@ -91,7 +91,7 @@ pub(crate) struct CostCertificate {
     pub(crate) certified_optimal: bool,
 }
 
-/// Clifford+√T synthesizer over `Z[ζ_16]`.
+/// Clifford+√T synthesizer over `Z[ζ]`.
 ///
 /// Field names mirror `clifford_t::SynthesizerT`. Defaults in [`Self::new`].
 #[derive(Clone)]
@@ -99,6 +99,13 @@ pub struct SynthesizerQ {
     /// Approximation precision in diamond distance. Private: paired with
     /// lde-window tuning in [`Self::new`]; read via [`Self::epsilon`].
     epsilon: f64,
+    /// Reduced-basis cache shared across the lde ladder (deep-ε path);
+    /// see [`lattice::scratch::BasisCache16`]. Opt-in: reusing bases is
+    /// sound (cached transforms are bit-identical to fresh reductions —
+    /// Q(k) = M/2^k), but the freed LLL time shifts what the wall-clock
+    /// deadlines explore, so default-on awaits a cost-telemetry eval.
+    basis_cache: Arc<lattice::scratch::BasisCache16>,
+    use_basis_cache: bool,
     /// Maximum lde to search before giving up.
     pub(crate) max_lde: u32,
     /// Minimum lde to start searching from.
@@ -187,7 +194,7 @@ pub struct SynthesizerQ {
 }
 
 /// Smallest lde where a generic SU(2) target is reachable within ε,
-/// per the Gaussian heuristic over the Minkowski-embedded Z[ζ_16]
+/// per the Gaussian heuristic over the Minkowski-embedded Z[ζ]
 /// lattice. We start the search 3 below this estimate so easy targets
 /// land without an extra full-shell sweep.
 fn lattice_lde_estimate(epsilon: f64) -> u32 {
@@ -254,8 +261,8 @@ pub(crate) fn gates_cost(gates: &str, q_cost_x2: usize) -> usize {
         .sum()
 }
 
-/// Inner (right-factor) det-phase for a left prefix `u_l`: the residual ζ₁₆
-/// power the suffix must carry so `det(u_l · u_r) = ζ₁₆^d_target`.
+/// Inner (right-factor) det-phase for a left prefix `u_l`: the residual ζ
+/// power the suffix must carry so `det(u_l · u_r) = ζ^d_target`.
 pub(crate) fn inner_d_r(d_target: u32, u_l: &U2Q) -> u32 {
     let d_l = det_phase_of(&u_l.to_float());
     ((d_target as i32 - d_l as i32).rem_euclid(16)) as u32
@@ -348,6 +355,8 @@ impl SynthesizerQ {
 
         Self {
             epsilon,
+            basis_cache: Arc::default(),
+            use_basis_cache: false,
             min_lde,
             max_lde: max_lde_override,
             prefix_split_m,
@@ -394,6 +403,15 @@ impl SynthesizerQ {
     }
 
     /// Approximation precision in diamond distance (set in [`Self::new`]).
+    /// Reuse LLL+BKZ-reduced bases across the lde ladder (the reduced
+    /// transform is lde-independent for a fixed prefix). Off by default
+    /// pending a cost-telemetry eval.
+    #[allow(dead_code)] // opt-in eval surface
+    pub(crate) fn with_lde_basis_cache(mut self, on: bool) -> Self {
+        self.use_basis_cache = on;
+        self
+    }
+
     pub(crate) fn epsilon(&self) -> f64 {
         self.epsilon
     }
@@ -610,6 +628,9 @@ pub(crate) fn with_incumbent_watcher<R: Send>(
     })
 }
 
+pub(crate) mod cost_bound;
+pub mod lattice;
+pub(crate) mod rz;
 mod brute;
 mod first_hit;
 mod optimal;
@@ -630,7 +651,7 @@ pub use recon::{det_phase_of, solution_to_u2q_with_det_phase, unitary_to_uv_zeta
 pub(crate) use recon::solution_to_u2q;
 pub use recon::project_det_to_zeta_coset;
 #[cfg(test)]
-pub(crate) use recon::zeta_16_pow;
+pub(crate) use recon::zeta_pow;
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 

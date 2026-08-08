@@ -33,7 +33,7 @@ pub(crate) fn cost_lb_half_units(k: u32) -> usize {
 
 /// Per-det-phase-class suffix cost lower bound (half-units): an odd det class
 /// forces ≥1 √T-class syllable (cost `q_cost_x2`), even gives 0. Only the
-/// PARITY of `d` is sound — a target matches up to global phase ζ₁₆ʲ, shifting
+/// PARITY of `d` is sound — a target matches up to global phase ζʲ, shifting
 /// the class by 2j, so a mod-4 bound is NOT sound. Pass `q_cost_x2` (not a
 /// hard-coded constant) to stay sound under any √T weight.
 pub(crate) fn class_cost_lb_half_units(d: u32, q_cost_x2: usize) -> usize {
@@ -147,7 +147,7 @@ mod tests {
     fn class_bound_holds_on_brute_shells() {
         use crate::synthesis::clifford_sqrt_t::{det_phase_of, gates_cost, solution_to_u2q};
         use crate::synthesis::decomposer::BlochDecomposer;
-        use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
+        use crate::synthesis::clifford_sqrt_t::lattice::brute::enumerate_unitary_norm_shell;
 
         let mut checked = 0usize;
         for k in 0..=3u32 {
@@ -184,7 +184,7 @@ mod tests {
     fn cost_bound_below_brute_minimum_small_k() {
         use crate::synthesis::clifford_sqrt_t::{gates_cost, solution_to_u2q};
         use crate::synthesis::decomposer::BlochDecomposer;
-        use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
+        use crate::synthesis::clifford_sqrt_t::lattice::brute::enumerate_unitary_norm_shell;
 
         for k in 0..=3u32 {
             let sols = enumerate_unitary_norm_shell(k);

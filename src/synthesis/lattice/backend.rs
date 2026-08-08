@@ -1,5 +1,5 @@
 //! Compiler-enforced contract shared by the per-ring lattice backends:
-//! [`Omega`] (Z[ω], d=8, Clifford+T) and [`Zeta`] (Z[ζ_16], d=16, Clifford+√T).
+//! [`Omega`] (Z[ω], d=8, Clifford+T) and [`Zeta`] (Z[ζ], d=16, Clifford+√T).
 //!
 //! Captures the dimension-only-different core: the dimension and scratch type,
 //! scratch build/reset, the exact-i256 Gram + L²-LLL reduction, the
@@ -12,12 +12,14 @@
 //! names" convention into a contract the compiler checks, and give a third ring
 //! a concrete checklist (implement this, then supply Q-build + enumeration).
 
+use crate::synthesis::clifford_sqrt_t::lattice as zeta_lattice;
+use crate::synthesis::clifford_t::lattice as omega_lattice;
 use super::common::LllResult;
 
 /// The lattice-enumeration core one ring must provide. See the module docs for
 /// what deliberately lives outside it.
 pub(crate) trait LatticeBackend {
-    /// Lattice dimension (8 for Z[ω], 16 for Z[ζ_16]).
+    /// Lattice dimension (8 for Z[ω], 16 for Z[ζ]).
     const DIM: usize;
 
     /// Per-call working set: exact i256 Gram, i64 basis, and the Gram-Schmidt
@@ -53,54 +55,54 @@ pub(crate) struct Omega;
 
 impl LatticeBackend for Omega {
     const DIM: usize = 8;
-    type Scratch = super::omega::scratch::IntScratch;
+    type Scratch = omega_lattice::scratch::IntScratch;
 
     fn compute_gram_full(scratch: &mut Self::Scratch) -> bool {
-        super::omega::lll::compute_gram_full(scratch)
+        omega_lattice::lll::compute_gram_full(scratch)
     }
 
     fn run_lll(scratch: &mut Self::Scratch) -> LllResult {
-        super::omega::lll::lll_l2(scratch)
+        omega_lattice::lll::lll_l2(scratch)
     }
 
-    fn new_scratch(eps: f64) -> Self::Scratch { super::omega::scratch::IntScratch::new(eps) }
+    fn new_scratch(eps: f64) -> Self::Scratch { omega_lattice::scratch::IntScratch::new(eps) }
     fn reset_basis(scratch: &mut Self::Scratch) { scratch.reset_basis() }
     fn det_exact(scratch: &Self::Scratch) -> Option<i64> {
-        super::omega::cholesky_lu::det_exact(&scratch.basis)
+        omega_lattice::cholesky_lu::det_exact(&scratch.basis)
     }
     fn cholesky_f64(scratch: &mut Self::Scratch) -> bool {
-        super::omega::cholesky_lu::cholesky_f64(scratch)
+        omega_lattice::cholesky_lu::cholesky_f64(scratch)
     }
     fn lu_solve_int_inplace(scratch: &mut Self::Scratch) -> bool {
-        super::omega::cholesky_lu::lu_solve_int_inplace(scratch)
+        omega_lattice::cholesky_lu::lu_solve_int_inplace(scratch)
     }
 }
 
-/// Z[ζ_16] / Clifford+√T, 16-dimensional.
+/// Z[ζ] / Clifford+√T, 16-dimensional.
 pub(crate) struct Zeta;
 
 impl LatticeBackend for Zeta {
     const DIM: usize = 16;
-    type Scratch = super::zeta::scratch::IntScratch16;
+    type Scratch = zeta_lattice::scratch::IntScratch16;
 
     fn compute_gram_full(scratch: &mut Self::Scratch) -> bool {
-        super::zeta::lll::compute_gram_full(scratch)
+        zeta_lattice::lll::compute_gram_full(scratch)
     }
 
     fn run_lll(scratch: &mut Self::Scratch) -> LllResult {
-        super::zeta::lll::run_lll(scratch)
+        zeta_lattice::lll::run_lll(scratch)
     }
 
-    fn new_scratch(eps: f64) -> Self::Scratch { super::zeta::scratch::IntScratch16::new(eps) }
+    fn new_scratch(eps: f64) -> Self::Scratch { zeta_lattice::scratch::IntScratch16::new(eps) }
     fn reset_basis(scratch: &mut Self::Scratch) { scratch.reset_basis() }
     fn det_exact(scratch: &Self::Scratch) -> Option<i64> {
-        super::zeta::cholesky_lu::det_exact(&scratch.basis)
+        zeta_lattice::cholesky_lu::det_exact(&scratch.basis)
     }
     fn cholesky_f64(scratch: &mut Self::Scratch) -> bool {
-        super::zeta::cholesky_lu::cholesky_f64(scratch)
+        zeta_lattice::cholesky_lu::cholesky_f64(scratch)
     }
     fn lu_solve_int_inplace(scratch: &mut Self::Scratch) -> bool {
-        super::zeta::cholesky_lu::lu_solve_int_inplace(scratch)
+        zeta_lattice::cholesky_lu::lu_solve_int_inplace(scratch)
     }
 }
 

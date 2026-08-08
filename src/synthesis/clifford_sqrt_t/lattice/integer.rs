@@ -1,10 +1,10 @@
-//! Aligned-lattice-point search for the 16D Z[ζ_16] pipeline (= the
+//! Aligned-lattice-point search for the 16D Z[ζ] pipeline (= the
 //! paper's phase 1, arXiv:2510.05816 Alg 3.6): build Q → L²-LLL →
 //! Cholesky → LU cap-center solve → Schnorr-Euchner with leaf checks.
 //!
 //! ## Leaf checks
 //!
-//!  - `‖x‖² == 2^k` (norm shell — i.e. `x ∈ Z[ζ_16]²` with combined norm
+//!  - `‖x‖² == 2^k` (norm shell — i.e. `x ∈ Z[ζ]²` with combined norm
 //!    matching the lde).
 //!  - `bilinear_forms(x) == (0, 0, 0)` (β_1, β_2, β_3 — the totally-real
 //!    decomposition of the unitarity constraint).
@@ -13,11 +13,11 @@
 //! ## Alignment threshold
 //!
 //! `thresh_xy = 2^(2k) · (1 − ε²) / 32`. Compared to the 8D path's
-//! `2^(2k)·(1−ε²)/4`, the additional factor of 8 reflects the Z[ζ_16]
+//! `2^(2k)·(1−ε²)/4`, the additional factor of 8 reflects the Z[ζ]
 //! conventions:
 //!
 //!  - `‖y_lattice‖² = 2^k/4` (vs 8D's `2^(k−1)`) — 16D y has half the
-//!    lattice-coord norm because each Z[ζ_16] element has 8 ζ-coefficients
+//!    lattice-coord norm because each Z[ζ] element has 8 ζ-coefficients
 //!    (vs 4 for Z[ω]) so the Σ-preimage spreads further.
 //!  - For a valid lattice solution `x_target` with `B_1=B_2=B_3=0`, the
 //!    σ_1 image of `Σ x_target` matches `y_real` exactly, so
@@ -43,7 +43,7 @@ use super::se::{bilinear_forms, schnorr_euchner, LeafAction, SeCenter16};
 use crate::synthesis::diag;
 
 /// MPFR precision used by the alignment-threshold dot product. Same as 8D
-/// `super::super::omega::se::SE_PREC` — 128 bits gives ~38 digits of
+/// `clifford_t::lattice::se::SE_PREC` — 128 bits gives ~38 digits of
 /// headroom past the precision walls in the f64 formula at ε ≲ √(machine_eps).
 const ALIGN_PREC: u32 = 128;
 
@@ -226,12 +226,55 @@ where
         diag::T_BUILD_NS.fetch_add(diag::elapsed_ns(t), Ordering::Relaxed);
     }
 
-    if run_lll_ladder(scratch, k, eps).is_none() {
-        return Vec::new();
-    }
-
-    if run_bkz_postpass(scratch, k, eps).is_none() {
-        return Vec::new();
+    // Reduced-basis reuse: Q(k) = M/2^k for a fixed prefix, so a basis
+    // reduced at any lde serves every lde. On a hit, install the cached
+    // transform and rebuild the exact Gram (16³ integer ops — negligible
+    // next to a fresh reduction); on a miss (or Gram overflow with the
+    // cached basis), run the full ladder and publish the result.
+    let cache = scratch.cache_key.zip(scratch.basis_cache.clone());
+    static CACHE_DBG: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("ZETA_CACHE_DBG").is_some());
+    let dbg = *CACHE_DBG;
+    let cached_ok = if let Some((key, cache)) = &cache {
+        match cache.get(*key) {
+            Some(basis) => {
+                if dbg {
+                    // Compare cached vs fresh reduction at this level.
+                    let cached_copy = basis;
+                    scratch.reset_basis();
+                    let _ = super::lll::compute_gram_full(scratch);
+                    let fresh_ok = run_lll_ladder(scratch, k, eps).is_some()
+                        && run_bkz_postpass(scratch, k, eps).is_some();
+                    let same = fresh_ok && scratch.basis == cached_copy;
+                    eprintln!("[cache] k={k} HIT fresh_eq_cached={same}");
+                }
+                scratch.basis = basis;
+                super::lll::compute_gram_full(scratch)
+            }
+            None => {
+                if dbg {
+                    eprintln!("[cache] k={k} MISS");
+                }
+                false
+            }
+        }
+    } else {
+        false
+    };
+    if !cached_ok {
+        scratch.reset_basis();
+        if !super::lll::compute_gram_full(scratch) {
+            return Vec::new();
+        }
+        if run_lll_ladder(scratch, k, eps).is_none() {
+            return Vec::new();
+        }
+        if run_bkz_postpass(scratch, k, eps).is_none() {
+            return Vec::new();
+        }
+        if let Some((key, cache)) = &cache {
+            cache.insert(*key, scratch.basis);
+        }
     }
 
     // Deep-ε bound: an MPFR-128 Cholesky projected to an f64 snapshot +
@@ -341,7 +384,7 @@ where
     // solution coinciding with `y_real`, giving target `(y·x)² = 2^(2k-1)`
     // — threshold lifts to `2^(2k-2)·(1−ε²) = 2^(2k)·(1−ε²)/4`.
     //
-    // 16D Z[ζ_16] path: for a valid lattice solution `x_target`,
+    // 16D Z[ζ] path: for a valid lattice solution `x_target`,
     //   `(y_lattice · x_target) = (1/4) (y_real · Σ x_target)
     //                           = (1/4) (y_real · σ_1-block of Σ x_target)
     //                           = (1/4) ‖y_real‖² = (1/4) · 2^k = 2^(k−2)`,
@@ -492,7 +535,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::synthesis::lattice::zeta::brute::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta};
+    use crate::synthesis::clifford_sqrt_t::lattice::brute::{enumerate_unitary_norm_shell, uv_to_lattice_y_zeta};
     use crate::synthesis::clifford_sqrt_t::{
         det_phase_of, solution_to_u2q_with_det_phase, unitary_to_uv_zeta,
     };
@@ -597,7 +640,7 @@ mod tests {
     /// returned candidates.
     #[test]
     fn lattice_search_finds_hqhqh_at_moderate_k() {
-        use crate::synthesis::lattice::zeta::brute::enumerate_unitary_norm_shell;
+        use crate::synthesis::clifford_sqrt_t::lattice::brute::enumerate_unitary_norm_shell;
         use crate::synthesis::distance::diamond_distance_float;
 
         let k = 2u32;

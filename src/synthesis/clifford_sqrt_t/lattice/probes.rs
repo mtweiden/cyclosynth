@@ -12,11 +12,11 @@
 #![allow(unused_imports)]
 use crate::rings::MpFloat;
 use super::*; // the tests module
-use super::super::*; // lattice::zeta internals
-use crate::synthesis::lattice::zeta::integer::find_aligned_lattice_points;
-use crate::synthesis::lattice::zeta::scratch::IntScratch16;
-use crate::synthesis::lattice::zeta::se::SeCenter16;
-use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta;
+use super::super::*; // clifford_sqrt_t internals
+use crate::synthesis::clifford_sqrt_t::lattice::integer::find_aligned_lattice_points;
+use crate::synthesis::clifford_sqrt_t::lattice::scratch::IntScratch16;
+use crate::synthesis::clifford_sqrt_t::lattice::se::SeCenter16;
+use crate::synthesis::clifford_sqrt_t::lattice::brute::uv_to_lattice_y_zeta;
 use crate::synthesis::clifford_sqrt_t::{det_phase_of, solution_to_u2q_with_det_phase, unitary_to_uv_zeta};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
     #[test]
     #[ignore = "census probe, print-only; see doc comment"]
     fn probe_f64_entry_radial_error() {
-        use crate::synthesis::lattice::zeta::brute::uv_to_lattice_y_zeta_mpfr;
+        use crate::synthesis::clifford_sqrt_t::lattice::brute::uv_to_lattice_y_zeta_mpfr;
 
         // SplitMix64 + u3, replicated from src/bin/probe_omega_vs_zeta.rs.
         struct Xs(u64);
@@ -290,7 +290,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
     /// Diagnostic: for Rz(0.3) at ε=1e-3, first establish the lde the 8D
     /// Clifford+T synthesizer reaches (upper bound for Clifford+√T since
     /// `T = QQ` as gates and lde counts √2 denominators identically). Then
-    /// verify the Z[ζ_16] / Clifford+√T flow hits it at ≤ that lde.
+    /// verify the Z[ζ] / Clifford+√T flow hits it at ≤ that lde.
     /// Behind `#[ignore]`: `cargo test --release --lib sqrt_t_depth_vs_clifford_t_baseline --
     /// --ignored --nocapture`.
     #[test]

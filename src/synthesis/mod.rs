@@ -11,8 +11,8 @@
 //! - **lde** — "least denominator exponent": the power `k` of √2 in a
 //!   circuit's ring denominator, used as the search-depth parameter
 //!   (`min_lde`/`max_lde`).
-//! - **Z[ω] / Z[ζ₁₆]** — the rings the two backends search: Z[ω] (8-dim,
-//!   `zomega`, Clifford+T) and Z[ζ₁₆] (16-dim, `zeta`/`zzeta`, Clifford+√T).
+//! - **Z[ω] / Z[ζ]** — the rings the two backends search: Z[ω] (8-dim,
+//!   `zomega`, Clifford+T) and Z[ζ] (16-dim, `zeta`/`zzeta`, Clifford+√T).
 //! - **u2t / u2q** — a 2×2 unitary over the Clifford+T (`u2t`) or Clifford+√T
 //!   (`u2q`) ring; **uv** is its (u, v) first-column encoding.
 //! - **Matsumoto-Amano (MA) prefix** — the Clifford+T canonical-form left
@@ -30,11 +30,12 @@ pub mod angle;
 pub mod clifford_sqrt_t;
 pub mod clifford_t;
 pub(crate) mod cliffords;
-pub(crate) mod cost_bound;
+pub(crate) mod factor;
 pub mod decomposer;
 pub mod diag;
 pub mod distance;
 pub mod lattice;
+pub(crate) mod near_clifford;
 pub(crate) mod synthesizer;
 
 /// Build the global rayon pool with 16 MiB worker stacks before its

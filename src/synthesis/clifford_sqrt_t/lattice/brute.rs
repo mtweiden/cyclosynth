@@ -1,5 +1,5 @@
-//! Brute-force search and y-vector helpers for the Z[ζ_16] / Clifford+√T
-//! flow. Mirrors the role of [`super::super::omega::brute`] for the Z[ω] /
+//! Brute-force search and y-vector helpers for the Z[ζ] / Clifford+√T
+//! flow. Mirrors the role of `clifford_t::lattice::brute` for the Z[ω] /
 //! Clifford+T flow: y-vector construction (`compute_align_vec_zeta`,
 //! `uv_to_lattice_y_zeta`) plus a brute-force enumerator
 //! (`enumerate_unitary_norm_shell`) used as a correctness oracle for the
@@ -36,7 +36,7 @@ pub(crate) fn compute_align_vec_zeta(v: [f64; 4]) -> [f64; 16] {
 }
 
 /// Scale a 4-element alignment direction `v` to the 16-element y vector
-/// used by the Z[ζ_16] lattice pipeline. Convention chosen so that
+/// used by the Z[ζ] lattice pipeline. Convention chosen so that
 /// `Σ_full · y = √(2^k) · v_padded` (target × √(2^k) on σ_1, zero on
 /// σ_5/9/13); this gives ‖y‖² = 2^k/4, the 16D norm convention (the 8D
 /// flow uses 2^(k−1) — they deliberately differ).
@@ -120,7 +120,7 @@ fn enumerate<F: FnMut(&[i64; 16])>(
     }
 }
 
-/// Brute-force find_aligned_lattice_points for Z[ζ_16]: enumerate all `(u_1, u_2) ∈ Z[ζ_16]²`
+/// Brute-force find_aligned_lattice_points for Z[ζ]: enumerate all `(u_1, u_2) ∈ Z[ζ]²`
 /// with `‖u_1‖² + ‖u_2‖² = 2^k` and `B_1 = B_2 = B_3 = 0`.
 ///
 /// Returns 16-element integer solutions. Cost is exponential in `k`.

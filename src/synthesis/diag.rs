@@ -129,7 +129,7 @@ pub(crate) static N_LAZY_CALLS_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Max passes ever seen in a single invocation.
 pub(crate) static N_LAZY_PASSES_MAX: AtomicU64 = AtomicU64::new(0);
 
-// ─── 16D Z[ζ_16] / Clifford+√T-specific counters ─────────────────────────────
+// ─── 16D Z[ζ] / Clifford+√T-specific counters ─────────────────────────────
 
 /// Number of `find_aligned_lattice_points` invocations across this synthesize call (one per k).
 pub(crate) static N_LATTICE_SEARCH_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -339,7 +339,7 @@ pub struct Snapshot {
     pub(crate) lazy_passes_total: u64,
     pub(crate) lazy_calls_total: u64,
     pub(crate) lazy_passes_max: u64,
-    // 16D Z[ζ_16] fields.
+    // 16D Z[ζ] fields.
     pub(crate) lattice_search_calls: u64,
     pub(crate) norm_rejected: u64,
     pub(crate) bilinear_rejected: u64,
@@ -610,14 +610,14 @@ pub(crate) fn diag_inner_cap(
     use crate::synthesis::angle::{su2_col_mpfr, Angle};
     use crate::synthesis::clifford_t::solution_to_u2t;
     use crate::synthesis::decomposer::BlochDecomposer;
-    use crate::synthesis::lattice::omega::brute::apply_u2t_dag_to_uv_mpfr;
-    use crate::synthesis::lattice::omega::cholesky_lu::{
+    use crate::synthesis::clifford_t::lattice::brute::apply_u2t_dag_to_uv_mpfr;
+    use crate::synthesis::clifford_t::lattice::cholesky_lu::{
         cholesky_f64, cholesky_int, lu_solve_int_inplace, snapshot_gram_to_mpfr,
     };
-    use crate::synthesis::lattice::omega::lll::lll_l2;
-    use crate::synthesis::lattice::omega::q_metric::{build_q_int, build_q_mpfr_y, uv_to_lattice_y_mpfr};
-    use crate::synthesis::lattice::omega::scratch::IntScratch;
-    use crate::synthesis::lattice::omega::se::{bilinear_b, reconstruct_x, SE_PREC};
+    use crate::synthesis::clifford_t::lattice::lll::lll_l2;
+    use crate::synthesis::clifford_t::lattice::q_metric::{build_q_int, build_q_mpfr_y, uv_to_lattice_y_mpfr};
+    use crate::synthesis::clifford_t::lattice::scratch::IntScratch;
+    use crate::synthesis::clifford_t::lattice::se::{bilinear_b, reconstruct_x, SE_PREC};
 
     let mut out = String::new();
     macro_rules! p { ($($t:tt)*) => {{ out.push_str(&format!($($t)*)); out.push('\n'); }} }

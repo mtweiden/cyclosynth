@@ -1,4 +1,4 @@
-//! Clifford gate table for Clifford+T synthesis.
+//! The single-qubit Clifford gate table, shared by both gate sets.
 //!
 //! All 24 single-qubit Cliffords are represented as SU(2) matrices
 //! in the U2T parameterization (ZOmega numerators with denominator √2^k).

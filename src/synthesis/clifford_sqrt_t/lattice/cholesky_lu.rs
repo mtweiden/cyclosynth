@@ -1,5 +1,5 @@
 //! Post-LLL linear algebra at d=16: Cholesky and LU on the reduced Gram +
-//! basis. Mirrors `super::super::omega::cholesky_lu` (the d=8 path) with
+//! basis. Mirrors `clifford_t::lattice::cholesky_lu` (the d=8 path) with
 //! buffers and loops dimension-bumped to 16.
 //!
 //! Production path:
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn cholesky_f64_16_round_trip() {
         // Construct a known PSD 16x16 matrix: G = 4·I_16. (Matches the
-        // structure of Σᵀ·Σ for the Z[ζ_16] embedding.) Cholesky factor
+        // structure of Σᵀ·Σ for the Z[ζ] embedding.) Cholesky factor
         // should be 2·I_16.
         let mut g = [[0.0_f64; 16]; 16];
         for i in 0..16 {

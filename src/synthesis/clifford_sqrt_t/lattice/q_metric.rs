@@ -1,8 +1,8 @@
 //! 16D Q-metric construction in MPFR + integer-scaled snapshot.
 //!
 //! Constructs Q in lattice coordinates at MPFR precision, then snapshots to
-//! i256 with adaptive scaling for the integer LLL. Z[ζ_16] analog of
-//! [`super::super::omega::q_metric`].
+//! i256 with adaptive scaling for the integer LLL. Z[ζ] analog of
+//! `clifford_t::lattice::q_metric`.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -16,7 +16,7 @@ use super::scratch::{
 
 // ─── build_q_mpfr_zeta: 16D Q-metric construction in MPFR ────────────────────
 
-/// Build the 16D Q-metric matrix in **lattice coordinates** for Z[ζ_16]
+/// Build the 16D Q-metric matrix in **lattice coordinates** for Z[ζ]
 /// synthesis at lde `k` and precision `eps`, in MPFR at `scratch.prec_q`.
 ///
 /// Mirrors the f64 `build_q_zzeta_lattice` (test helper at the bottom of
@@ -257,7 +257,7 @@ use crate::synthesis::lattice::common::rug_to_i256_scaled;
 /// the production pipeline (which always goes through MPFR + i256).
 #[cfg(test)]
 pub(crate) fn build_q_zzeta_lattice(v: [f64; 4], k: u32, eps: f64) -> [[f64; 16]; 16] {
-    use crate::synthesis::lattice::zeta::brute::compute_align_vec_zeta;
+    use crate::synthesis::clifford_sqrt_t::lattice::brute::compute_align_vec_zeta;
 
     let r_sq = 2.0f64.powi(k as i32);
     let r = r_sq.sqrt();

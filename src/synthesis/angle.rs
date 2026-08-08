@@ -31,6 +31,15 @@ impl Angle {
         }
     }
 
+    /// Exactly zero (either representation). Used to detect diagonal
+    /// (pure z-rotation) targets for the native Rz route.
+    pub(crate) fn is_zero(self) -> bool {
+        match self {
+            Angle::Rad(x) => x == 0.0,
+            Angle::PiRatio(p, _) => p == 0,
+        }
+    }
+
     /// Evaluate to radians as an MPFR float at `prec` bits. For `PiRatio` the
     /// result is the correctly-rounded `(p/q)·π` (π carries full `prec` bits,
     /// p and q are exact), the source of exactness below the f64 ULP.
