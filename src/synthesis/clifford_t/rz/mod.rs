@@ -259,7 +259,7 @@ mod tests {
     fn gridsynth_phase_branch_bisect() {
         let eps = 1e-28_f64;
         let prec = prec_for_epsilon(eps);
-        let th = 1.0472_f64;
+        let th = std::f64::consts::FRAC_PI_3;
         let theta = MpFloat::with_val(prec, th);
         let eps_f = MpFloat::with_val(prec, eps);
         let mut rng = Rng::new(GS_SEED);
@@ -468,7 +468,7 @@ mod tests {
             }
             let eps = 10f64.powi(-i32::try_from(decades).expect("small"));
             let prec = prec_for_epsilon(eps);
-            for (name, th) in [("generic", 1.0472_f64), ("near-id", 3.74507e-7)] {
+            for (name, th) in [("generic", std::f64::consts::FRAC_PI_3), ("near-id", 3.74507e-7)] {
                 let theta = MpFloat::with_val(prec, th);
                 let t0 = std::time::Instant::now();
                 let g = gridsynth_gates_native(&theta, eps, prec);
@@ -549,7 +549,7 @@ mod tests {
         // Deep-ε scaling: single calls, one generic + one near-Clifford angle.
         for eps in [1e-6_f64, 1e-8, 1e-10, 1e-12, 1e-14] {
             let prec = prec_for_epsilon(eps);
-            for (name, th) in [("generic", 1.0472_f64), ("near-id", 3.74507e-7)] {
+            for (name, th) in [("generic", std::f64::consts::FRAC_PI_3), ("near-id", 3.74507e-7)] {
                 let theta = MpFloat::with_val(prec, th);
                 let t0 = std::time::Instant::now();
                 let g = gridsynth_gates_native(&theta, eps, prec).expect("solve");
@@ -600,7 +600,7 @@ mod tests {
         let mut total = Duration::ZERO;
 
         let angles: Vec<f64> = {
-            let mut v = vec![1.0472, 0.1234, 2.9876];
+            let mut v = vec![std::f64::consts::FRAC_PI_3, 0.1234, 2.9876];
             for k in [4i32, 10, 23, 30] {
                 v.push(std::f64::consts::PI * 2f64.powi(-k));
             }

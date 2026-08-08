@@ -791,7 +791,7 @@ use std::f64::consts::PI;
             .iter()
             .map(|&d| (format!("Rz({d})"), rz(d)))
             .collect();
-        targets.push(("generic Rz(1.0472)".into(), rz(1.0472)));
+        targets.push(("generic Rz(pi/3)".into(), rz(std::f64::consts::FRAC_PI_3)));
 
         // dd(W·C, T) = dd(W, T·C†): pre-rotate each target by all Cliffords.
         let rotated: Vec<Vec<Mat2>> = targets

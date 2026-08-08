@@ -48,7 +48,7 @@ impl<C: RingScalar> ZOmegaG<C> {
     }
 
     /// Construct from coefficients in ω-power order.
-    #[cfg_attr(not(test), allow(dead_code))] // parity with `ZZetaG::from_coeffs`
+    #[allow(dead_code)] // parity with `ZZetaG::from_coeffs`
     pub(crate) fn from_coeffs(v: [C; 4]) -> Self {
         let [a, b, c, d] = v;
         Self::from_parts(a, b, c, d)
@@ -56,7 +56,7 @@ impl<C: RingScalar> ZOmegaG<C> {
 
     /// Coefficients in ω-power order, by reference.
     #[inline]
-    #[cfg_attr(not(test), allow(dead_code))] // parity with `ZZetaG::coeffs`
+    #[allow(dead_code)] // parity with `ZZetaG::coeffs`
     pub(crate) fn coeffs(&self) -> [&C; 4] {
         [&self.a, &self.b, &self.c, &self.d]
     }

@@ -117,7 +117,7 @@ mod tests {
     /// (both are T-optimal for z-rotations; allow ±1 for tie-breaks).
     #[test]
     fn test_matches_lattice_t_count() {
-        for lam in [Angle::Rad(1.0472), Angle::PiRatio(1, 8), Angle::PiRatio(3, 16)] {
+        for lam in [Angle::Rad(std::f64::consts::FRAC_PI_3), Angle::PiRatio(1, 8), Angle::PiRatio(3, 16)] {
             let native = Synthesizer::new(1e-3, false)
                 .synthesize_u1(lam)
                 .expect("native");
@@ -154,7 +154,7 @@ mod tests {
     fn test_below_floor_declines_fast() {
         let target = [[num_complex::Complex::new(1.0, 0.0), num_complex::Complex::new(0.0, 0.0)],
                       [num_complex::Complex::new(0.0, 0.0), num_complex::Complex::new(1.0, 0.0)]];
-        let theta = crate::rings::types::MpFloat::with_val(64, 1.0472);
+        let theta = crate::rings::types::MpFloat::with_val(64, std::f64::consts::FRAC_PI_3);
         let t0 = std::time::Instant::now();
         assert!(super::synthesize_rz(&theta, &target, 1e-49).is_none());
         assert!(t0.elapsed().as_millis() < 50, "floor decline must be immediate");

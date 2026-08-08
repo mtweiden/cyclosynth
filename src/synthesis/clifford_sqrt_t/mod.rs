@@ -406,7 +406,7 @@ impl SynthesizerQ {
     /// Reuse LLL+BKZ-reduced bases across the lde ladder (the reduced
     /// transform is lde-independent for a fixed prefix). Off by default
     /// pending a cost-telemetry eval.
-    #[cfg_attr(not(test), allow(dead_code))] // opt-in eval surface
+    #[allow(dead_code)] // opt-in eval surface
     pub(crate) fn with_lde_basis_cache(mut self, on: bool) -> Self {
         self.use_basis_cache = on;
         self

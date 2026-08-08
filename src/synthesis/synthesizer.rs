@@ -1146,7 +1146,9 @@ mod tests {
         let mut state = 0xC0FF_EE00_D00D_5EEDu64;
         let mut rnd = || {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            (state >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU
+            #[allow(clippy::cast_precision_loss)]
+            let x = (state >> 11) as f64 / (1u64 << 53) as f64;
+            x * std::f64::consts::TAU
         };
         let targets: Vec<[f64; 3]> = (0..5).map(|_| [rnd(), rnd(), rnd()]).collect();
         for (sqrt_t, levels) in [
@@ -1185,7 +1187,9 @@ mod tests {
         let mut state = 0xC0FF_EE00_D00D_5EEDu64;
         let mut rnd = || {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            (state >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU
+            #[allow(clippy::cast_precision_loss)]
+            let x = (state >> 11) as f64 / (1u64 << 53) as f64;
+            x * std::f64::consts::TAU
         };
         let targets: Vec<[f64; 3]> = (0..5).map(|_| [rnd(), rnd(), rnd()]).collect();
         let synth = Synthesizer::new(1e-8, true);
@@ -1378,7 +1382,7 @@ mod tests {
     fn probe_issue2_repro() {
         let synth = Synthesizer::new(1e-8, false);
         let cases: Vec<(&str, f64)> = vec![
-            ("generic 1.0472", 1.0472),
+            ("generic pi/3", std::f64::consts::FRAC_PI_3),
             ("pi/2^23 near id", 3.74507e-07),
             ("near S", std::f64::consts::FRAC_PI_2 + 3.74507e-07),
             ("delta 1e-2", 1e-2),

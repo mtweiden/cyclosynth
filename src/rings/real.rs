@@ -710,6 +710,12 @@ impl ZZetaBig {
     }
 }
 
+/// Approximate Integer → f64 for tests.
+#[cfg(test)]
+pub(crate) fn int_to_approx(x: &Integer) -> f64 {
+    x.to_f64()
+}
+
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -832,10 +838,3 @@ mod tests {
         assert!(!ZRootTwoPlusRootTwo::sqrt2().is_totally_nonneg());
     }
 }
-
-/// Approximate Integer → f64 for tests.
-#[cfg(test)]
-pub(crate) fn int_to_approx(x: &Integer) -> f64 {
-    x.to_f64()
-}
-
