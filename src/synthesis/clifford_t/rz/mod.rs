@@ -442,7 +442,7 @@ mod tests {
                 }
                 rows.push((format!("{name}@{eps:.0e}"), dt.as_secs_f64() * 1e3, {
                     #[allow(clippy::cast_precision_loss)]
-                    let t = g.matches('T').count() as f64;
+                    let t = g.matches(['T', 't']).count() as f64;
                     t
                 }));
             }
@@ -555,7 +555,7 @@ mod tests {
                 let g = gridsynth_gates_native(&theta, eps, prec).expect("solve");
                 eprintln!(
                     "eps={eps:<8.0e} {name:8} T={:<4} {:>8.2?}",
-                    g.matches('T').count(),
+                    g.matches(['T', 't']).count(),
                     t0.elapsed()
                 );
             }

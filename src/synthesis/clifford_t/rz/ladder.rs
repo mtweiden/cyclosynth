@@ -99,7 +99,8 @@ mod tests {
         let synth = Synthesizer::new(1e-8, false);
         let r = synth.synthesize_u1(Angle::Rad(5e-9)).expect("no result");
         let gates = r.gates.expect("gates");
-        assert_eq!(gates.matches('T').count(), 0, "expected T-free result, got {gates}");
+        let t_count = gates.matches(['T', 't']).count();
+        assert_eq!(t_count, 0, "expected T-free result, got {gates}");
         assert!(r.distance < 1e-8);
     }
 
