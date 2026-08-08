@@ -62,8 +62,11 @@ Runnable demos are in [`examples/`](examples/).
 
 ## Attribution
 
-Algorithms follow arXiv:2510.05816 (core lattice synthesis) and
-Ross–Selinger arXiv:1403.2975 (z-rotations). Portions of the Clifford+T
+Algorithms follow arXiv:2510.05816 (core lattice synthesis) and, for
+z-rotations, Neil J. Ross and Peter Selinger, *Optimal ancilla-free
+Clifford+T approximation of z-rotations*, QIC 16(11–12):901–953, 2016
+(arXiv:1403.2975), whose method the Clifford+√T route generalizes to
+Z[ζ]. Portions of the Clifford+T
 z-rotation route were derived from the MIT-licensed
 [pygridsynth](https://github.com/quantum-programming/pygridsynth)
 (see [THIRD_PARTY.md](THIRD_PARTY.md)).

@@ -1,7 +1,10 @@
 //! Native Ross–Selinger z-rotation synthesis (no external crates).
 //!
 //! A from-scratch Rust implementation of the Ross–Selinger z-rotation
-//! algorithm (arXiv:1403.2975) on cyclosynth-native machinery:
+//! algorithm — Neil J. Ross and Peter Selinger, "Optimal ancilla-free
+//! Clifford+T approximation of z-rotations", Quantum Information and
+//! Computation 16(11–12):901–953, 2016; arXiv:1403.2975 — on
+//! cyclosynth-native machinery:
 //! `rug::Integer` ring coefficients, `MpFloat` reals with explicit
 //! precision (no process-global state), a deterministic SplitMix64 for
 //! the Las Vegas factoring, and the crate's own `BlochDecomposer` for
