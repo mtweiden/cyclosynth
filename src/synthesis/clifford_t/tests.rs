@@ -371,12 +371,14 @@ mod probes;
             if optimal_t_prime(t, eps) == 0 {
                 continue;
             }
-            let (res, hit) = synth.prefix_split_search(&target, v, None, t, PASS1_CAP, PASS1_NODE_CAP);
+            let (res, hit, prefix_cap_hit) =
+                synth.prefix_split_search(&target, v, None, t, PASS1_CAP, PASS1_NODE_CAP, usize::MAX);
             if res.is_some() {
                 break; // first-hit reached; no empty levels above
             }
+            assert!(!prefix_cap_hit, "prefix cap disabled by default (usize::MAX) should never hit");
             assert!(!hit, "production caps should be exhaustive at lde={t}");
-            let (res1, hit1) = synth.prefix_split_search(&target, v, None, t, u64::MAX, 1);
+            let (res1, hit1, _) = synth.prefix_split_search(&target, v, None, t, u64::MAX, 1, usize::MAX);
             assert!(res1.is_none(), "no solution reachable on a 1-node budget (lde={t})");
             if hit1 {
                 verified = true;

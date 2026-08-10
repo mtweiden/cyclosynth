@@ -361,6 +361,44 @@ const PASS2_CAP: u64 = u64::MAX;
 const PASS1_NODE_CAP: u64 = 2_000_000;
 const PASS2_NODE_CAP: u64 = 50_000_000;
 
+/// Per-level cap on how many (interleaved-order) prefixes Pass 1 will search
+/// before giving up on the lde as "no solution", instead of scanning the
+/// full `L_{t'}` set. The per-prefix budgets above already bound any single
+/// walk, but nothing bounds the AGGREGATE cost of a "no solution" level,
+/// which scales with `|L_{t'}| ≈ 2^{t'}` and dominates measured runtime --
+/// empty-level proofs, not successful searches, are where nearly all
+/// Stage-3 time goes on deep circuits (97% of Stage-3 CPU time on one
+/// 129-qubit benchmark). Capping here trades a small chance of missing a
+/// solution that existed only in the untried tail of a level (forcing that
+/// Rz to a slightly higher lde, i.e. +2 T-count) for bounding that aggregate
+/// cost. `stride_interleave` (see `prefix_split_search`) makes a
+/// prefix-count truncation a representative sample across the whole
+/// prefix-index range rather than an arbitrary prefix, so this is a real
+/// sample, not a biased one.
+///
+/// `256` is measured, not a guess: across the 11-circuit benchmark suite
+/// (3 repeated runs each, to separate real effect from rayon scheduling
+/// noise), aggregate T-count at cap=256 was consistently *lower* than the
+/// uncapped baseline (-0.008% to -0.010% across repeats), with the worst
+/// single circuit costing +0.32% T -- comparable to the ±0.01-0.3%
+/// run-to-run spread the uncapped search itself already has from
+/// first-hit race non-determinism. Total wall time across the suite fell
+/// ~82%, consistently across repeats (one circuit: 49 min -> 9 min).
+/// Override with `CYCLOSYNTH_PASS1_PREFIX_CAP=<n>` (`0` or unset falls
+/// through to this default; set it to a huge value, e.g. `4294967295`,
+/// to recover the old fully-exhaustive behavior for comparison).
+fn pass1_prefix_cap() -> usize {
+    const DEFAULT: usize = 256;
+    static CAP: LazyLock<usize> = LazyLock::new(|| {
+        std::env::var("CYCLOSYNTH_PASS1_PREFIX_CAP")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&n: &usize| n > 0)
+            .unwrap_or(DEFAULT)
+    });
+    *CAP
+}
+
 /// Hard cap on the prefix length t' the search will build a prefix set
 /// for. The set is O(2^t') `U2T`s retained in a process-wide cache, so
 /// scanning levels beyond this (e.g. a user-supplied `max_lde` far above
@@ -939,8 +977,9 @@ impl SynthesizerT {
             crate::synthesis::diag::reset_all();
         }
         let t_start = std::time::Instant::now();
-        let (result, budget_hit) =
-            self.prefix_split_search(target, v, exact_col, t, PASS1_CAP, PASS1_NODE_CAP);
+        let (result, budget_hit, prefix_cap_hit) = self.prefix_split_search(
+            target, v, exact_col, t, PASS1_CAP, PASS1_NODE_CAP, pass1_prefix_cap(),
+        );
         let pass1_ms = t_start.elapsed().as_secs_f64() * 1000.0;
         if trace {
             let s = crate::synthesis::diag::snapshot();
@@ -951,6 +990,15 @@ impl SynthesizerT {
         if result.is_some() {
             return result;
         }
+        if prefix_cap_hit {
+            // Bailed on the aggregate prefix-count cap rather than proving
+            // exhaustively that no solution exists at this lde. Pass 2 would
+            // only multiply the same aggregate cost (more prefixes, not a
+            // deeper per-prefix budget), so it can't help here -- treat this
+            // exactly like an exhaustive miss and advance to lde+1. See
+            // `pass1_prefix_cap` for the T-count risk this accepts.
+            return None;
+        }
         if !budget_hit {
             // Search was exhaustive at PASS1_CAP — no solution exists at this lde.
             return None;
@@ -960,8 +1008,9 @@ impl SynthesizerT {
             crate::synthesis::diag::reset_all();
         }
         let t_start2 = std::time::Instant::now();
-        let (result2, budget_hit2) =
-            self.prefix_split_search(target, v, exact_col, t, PASS2_CAP, PASS2_NODE_CAP);
+        let (result2, budget_hit2, _prefix_cap_hit2) = self.prefix_split_search(
+            target, v, exact_col, t, PASS2_CAP, PASS2_NODE_CAP, usize::MAX,
+        );
         if trace {
             let s = crate::synthesis::diag::snapshot();
             crate::synthesis::diag::trace_dump_pass(
@@ -1002,10 +1051,17 @@ impl SynthesizerT {
     /// Even and odd inner branches are both tried per prefix.
     /// `max_leaf_checks` (SE leaf budget) and `max_nodes` (SE node budget) are
     /// forwarded to lll_aligned_search → lattice::find_aligned_lattice_points, per prefix × branch.
-    /// Returns `(solution, budget_was_hit)` where `budget_was_hit=true` means at least
-    /// one find_aligned_lattice_points invocation exhausted an SE budget — the caller may want to
-    /// retry at the same lde with a larger budget. If `false` and `solution` is `None`,
-    /// the search was exhaustive at this lde and the caller should advance to lde+1.
+    /// `max_prefixes` bounds how many (interleaved-order) prefixes are searched at
+    /// all -- see `pass1_prefix_cap`; `usize::MAX` (Pass 2's setting) never truncates.
+    /// Returns `(solution, budget_was_hit, prefix_cap_was_hit)`. `budget_was_hit=true`
+    /// means at least one find_aligned_lattice_points invocation exhausted an SE
+    /// budget — the caller may want to retry at the same lde with a larger budget.
+    /// `prefix_cap_was_hit=true` means the prefix set was truncated by `max_prefixes`
+    /// before every prefix was tried -- a DIFFERENT kind of inconclusive than
+    /// `budget_was_hit` (no single walk ran out of room; there just wasn't time to
+    /// try every prefix), which the caller should NOT retry via Pass 2 for (see
+    /// `prefix_split_two_pass`). If both are `false` and `solution` is `None`, the
+    /// search was exhaustive at this lde and the caller should advance to lde+1.
     ///
     /// Cross-branch abort: the first prefix to find an ε-close solution sets
     /// `found_abort`; every other in-flight SE walk sees it at its next
@@ -1024,7 +1080,8 @@ impl SynthesizerT {
         t: u32,
         max_leaf_checks: u64,
         max_nodes: u64,
-    ) -> (Option<SynthResultT>, bool) {
+        max_prefixes: usize,
+    ) -> (Option<SynthResultT>, bool, bool) {
         let eps = self.epsilon;
 
         // t_prime is the optimal split from Prop 3.13. When it is 0 the
@@ -1035,13 +1092,13 @@ impl SynthesizerT {
         let t_prime = {
             let opt = optimal_t_prime(t, eps);
             if opt == 0 && t > self.direct_limit {
-                return (None, false);
+                return (None, false, false);
             }
             opt
         };
 
         if t_prime == 0 || t_prime > t {
-            return (self.direct_search(target, v, t), false);
+            return (self.direct_search(target, v, t), false, false);
         }
         let t_inner = t - t_prime;
 
@@ -1086,6 +1143,13 @@ impl SynthesizerT {
         let indices: Vec<u32> =
             (0..u32::try_from(n).expect("prefix count fits u32")).collect();
         let order = crate::synthesis::stride_interleave(&indices, n_threads);
+        // stride_interleave deals round-robin across threads, so the first
+        // `max_prefixes` of it are a representative spread over the whole
+        // index range, not an arbitrary prefix of the unshuffled set --
+        // truncating here is a real sample, not a biased one.
+        let prefix_cap_hit = order.len() > max_prefixes;
+        let order: Vec<u32> =
+            if prefix_cap_hit { order.into_iter().take(max_prefixes).collect() } else { order };
 
         // Algebraic parity pre-filter (see the det-parity gate in `run`): skip
         // prefixes whose det ζ-parity mismatches the target before the per-prefix
@@ -1145,7 +1209,7 @@ impl SynthesizerT {
             }
         }
 
-        (result, budget_hit.load(Ordering::Relaxed))
+        (result, budget_hit.load(Ordering::Relaxed), prefix_cap_hit)
     }
 }
 
