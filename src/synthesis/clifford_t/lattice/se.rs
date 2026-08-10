@@ -26,6 +26,7 @@ use std::sync::LazyLock;
 use i256::i256;
 use rug::Assign;
 use crate::rings::MpFloat;
+use crate::synthesis::diag;
 
 
 type IMat8 = [[i64; 8]; 8];
@@ -369,6 +370,10 @@ fn recurse<F>(
         budget_exhausted.store(true, Ordering::Relaxed);
         return;
     }
+    let trace = diag::trace_enabled();
+    if trace && depth >= 0 && (depth as usize) < 16 {
+        diag::N_RECURSE_ENTER_AT_DEPTH[depth as usize].fetch_add(1, Ordering::Relaxed);
+    }
     if depth < 0 {
         if let Some(r) = callback(z) {
             *result.borrow_mut() = Some(r);
@@ -522,11 +527,22 @@ fn recurse<F>(
         };
 
         z[d] = zd;
+        // Only the top level (depth==7) is tracked: that's the enumeration
+        // order the caller actually sees branch-by-branch, and it's cheap
+        // enough (one atomic load before/after, only when tracing) to not
+        // disturb the untraced hot path.
+        let track_top = trace && depth == 7;
+        let before = if track_top { node_budget.load(Ordering::Relaxed) } else { 0 };
         recurse(
             depth - 1, r_chol, z_c, bound, r_chol_eucl, target_norm_eucl,
             new_partial_eucl, z, &new_partial, abort, node_budget,
             budget_exhausted, shell, callback, result, shared,
         );
+        if track_top {
+            let after = node_budget.load(Ordering::Relaxed);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            diag::record_se_top_branch(raw as usize, before.saturating_sub(after));
+        }
     }
 }
 

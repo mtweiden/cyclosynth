@@ -231,6 +231,92 @@ pub static N_RECURSE_ENTER_AT_DEPTH: [AtomicU64; 16] = [
     AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
 ];
 
+// ─── SE top-level sibling-branch cost skew ───────────────────────────────────
+//
+// Indexed by enumeration rank at the SE walk's TOP level (depth=7 in the 8D
+// walk): rank 0 = center offset, 1 = +1, 2 = -1, 3 = +2, ... (the same
+// distance-from-center order the walk visits). For each top-level child,
+// records the total node count consumed by that child's whole subtree
+// (recurse-entries at depth 6..-1 underneath it). Answers "does search cost
+// differ from branch to branch, and if so is it concentrated near the
+// center (where a true solution is also most likely) or spread evenly."
+// Capped at rank 23; any deeper rank folds into the last bucket.
+//
+// CUMULATIVE across the process, like the branch-win telemetry above --
+// deliberately NOT in `reset_all()`. `prefix_split_two_pass` calls
+// `reset_all()` once or twice per lde, which would otherwise wipe this
+// histogram before a whole-circuit (or whole-run) picture could accumulate.
+// Use `reset_se_top_branch_histogram()` to isolate one circuit's contribution
+// explicitly.
+pub static N_SE_TOP_NODES_BY_RANK: [AtomicU64; 24] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+/// Number of top-level children actually visited at each rank (not every
+/// walk's ellipsoid is wide enough to reach the higher ranks).
+pub static N_SE_TOP_BRANCHES_BY_RANK: [AtomicU64; 24] = [
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+    AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+];
+
+/// Record one top-level (depth=7) SE child's subtree node cost, bucketed by
+/// its enumeration rank. `nodes` is the recurse-entry count spent under that
+/// one child (computed by the caller as a node_budget delta).
+pub(crate) fn record_se_top_branch(rank: usize, nodes: u64) {
+    if !trace_enabled() {
+        return;
+    }
+    let idx = rank.min(N_SE_TOP_NODES_BY_RANK.len() - 1);
+    N_SE_TOP_NODES_BY_RANK[idx].fetch_add(nodes, Ordering::Relaxed);
+    N_SE_TOP_BRANCHES_BY_RANK[idx].fetch_add(1, Ordering::Relaxed);
+}
+
+/// Zero the top-branch histogram (e.g. to isolate one circuit's contribution
+/// mid-process). Not part of `reset_all()` -- see the section doc above.
+pub fn reset_se_top_branch_histogram() {
+    for c in N_SE_TOP_NODES_BY_RANK.iter().chain(N_SE_TOP_BRANCHES_BY_RANK.iter()) {
+        c.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Print the top-branch node-cost histogram accumulated since the last
+/// `reset_se_top_branch_histogram()` call (or process start). Call after a
+/// batch of SE walks (e.g. one circuit's worth) with `CYCLOSYNTH_TRACE=1`.
+pub fn dump_se_top_branch_histogram() {
+    let total_nodes: u64 = N_SE_TOP_NODES_BY_RANK.iter().map(|c| c.load(Ordering::Relaxed)).sum();
+    eprintln!("─── [se top-branch node-cost histogram] ───────────────");
+    if total_nodes == 0 {
+        eprintln!("  (no data -- CYCLOSYNTH_TRACE=1 and --features trace required)");
+        eprintln!("─────────────────────────────────────────────────────");
+        return;
+    }
+    for (rank, (n, cnt)) in N_SE_TOP_NODES_BY_RANK.iter()
+        .zip(N_SE_TOP_BRANCHES_BY_RANK.iter())
+        .enumerate()
+    {
+        let nodes = n.load(Ordering::Relaxed);
+        let branches = cnt.load(Ordering::Relaxed);
+        if branches == 0 {
+            continue;
+        }
+        let avg = nodes as f64 / branches as f64;
+        let pct = 100.0 * nodes as f64 / total_nodes as f64;
+        eprintln!(
+            "  rank={:>2}  branches={:>9}  total_nodes={:>13}  avg_nodes/branch={:>10.1}  ({:>5.1}% of top-level spend)",
+            rank, branches, nodes, avg, pct,
+        );
+    }
+    eprintln!("─────────────────────────────────────────────────────");
+}
+
 
 
 /// Record one lazy_size_reduce invocation's pass count.
