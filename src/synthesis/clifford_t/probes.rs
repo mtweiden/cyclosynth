@@ -861,3 +861,117 @@ use std::f64::consts::PI;
             eprintln!();
         }
     }
+
+    /// Shared find-lde calibration sweep body, parametrized by `eps` so the
+    /// exact same methodology (and the same seeded target sequence, for a
+    /// fair paired comparison across ε -- cf. scripts/sweep_deep_eps.py's
+    /// "same targets across every config" rationale) can be re-run at any
+    /// ε. See the eps-specific wrappers below for the motivating history.
+    fn find_lde_calibration_sweep(eps: f64, n_targets: usize, floor_margin: u32) {
+        struct Xs(u64);
+        impl Xs {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^ (z >> 31)
+            }
+            fn unit(&mut self) -> f64 {
+                (self.next() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+            }
+        }
+        let mut rng = Xs(0xC0FFEE);
+
+        let default_min_lde = SynthesizerT::new(eps).min_lde;
+        let floor = default_min_lde.saturating_sub(floor_margin);
+        eprintln!(
+            "find_lde_calibration_sweep eps={eps:e}: formula min_lde={default_min_lde}, \
+             testing floor={floor} ({floor_margin} levels below) across {n_targets} targets"
+        );
+
+        let mut worst_overshoot: Option<(usize, u32)> = None;
+        for i in 0..n_targets {
+            // Haar measure on SU(2) in ZYZ: alpha, gamma uniform on
+            // [0, 2*pi), beta sine-weighted (same convention as
+            // scripts/sweep_deep_eps.py's make_targets).
+            let alpha = rng.unit() * std::f64::consts::TAU;
+            let gamma = rng.unit() * std::f64::consts::TAU;
+            let beta = (1.0 - 2.0 * rng.unit()).acos();
+
+            let synth = SynthesizerT::new(eps).with_min_lde(floor);
+            let t0 = std::time::Instant::now();
+            let result =
+                synth.synthesize_zyz(Angle::Rad(alpha), Angle::Rad(beta), Angle::Rad(gamma));
+            let elapsed = t0.elapsed();
+            match result {
+                Some(r) => {
+                    let overshoot = default_min_lde.saturating_sub(r.lde);
+                    eprintln!(
+                        "  target_{i:02}  true_min_lde={:>4}  formula_floor={:>4}  overshoot={:>3}  \
+                         dist={:.2e}  {:>8.2?}",
+                        r.lde, default_min_lde, overshoot, r.distance, elapsed,
+                    );
+                    if worst_overshoot.map_or(true, |(_, g)| overshoot > g) {
+                        worst_overshoot = Some((i, overshoot));
+                    }
+                }
+                None => {
+                    eprintln!(
+                        "  target_{i:02}  NONE within [{floor}, max_lde]  {:>8.2?}",
+                        elapsed,
+                    );
+                }
+            }
+        }
+        match worst_overshoot {
+            Some((i, gap)) if gap > 0 => eprintln!(
+                "VERDICT eps={eps:e}: coefficient OVERSHOOTS by up to {gap} level(s) \
+                 (target_{i:02}) -- recalibration warranted, same fix as the 1e-11 bucket."
+            ),
+            _ => eprintln!(
+                "VERDICT eps={eps:e}: no overshoot found within {floor_margin} levels below \
+                 the formula's floor across {n_targets} samples (not proof at N={n_targets}, \
+                 but no evidence of the 1e-11-style bug at this eps)."
+            ),
+        }
+    }
+
+    /// Find-lde calibration sweep at ε=1e-10, mirroring the methodology
+    /// behind the ε≤1e-11 recalibration (`SynthesizerT::new`'s min_lde
+    /// coefficient doc comment: N=38 sweep, 2.8 -> 2.6546). That bucket's
+    /// coefficient was found to OVERSHOOT the true minimal lde for some
+    /// targets (rand#15 @1e-11: true min 97, formula gave a floor above
+    /// it) -- meaning the search silently returned a higher-T-count
+    /// circuit than achievable. This confirmed the same bug at ε=1e-10
+    /// (worst case: true min 87 vs. the old flat-2.8 floor of 93), which
+    /// is why `SynthesizerT::new` now applies the 2.6546+margin branch down
+    /// to ε=1e-10 (2026-08-10). Re-running this after any further min_lde
+    /// formula change should show zero overshoot again.
+    /// Run: `cargo test --release --lib find_lde_calibration_sweep_1e10 -- --ignored --nocapture`
+    #[test]
+    #[ignore = "calibration sweep; run individually, ~1 minute"]
+    fn find_lde_calibration_sweep_1e10() {
+        find_lde_calibration_sweep(1e-10, 38, 12);
+    }
+
+    /// Same sweep at ε=1e-8 (the tool's default epsilon), which found the
+    /// same overshoot bug (worst case: true min 70 vs. the old flat-2.8
+    /// floor of 74, 47% of the N=38 sample affected) -- why the
+    /// 2.6546+margin branch now covers ε≤1e-8 too (2026-08-10).
+    /// Run: `cargo test --release --lib find_lde_calibration_sweep_1e8 -- --ignored --nocapture`
+    #[test]
+    #[ignore = "calibration sweep; run individually, ~1 minute"]
+    fn find_lde_calibration_sweep_1e8() {
+        find_lde_calibration_sweep(1e-8, 38, 12);
+    }
+
+    /// Spot-check ε=1e-9, the gap between the two independently-swept
+    /// points above -- not separately calibrated, but now covered by the
+    /// same 2.6546+margin branch since it lies between them.
+    /// Run: `cargo test --release --lib find_lde_calibration_sweep_1e9 -- --ignored --nocapture`
+    #[test]
+    #[ignore = "calibration sweep; run individually, ~1 minute"]
+    fn find_lde_calibration_sweep_1e9() {
+        find_lde_calibration_sweep(1e-9, 38, 12);
+    }

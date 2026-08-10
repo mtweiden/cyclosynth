@@ -682,7 +682,7 @@ impl SynthesizerT {
     /// ε-tuned defaults. min_lde's coefficient ramps 1.5 → 2.8 in
     /// log10(1/ε): shallow ε must give small-T/identity-like targets a
     /// chance below the generic floor, deep ε can skip known-empty
-    /// levels; at ε ≤ 1e-11 it drops to a sweep-calibrated 2.6546 with a
+    /// levels; at ε ≤ 1e-8 it drops to a sweep-calibrated 2.6546 with a
     /// 2-level margin (see the branch comment). max_lde scales at 3.1×
     /// with headroom for worst-case angles. direct_limit is large only
     /// at moderate ε, where it covers the gap below the t' > 0
@@ -694,15 +694,28 @@ impl SynthesizerT {
             let log10_recip = (1.0 / epsilon).log10();
             let coef = if log10_recip <= 4.0 {
                 1.5
-            } else if log10_recip >= 11.0 {
+            } else if log10_recip >= 8.0 {
                 // Deep-ε recalibration (N=38 find-lde sweep + censor-resolved
                 // minima, 2026-07-01, ε ∈ {1e-11, 1e-12}): smallest TRUE
                 // find-lde ratio observed is 97/log2(1e11) ≈ 2.655 (seed
                 // 0xC0FFEE rand#15 @1e-11; the 2.8 start overshot it), so
                 // start just under it (2 levels below, applied after the
                 // floor). Sub-start empty levels cost ≲0.5 s even at 1e-12,
-                // so the extra margin is nearly free. 1e-10 and shallower
-                // keep the 2.8 ramp (deep_eps_canary regime).
+                // so the extra margin is nearly free.
+                //
+                // Threshold widened twice since (2026-08-10,
+                // find_lde_calibration_sweep_1e10/1e8, N=38 each): the
+                // un-recalibrated 2.8 coefficient overshot at BOTH ε=1e-10
+                // (true min lde as low as 87 vs. floor 93, worst ratio
+                // 87/log2(1e10) ≈ 2.619) and ε=1e-8, the tool's DEFAULT
+                // epsilon (true min lde as low as 70 vs. floor 74, worst
+                // ratio 70/log2(1e8) ≈ 2.634, 47% of the sample affected).
+                // Both worst ratios sit comfortably above 2.6546 minus the
+                // 2-level margin, so the same coefficient covers both without
+                // a separate value per decade. ε=1e-9 in between was not
+                // independently swept but shares this branch now too;
+                // ε > 1e-8 (e.g. 1e-6, 1e-7) has NOT been swept and still
+                // rides the flat-2.8/ramp branches below.
                 2.6546
             } else if log10_recip >= 6.0 {
                 2.8
@@ -714,7 +727,7 @@ impl SynthesizerT {
             #[allow(clippy::cast_possible_truncation)]
             let min_lde = (coef * log2_recip).floor() as u32;
             // 2-level safety margin, recalibrated deep-ε regime only.
-            let min_lde = if log10_recip >= 11.0 {
+            let min_lde = if log10_recip >= 8.0 {
                 min_lde.saturating_sub(2)
             } else {
                 min_lde
