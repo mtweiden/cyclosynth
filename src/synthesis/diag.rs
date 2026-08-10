@@ -432,6 +432,62 @@ pub(crate) fn trace_dump_pass(
     }
 }
 
+// ─── Always-on coarse phase timers (NOT gated by the `trace` feature) ───────
+//
+// Ad hoc counters for wall-time-vs-phase profiling of a full compile run
+// (thousands of `synthesize` calls), where the per-leaf `trace` feature's
+// verbose per-lde stderr dump is impractical. Cheap enough (one
+// `Instant::now()` + one atomic add per call, off the per-leaf hot path) to
+// leave compiled in unconditionally. CPU-summed across threads, like the
+// trace-gated phase timers above; divide by wall time × thread count for a
+// rough parallel-efficiency estimate.
+
+/// CPU-summed time actually spent inside `build_ma_prefix_set_inner`
+/// (cache misses only -- cache hits are a mutex lock + `Arc::clone`,
+/// counted separately in `PREFIX_CACHE_HITS`).
+pub static PREFIX_BUILD_NS: AtomicU64 = AtomicU64::new(0);
+/// Number of `build_ma_prefix_set` calls that missed the cache and paid to
+/// build the `(t_prime, coset_dedup)` table.
+pub static PREFIX_BUILD_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Number of `build_ma_prefix_set` calls served from the cache.
+pub static PREFIX_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+/// CPU-summed time inside `direct_search` (brute-force branch, `t <=
+/// direct_limit`).
+pub static DIRECT_SEARCH_NS: AtomicU64 = AtomicU64::new(0);
+pub static DIRECT_SEARCH_CALLS: AtomicU64 = AtomicU64::new(0);
+/// CPU-summed time inside `prefix_split_two_pass` (the D&C combine step,
+/// `t > direct_limit`) -- includes any lazy `build_ma_prefix_set` call it
+/// triggers, so this is a superset of (not additional to) `PREFIX_BUILD_NS`.
+pub static PREFIX_SPLIT_NS: AtomicU64 = AtomicU64::new(0);
+pub static PREFIX_SPLIT_CALLS: AtomicU64 = AtomicU64::new(0);
+
+/// One-line summary of the coarse counters above; call at the end of a
+/// compile run (or after `coarse_profile_reset()` to isolate one circuit).
+pub fn coarse_profile_line() -> String {
+    let ms = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e6;
+    let n = |c: &AtomicU64| c.load(Ordering::Relaxed);
+    format!(
+        "prefix_build_ms={:.1} (builds={}, cache_hits={})  \
+         direct_search_ms={:.1} (calls={})  \
+         prefix_split_ms={:.1} (calls={}, incl. lazy prefix builds)",
+        ms(&PREFIX_BUILD_NS), n(&PREFIX_BUILD_CALLS), n(&PREFIX_CACHE_HITS),
+        ms(&DIRECT_SEARCH_NS), n(&DIRECT_SEARCH_CALLS),
+        ms(&PREFIX_SPLIT_NS), n(&PREFIX_SPLIT_CALLS),
+    )
+}
+
+/// Zero every coarse counter (e.g. to isolate one circuit's contribution
+/// mid-process).
+pub fn coarse_profile_reset() {
+    for c in [
+        &PREFIX_BUILD_NS, &PREFIX_BUILD_CALLS, &PREFIX_CACHE_HITS,
+        &DIRECT_SEARCH_NS, &DIRECT_SEARCH_CALLS,
+        &PREFIX_SPLIT_NS, &PREFIX_SPLIT_CALLS,
+    ] {
+        c.store(0, Ordering::Relaxed);
+    }
+}
+
 // ─── prefix_split_search branch-win telemetry ───────────────────────────────
 //
 // Trace-gated; CUMULATIVE across the process — deliberately NOT in

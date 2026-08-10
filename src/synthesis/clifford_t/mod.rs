@@ -33,6 +33,7 @@
 use num_complex::Complex;
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::matrix::U2T;
@@ -224,10 +225,15 @@ pub(crate) fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2
     {
         let cache = MA_PREFIX_CACHE.lock().expect("MA prefix cache poisoned");
         if let Some(v) = cache.get(&key) {
+            crate::synthesis::diag::PREFIX_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
             return Arc::clone(v);
         }
     }
+    let t_start = std::time::Instant::now();
     let result = Arc::new(build_ma_prefix_set_inner(t_prime, coset_dedup));
+    crate::synthesis::diag::PREFIX_BUILD_NS
+        .fetch_add(t_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    crate::synthesis::diag::PREFIX_BUILD_CALLS.fetch_add(1, Ordering::Relaxed);
     // A racing thread may have inserted an identical copy; overwrite is harmless.
     MA_PREFIX_CACHE
         .lock()
@@ -570,7 +576,7 @@ impl PrefixSweepCtx<'_> {
             if det_zeta_parity(&u_l.to_float()) != Some(tp) {
                 if crate::synthesis::diag::trace_enabled() {
                     crate::synthesis::diag::N_UV_EXTRACT_REJECTED
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 return None;
             }
@@ -581,7 +587,7 @@ impl PrefixSweepCtx<'_> {
             None => {
                 if crate::synthesis::diag::trace_enabled() {
                     crate::synthesis::diag::N_UV_EXTRACT_REJECTED
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 return None;
             }
@@ -651,7 +657,7 @@ impl PrefixSweepCtx<'_> {
                 let dist = diamond_distance_u2t_float(&u2t, self.target);
                 if dist < self.eps {
                     self.found_abort
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                        .store(true, Ordering::Relaxed);
                     crate::synthesis::diag::record_branch_win(
                         odd, pos, self.n, self.t,
                     );
@@ -663,7 +669,7 @@ impl PrefixSweepCtx<'_> {
                 }
                 if crate::synthesis::diag::trace_enabled() {
                     crate::synthesis::diag::N_DIST_REJECTED
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
@@ -882,17 +888,26 @@ impl SynthesizerT {
             let trace = crate::synthesis::diag::trace_enabled();
             let t_start = std::time::Instant::now();
             let result = self.direct_search(target, v, t);
+            let elapsed = t_start.elapsed();
+            crate::synthesis::diag::DIRECT_SEARCH_NS
+                .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+            crate::synthesis::diag::DIRECT_SEARCH_CALLS.fetch_add(1, Ordering::Relaxed);
             if trace {
                 eprintln!(
                     "[trace] lde={:>2} direct_search    {:>9.1}ms  result={}",
                     t,
-                    t_start.elapsed().as_secs_f64() * 1000.0,
+                    elapsed.as_secs_f64() * 1000.0,
                     if result.is_some() { "FOUND" } else { "none" }
                 );
             }
             result
         } else {
-            self.prefix_split_two_pass(target, v, exact_col, t)
+            let t_start = std::time::Instant::now();
+            let result = self.prefix_split_two_pass(target, v, exact_col, t);
+            crate::synthesis::diag::PREFIX_SPLIT_NS
+                .fetch_add(t_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            crate::synthesis::diag::PREFIX_SPLIT_CALLS.fetch_add(1, Ordering::Relaxed);
+            result
         }
     }
 
@@ -1030,7 +1045,7 @@ impl SynthesizerT {
         let prefixes = build_ma_prefix_set(t_prime, coset_mode_for(eps));
         if crate::synthesis::diag::trace_enabled() {
             crate::synthesis::diag::N_PREFIXES
-                .fetch_add(prefixes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                .fetch_add(prefixes.len() as u64, Ordering::Relaxed);
         }
 
         // Parallel search over all left prefixes. `find_any` stops scheduling
@@ -1117,7 +1132,7 @@ impl SynthesizerT {
             }
         }
 
-        (result, budget_hit.load(std::sync::atomic::Ordering::Relaxed))
+        (result, budget_hit.load(Ordering::Relaxed))
     }
 }
 
