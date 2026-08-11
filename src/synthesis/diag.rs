@@ -23,7 +23,15 @@ use std::sync::OnceLock;
 /// after ~584 years; telemetry-only).
 #[inline]
 pub(crate) fn elapsed_ns(t: std::time::Instant) -> u64 {
-    t.elapsed().as_nanos() as u64
+    duration_ns(t.elapsed())
+}
+
+/// `duration_ns` variant for callers that already hold the `Duration` (e.g.
+/// to also report it elsewhere) and shouldn't take a second, slightly later
+/// `Instant::elapsed()` reading just to feed a counter.
+#[inline]
+pub(crate) fn duration_ns(d: std::time::Duration) -> u64 {
+    d.as_nanos() as u64
 }
 
 #[cfg(all(feature = "python", feature = "trace"))]

@@ -120,106 +120,13 @@ fn isqrt_i256(n: i256) -> i256 {
         return zero;
     }
     let bits = 256u32 - n.leading_zeros();
-    let mut x = i256::from_i64(1) << ((bits + 1) / 2);
+    let mut x = i256::from_i64(1) << bits.div_ceil(2);
     loop {
         let y = (x + n.checked_div(x).expect("x > 0 by construction")) >> 1u32;
         if y >= x {
             return x;
         }
         x = y;
-    }
-}
-
-#[cfg(test)]
-mod isqrt_tests {
-    use super::*;
-
-    /// The bit-by-bit reference this replaced, kept only as a test oracle.
-    fn isqrt_i256_reference(mut n: i256) -> i256 {
-        let one = i256::from_i64(1);
-        let mut x = i256::from_i64(0);
-        let nbits = 256u32 - n.leading_zeros();
-        if nbits == 0 {
-            return x;
-        }
-        let mut shift = (nbits - 1) & !1u32;
-        let mut bit = one << shift;
-        loop {
-            let xb = x + bit;
-            if n >= xb {
-                n -= xb;
-                x = (x >> 1u32) + bit;
-            } else {
-                x >>= 1u32;
-            }
-            if shift == 0 {
-                break;
-            }
-            shift -= 2;
-            bit >>= 2u32;
-        }
-        x
-    }
-
-    fn assert_exact_floor_sqrt(n: i256) {
-        let s = isqrt_i256(n);
-        let reference = isqrt_i256_reference(n);
-        assert_eq!(s, reference, "mismatch vs. bit-by-bit reference for n={n}");
-        let zero = i256::from_i64(0);
-        assert!(s >= zero, "isqrt must be non-negative for n={n}, got {s}");
-        // Exact characterization of floor(sqrt(n)): s*s <= n < (s+1)*(s+1).
-        assert!(s * s <= n, "s*s > n for n={n}, s={s}");
-        let s_plus_1 = s + i256::from_i64(1);
-        assert!(s_plus_1 * s_plus_1 > n, "(s+1)^2 <= n for n={n}, s={s}");
-    }
-
-    #[test]
-    fn zero_and_negative_return_zero() {
-        assert_eq!(isqrt_i256(i256::from_i64(0)), i256::from_i64(0));
-        assert_eq!(isqrt_i256(i256::from_i64(-5)), i256::from_i64(0));
-    }
-
-    #[test]
-    fn small_values_exact() {
-        for n in 0i64..2000 {
-            assert_exact_floor_sqrt(i256::from_i64(n));
-        }
-    }
-
-    #[test]
-    fn perfect_squares_at_many_scales() {
-        // Perfect squares from tiny up to ~2^126 (so squaring stays in i256).
-        for shift in 0u32..126 {
-            let root = i256::from_i64(1) << shift;
-            assert_exact_floor_sqrt(root * root);
-            // And one-off-from-perfect-square on each side.
-            assert_exact_floor_sqrt(root * root + i256::from_i64(1));
-            if shift > 0 {
-                assert_exact_floor_sqrt(root * root - i256::from_i64(1));
-            }
-        }
-    }
-
-    #[test]
-    fn near_discriminant_scale() {
-        // Discriminants in this module reach ~2^205; check values built from
-        // products of large factors land in the same neighborhood.
-        let big = i256::from_i64(1) << 100;
-        for k in 0i64..500 {
-            let n = big * big + i256::from_i64(k * 104_729 - 250_000);
-            if n > i256::from_i64(0) {
-                assert_exact_floor_sqrt(n);
-            }
-        }
-    }
-
-    #[test]
-    fn near_i256_max_does_not_panic() {
-        // Largest representable magnitude this discriminant math can hit
-        // (well below i256::MAX, but exercise a very large, non-power-of-two
-        // value to catch any shift/overflow edge case in the new seed logic).
-        let huge = (i256::from_i64(1) << 250) + i256::from_i64(123_456_789);
-        assert_exact_floor_sqrt(huge);
     }
 }
 
@@ -588,4 +495,97 @@ pub(crate) fn bilinear_b(x: &[i64; 8]) -> i128 {
     let (a1, b1, c1, d1) = (i128::from(x[0]), i128::from(x[1]), i128::from(x[2]), i128::from(x[3]));
     let (a2, b2, c2, d2) = (i128::from(x[4]), i128::from(x[5]), i128::from(x[6]), i128::from(x[7]));
     a1 * b1 - a1 * d1 + b1 * c1 + c1 * d1 + a2 * b2 - a2 * d2 + b2 * c2 + c2 * d2
+}
+
+#[cfg(test)]
+mod isqrt_tests {
+    use super::*;
+
+    /// The bit-by-bit reference this replaced, kept only as a test oracle.
+    fn isqrt_i256_reference(mut n: i256) -> i256 {
+        let one = i256::from_i64(1);
+        let mut x = i256::from_i64(0);
+        let nbits = 256u32 - n.leading_zeros();
+        if nbits == 0 {
+            return x;
+        }
+        let mut shift = (nbits - 1) & !1u32;
+        let mut bit = one << shift;
+        loop {
+            let xb = x + bit;
+            if n >= xb {
+                n -= xb;
+                x = (x >> 1u32) + bit;
+            } else {
+                x >>= 1u32;
+            }
+            if shift == 0 {
+                break;
+            }
+            shift -= 2;
+            bit >>= 2u32;
+        }
+        x
+    }
+
+    fn assert_exact_floor_sqrt(n: i256) {
+        let s = isqrt_i256(n);
+        let reference = isqrt_i256_reference(n);
+        assert_eq!(s, reference, "mismatch vs. bit-by-bit reference for n={n}");
+        let zero = i256::from_i64(0);
+        assert!(s >= zero, "isqrt must be non-negative for n={n}, got {s}");
+        // Exact characterization of floor(sqrt(n)): s*s <= n < (s+1)*(s+1).
+        assert!(s * s <= n, "s*s > n for n={n}, s={s}");
+        let s_plus_1 = s + i256::from_i64(1);
+        assert!(s_plus_1 * s_plus_1 > n, "(s+1)^2 <= n for n={n}, s={s}");
+    }
+
+    #[test]
+    fn zero_and_negative_return_zero() {
+        assert_eq!(isqrt_i256(i256::from_i64(0)), i256::from_i64(0));
+        assert_eq!(isqrt_i256(i256::from_i64(-5)), i256::from_i64(0));
+    }
+
+    #[test]
+    fn small_values_exact() {
+        for n in 0i64..2000 {
+            assert_exact_floor_sqrt(i256::from_i64(n));
+        }
+    }
+
+    #[test]
+    fn perfect_squares_at_many_scales() {
+        // Perfect squares from tiny up to ~2^126 (so squaring stays in i256).
+        for shift in 0u32..126 {
+            let root = i256::from_i64(1) << shift;
+            assert_exact_floor_sqrt(root * root);
+            // And one-off-from-perfect-square on each side.
+            assert_exact_floor_sqrt(root * root + i256::from_i64(1));
+            if shift > 0 {
+                assert_exact_floor_sqrt(root * root - i256::from_i64(1));
+            }
+        }
+    }
+
+    #[test]
+    fn near_discriminant_scale() {
+        // Discriminants in this module reach ~2^205; check values built from
+        // products of large factors land in the same neighborhood.
+        let big = i256::from_i64(1) << 100;
+        for k in 0i64..500 {
+            let n = big * big + i256::from_i64(k * 104_729 - 250_000);
+            if n > i256::from_i64(0) {
+                assert_exact_floor_sqrt(n);
+            }
+        }
+    }
+
+    #[test]
+    fn near_i256_max_does_not_panic() {
+        // Largest representable magnitude this discriminant math can hit
+        // (well below i256::MAX, but exercise a very large, non-power-of-two
+        // value to catch any shift/overflow edge case in the new seed logic).
+        let huge = (i256::from_i64(1) << 250) + i256::from_i64(123_456_789);
+        assert_exact_floor_sqrt(huge);
+    }
 }

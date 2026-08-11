@@ -232,7 +232,7 @@ pub(crate) fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2
     let t_start = std::time::Instant::now();
     let result = Arc::new(build_ma_prefix_set_inner(t_prime, coset_dedup));
     crate::synthesis::diag::PREFIX_BUILD_NS
-        .fetch_add(t_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        .fetch_add(crate::synthesis::diag::elapsed_ns(t_start), Ordering::Relaxed);
     crate::synthesis::diag::PREFIX_BUILD_CALLS.fetch_add(1, Ordering::Relaxed);
     // A racing thread may have inserted an identical copy; overwrite is harmless.
     MA_PREFIX_CACHE
@@ -950,7 +950,7 @@ impl SynthesizerT {
             let result = self.direct_search(target, v, t);
             let elapsed = t_start.elapsed();
             crate::synthesis::diag::DIRECT_SEARCH_NS
-                .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+                .fetch_add(crate::synthesis::diag::duration_ns(elapsed), Ordering::Relaxed);
             crate::synthesis::diag::DIRECT_SEARCH_CALLS.fetch_add(1, Ordering::Relaxed);
             if trace {
                 eprintln!(
@@ -965,7 +965,7 @@ impl SynthesizerT {
             let t_start = std::time::Instant::now();
             let result = self.prefix_split_two_pass(target, v, exact_col, t);
             crate::synthesis::diag::PREFIX_SPLIT_NS
-                .fetch_add(t_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                .fetch_add(crate::synthesis::diag::elapsed_ns(t_start), Ordering::Relaxed);
             crate::synthesis::diag::PREFIX_SPLIT_CALLS.fetch_add(1, Ordering::Relaxed);
             result
         }

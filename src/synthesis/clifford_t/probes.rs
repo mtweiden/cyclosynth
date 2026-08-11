@@ -12,6 +12,7 @@ use super::super::*; // clifford_t internals
 use crate::synthesis::distance::{diamond_distance_float, Mat2};
 use num_complex::Complex;
 use std::f64::consts::PI;
+use std::sync::atomic::Ordering;
 
     /// Diagnostic probe (ignored): the t_identity target-2 @1e-5 FOUND→none
     /// flip under coset dedup, reproduced at level t=47 (t'=6). Finds every
@@ -266,7 +267,7 @@ use std::f64::consts::PI;
                         "  rep odd frame direct find_aligned_lattice_points: sols={} should_escalate={} budget_hit={}",
                         out.solutions.len(),
                         out.should_escalate,
-                        hit.load(std::sync::atomic::Ordering::Relaxed),
+                        hit.load(Ordering::Relaxed),
                     );
                 }
                 // SE-walk replay: reproduce find_aligned_lattice_points's setup, locate x_img's
@@ -563,7 +564,7 @@ use std::f64::consts::PI;
                             continue;
                         }
                         sol_frames += 1;
-                        any_trunc |= hit.load(std::sync::atomic::Ordering::Relaxed);
+                        any_trunc |= hit.load(Ordering::Relaxed);
                         // Fresh scratch for Q + cap center in THIS frame:
                         // find_aligned_lattice_points's LLL may have mutated downstream state;
                         // build_q alone is cheap and sets q_mpfr and c.
@@ -912,7 +913,7 @@ use std::f64::consts::PI;
                          dist={:.2e}  {:>8.2?}",
                         r.lde, default_min_lde, overshoot, r.distance, elapsed,
                     );
-                    if worst_overshoot.map_or(true, |(_, g)| overshoot > g) {
+                    if worst_overshoot.is_none_or(|(_, g)| overshoot > g) {
                         worst_overshoot = Some((i, overshoot));
                     }
                 }
