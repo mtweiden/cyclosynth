@@ -241,6 +241,16 @@ pub(crate) fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2
 /// (HS^b·T) products and an odd branch prefixed with T, each times every
 /// Clifford, deduplicated up to global phase (and, in coset mode, up to
 /// the right coset u·⟨S,X⟩).
+///
+/// Dedups as each candidate is generated rather than collecting the full
+/// `1.5 · 2^t' · 24` set first: at `T_PRIME_CAP` (22), that intermediate
+/// buffer alone is ~79 GB (measured `size_of::<U2T>() == 520` bytes ×
+/// ~151M entries) — ~130x the `T_PRIME_CAP` doc comment's "2^22 prefixes ≈
+/// 0.6 GB" estimate, which was sized for the deduplicated `unique` set
+/// below, not this transient one. Streaming the same first-occurrence-wins
+/// dedup inline (same iteration order as the old collect-then-dedup pass,
+/// so the result is identical) keeps peak memory at the `unique`/`seen`
+/// sets' size the comment actually assumed.
 fn build_ma_prefix_set_inner(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
     if t_prime == 0 {
         return vec![U2T::eye()];
@@ -252,7 +262,25 @@ fn build_ma_prefix_set_inner(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
     let hs0t = h * t;        // H·T
     let hs1t = h * s * t;   // H·S·T
 
-    let mut candidates: Vec<U2T> = Vec::new();
+    // Coset mode inserts every orbit member u·c's key when a rep u is kept,
+    // so later mates dedup with one key computation each (~2.3n keys vs 8n
+    // for a min-over-orbit key).
+    let mut seen: std::collections::HashSet<[i64; 8]> = std::collections::HashSet::new();
+    let mut unique: Vec<U2T> = Vec::new();
+    let mut consider = |u: U2T| {
+        let key = canonical_key(&u);
+        if seen.contains(&key) {
+            return;
+        }
+        unique.push(u);
+        if coset_dedup {
+            for &ci in CLIFFORD_LDE0_IDX.iter() {
+                seen.insert(canonical_key(&(u * CLIFFORD_TABLE_T[ci].1)));
+            }
+        } else {
+            seen.insert(key);
+        }
+    };
 
     // Even branch: length-t' product of (HS^b·T) blocks, then · C.
     let n = 1u32 << t_prime;
@@ -263,7 +291,7 @@ fn build_ma_prefix_set_inner(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
             u = u * gate;
         }
         for (_, c_u2t) in CLIFFORD_TABLE_T {
-            candidates.push(u * *c_u2t);
+            consider(u * *c_u2t);
         }
     }
 
@@ -276,29 +304,10 @@ fn build_ma_prefix_set_inner(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
             u = u * gate;
         }
         for (_, c_u2t) in CLIFFORD_TABLE_T {
-            candidates.push(u * *c_u2t);
+            consider(u * *c_u2t);
         }
     }
 
-    // Coset mode inserts every orbit member u·c's key when a rep u is kept,
-    // so later mates dedup with one key computation each (~2.3n keys vs 8n
-    // for a min-over-orbit key).
-    let mut seen: std::collections::HashSet<[i64; 8]> = std::collections::HashSet::new();
-    let mut unique: Vec<U2T> = Vec::new();
-    for u in candidates {
-        let key = canonical_key(&u);
-        if seen.contains(&key) {
-            continue;
-        }
-        unique.push(u);
-        if coset_dedup {
-            for &ci in CLIFFORD_LDE0_IDX.iter() {
-                seen.insert(canonical_key(&(u * CLIFFORD_TABLE_T[ci].1)));
-            }
-        } else {
-            seen.insert(key);
-        }
-    }
     unique
 }
 
