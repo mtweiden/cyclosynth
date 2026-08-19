@@ -284,10 +284,13 @@ pub(crate) fn build_fgkm_prefix_set_inner(m: u32) -> Vec<U2Q> {
         })
         .collect();
 
-    let mut bodies: Vec<U2Q> = Vec::new();
-    enumerate_bodies(m, 3, U2Q::eye(), &syllables, &mut bodies);
-
-    // Append every Clifford suffix to every body.
+    // Append every Clifford suffix to every body, deduplicating up to
+    // global U(1) phase as each candidate is generated. Streaming instead
+    // of materializing keeps peak memory at the deduplicated result: the
+    // full body·Clifford set is `9·6^(m-1)·24` `U2Q`s (~1 KB each), ~1.7 GB
+    // at m=6 — the same transient-buffer trap as the Clifford+T
+    // `build_ma_prefix_set_inner` fix, and the same first-occurrence-wins
+    // order, so the result is identical.
     //
     // The stored `k` is the UNREDUCED accumulation — a *peel-depth*
     // coordinate matching the inner-LLL+SE shell split (`lde_inner =
@@ -296,37 +299,34 @@ pub(crate) fn build_fgkm_prefix_set_inner(m: u32) -> Vec<U2Q> {
     // suffix searches run at nearly full depth (large wall regression); a
     // sound reduction needs a dual coordinate (reduced lde for cost, peel
     // depth for shell selection).
-    let mut candidates: Vec<U2Q> = Vec::with_capacity(bodies.len() * cliffords_q.len());
-    for body in &bodies {
-        for c in &cliffords_q {
-            candidates.push(*body * *c);
-        }
-    }
-
-    // Dedup up to global U(1) phase.
     let mut seen: std::collections::HashSet<[i64; 8]> = std::collections::HashSet::new();
-    let mut unique: Vec<U2Q> = Vec::with_capacity(candidates.len());
-    for u in candidates {
-        let key = canonical_key_q(&u);
-        if seen.insert(key) {
-            unique.push(u);
+    let mut unique: Vec<U2Q> = Vec::new();
+    enumerate_bodies(m, 3, U2Q::eye(), &syllables, &mut |body| {
+        for c in &cliffords_q {
+            let u = body * *c;
+            let key = canonical_key_q(&u);
+            if seen.insert(key) {
+                unique.push(u);
+            }
         }
-    }
+    });
     unique
 }
 
 /// Recursively enumerate length-m FGKM bodies under the
-/// adjacent-axis-distinct constraint. `prev_axis = 3` is the sentinel
-/// "no previous axis" — used at the first slot so all 3 axes are open.
+/// adjacent-axis-distinct constraint, feeding each completed body to
+/// `sink` in DFS order (so no body list is materialized). `prev_axis = 3`
+/// is the sentinel "no previous axis" — used at the first slot so all 3
+/// axes are open.
 pub(crate) fn enumerate_bodies(
     remaining: u32,
     prev_axis: usize,
     acc: U2Q,
     syllables: &[[U2Q; 3]; 3],
-    out: &mut Vec<U2Q>,
+    sink: &mut impl FnMut(U2Q),
 ) {
     if remaining == 0 {
-        out.push(acc);
+        sink(acc);
         return;
     }
     for axis in 0..3 {
@@ -335,7 +335,7 @@ pub(crate) fn enumerate_bodies(
         }
         for a in 0..3 {
             let next = acc * syllables[axis][a];
-            enumerate_bodies(remaining - 1, axis, next, syllables, out);
+            enumerate_bodies(remaining - 1, axis, next, syllables, sink);
         }
     }
 }
