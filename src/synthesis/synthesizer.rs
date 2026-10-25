@@ -27,7 +27,7 @@ use crate::synthesis::clifford_sqrt_t::SynthesizerQ;
 /// underlying gate set.
 #[derive(Debug, Clone)]
 pub struct SynthResult {
-    /// Gate string (leftmost = first gate applied). Alphabet is
+    /// Gate string in matrix order (`"ABC"` is `A·B·C`). Alphabet is
     /// `{H, S, T, X, Y, Z}` for Clifford+T and `{H, S, T, Q, X, Y, Z}` for
     /// Clifford+√T (`Q = √T`). `None` if extraction failed.
     pub gates: Option<String>,
@@ -59,6 +59,11 @@ pub struct Synthesizer {
     /// covers near-Clifford angles whose solutions lie above the ε-tuned
     /// lde band (issue #2).
     native_rz: bool,
+    /// Take the issue-#2 escape for targets in the ring ε ≤ δ < 256ε around
+    /// a shallow point (ε ≤ 1e-4): synthesize `target·W†` and append the
+    /// exact `W`. On by default; it trades a few T gates for speed, so off
+    /// keeps the result cost-minimal (the search then handles the ring).
+    near_clifford_escape: bool,
 }
 
 
@@ -120,13 +125,19 @@ impl Synthesizer {
         } else {
             Backend::T(SynthesizerT::new(epsilon))
         };
-        Self { inner, native_rz: true }
+        Self { inner, native_rz: true, near_clifford_escape: true }
     }
 
     /// Disable the native Ross–Selinger route for diagonal targets and
     /// force the lattice pipeline (mainly for A/B testing).
     pub fn with_native_rz(mut self, on: bool) -> Self {
         self.native_rz = on;
+        self
+    }
+
+    /// Enable or disable the near-Clifford escape (see the field doc).
+    pub fn with_near_clifford_escape(mut self, on: bool) -> Self {
+        self.near_clifford_escape = on;
         self
     }
 
@@ -406,7 +417,7 @@ impl Synthesizer {
             }
             // δ ≈ ε boundary disagreement — fall through to the escape.
         }
-        if eps > nc::ESCAPE_EPS_MAX || delta >= nc::RING_FACTOR * eps {
+        if !self.near_clifford_escape || eps > nc::ESCAPE_EPS_MAX || delta >= nc::RING_FACTOR * eps {
             return None;
         }
         let esc = nc::build_escape(target, exact_col, delta / eps)?;
@@ -506,7 +517,7 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 #[pyclass(name = "SynthResult", frozen)]
 pub(crate) struct PySynthResult {
-    /// Gate string (leftmost = first gate applied), or `None` if extraction
+    /// Gate string in matrix order (`"ABC"` is `A·B·C`), or `None` if extraction
     /// failed. Alphabet `{H, S, T, X, Y, Z}` for Clifford+T,
     /// `{H, S, T, Q, X, Y, Z}` for Clifford+√T.
     #[pyo3(get)]
@@ -619,7 +630,8 @@ impl PySynthesizer {
     #[new]
     #[pyo3(signature = (epsilon, *, sqrt_t=false, max_lde=None, min_lde=None,
                         optimize_cost=None, q_cost=None, lde_window=None,
-                        deadline_ms=None, seq_parity=None, native_rz=None))]
+                        deadline_ms=None, seq_parity=None, native_rz=None,
+                        near_clifford_escape=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -633,6 +645,7 @@ impl PySynthesizer {
         deadline_ms: Option<u64>,
         seq_parity: Option<bool>,
         native_rz: Option<bool>,
+        near_clifford_escape: Option<bool>,
     ) -> PyResult<Self> {
         // Only the hard floor here: whether the narrower general-target
         // ranges apply depends on what gets synthesized, so those are
@@ -668,10 +681,10 @@ impl PySynthesizer {
         if let Some(w) = lde_window {
             s = s.with_optimal_lde_window(w);
         }
-        // None = keep the ε-based default deadline; an explicit value
-        // overrides it (there is no kwarg form for "no deadline").
+        // None = keep the ε-based default deadline; 0 = no deadline (the
+        // cost search runs its full lde window); any other value overrides it.
         if let Some(ms) = deadline_ms {
-            s = s.with_optimal_deadline_ms(Some(ms));
+            s = s.with_optimal_deadline_ms((ms > 0).then_some(ms));
         }
         if seq_parity.is_some() {
             s = s.with_seq_parity(seq_parity);
@@ -679,6 +692,9 @@ impl PySynthesizer {
         // None = default (on for both gate sets).
         if let Some(b) = native_rz {
             s = s.with_native_rz(b);
+        }
+        if let Some(b) = near_clifford_escape {
+            s = s.with_near_clifford_escape(b);
         }
         Ok(Self { inner: s })
     }

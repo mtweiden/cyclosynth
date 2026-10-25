@@ -52,8 +52,8 @@ pub struct SynthResultQ {
     /// Clifford+√T gate string in the alphabet `{H, S, T, Q, X, Y, Z}` plus
     /// the adjoints `{q=Q†, t=T†, s=S†}` (lowercase) that the decomposer
     /// emits when collapsing a syllable to its minimal cost-class form.
-    /// Leftmost gate = first applied, matching the rest of cyclosynth's
-    /// composition convention. `None` if the gate string couldn't be
+    /// Matrix order (`"ABC"` is `A·B·C`), matching the rest of cyclosynth's
+    /// results. `None` if the gate string couldn't be
     /// extracted.
     pub gates: Option<String>,
     /// Denominator exponent of the synthesized unitary.

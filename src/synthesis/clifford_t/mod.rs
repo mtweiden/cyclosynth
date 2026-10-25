@@ -238,7 +238,7 @@ pub(crate) fn build_ma_prefix_set(t_prime: u32, coset_dedup: bool) -> Arc<Vec<U2
 
 /// L_{t'} construction (cache + env bypassed so a probe can compare dedup
 /// modes in one process). L_0 = {I}; otherwise an even branch of
-/// (HS^b·T) products and an odd branch prefixed with T, each times every
+/// {H·T, S·H·T} syllable products and an odd branch prefixed with T, each times every
 /// Clifford, deduplicated up to global phase (and, in coset mode, up to
 /// the right coset u·⟨S,X⟩).
 ///
@@ -259,8 +259,11 @@ fn build_ma_prefix_set_inner(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
     let h = U2T::h();
     let s = U2T::s();
     let t = U2T::t();
-    let hs0t = h * t;        // H·T
-    let hs1t = h * s * t;   // H·S·T
+    // Matsumoto–Amano syllables. The second must be S·H·T, not H·S·T: S
+    // commutes with T, so H·S·T = H·T·S and its S would be absorbed by the
+    // right Clifford, leaving no prefix that starts with S·H·T.
+    let ht = h * t;          // H·T
+    let sht = s * h * t;     // S·H·T
 
     // Coset mode inserts every orbit member u·c's key when a rep u is kept,
     // so later mates dedup with one key computation each (~2.3n keys vs 8n
@@ -282,12 +285,12 @@ fn build_ma_prefix_set_inner(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
         }
     };
 
-    // Even branch: length-t' product of (HS^b·T) blocks, then · C.
+    // Even branch: length-t' product of {H·T, S·H·T} syllables, then · C.
     let n = 1u32 << t_prime;
     for bits in 0..n {
         let mut u = U2T::eye();
         for i in 0..t_prime {
-            let gate = if (bits >> i) & 1 == 1 { hs1t } else { hs0t };
+            let gate = if (bits >> i) & 1 == 1 { sht } else { ht };
             u = u * gate;
         }
         for (_, c_u2t) in CLIFFORD_TABLE_T {
@@ -300,7 +303,7 @@ fn build_ma_prefix_set_inner(t_prime: u32, coset_dedup: bool) -> Vec<U2T> {
     for bits in 0..n2 {
         let mut u = t;
         for i in 0..(t_prime - 1) {
-            let gate = if (bits >> i) & 1 == 1 { hs1t } else { hs0t };
+            let gate = if (bits >> i) & 1 == 1 { sht } else { ht };
             u = u * gate;
         }
         for (_, c_u2t) in CLIFFORD_TABLE_T {
@@ -325,11 +328,6 @@ pub fn solution_to_u2t(sol: &[i64; 8], k: u32) -> U2T {
         Int::from_i64(sol[6]), Int::from_i64(sol[7]),
     );
     U2T::new(u1, -u2.conj(), u2, u1.conj(), k)
-}
-
-/// Decompose a lattice solution into a Clifford+T gate string.
-fn solution_to_gates(sol: &[i64; 8], k: u32) -> String {
-    BlochDecomposer.decompose(&solution_to_u2t(sol, k))
 }
 
 // ─── LLL-based aligned search (used by prefix_split_search inner step) ─────────────────
@@ -379,6 +377,10 @@ const T_PRIME_CAP: u32 = 22;
 /// alignment cap, fails f64 distance by ~1 ulp). Identical to
 /// max_solutions=1 whenever the first candidate is good.
 const DC_WALK_MAX_SOLUTIONS: usize = 8;
+
+/// Candidates kept per direct-search branch. One lde level holds several
+/// T-counts, so the first candidate is not necessarily the cheapest.
+const DIRECT_MAX_SOLUTIONS: usize = 64;
 
 /// LLL-based aligned search for a right factor `U_R` of given lde `k`
 /// matching the alignment vector `v`. Finds integer 8-vectors satisfying
@@ -452,7 +454,7 @@ fn optimal_t_prime(t: u32, eps: f64) -> u32 {
 
 /// Result of a successful synthesis.
 pub struct SynthResultT {
-    /// Clifford+T gate string (leftmost = first gate applied).
+    /// Clifford+T gate string in matrix order (`"ABC"` is `A·B·C`).
     /// `None` if the gate string could not be extracted.
     pub gates: Option<String>,
     /// Denominator exponent of the synthesized unitary.
@@ -493,39 +495,16 @@ fn build_direct_branches(v: [f64; 4]) -> Vec<([f64; 4], DirectBranch)> {
     branches
 }
 
-/// Compose `(U2T, gate string)` for one direct-search branch tag + solution.
-fn direct_branch_gate(tag: &DirectBranch, sol: &[i64; 8], t: u32) -> (U2T, String) {
+/// The unitary for one direct-search branch tag + solution.
+fn direct_branch_unitary(tag: &DirectBranch, sol: &[i64; 8], t: u32) -> U2T {
+    let u = solution_to_u2t(sol, t);
     match tag {
-        DirectBranch::Plain => (
-            solution_to_u2t(sol, t),
-            solution_to_gates(sol, t),
-        ),
-        DirectBranch::T => (
-            solution_to_u2t(sol, t) * U2T::t(),
-            solution_to_gates(sol, t) + "T",
-        ),
-        DirectBranch::Tdg => (
-            solution_to_u2t(sol, t) * U2T::t().dagger(),
-            solution_to_gates(sol, t) + "SSST",
-        ),
-        DirectBranch::ClifEven(i) => {
-            let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
-            (*c_u2t * solution_to_u2t(sol, t), solution_to_gates(sol, t) + c_str)
-        }
-        DirectBranch::ClifT(i) => {
-            let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
-            (
-                *c_u2t * solution_to_u2t(sol, t) * U2T::t(),
-                solution_to_gates(sol, t) + "T" + c_str,
-            )
-        }
-        DirectBranch::ClifTdg(i) => {
-            let (c_str, c_u2t) = &CLIFFORD_TABLE_T[*i];
-            (
-                *c_u2t * solution_to_u2t(sol, t) * U2T::t().dagger(),
-                solution_to_gates(sol, t) + "SSST" + c_str,
-            )
-        }
+        DirectBranch::Plain => u,
+        DirectBranch::T => u * U2T::t(),
+        DirectBranch::Tdg => u * U2T::t().dagger(),
+        DirectBranch::ClifEven(i) => CLIFFORD_TABLE_T[*i].1 * u,
+        DirectBranch::ClifT(i) => CLIFFORD_TABLE_T[*i].1 * u * U2T::t(),
+        DirectBranch::ClifTdg(i) => CLIFFORD_TABLE_T[*i].1 * u * U2T::t().dagger(),
     }
 }
 
@@ -600,15 +579,17 @@ impl PrefixSweepCtx<'_> {
         let v_inner_mpfr: Option<[MpFloat; 4]> =
             self.exact_col.map(|col| apply_u2t_dag_to_uv_mpfr(u_l, col, scratch.prec_q));
 
+        let mut best: Option<SynthResultT> = None;
         for &odd in self.plan {
             if let Some(r) =
                 self.try_inner_branch(scratch, odd, v_inner, v_inner_mpfr.as_ref(), u_l, pos)
             {
-                return Some(r);
+                if best.as_ref().is_none_or(|b| t_count_of(&r) < t_count_of(b)) {
+                    best = Some(r);
+                }
             }
         }
-
-        None
+        best
     }
 
     /// One inner branch (even `U_L·U_R` or odd `U_L·U_R·T`) of `search_prefix`:
@@ -646,6 +627,7 @@ impl PrefixSweepCtx<'_> {
         // (`⌊t_inner/2⌋+1` drops the half), so search both —
         // else factors at the higher shell are unreachable
         // (e.g. the 84-T suffix of Rz(π/64) at 1e-10).
+        let mut best: Option<SynthResultT> = None;
         for cur_lde in [self.lde_inner, self.lde_inner + 1] {
             for sol in lll_aligned_search(
                 scratch, v_branch, v_branch_mpfr.as_ref(), cur_lde, self.eps,
@@ -659,16 +641,26 @@ impl PrefixSweepCtx<'_> {
                 };
                 let dist = diamond_distance_u2t_float(&u2t, self.target);
                 if dist < self.eps {
-                    self.found_abort
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
-                    crate::synthesis::diag::record_branch_win(
-                        odd, pos, self.n, self.t,
-                    );
-                    return Some(SynthResultT {
+                    let r = SynthResultT {
                         gates: Some(BlochDecomposer.decompose(&u2t)),
                         lde: self.t,
                         distance: dist,
-                    });
+                    };
+                    let tc = t_count_of(&r);
+                    // A level holds several T-counts. Only a hit at or below
+                    // the level's own T-count ends the sweep; anything higher
+                    // is kept while the rest of the level is searched.
+                    if tc <= self.t as usize {
+                        self.found_abort
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        crate::synthesis::diag::record_branch_win(
+                            odd, pos, self.n, self.t,
+                        );
+                    }
+                    if best.as_ref().is_none_or(|b| tc < t_count_of(b)) {
+                        best = Some(r);
+                    }
+                    continue;
                 }
                 if crate::synthesis::diag::trace_enabled() {
                     crate::synthesis::diag::N_DIST_REJECTED
@@ -677,58 +669,32 @@ impl PrefixSweepCtx<'_> {
             }
         }
 
-        None
+        best
     }
 }
 
+/// T-count of a result's gate string (`T` and `T†` both count).
+fn t_count_of(r: &SynthResultT) -> usize {
+    r.gates.as_deref().map_or(usize::MAX, |g| g.chars().filter(|&c| c == 'T' || c == 't').count())
+}
+
 impl SynthesizerT {
-    /// ε-tuned defaults. min_lde's coefficient ramps 1.5 → 2.8 in
-    /// log10(1/ε): shallow ε must give small-T/identity-like targets a
-    /// chance below the generic floor, deep ε can skip known-empty
-    /// levels; at ε ≤ 1e-11 it drops to a sweep-calibrated 2.6546 with a
-    /// 2-level margin (see the branch comment). max_lde scales at 3.1×
-    /// with headroom for worst-case angles. direct_limit is large only
-    /// at moderate ε, where it covers the gap below the t' > 0
-    /// threshold; direct search is exponential in t, so deep ε keeps it
-    /// small.
+    /// ε-tuned defaults. The sweep starts at lde 0 (`min_lde = 0`) so no
+    /// T-count is skipped; `max_lde` scales at 3.1× log₂(1/ε) with headroom
+    /// for worst-case angles. direct_limit is large only at moderate ε;
+    /// direct search is exponential in t, so deep ε keeps it small.
     pub fn new(epsilon: f64) -> Self {
-        let (min_lde, max_lde) = if epsilon > 0.0 && epsilon < 1.0 {
-            let log2_recip  = (1.0 / epsilon).log2();
-            let log10_recip = (1.0 / epsilon).log10();
-            let coef = if log10_recip <= 4.0 {
-                1.5
-            } else if log10_recip >= 11.0 {
-                // Deep-ε recalibration (N=38 find-lde sweep + censor-resolved
-                // minima, 2026-07-01, ε ∈ {1e-11, 1e-12}): smallest TRUE
-                // find-lde ratio observed is 97/log2(1e11) ≈ 2.655 (seed
-                // 0xC0FFEE rand#15 @1e-11; the 2.8 start overshot it), so
-                // start just under it (2 levels below, applied after the
-                // floor). Sub-start empty levels cost ≲0.5 s even at 1e-12,
-                // so the extra margin is nearly free. 1e-10 and shallower
-                // keep the 2.8 ramp (deep_eps_canary regime).
-                2.6546
-            } else if log10_recip >= 6.0 {
-                2.8
-            } else {
-                // Linear in log10(1/ε): 1.5 at decade 4, 2.8 at decade 6.
-                1.5 + 0.65 * (log10_recip - 4.0)
-            };
-            // log₂(1/ε) ≤ 1074 for any positive f64 ε — the lde formulas fit u32.
+        let min_lde = 0;
+        let max_lde = if epsilon > 0.0 && epsilon < 1.0 {
+            let log2_recip = (1.0 / epsilon).log2();
+            // log₂(1/ε) ≤ 1074 for any positive f64 ε — fits u32.
             #[allow(clippy::cast_possible_truncation)]
-            let min_lde = (coef * log2_recip).floor() as u32;
-            // 2-level safety margin, recalibrated deep-ε regime only.
-            let min_lde = if log10_recip >= 11.0 {
-                min_lde.saturating_sub(2)
-            } else {
-                min_lde
-            };
-            #[allow(clippy::cast_possible_truncation)] // same u32 bound
             let max_lde = ((3.1 * log2_recip).ceil() as u32 + 2).max(50);
-            (min_lde, max_lde)
+            max_lde
         } else {
-            (0, 50)
+            50
         };
-        let direct_limit = if epsilon >= 1e-4 { 8 } else { 6 };
+        let direct_limit = 3;
         Self { epsilon, max_lde, min_lde, direct_limit }
     }
 
@@ -804,40 +770,44 @@ impl SynthesizerT {
                 || target_parity.is_none_or(|par| (t_prime % 2) as u8 == par)
         };
 
-        // Direct search starts at min_lde, not 0: no generic rotation
-        // reaches ε with fewer T-gates.
+        // Levels are swept upward and the cheapest circuit found so far is
+        // kept. A level can contain circuits above its own T-count, so a hit
+        // only ends the sweep once every lower T-count has been searched: the
+        // loop stops when the next level could no longer beat `best`.
+        let mut best: Option<SynthResultT> = None;
+        let best_t = |b: &Option<SynthResultT>| b.as_ref().map_or(usize::MAX, t_count_of);
+
+        // Direct levels are lde levels: lde t holds T-counts ≥ 2t − 3.
         for t in self.min_lde..=self.direct_limit {
-            let result = self.try_at_lde(&target, v, exact_col, t);
-            if result.is_some() {
-                return result;
+            if (2 * t as usize).saturating_sub(3) >= best_t(&best) {
+                return best;
+            }
+            if let Some(r) = self.try_at_lde(&target, v, exact_col, t) {
+                if t_count_of(&r) < best_t(&best) {
+                    best = Some(r);
+                }
             }
         }
 
-        // Skip the gap where prefix_split_search exists but prefix lists are
-        // tiny and the inner search is cheap anyway.
-        let t_dc_start = if self.epsilon < 1.0 {
-            let raw = (5.0 / 2.0) * (1.0 / self.epsilon).log2();
-            // log₂(1/ε) ≤ 1074 for any positive f64 ε — fits u32.
-            #[allow(clippy::cast_possible_truncation)]
-            let t_dc = (raw.ceil() as u32).max(self.direct_limit + 1);
-            t_dc
-        } else {
-            self.direct_limit + 1
-        };
-        let t_dc_start = t_dc_start.max(self.min_lde);
+        // Divide-and-conquer levels are T-count levels, starting right after
+        // the direct range so no T-count is skipped.
+        let t_dc_start = (self.direct_limit + 1).max(self.min_lde);
+        let split = |t: u32| self.split_for(t, target_parity);
 
         // Pre-warm the prefix-set cache in parallel for the t_prime values
         // the first few t-loop steps will need. `build_ma_prefix_set` is
         // O(2^t_prime) and lazily populated, so building here fills all
-        // cores before the search loop. Cap at a 5-step horizon: solutions
-        // almost always land within a few t of t_dc_start.
+        // cores before the search loop.
         if t_dc_start <= self.max_lde {
-            let horizon = (t_dc_start + 5).min(self.max_lde);
+            let first_split = (t_dc_start..=self.max_lde)
+                .find(|&t| optimal_t_prime(t, self.epsilon) > 0)
+                .unwrap_or(self.max_lde);
+            let horizon = (first_split + 5).min(self.max_lde);
             let needed: Vec<u32> = {
                 let mut seen = std::collections::HashSet::new();
                 (t_dc_start..=horizon)
                     .filter_map(|t| {
-                        let tp = optimal_t_prime(t, self.epsilon);
+                        let tp = split(t);
                         if tp > 0 && tp <= T_PRIME_CAP && parity_ok(tp) && seen.insert(tp) {
                             Some(tp)
                         } else {
@@ -851,7 +821,10 @@ impl SynthesizerT {
         }
 
         for t in t_dc_start..=self.max_lde {
-            let tp = optimal_t_prime(t, self.epsilon);
+            if t as usize >= best_t(&best) {
+                break;
+            }
+            let tp = split(t);
             // Memory guard: the prefix set is O(2^t'), retained in a cache.
             // A user-supplied max_lde far above the ε-band would otherwise
             // OOM the process; t' grows with t, so stop here (issue #2).
@@ -867,12 +840,26 @@ impl SynthesizerT {
             if !parity_ok(tp) {
                 continue;
             }
-            let result = self.try_at_lde(&target, v, exact_col, t);
-            if result.is_some() {
-                return result;
+            if let Some(r) = self.try_at_lde(&target, v, exact_col, t) {
+                if t_count_of(&r) < best_t(&best) {
+                    best = Some(r);
+                }
             }
         }
-        None
+        best
+    }
+
+    /// Prefix length t' for divide-and-conquer level `t`: the ε-optimal
+    /// split (Prop. 3.13). Where that is 0 above the direct range the level
+    /// is still searched, with the shortest prefix whose det parity matches
+    /// the target: none (t' = 0, L_0 = {I}) or a single T syllable (t' = 1).
+    fn split_for(&self, t: u32, target_parity: Option<u8>) -> u32 {
+        let opt = optimal_t_prime(t, self.epsilon);
+        if opt == 0 && t > self.direct_limit && target_parity == Some(1) {
+            1
+        } else {
+            opt
+        }
     }
 
     /// Find a solution at lde `t`: direct_search for `t ≤ direct_limit`,
@@ -963,16 +950,26 @@ impl SynthesizerT {
         let eps = self.epsilon;
         let branches = build_direct_branches(v);
 
-        branches.par_iter().find_map_any(|(v_s, tag)| {
-            for sol in brute_aligned_search(*v_s, t, eps, 1) {
-                let (u2t, gates) = direct_branch_gate(tag, &sol, t);
-                let dist = diamond_distance_u2t_float(&u2t, target);
-                if dist < eps {
-                    return Some(SynthResultT { gates: Some(gates), lde: t, distance: dist });
-                }
-            }
-            None
-        })
+        // Lowest-T hit over all branches (branches reach different T-counts).
+        branches
+            .par_iter()
+            .filter_map(|(v_s, tag)| {
+                brute_aligned_search(*v_s, t, eps, DIRECT_MAX_SOLUTIONS)
+                    .into_iter()
+                    .filter_map(|sol| {
+                        let u2t = direct_branch_unitary(tag, &sol, t);
+                        let dist = diamond_distance_u2t_float(&u2t, target);
+                        // Decode the whole unitary: the branch-tagged string
+                        // is not canonical and can carry two extra T gates.
+                        (dist < eps).then(|| SynthResultT {
+                            gates: Some(BlochDecomposer.decompose(&u2t)),
+                            lde: t,
+                            distance: dist,
+                        })
+                    })
+                    .min_by_key(t_count_of)
+            })
+            .min_by_key(t_count_of)
     }
 
     /// Algorithm 3.11: divide-and-conquer with MA left prefixes.
@@ -1013,15 +1010,9 @@ impl SynthesizerT {
         // direct-search limit, return None so the outer loop advances to the
         // next (higher) t where the split is non-trivial. (Forcing a split
         // here would produce an exponentially large prefix set.)
-        let t_prime = {
-            let opt = optimal_t_prime(t, eps);
-            if opt == 0 && t > self.direct_limit {
-                return (None, false);
-            }
-            opt
-        };
+        let t_prime = self.split_for(t, det_zeta_parity(target));
 
-        if t_prime == 0 || t_prime > t {
+        if t <= self.direct_limit || t_prime > t {
             return (self.direct_search(target, v, t), false);
         }
         let t_inner = t - t_prime;
@@ -1119,8 +1110,8 @@ impl SynthesizerT {
                     || IntScratch::new(eps),
                     |scratch, (pos, &pi)| ctx.search_prefix(scratch, pos, &prefixes[pi as usize]),
                 )
-                .find_any(|r| r.is_some())
-                .flatten();
+                .flatten()
+                .min_by_key(t_count_of);
             if result.is_some() {
                 break;
             }

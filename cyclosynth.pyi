@@ -79,7 +79,7 @@ class SynthResult:
     """Result of a synthesis run (same shape for Clifford+T and Clifford+√T)."""
 
     gates: str | None
-    """Gate string, leftmost = first gate applied; None if extraction failed."""
+    """Gate string in matrix order (``"ABC"`` is ``A·B·C``); None if extraction failed."""
     lde: int
     """Denominator exponent (search depth) of the synthesized unitary."""
     distance: float
@@ -108,10 +108,20 @@ class Synthesizer:
         lde_window: int | None = None,
         deadline_ms: int | None = None,
         seq_parity: bool | None = None,
+        native_rz: bool | None = None,
+        near_clifford_escape: bool | None = None,
     ) -> None:
         """``sqrt_t=True`` requires ``epsilon >= 1e-8`` (``ValueError``
         below); ``sqrt_t=False`` emits a ``UserWarning`` for
         ``epsilon < 1e-10`` (below the oracle-validated range).
+
+        ``deadline_ms`` caps the Clifford+√T cost search in milliseconds;
+        ``None`` keeps the ε-based default and ``0`` removes the deadline
+        (the search covers its full lde window). ``native_rz=False``
+        sends z-rotation targets through the general lattice search instead
+        of the native Ross–Selinger route. ``near_clifford_escape=False``
+        turns off the speed escape for targets just outside ε of a
+        Clifford-like point (ε ≤ 1e-4), which otherwise adds a few T gates.
         """
         ...
     def synthesize_u3(

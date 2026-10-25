@@ -37,3 +37,17 @@ docs/
 
 # Dev/benchmark binaries — kept locally, out of git (not production).
 /src/bin/
+
+# Figure generation and local research tooling: kept on disk, out of git.
+# The repo ships only what reproduces the reported numbers (scripts/README.md).
+scripts/plot_cost_vs_eps.py
+scripts/plot_cost_violin.py
+scripts/plot_cost_weight_sweep.py
+scripts/gen_bloch_trajectories.py
+scripts/_plotstyle.py
+scripts/plot_runtime.py
+scripts/profile_summary.py
+scripts/sweep_deep_eps.py
+scripts/analyze_sweep_deep_eps.py
+scripts/bloch_traj/
+*.zip

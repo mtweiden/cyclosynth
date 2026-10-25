@@ -39,6 +39,7 @@ def _find_binary():
 
 
 GRIDSYNTH = None  # resolved lazily so the module imports before install finishes
+GRIDSYNTH_SEED = os.environ.get("GRIDSYNTH_SEED", "1")
 
 
 def to_u(s):
@@ -75,7 +76,9 @@ def _call(theta, eps):
     th = float(theta)
     s = f"{th:.17g}"
     arg = f"({s})" if th < 0 else s
-    out = subprocess.run([GRIDSYNTH, "--phase", "-e", f"{eps:.3e}", arg],
+    # Fixed seed: gridsynth randomizes its candidate search by default, so
+    # without one its T-counts differ from run to run.
+    out = subprocess.run([GRIDSYNTH, "--phase", "-r", GRIDSYNTH_SEED, "-e", f"{eps:.3e}", arg],
                          capture_output=True, text=True, timeout=120)
     if out.returncode != 0:
         raise RuntimeError(f"gridsynth failed: {out.stderr.strip()}")

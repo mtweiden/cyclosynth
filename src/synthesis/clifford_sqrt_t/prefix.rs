@@ -9,7 +9,7 @@ type CacheByM<V> = LazyLock<Mutex<HashMap<u32, Arc<Vec<V>>>>>;
 // ─── Canonical-form prefix generation (arXiv:1501.04944 §4; syllable-count enumeration) ──
 //
 // Mirrors `clifford_t::build_ma_prefix_set`. Where Clifford+T enumerates
-// Matsumoto–Amano words `T^{a₀} · ∏ (HS^bᵢ T) · C` of T-count t', this
+// Matsumoto–Amano words `T^{a₀} · ∏ (S^bᵢ H T) · C` of T-count t', this
 // enumerates Forest–Gosset–Kliuchnikov–McKinnon words
 // `∏ R_{pᵢ}(aᵢπ/8) · C` of syllable count m. A syllable is one
 // `R_p(a·π/8)` with `p ∈ {x,y,z}, a ∈ {1,2,3}`; consecutive syllables

@@ -79,3 +79,36 @@ let synth = Synthesizer::new(1e-5, /* sqrt_t = */ false);
 let result = synth.synthesize_u3(Angle::Rad(1.0472), Angle::Rad(2.7577), Angle::Rad(5.3947)).unwrap();
 println!("{}", result.gates.unwrap());
 ```
+
+## Reproducing the paper
+
+The data and numbers in arXiv:2609.16659 come from the scripts in
+[`scripts/`](scripts/). One command rebuilds the library and regenerates
+them (many hours at 500 targets per precision; resumable):
+
+```sh
+scripts/reproduce_paper.sh                 # build, gather, print numbers
+SKIP_GATHER=1 scripts/reproduce_paper.sh   # recompute from existing CSVs
+```
+
+It needs `maturin`, Python with `numpy` and `mpmath`, and the
+Ross–Selinger `gridsynth` binary (`cabal install newsynth`, or set
+`GRIDSYNTH_BIN`). Each step can also be run on its own:
+
+| Step | Script | Produces | Paper |
+| --- | --- | --- | --- |
+| General targets | `gather_u3.py` | `scripts/data/u3.csv` | Tables 2, 3 and the cost fits |
+| z-rotations | `gather_rz.py` | `scripts/data/rz.csv` | Sec. 5.3 (gridsynth check), Sec. 6 |
+| Quoted numbers | `paper_numbers.py` | `paper_numbers.txt` | Tables 2, 3 and the text |
+
+The gathers draw seeded targets (the same 500 per precision on every run),
+time each call in a fresh process with the whole machine, re-verify every
+circuit's diamond distance in 40-digit arithmetic, and record the host and
+commit in a `.meta.json` sidecar. Clifford+√T runs use the library's default
+cost-search deadline; they turn off the near-Clifford speed escape
+(`near_clifford_escape=False`), which can add T gates, and z-rotations use
+`native_rz=False` so they exercise the general lattice search. Each call also
+has a hard timeout of 5× the slowest completed call at that precision in the
+2026-10-17 reference run (at least 30 s; table in `scripts/_gather.py`); a Clifford+√T call that hits it reports its Clifford+T circuit and
+is counted by `paper_numbers.py`. Small run-to-run differences are expected: the parallel search
+may return a different circuit of the same or nearly the same cost.
